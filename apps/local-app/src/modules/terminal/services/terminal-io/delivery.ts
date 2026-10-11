@@ -6,6 +6,7 @@ import type {
   GuardedDeliveryResult,
 } from './types';
 import { captureStrict } from './capture';
+import { readForegroundState } from './foreground';
 import { generateDeliveryNonce } from '../../../../common/delivery-nonce';
 import { FOLLOW_NOTE } from '../../../../common/follow-note';
 
@@ -24,6 +25,8 @@ interface ConfirmationBaseline {
 interface PreparedBuffer {
   readonly name: string;
 }
+
+export type ForegroundCheck = () => Promise<void>;
 
 function clampDelay(raw: number | undefined, fallback: number): number {
   const v = raw ?? fallback;
@@ -151,7 +154,9 @@ async function typeFollowNote(
   executor: ProcessExecutor,
   target: SessionTarget,
   postPasteDelayMs: number,
+  foregroundCheck?: ForegroundCheck,
 ): Promise<void> {
+  await foregroundCheck?.();
   try {
     await sendKeys(executor, target, ['-l', '--', FOLLOW_NOTE]);
   } catch {
@@ -164,12 +169,15 @@ async function sendSubmitKeysWithRetry(
   executor: ProcessExecutor,
   target: SessionTarget,
   keys: readonly string[],
+  foregroundCheck?: ForegroundCheck,
 ): Promise<void> {
   if (keys.length === 0) return;
+  await foregroundCheck?.();
   try {
     await sendKeys(executor, target, keys);
   } catch {
     await new Promise((r) => setTimeout(r, 150));
+    await foregroundCheck?.();
     await sendKeys(executor, target, keys);
   }
 }
@@ -190,11 +198,17 @@ async function pasteAndSubmit(
     confirmationBaseline?: ConfirmationBaseline;
     preparedBuffer?: PreparedBuffer;
     followNote?: boolean;
+    firstWriteChecked?: boolean;
   },
+  foregroundCheck?: ForegroundCheck,
 ): Promise<{ method?: 'nonce' | 'paste_indicator' | 'paste_changed' }> {
-  let preparedBufferNeedsCleanup = Boolean(options.preparedBuffer);
+  // Set while a tmux buffer exists that this call must delete on failure.
+  let pendingBuffer = options.preparedBuffer;
+  let firstWriteChecked = options.firstWriteChecked === true;
   try {
     if (options.preKeys?.length) {
+      if (!firstWriteChecked) await foregroundCheck?.();
+      firstWriteChecked = false;
       await sendKeys(executor, target, options.preKeys);
       if (options.preDelayMs && options.preDelayMs > 0) {
         await new Promise((r) => setTimeout(r, options.preDelayMs));
@@ -213,12 +227,12 @@ async function pasteAndSubmit(
       }
     }
 
-    const preparedBuffer =
-      options.preparedBuffer ?? (await prepareBuffer(executor, target, text, options.bracketed));
+    pendingBuffer ??= await prepareBuffer(executor, target, text, options.bracketed);
 
-    await pasteBuffer(executor, preparedBuffer.name, target.name);
-    await deleteBuffer(executor, preparedBuffer.name);
-    preparedBufferNeedsCleanup = false;
+    if (!firstWriteChecked) await foregroundCheck?.();
+    await pasteBuffer(executor, pendingBuffer.name, target.name);
+    await deleteBuffer(executor, pendingBuffer.name);
+    pendingBuffer = undefined;
 
     let method: 'nonce' | 'paste_indicator' | 'paste_changed' | undefined;
     if (options.confirm && options.nonce) {
@@ -245,14 +259,14 @@ async function pasteAndSubmit(
     }
 
     if (shouldTypeFollowNote(text, options)) {
-      await typeFollowNote(executor, target, options.postPasteDelayMs);
+      await typeFollowNote(executor, target, options.postPasteDelayMs, foregroundCheck);
     }
-    await sendSubmitKeysWithRetry(executor, target, options.submitKeys);
+    await sendSubmitKeysWithRetry(executor, target, options.submitKeys, foregroundCheck);
 
     return { method };
   } catch (error) {
-    if (preparedBufferNeedsCleanup && options.preparedBuffer) {
-      await deleteBuffer(executor, options.preparedBuffer.name);
+    if (pendingBuffer) {
+      await deleteBuffer(executor, pendingBuffer.name);
     }
     throw error;
   }
@@ -280,6 +294,23 @@ export class PasteNotConfirmedError extends Error {
   ) {
     super(`Paste not confirmed for session "${sessionName}" (nonce: ${nonce})`);
     this.name = 'PasteNotConfirmedError';
+  }
+}
+
+export class ShellForegroundError extends Error {
+  constructor(readonly sessionName: string) {
+    super(`The CLI is not running in session "${sessionName}"; automated delivery refused`);
+    this.name = 'ShellForegroundError';
+  }
+}
+
+export async function requireForegroundProgram(
+  executor: ProcessExecutor,
+  target: SessionTarget,
+): Promise<void> {
+  const foreground = await readForegroundState(executor, target);
+  if (!foreground || foreground.shellInFront) {
+    throw new ShellForegroundError(target.name);
   }
 }
 
@@ -316,6 +347,7 @@ function deliverWithFirstMutationGuard(
   text: string,
   options: DeliveryOptions,
   firstMutationGuard: undefined,
+  foregroundCheck?: ForegroundCheck,
 ): Promise<DeliveryResult>;
 function deliverWithFirstMutationGuard(
   executor: ProcessExecutor,
@@ -324,6 +356,7 @@ function deliverWithFirstMutationGuard(
   text: string,
   options: DeliveryOptions,
   firstMutationGuard: () => boolean,
+  foregroundCheck?: ForegroundCheck,
 ): Promise<GuardedDeliveryResult>;
 async function deliverWithFirstMutationGuard(
   executor: ProcessExecutor,
@@ -332,6 +365,7 @@ async function deliverWithFirstMutationGuard(
   text: string,
   options: DeliveryOptions,
   firstMutationGuard: (() => boolean) | undefined,
+  foregroundCheck?: ForegroundCheck,
 ): Promise<GuardedDeliveryResult> {
   const maxAttempts = options.maxAttempts ?? DEFAULT_MAX_ATTEMPTS;
   const submitKeys = options.submitKeys ?? ['Enter'];
@@ -350,35 +384,50 @@ async function deliverWithFirstMutationGuard(
 
     let confirmationBaseline: ConfirmationBaseline | undefined;
     let preparedBuffer: PreparedBuffer | undefined;
-    if (attempt === 0 && firstMutationGuard && confirm) {
-      confirmationBaseline = await captureConfirmationBaseline(executor, target);
-    }
     if (attempt === 0 && firstMutationGuard) {
+      if (confirm) {
+        confirmationBaseline = await captureConfirmationBaseline(executor, target);
+      }
       preparedBuffer = await prepareBuffer(executor, target, textWithNonce, bracketed);
-    }
-    if (attempt === 0 && firstMutationGuard && !firstMutationGuard()) {
-      await deleteBuffer(executor, preparedBuffer!.name);
-      return { deferred: 'human_draft' };
+      try {
+        await foregroundCheck?.();
+      } catch (error) {
+        await deleteBuffer(executor, preparedBuffer.name);
+        throw error;
+      }
+      if (!firstMutationGuard()) {
+        await deleteBuffer(executor, preparedBuffer.name);
+        return { deferred: 'human_draft' };
+      }
     }
 
     try {
-      const result = await pasteAndSubmit(executor, target, textWithNonce, {
-        bracketed,
-        submitKeys,
-        preKeys: attempt === 0 ? options.preKeys : undefined,
-        preDelayMs: options.preDelayMs,
-        postPasteDelayMs,
-        confirm,
-        nonce: lastNonce,
-        confirmTimeoutMs,
-        confirmationBaseline,
-        preparedBuffer,
-        followNote: options.followNote,
-      });
+      const result = await pasteAndSubmit(
+        executor,
+        target,
+        textWithNonce,
+        {
+          bracketed,
+          submitKeys,
+          preKeys: attempt === 0 ? options.preKeys : undefined,
+          preDelayMs: options.preDelayMs,
+          postPasteDelayMs,
+          confirm,
+          nonce: lastNonce,
+          confirmTimeoutMs,
+          confirmationBaseline,
+          preparedBuffer,
+          followNote: options.followNote,
+          // Prepared input lets the synchronous mutation fence protect the already-checked first write.
+          firstWriteChecked: attempt === 0 && Boolean(firstMutationGuard),
+        },
+        foregroundCheck,
+      );
 
       return { confirmed: true, nonce: lastNonce, retryCount: attempt, method: result.method };
     } catch (error) {
       if (error instanceof PasteNotConfirmedError && attempt < maxAttempts - 1) {
+        await foregroundCheck?.();
         try {
           await sendKeys(executor, target, ['Escape']);
         } catch {}
@@ -387,6 +436,7 @@ async function deliverWithFirstMutationGuard(
       }
 
       if (error instanceof PasteNotConfirmedError) {
+        if (submitKeys.length > 0) await foregroundCheck?.();
         try {
           await sendKeys(executor, target, submitKeys);
         } catch {}
@@ -406,8 +456,17 @@ export async function deliver(
   target: SessionTarget,
   text: string,
   options: DeliveryOptions,
+  foregroundCheck?: ForegroundCheck,
 ): Promise<DeliveryResult> {
-  return deliverWithFirstMutationGuard(executor, gap, target, text, options, undefined);
+  return deliverWithFirstMutationGuard(
+    executor,
+    gap,
+    target,
+    text,
+    options,
+    undefined,
+    foregroundCheck,
+  );
 }
 
 export async function deliverGuarded(
@@ -417,8 +476,17 @@ export async function deliverGuarded(
   text: string,
   options: DeliveryOptions,
   firstMutationGuard: () => boolean,
+  foregroundCheck?: ForegroundCheck,
 ): Promise<GuardedDeliveryResult> {
-  return deliverWithFirstMutationGuard(executor, gap, target, text, options, firstMutationGuard);
+  return deliverWithFirstMutationGuard(
+    executor,
+    gap,
+    target,
+    text,
+    options,
+    firstMutationGuard,
+    foregroundCheck,
+  );
 }
 
 export async function deliverImmediate(
@@ -426,6 +494,7 @@ export async function deliverImmediate(
   target: SessionTarget,
   text: string,
   options: Omit<DeliveryOptions, 'agentId'>,
+  foregroundCheck?: ForegroundCheck,
 ): Promise<DeliveryResult> {
   const submitKeys = options.submitKeys ?? ['Enter'];
   const bracketed = options.bracketed ?? true;
@@ -436,17 +505,23 @@ export async function deliverImmediate(
   const nonce = generateDeliveryNonce();
   const textWithNonce = confirm ? `${text}\n[MsgId:${nonce}]` : text;
 
-  const result = await pasteAndSubmit(executor, target, textWithNonce, {
-    bracketed,
-    submitKeys,
-    preKeys: options.preKeys,
-    preDelayMs: options.preDelayMs,
-    postPasteDelayMs,
-    confirm,
-    nonce: confirm ? nonce : undefined,
-    confirmTimeoutMs,
-    followNote: options.followNote,
-  });
+  const result = await pasteAndSubmit(
+    executor,
+    target,
+    textWithNonce,
+    {
+      bracketed,
+      submitKeys,
+      preKeys: options.preKeys,
+      preDelayMs: options.preDelayMs,
+      postPasteDelayMs,
+      confirm,
+      nonce: confirm ? nonce : undefined,
+      confirmTimeoutMs,
+      followNote: options.followNote,
+    },
+    foregroundCheck,
+  );
 
   return { confirmed: true, nonce, retryCount: 0, method: result.method };
 }

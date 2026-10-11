@@ -14,10 +14,7 @@ import { EnvScopesMap, Provider, UpdateProvider } from '../../storage/models/dom
 import { NotFoundError, ValidationError } from '../../../common/errors/error-types';
 import { ProviderProjectSyncService, type SyncResult } from './provider-project-sync.service';
 import { ProviderEffortSeedingService } from './provider-effort-seeding.service';
-import {
-  disableClaudeAutoCompact,
-  enableClaudeAutoCompact,
-} from '../../sessions/utils/claude-config';
+import { disableClaudeAutoCompact, enableClaudeAutoCompact } from '../utils/claude-config';
 import { ProcessExecutor } from '../../terminal/services/process-executor/process-executor.port';
 import { createLogger } from '../../../common/logging/logger';
 import { validateClaudeLaunchSettingsJson } from '@devchain/shared';

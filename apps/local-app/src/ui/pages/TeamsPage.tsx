@@ -724,8 +724,8 @@ export function TeamsPage() {
     enabled: !!editingTeam,
   });
 
-  const teams = data?.items ?? [];
-  const agents: Agent[] = agentsData?.items ?? [];
+  const teams = useMemo(() => data?.items ?? [], [data]);
+  const agents: Agent[] = useMemo(() => agentsData?.items ?? [], [agentsData]);
   const profiles: ProfileListItem[] = profilesData?.items ?? [];
   const existingTeamNames = teams.map((t) => t.name);
 

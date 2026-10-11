@@ -75,7 +75,7 @@ export async function fetchActions(fetchFn: FetchFn): Promise<ActionMetadata[]> 
   if (!response.ok) {
     throw new Error('Failed to fetch actions');
   }
-  return response.json();
+  return response.json() as Promise<ActionMetadata[]>;
 }
 
 /**
@@ -89,5 +89,5 @@ export async function fetchAction(fetchFn: FetchFn, type: string): Promise<Actio
     }
     throw new Error('Failed to fetch action');
   }
-  return response.json();
+  return response.json() as Promise<ActionMetadata>;
 }

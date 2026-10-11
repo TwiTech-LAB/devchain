@@ -80,7 +80,8 @@ export class FakeSyncthingLauncher extends SyncthingLauncher {
   onShutdown: 'exit' | 'ignore' = 'exit';
   /** Answers to successive GET /rest/config/restart-required; false once exhausted. */
   restartRequired: boolean[] = [];
-  folders: Array<{ id: string; path?: string }> = [];
+  privileged = false;
+  folders: Array<{ id: string; path?: string; copyOwnershipFromParent?: boolean }> = [];
   readonly runs: FakeSyncthingRun[] = [];
   readonly kills: number[] = [];
   private nextPid = 40_000;
@@ -115,6 +116,14 @@ export class FakeSyncthingLauncher extends SyncthingLauncher {
         if (route === 'GET /rest/system/version') return json({ version: this.lookup.version });
         if (route === 'GET /rest/system/status') return json({ myID: deviceIdFor(run.home) });
         if (route === 'GET /rest/config/folders') return json(this.folders);
+        if (req.method === 'PATCH' && path.startsWith('/rest/config/folders/')) {
+          const folder = this.folders.find(
+            (f) => f.id === decodeURIComponent(path.slice('/rest/config/folders/'.length)),
+          );
+          if (!folder) return res.writeHead(404).end();
+          Object.assign(folder, body);
+          return json({});
+        }
         if (req.method === 'DELETE' && path.startsWith('/rest/config/folders/')) {
           this.folders = this.folders.filter(
             (f) => f.id !== decodeURIComponent(path.slice('/rest/config/folders/'.length)),
@@ -142,6 +151,10 @@ export class FakeSyncthingLauncher extends SyncthingLauncher {
   findChildPid(pid: number): Promise<number | null> {
     const run = this.runs.find((r) => r.pid === pid);
     return Promise.resolve(run?.childAlive ? run.childPid : null);
+  }
+
+  hasOwnershipCapabilities(_pid: number): Promise<boolean> {
+    return Promise.resolve(this.privileged);
   }
 
   isAlive(pid: number): boolean {

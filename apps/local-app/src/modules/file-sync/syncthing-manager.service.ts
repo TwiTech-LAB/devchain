@@ -6,11 +6,13 @@ import {
 } from '@nestjs/common';
 import { z } from 'zod';
 import { randomBytes } from 'crypto';
+import { existsSync } from 'fs';
 import { mkdir } from 'fs/promises';
 import { createServer } from 'net';
 import { join } from 'path';
 import { getEnvConfig } from '../../common/config/env.config';
 import { createLogger } from '../../common/logging/logger';
+import { isProjectFolderId } from './file-sync.dto';
 import { FILE_SYNC_PATHS, type FileSyncPaths } from './file-sync-paths';
 import { SyncthingLauncher, type SyncthingProcess } from './syncthing-launcher';
 import { SyncthingRestClient, SyncthingRestError } from './syncthing-rest.client';
@@ -23,6 +25,7 @@ export interface SyncthingState {
   available: boolean;
   version: string | null;
   running: boolean;
+  privileged: boolean;
   deviceId: string | null;
   apiPort: number | null;
   /** Why the instance is unavailable or not running; install guidance when the binary is missing. */
@@ -87,6 +90,7 @@ export class SyncthingManager implements OnApplicationBootstrap, BeforeApplicati
     available: false,
     version: null,
     running: false,
+    privileged: false,
     deviceId: null,
     apiPort: null,
     error: null,
@@ -96,6 +100,7 @@ export class SyncthingManager implements OnApplicationBootstrap, BeforeApplicati
   private stopping = false;
   private failures = 0;
   private transcriptFoldersRemoved = false;
+  private warnedUnprivilegedHost = false;
   private restartTimer: NodeJS.Timeout | null = null;
   private monitorTimer: NodeJS.Timeout | null = null;
 
@@ -146,7 +151,7 @@ export class SyncthingManager implements OnApplicationBootstrap, BeforeApplicati
     this.stopMonitor();
     const instance = this.instance;
     this.instance = null;
-    this.state = { ...this.state, running: false };
+    this.state = { ...this.state, running: false, privileged: false };
     if (!instance) return;
     instance.childPid ??= await this.launcher.findChildPid(instance.proc.pid);
     try {
@@ -172,6 +177,7 @@ export class SyncthingManager implements OnApplicationBootstrap, BeforeApplicati
         available: false,
         version: binary.version,
         running: false,
+        privileged: false,
         deviceId: null,
         apiPort: null,
         error: binary.error,
@@ -192,7 +198,7 @@ export class SyncthingManager implements OnApplicationBootstrap, BeforeApplicati
       const instance = this.instance;
       this.instance = null;
       if (instance) await this.kill(instance);
-      this.state = { ...this.state, running: false, error: reason };
+      this.state = { ...this.state, running: false, privileged: false, error: reason };
       logger.warn({ reason }, 'Syncthing did not start');
       this.scheduleRestart();
     }
@@ -244,6 +250,18 @@ export class SyncthingManager implements OnApplicationBootstrap, BeforeApplicati
 
     await this.waitForApi(instance, home);
     instance.childPid = (await this.launcher.findChildPid(proc.pid)) ?? proc.pid;
+    const privileged = await this.launcher.hasOwnershipCapabilities(instance.childPid);
+    this.state = { ...this.state, privileged };
+    if (
+      !privileged &&
+      !this.warnedUnprivilegedHost &&
+      existsSync(join(getEnvConfig().DEVCHAIN_HOST_ETC_DIR, 'claim.json'))
+    ) {
+      this.warnedUnprivilegedHost = true;
+      logger.warn(
+        'Syncthing lacks ownership capabilities on this claimed VM; update the VM to sync files owned by other users',
+      );
+    }
     this.throwIfStopping();
     await instance.client.patchOptions({
       listenAddresses: [instance.listenAddress],
@@ -258,12 +276,19 @@ export class SyncthingManager implements OnApplicationBootstrap, BeforeApplicati
     if (await instance.client.restartRequired()) {
       throw new Error('Syncthing needs a restart to apply its options');
     }
-    if (!this.transcriptFoldersRemoved) {
-      const folders = z
-        .array(z.object({ id: z.string() }))
-        .parse(await instance.client.request('GET', '/rest/config/folders'));
-      for (const folder of folders) {
-        if (!folder.id.startsWith('tx:')) continue;
+    const folders = z
+      .array(z.object({ id: z.string(), copyOwnershipFromParent: z.boolean().optional() }))
+      .parse(await instance.client.request('GET', '/rest/config/folders'));
+    for (const folder of folders) {
+      if (isProjectFolderId(folder.id)) {
+        if (folder.copyOwnershipFromParent !== privileged) {
+          await instance.client.request(
+            'PATCH',
+            `/rest/config/folders/${encodeURIComponent(folder.id)}`,
+            { copyOwnershipFromParent: privileged },
+          );
+        }
+      } else if (!this.transcriptFoldersRemoved && folder.id.startsWith('tx:')) {
         try {
           await instance.client.request(
             'DELETE',
@@ -273,8 +298,8 @@ export class SyncthingManager implements OnApplicationBootstrap, BeforeApplicati
           if (!(error instanceof SyncthingRestError && error.status === 404)) throw error;
         }
       }
-      this.transcriptFoldersRemoved = true;
     }
+    this.transcriptFoldersRemoved = true;
     instance.deviceId = await instance.client.deviceId();
     this.throwIfStopping();
     instance.readyAt = Date.now();
@@ -376,7 +401,7 @@ export class SyncthingManager implements OnApplicationBootstrap, BeforeApplicati
     if (instance.readyAt !== null && Date.now() - instance.readyAt >= this.timings.stableAfterMs) {
       this.failures = 0;
     }
-    this.state = { ...this.state, running: false, error: reason };
+    this.state = { ...this.state, running: false, privileged: false, error: reason };
     logger.warn({ reason }, 'Syncthing stopped; restarting');
     await this.kill(instance);
     this.scheduleRestart();

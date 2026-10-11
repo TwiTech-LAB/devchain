@@ -1,11 +1,13 @@
+import { OnCatalogEvent } from '../../events/catalog/on-catalog-event';
 import { Inject, Injectable, Logger } from '@nestjs/common';
-import { OnEvent } from '@nestjs/event-emitter';
 import type Database from 'better-sqlite3';
 import { BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import { DB_CONNECTION } from '../../storage/db/db.provider';
 import { getRawSqliteClient } from '../../storage/db/sqlite-raw';
+import { SessionRowStore } from '../../storage/sessions/session-row.store';
+import type { TranscriptBackfillOutcome } from '../../storage/sessions/session-transcript.types';
 import { EventsService } from '../../events/services/events.service';
 import { TranscriptPathValidator } from './transcript-path-validator.service';
 import { SessionReaderAdapterFactory } from '../adapters/session-reader-adapter.factory';
@@ -76,20 +78,11 @@ interface AssignedTranscriptPathRow {
 export type PersistOutcome =
   | { kind: 'persisted'; sessionId: string }
   | { kind: 'persistedPathOnly'; sessionId: string }
-  | { kind: 'backfilledId'; sessionId: string }
-  | { kind: 'alreadyComplete'; sessionId: string }
-  | { kind: 'pathMismatch'; sessionId: string; existing: string; incoming: string }
-  | { kind: 'skipped'; sessionId: string; reason: string };
+  | Exclude<TranscriptBackfillOutcome, { kind: 'noIdAvailable' }>;
 
 type DiscoveryGate =
   | { needsAny: true; transcriptPath: string | null; providerSessionId: string | null }
   | { needsAny: false };
-
-interface SessionDiscoveryRow {
-  transcript_path: string | null;
-  provider_session_id: string | null;
-  provider_name_at_launch: string | null;
-}
 
 interface ProviderSessionIdBackfillInput {
   sessionId: string;
@@ -115,6 +108,7 @@ export class TranscriptPersistenceListener {
       ProjectStorage &
       Pick<StorageService, 'getProvider'>,
     private readonly providerAdapterFactory: ProviderAdapterFactory,
+    private readonly sessionRows: SessionRowStore,
   ) {
     this.sqlite = getRawSqliteClient(db);
   }
@@ -123,7 +117,7 @@ export class TranscriptPersistenceListener {
   // Hook-based discovery (existing)
   // ---------------------------------------------------------------------------
 
-  @OnEvent('claude.hooks.session.started', { async: true })
+  @OnCatalogEvent('claude.hooks.session.started', { async: true })
   async handleHookSessionStarted(payload: ClaudeHooksSessionStartedEventPayload): Promise<void> {
     try {
       await this.processHookPayload(payload);
@@ -140,7 +134,7 @@ export class TranscriptPersistenceListener {
   // Auto-discovery on session launch (new)
   // ---------------------------------------------------------------------------
 
-  @OnEvent('session.started', { async: true })
+  @OnCatalogEvent('session.started', { async: true })
   async handleSessionStarted(payload: SessionStartedEventPayload): Promise<void> {
     try {
       await this.discoverTranscriptWithRetry(payload.sessionId, payload.agentId);
@@ -202,15 +196,14 @@ export class TranscriptPersistenceListener {
     }
 
     const now = new Date().toISOString();
-    const result = this.sqlite
-      .prepare(
-        `UPDATE sessions
-         SET transcript_path = ?, provider_session_id = ?, updated_at = ?
-         WHERE id = ?`,
-      )
-      .run(normalizedPath, providerSessionId, now, sessionId);
+    const changes = this.sessionRows.bindTranscriptFromHook({
+      sessionId,
+      transcriptPath: normalizedPath,
+      providerSessionId,
+      updatedAt: now,
+    });
 
-    if (result.changes === 0) {
+    if (changes === 0) {
       this.logger.warn(
         { sessionId, providerSessionId },
         'Session not found for transcript persistence — hook may have arrived before session record was created',
@@ -277,11 +270,7 @@ export class TranscriptPersistenceListener {
       return;
     }
 
-    const row = this.sqlite
-      .prepare('SELECT transcript_path, provider_session_id FROM sessions WHERE id = ?')
-      .get(sessionId) as
-      | { transcript_path: string | null; provider_session_id: string | null }
-      | undefined;
+    const row = this.sessionRows.getTranscriptMetadata(sessionId);
 
     if (!row) {
       this.logger.warn(
@@ -591,11 +580,7 @@ export class TranscriptPersistenceListener {
   }
 
   private getDiscoveryGate(sessionId: string): DiscoveryGate {
-    const row = this.sqlite
-      .prepare('SELECT transcript_path, provider_session_id FROM sessions WHERE id = ?')
-      .get(sessionId) as
-      | { transcript_path: string | null; provider_session_id: string | null }
-      | undefined;
+    const row = this.sessionRows.getTranscriptMetadata(sessionId);
 
     if (!row) {
       return { needsAny: true, transcriptPath: null, providerSessionId: null };
@@ -735,104 +720,59 @@ export class TranscriptPersistenceListener {
     const providerSessionId = file.providerSessionId ?? null;
     const now = new Date().toISOString();
 
-    let transactionOpen = false;
-    this.sqlite.prepare('BEGIN').run();
-    transactionOpen = true;
-    try {
-      const row = this.sqlite
-        .prepare(
-          `SELECT transcript_path, provider_session_id, provider_name_at_launch
-           FROM sessions
-           WHERE id = ?`,
-        )
-        .get(sessionId) as SessionDiscoveryRow | undefined;
+    const outcome = await this.sessionRows.bindDiscoveredTranscript({
+      sessionId,
+      transcriptPath: normalizedPath,
+      providerSessionId,
+      updatedAt: now,
+    });
 
-      if (!row) {
-        this.sqlite.prepare('COMMIT').run();
-        transactionOpen = false;
-        return { kind: 'skipped', sessionId, reason: 'sessionNotFound' };
-      }
-
-      if (!row.transcript_path) {
-        // Uniqueness guard on (path, providerSessionId): for DB-backed sources
-        // many sessions share one container path, so two concurrent discoveries
-        // could otherwise bind the same `ses_…`. No-op for file adapters whose
-        // candidates carry no providerSessionId (NULL → path-only semantics).
-        if (providerSessionId) {
-          const conflict = this.sqlite
-            .prepare(
-              `SELECT id FROM sessions
-               WHERE id != ? AND provider_session_id = ? AND transcript_path = ?`,
-            )
-            .get(sessionId, providerSessionId, normalizedPath) as { id: string } | undefined;
-          if (conflict) {
-            this.sqlite.prepare('COMMIT').run();
-            transactionOpen = false;
-            this.logger.warn(
-              { sessionId, conflictingSessionId: conflict.id, providerSessionId, providerName },
-              'Provider session id already bound to another session — skipping',
-            );
-            return { kind: 'skipped', sessionId, reason: 'providerSessionIdTaken' };
-          }
-        }
-
-        this.sqlite
-          .prepare(
-            `UPDATE sessions
-             SET transcript_path = ?, provider_session_id = ?, updated_at = ?
-             WHERE id = ?`,
-          )
-          .run(normalizedPath, providerSessionId, now, sessionId);
-        this.sqlite.prepare('COMMIT').run();
-        transactionOpen = false;
-
-        if (providerSessionId || !this.requiresProviderSessionIdForRestore(providerName)) {
-          this.logger.log(
-            { sessionId, transcriptPath: normalizedPath, providerName },
-            'Auto-discovered and persisted transcript path',
-          );
-
-          await this.events.publish('session.transcript.discovered', {
-            sessionId,
-            agentId,
-            projectId,
-            transcriptPath: normalizedPath,
-            providerName,
-            providerSessionId: providerSessionId ?? undefined,
-          });
-          return { kind: 'persisted', sessionId };
-        }
-
-        this.logger.log(
-          { sessionId, transcriptPath: normalizedPath, providerName, pathOnly: true },
-          'Auto-discovered and persisted transcript path without provider session id',
-        );
-        await this.events.publish('session.transcript.discovered', {
+    if (outcome.kind === 'sessionNotFound') {
+      return { kind: 'skipped', sessionId, reason: 'sessionNotFound' };
+    }
+    if (outcome.kind === 'providerSessionIdTaken') {
+      this.logger.warn(
+        {
           sessionId,
-          agentId,
-          projectId,
-          transcriptPath: normalizedPath,
+          conflictingSessionId: outcome.conflictingSessionId,
+          providerSessionId,
           providerName,
-          providerSessionId: providerSessionId ?? undefined,
-        });
-        return { kind: 'persistedPathOnly', sessionId };
-      }
-
-      this.sqlite.prepare('COMMIT').run();
-      transactionOpen = false;
-
+        },
+        'Provider session id already bound to another session — skipping',
+      );
+      return { kind: 'skipped', sessionId, reason: 'providerSessionIdTaken' };
+    }
+    if (outcome.kind === 'needsBackfill') {
       return this.backfillProviderSessionIdForTranscriptPath({
         sessionId,
         providerName,
         transcriptPath: normalizedPath,
         providerSessionId,
       });
-    } catch (error) {
-      if (transactionOpen) {
-        this.sqlite.prepare('ROLLBACK').run();
-      }
-      throw error;
     }
+
+    const pathOnly = !providerSessionId && this.requiresProviderSessionIdForRestore(providerName);
+    if (pathOnly) {
+      this.logger.log(
+        { sessionId, transcriptPath: normalizedPath, providerName, pathOnly: true },
+        'Auto-discovered and persisted transcript path without provider session id',
+      );
+    } else {
+      this.logger.log(
+        { sessionId, transcriptPath: normalizedPath, providerName },
+        'Auto-discovered and persisted transcript path',
+      );
+    }
+
+    await this.events.publish('session.transcript.discovered', {
+      sessionId,
+      agentId,
+      projectId,
+      transcriptPath: normalizedPath,
+      providerName,
+      providerSessionId: providerSessionId ?? undefined,
+    });
+    return { kind: pathOnly ? 'persistedPathOnly' : 'persisted', sessionId };
   }
 
   async backfillProviderSessionIdForTranscriptPath(
@@ -842,128 +782,59 @@ export class TranscriptPersistenceListener {
     const now = new Date().toISOString();
     const emitEvent = input.emitEvent ?? true;
 
-    let transactionOpen = false;
-    this.sqlite.prepare('BEGIN').run();
-    transactionOpen = true;
-    try {
-      const row = this.sqlite
-        .prepare(
-          `SELECT transcript_path, provider_session_id, provider_name_at_launch
-           FROM sessions
-           WHERE id = ?`,
-        )
-        .get(input.sessionId) as SessionDiscoveryRow | undefined;
+    const outcome = await this.sessionRows.backfillTranscriptProviderSessionId({
+      sessionId: input.sessionId,
+      providerName: input.providerName,
+      transcriptPath: input.transcriptPath,
+      normalizedTranscriptPath: incomingPath,
+      providerSessionId: input.providerSessionId,
+      updatedAt: now,
+    });
 
-      if (!row) {
-        this.sqlite.prepare('COMMIT').run();
-        transactionOpen = false;
-        return { kind: 'skipped', sessionId: input.sessionId, reason: 'sessionNotFound' };
-      }
-
-      if (!row.transcript_path) {
-        this.sqlite.prepare('COMMIT').run();
-        transactionOpen = false;
-        return { kind: 'skipped', sessionId: input.sessionId, reason: 'noTranscriptPath' };
-      }
-
-      const existingPath = this.normalizePathForCompare(row.transcript_path);
-      if (existingPath !== incomingPath) {
-        this.sqlite.prepare('COMMIT').run();
-        transactionOpen = false;
-        this.logger.warn(
-          {
-            sessionId: input.sessionId,
-            existing: row.transcript_path,
-            incoming: input.transcriptPath,
-          },
-          'Discovered transcript path does not match existing session path — skipping',
-        );
-        return {
-          kind: 'pathMismatch',
-          sessionId: input.sessionId,
-          existing: row.transcript_path,
-          incoming: input.transcriptPath,
-        };
-      }
-
-      if (row.provider_session_id) {
-        this.sqlite.prepare('COMMIT').run();
-        transactionOpen = false;
-        return { kind: 'alreadyComplete', sessionId: input.sessionId };
-      }
-
-      if (!input.providerSessionId) {
-        this.sqlite.prepare('COMMIT').run();
-        transactionOpen = false;
-        if (this.requiresProviderSessionIdForRestore(input.providerName)) {
-          if (emitEvent) {
-            this.logger.log(
-              {
-                sessionId: input.sessionId,
-                transcriptPath: input.transcriptPath,
-                providerName: input.providerName,
-                pathOnly: true,
-              },
-              'Discovered transcript path still lacks provider session id',
-            );
-          }
-          return { kind: 'persistedPathOnly', sessionId: input.sessionId };
-        }
-
-        // Claude's provider id comes from hook payloads, not transcript metadata.
-        // Adapter-based Case B therefore no-ops for Claude unless a future adapter
-        // starts returning a providerSessionId explicitly.
-        return { kind: 'skipped', sessionId: input.sessionId, reason: 'noIdAvailable' };
-      }
-
-      if (
-        row.provider_name_at_launch &&
-        row.provider_name_at_launch.toLowerCase() !== input.providerName.toLowerCase()
-      ) {
-        this.sqlite.prepare('COMMIT').run();
-        transactionOpen = false;
-        return { kind: 'skipped', sessionId: input.sessionId, reason: 'providerMismatch' };
-      }
-
-      const result = this.sqlite
-        .prepare(
-          `UPDATE sessions
-           SET provider_session_id = ?, updated_at = ?
-           WHERE id = ? AND provider_session_id IS NULL`,
-        )
-        .run(input.providerSessionId, now, input.sessionId);
-      this.sqlite.prepare('COMMIT').run();
-      transactionOpen = false;
-
-      if (result.changes === 0) {
-        return { kind: 'alreadyComplete', sessionId: input.sessionId };
-      }
-
-      if (emitEvent) {
-        this.logger.log(
-          {
-            sessionId: input.sessionId,
-            providerName: input.providerName,
-            providerSessionId: input.providerSessionId,
-            repaired: true,
-          },
-          'Backfilled provider session id for discovered transcript',
-        );
-
-        await this.events.publish('session.providerSessionId.discovered', {
-          sessionId: input.sessionId,
-          providerSessionId: input.providerSessionId,
-          providerName: input.providerName,
-        });
-      }
-
-      return { kind: 'backfilledId', sessionId: input.sessionId };
-    } catch (error) {
-      if (transactionOpen) {
-        this.sqlite.prepare('ROLLBACK').run();
-      }
-      throw error;
+    if (outcome.kind === 'pathMismatch') {
+      this.logger.warn(
+        { sessionId: input.sessionId, existing: outcome.existing, incoming: outcome.incoming },
+        'Discovered transcript path does not match existing session path — skipping',
+      );
     }
+    if (outcome.kind === 'noIdAvailable') {
+      if (this.requiresProviderSessionIdForRestore(input.providerName)) {
+        if (emitEvent) {
+          this.logger.log(
+            {
+              sessionId: input.sessionId,
+              transcriptPath: input.transcriptPath,
+              providerName: input.providerName,
+              pathOnly: true,
+            },
+            'Discovered transcript path still lacks provider session id',
+          );
+        }
+        return { kind: 'persistedPathOnly', sessionId: input.sessionId };
+      }
+
+      // Claude's provider id comes from hook payloads, not transcript metadata.
+      return { kind: 'skipped', sessionId: input.sessionId, reason: 'noIdAvailable' };
+    }
+
+    if (outcome.kind === 'backfilledId' && emitEvent) {
+      this.logger.log(
+        {
+          sessionId: input.sessionId,
+          providerName: input.providerName,
+          providerSessionId: input.providerSessionId,
+          repaired: true,
+        },
+        'Backfilled provider session id for discovered transcript',
+      );
+
+      await this.events.publish('session.providerSessionId.discovered', {
+        sessionId: input.sessionId,
+        providerSessionId: input.providerSessionId!,
+        providerName: input.providerName,
+      });
+    }
+    return outcome;
   }
 
   private shouldStopAfterPersistOutcome(

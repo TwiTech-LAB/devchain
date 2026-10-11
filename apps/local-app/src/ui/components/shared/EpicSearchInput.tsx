@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef, useEffect } from 'react';
+import { useMemo, useState, useCallback, useRef, useEffect } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { Search, Loader2, AlertCircle } from 'lucide-react';
@@ -26,7 +26,7 @@ async function searchEpics(
   const params = new URLSearchParams({ projectId, q, limit: '10' });
   const res = await fetchFn(`/api/epics?${params.toString()}`);
   if (!res.ok) throw new Error('Failed to search epics');
-  return res.json();
+  return res.json() as Promise<EpicsQueryData>;
 }
 
 /**
@@ -82,7 +82,7 @@ export function EpicSearchInput({ projectId, className }: EpicSearchInputProps) 
     staleTime: 30 * 1000, // 30 seconds
   });
 
-  const results = searchData?.items ?? [];
+  const results = useMemo(() => searchData?.items ?? [], [searchData]);
   const showLoading = isLoading || isFetching;
   const showResults = debouncedQuery.length > 0;
 

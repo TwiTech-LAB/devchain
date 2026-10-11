@@ -1,3 +1,4 @@
+import { fetchJsonOrThrow, fetchOrThrow } from './http-json';
 import type { FetchFn } from './api-transport';
 import type { PreflightResult, ProviderCheck } from './preflight';
 import type { UnifiedMetrics } from '@/modules/session-reader/dtos/unified-session.types';
@@ -15,113 +16,8 @@ export interface ActiveSession {
   updatedAt: string;
 }
 
-/**
- * API error payload shape from backend AllExceptionsFilter.
- * Matches the response format in http-exception.filter.ts
- */
-export interface ApiErrorPayload {
-  statusCode: number;
-  code: string;
-  message: string;
-  details?: {
-    code?: string;
-    providerId?: string;
-    providerName?: string;
-    mcpStatus?: string;
-    mcpMessage?: string;
-    [key: string]: unknown;
-  };
-  timestamp: string;
-  path: string;
-}
-
-/**
- * Custom error class for session API errors that includes HTTP status code and full payload.
- * Allows callers to make decisions based on specific error types (404, 409, MCP_NOT_CONFIGURED, etc.).
- */
-export class SessionApiError extends Error {
-  public readonly status: number;
-  public readonly payload?: ApiErrorPayload;
-
-  constructor(message: string, status: number, payload?: ApiErrorPayload) {
-    super(message);
-    this.name = 'SessionApiError';
-    this.status = status;
-    this.payload = payload;
-  }
-
-  /**
-   * Check if this error has a specific error code in the details.
-   * Useful for handling specific error types like MCP_NOT_CONFIGURED.
-   */
-  hasCode(code: string): boolean {
-    return this.payload?.details?.code === code;
-  }
-}
-
-export type { FetchFn };
-
-/**
- * Extract error message from API response payload.
- * Handles { message: string } format common in our API responses.
- */
-function extractErrorMessage(payload: unknown, fallback: string): string {
-  if (payload && typeof payload === 'object' && 'message' in payload) {
-    return String((payload as { message: unknown }).message);
-  }
-  return fallback;
-}
-
-/**
- * Standardized fetch helper that parses JSON responses and throws SessionApiError on failure.
- * Preserves server-provided error messages and full payload for error handling.
- *
- * @param url - The URL to fetch
- * @param options - Fetch options (method, headers, body, etc.)
- * @param fallbackError - Error message to use if server doesn't provide one
- * @returns Parsed JSON response of type T
- * @throws SessionApiError with server message, HTTP status code, and full payload
- */
-export async function fetchJsonOrThrow<T>(
-  url: string,
-  options: RequestInit = {},
-  fallbackError: string = 'Request failed',
-  fetchFn: FetchFn,
-): Promise<T> {
-  const response = await fetchFn(url, options);
-
-  if (!response.ok) {
-    const payload = await response.json().catch(() => null);
-    const message = extractErrorMessage(payload, fallbackError);
-    throw new SessionApiError(message, response.status, payload ?? undefined);
-  }
-
-  return response.json();
-}
-
-/**
- * Standardized fetch helper for requests that don't return a body (e.g., DELETE).
- * Throws SessionApiError on failure with server-provided message and full payload.
- *
- * @param url - The URL to fetch
- * @param options - Fetch options (method, headers, body, etc.)
- * @param fallbackError - Error message to use if server doesn't provide one
- * @throws SessionApiError with server message, HTTP status code, and full payload
- */
-export async function fetchOrThrow(
-  url: string,
-  options: RequestInit = {},
-  fallbackError: string = 'Request failed',
-  fetchFn: FetchFn,
-): Promise<void> {
-  const response = await fetchFn(url, options);
-
-  if (!response.ok) {
-    const payload = await response.json().catch(() => null);
-    const message = extractErrorMessage(payload, fallbackError);
-    throw new SessionApiError(message, response.status, payload ?? undefined);
-  }
-}
+export { fetchJsonOrThrow, fetchOrThrow, SessionApiError } from './http-json';
+export type { ApiErrorPayload, FetchFn } from './http-json';
 
 /**
  * Result of a restart session operation.

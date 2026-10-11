@@ -21,13 +21,13 @@ async function fetchAllProjects(signal: AbortSignal): Promise<ProjectsQueryData>
     { backend: HOME_BACKEND },
   );
   if (!res.ok) throw new Error(`Failed to load projects (${res.status})`);
-  return res.json();
+  return res.json() as Promise<ProjectsQueryData>;
 }
 
 async function fetchWorkspaces(signal: AbortSignal): Promise<ProjectWorkspace[]> {
   const res = await apiFetch('/api/workspaces', { signal }, { backend: HOME_BACKEND });
   if (!res.ok) throw new Error(`Failed to load workspaces (${res.status})`);
-  return res.json();
+  return res.json() as Promise<ProjectWorkspace[]>;
 }
 
 /** Every project of every workspace on this PC, without per-project stats. */

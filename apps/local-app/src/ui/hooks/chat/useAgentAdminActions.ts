@@ -1,3 +1,4 @@
+import type { AgentsController } from '@/modules/agents/controllers/agents.controller';
 import { useCallback, useMemo, useState } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { agentQueryKeys } from '@/ui/lib/agents';
@@ -85,10 +86,13 @@ export function useAgentAdminActions({
   );
 
   const pendingCloneName = pendingCloneAgent ? computeCloneName(pendingCloneAgent.agent.name) : '';
-  const cloneTargetTeam =
-    pendingCloneAgent?.teamId && !pendingCloneAgent?.isTeamLead
-      ? { teamId: pendingCloneAgent.teamId, teamName: pendingCloneAgent.teamName ?? '' }
-      : null;
+  const cloneTargetTeam = useMemo(
+    () =>
+      pendingCloneAgent?.teamId && !pendingCloneAgent?.isTeamLead
+        ? { teamId: pendingCloneAgent.teamId, teamName: pendingCloneAgent.teamName ?? '' }
+        : null,
+    [pendingCloneAgent],
+  );
 
   const cloneAgentMutation = useMutation({
     mutationFn: async (payload: {
@@ -116,7 +120,9 @@ export function useAgentAdminActions({
         const body = await res.json().catch(() => ({}));
         throw new Error(body.message ?? 'Failed to clone agent');
       }
-      const created = await res.json();
+      const created = (await res.json()) as Awaited<ReturnType<AgentsController['createAgent']>> & {
+        teamAddFailed?: boolean;
+      };
 
       if (payload.targetTeamId) {
         try {

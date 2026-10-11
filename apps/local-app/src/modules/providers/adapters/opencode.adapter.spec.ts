@@ -1,6 +1,6 @@
 import { OpencodeAdapter } from './opencode.adapter';
 import { ValidationError } from '../../../common/errors/error-types';
-import { EnvBuilderError } from '../../sessions/utils/env-builder';
+import { EnvBuilderError } from '../utils/env-builder';
 
 describe('OpencodeAdapter', () => {
   let adapter: OpencodeAdapter;

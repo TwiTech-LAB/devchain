@@ -16,6 +16,7 @@ const DEFAULT_PATHS = {
   binDir: "/usr/local/bin",
   cliPrefix: "/usr/local",
   installRoot: "/opt/devchain-host",
+  syncthingBinary: "/usr/bin/syncthing",
   unitTemplate: require.resolve("../systemd/devchain-host.service"),
 };
 

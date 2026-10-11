@@ -1,5 +1,5 @@
 import { Injectable, Inject, OnModuleDestroy } from '@nestjs/common';
-import { OnEvent } from '@nestjs/event-emitter';
+import { OnCatalogEvent } from '../../events/catalog/on-catalog-event';
 import { randomUUID } from 'crypto';
 import { SessionsService } from './sessions.service';
 import { SessionCoordinatorService } from './session-coordinator.service';
@@ -10,6 +10,7 @@ import { SettingsService } from '../../settings/services/settings.service';
 import { STORAGE_SERVICE, type AgentStorage } from '../../storage/interfaces/storage.interface';
 import { createLogger } from '../../../common/logging/logger';
 import { TerminalIOService } from '../../terminal/services/terminal-io/terminal-io.service';
+import { ShellForegroundError } from '../../terminal/services/terminal-io/delivery';
 import { ProviderAdapterFactory } from '../../providers/adapters/provider-adapter.factory';
 import {
   type MessagePoolConfig,
@@ -149,6 +150,11 @@ function deferredClaimCancellationResult(
 ): FlushResult | null {
   const reason = claim?.state.phase === 'preparing' ? claim.state.cancellationReason : undefined;
   return reason ? { success: false, discardedCount, reason } : null;
+}
+
+// A refused delivery reports why by its error type; other failures keep the caller's code.
+function deliveryFailureCode(error: unknown, fallback: DeliveryFailureCode): DeliveryFailureCode {
+  return error instanceof ShellForegroundError ? 'shell_foreground' : fallback;
 }
 
 const DEFAULT_CONFIG: MessagePoolConfig = {
@@ -560,7 +566,11 @@ export class SessionsMessagePoolService implements OnModuleDestroy {
 
   private recordImmediateFailed(input: ResolvedEnqueueInput, error: unknown): EnqueueResult {
     const errorMsg = error instanceof Error ? error.message : String(error);
-    const failure = classifyDeliveryFailure(input.failureDisclosure, errorMsg, 'tmux_error');
+    const failure = classifyDeliveryFailure(
+      input.failureDisclosure,
+      errorMsg,
+      deliveryFailureCode(error, 'tmux_error'),
+    );
     logger.error(
       { agentId: input.agentId, source: input.source, error: failure.error },
       'Immediate delivery failed',
@@ -1193,7 +1203,7 @@ export class SessionsMessagePoolService implements OnModuleDestroy {
     return this.messageLog.getMessageById(messageId);
   }
 
-  @OnEvent(sessionHumanPromptStateChangedEvent.name, { suppressErrors: false })
+  @OnCatalogEvent(sessionHumanPromptStateChangedEvent.name, { suppressErrors: false })
   async handleHumanPromptStateChanged(
     event: SessionHumanPromptStateChangedEventPayload,
   ): Promise<void> {
@@ -1287,7 +1297,7 @@ export class SessionsMessagePoolService implements OnModuleDestroy {
     );
   }
 
-  @OnEvent('session.activity.changed', { async: true })
+  @OnCatalogEvent('session.activity.changed', { async: true })
   async handleSessionActivityChanged(event: SessionActivityChangedEventPayload): Promise<void> {
     const session = this.sessions.getSession(event.sessionId);
     if (!session?.agentId || event.state !== 'idle') return;
@@ -1295,7 +1305,7 @@ export class SessionsMessagePoolService implements OnModuleDestroy {
     await this.flushDeferredLane(session.agentId, event.sessionId);
   }
 
-  @OnEvent('session.stopped', { async: true })
+  @OnCatalogEvent('session.stopped', { async: true })
   async handleSessionStopped(event: SessionStoppedEventPayload): Promise<void> {
     const session = this.sessions.getSession(event.sessionId);
     if (!session?.agentId) return;
@@ -1308,7 +1318,7 @@ export class SessionsMessagePoolService implements OnModuleDestroy {
     );
   }
 
-  @OnEvent('session.crashed', { async: true })
+  @OnCatalogEvent('session.crashed', { async: true })
   async handleSessionCrashed(event: SessionCrashedEventPayload): Promise<void> {
     const session = this.sessions.getSession(event.sessionId);
     if (!session?.agentId) return;
@@ -1873,9 +1883,10 @@ export class SessionsMessagePoolService implements OnModuleDestroy {
       const errorMsg = error instanceof Error ? error.message : String(error);
       const cancellation = deferredClaimCancellationResult(claim, messages.length);
       if (cancellation) return cancellation;
-      const failureCode: DeliveryFailureCode = errorMsg.includes('send keys')
-        ? 'send_keys_failed'
-        : 'tmux_error';
+      const failureCode = deliveryFailureCode(
+        error,
+        errorMsg.includes('send keys') ? 'send_keys_failed' : 'tmux_error',
+      );
       const batchFailure = classifyDeliveryFailure(failureDisclosure, errorMsg, failureCode);
       logger.error(
         { agentId, sessionId: target.sessionId, error: batchFailure.error },

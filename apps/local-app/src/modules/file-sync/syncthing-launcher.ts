@@ -9,6 +9,7 @@ import { ProcessExecutor } from '../terminal/services/process-executor/process-e
 const EXIT_POLL_MS = 250;
 
 export const SYNCTHING_REQUIRED_MAJOR = 2;
+export const HOST_SYNCTHING_BINARY = '/opt/devchain-host/bin/syncthing';
 
 export const SYNCTHING_INSTALL_GUIDANCE =
   'Install Syncthing v2 from https://syncthing.net/downloads/ and put it on PATH, set ' +
@@ -37,6 +38,7 @@ export abstract class SyncthingLauncher {
   ): Promise<SyncthingProcess>;
   /** The process `pid` started, or null when it has none. */
   abstract findChildPid(pid: number): Promise<number | null>;
+  abstract hasOwnershipCapabilities(pid: number): Promise<boolean>;
   abstract isAlive(pid: number): boolean;
   /** SIGKILL; a process that is already gone is not an error. */
   abstract kill(pid: number): void;
@@ -58,7 +60,7 @@ export function parseSyncthingVersion(output: string): { version: string; major:
 }
 
 /**
- * Looks in `SYNCTHING_BIN`, then PATH, then `~/.devchain/bin`, and returns the
+ * Looks in `SYNCTHING_BIN`, then the host copy, PATH and `~/.devchain/bin`, and returns the
  * first v2 binary. Without one, the error names the first binary found (if any)
  * and carries the install guidance.
  */
@@ -68,6 +70,7 @@ export async function findSyncthingBinary(deps: BinaryLookupDeps): Promise<Synct
   const candidates = explicit
     ? [explicit]
     : [
+        ...(deps.platform === 'linux' ? [HOST_SYNCTHING_BINARY] : []),
         ...(deps.pathEnv ?? '')
           .split(delimiter)
           .filter((dir) => dir.length > 0)
@@ -107,6 +110,14 @@ export async function findSyncthingBinary(deps: BinaryLookupDeps): Promise<Synct
     ? `SYNCTHING_BIN points at ${explicit}, which is not an executable file.`
     : 'Syncthing was not found on PATH or in ~/.devchain/bin.';
   return { found: false, version: null, error: `${missing} ${SYNCTHING_INSTALL_GUIDANCE}` };
+}
+
+export function hasOwnershipCapabilities(status: string): boolean {
+  const effective = /^CapEff:\s*([0-9a-fA-F]{1,16})\s*$/m.exec(status);
+  if (!effective) return false;
+  // CAP_CHOWN (0), CAP_DAC_OVERRIDE (1) and CAP_FOWNER (3) are all required.
+  const required = BigInt(0x0b);
+  return (BigInt(`0x${effective[1]}`) & required) === required;
 }
 
 @Injectable()
@@ -189,6 +200,15 @@ export class NodeSyncthingLauncher extends SyncthingLauncher {
     });
     const first = result.success ? result.stdout.trim().split(/\s+/)[0] : '';
     return first ? Number(first) : null;
+  }
+
+  async hasOwnershipCapabilities(pid: number): Promise<boolean> {
+    if (process.platform !== 'linux') return false;
+    try {
+      return hasOwnershipCapabilities(await readFile(`/proc/${pid}/status`, 'utf8'));
+    } catch {
+      return false;
+    }
   }
 
   isAlive(pid: number): boolean {

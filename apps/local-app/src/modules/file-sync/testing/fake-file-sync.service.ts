@@ -63,6 +63,7 @@ export class FakeFileSyncService
       | 'updateFolder'
       | 'setFolderType'
       | 'folderConfiguration'
+      | 'installedIgnores'
       | 'folderPath'
       | 'removeFolder'
       | 'status'
@@ -190,6 +191,10 @@ export class FakeFileSyncService
       paused: folder.paused,
       devices: [{ deviceID: this.deviceId }, { deviceID: folder.peerDeviceId }],
     };
+  }
+
+  async installedIgnores(folderId: string) {
+    return { ignore: [...this.require(folderId).ignores] };
   }
 
   async folderPath(projectId: string, kind: ProjectFolder['kind'] = 'code'): Promise<string> {

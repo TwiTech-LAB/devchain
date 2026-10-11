@@ -1,3 +1,4 @@
+import type { ManagedSubtaskSyncController } from '@/modules/external-integrations/connections/managed-subtask-sync.controller';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { IntegrationProvider } from '@/ui/lib/integration-connections';
 import {
@@ -36,7 +37,7 @@ export function useManagedSubtaskSyncHealth(
         { signal },
       );
       if (!response.ok) return throwIntegrationApiError(response);
-      return response.json();
+      return response.json() as Promise<ManagedSubtaskSyncHealth>;
     },
     enabled: admitted,
     staleTime: 10_000,
@@ -57,7 +58,7 @@ export function useManagedSubtaskSyncHealth(
         },
       );
       if (!response.ok) return throwIntegrationApiError(response);
-      return response.json();
+      return response.json() as Promise<Awaited<ReturnType<ManagedSubtaskSyncController['retry']>>>;
     },
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey });

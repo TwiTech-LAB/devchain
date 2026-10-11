@@ -193,8 +193,11 @@ describe('TerminalKeyInputFacade', () => {
 
         for (let cycle = 0; cycle < 20; cycle += 1) {
           await facade.sendKey(sessionId, 'Up');
-          if (event === 'stopped') facade.handleSessionStopped({ sessionId });
-          else facade.handleSessionCrashed({ sessionId });
+          if (event === 'stopped') {
+            facade.handleSessionStopped({ sessionId, source: 'web-api', reason: 'user-requested' });
+          } else {
+            facade.handleSessionCrashed({ sessionId, sessionName: sessionId });
+          }
         }
 
         expect(io.sendControl).toHaveBeenCalledTimes(20);

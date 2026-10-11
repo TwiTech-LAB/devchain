@@ -1,3 +1,4 @@
+import { SessionRowsModule } from '../storage/sessions/session-rows.module';
 import { Module, OnModuleInit } from '@nestjs/common';
 import { StorageModule } from '../storage/storage.module';
 import { EventsCoreModule } from '../events/events-core.module';
@@ -30,6 +31,7 @@ import { RuntimeContextCaptureModule } from '../runtime-context-capture/runtime-
 
 @Module({
   imports: [
+    SessionRowsModule,
     StorageModule,
     EventsCoreModule,
     ProviderAdaptersModule,

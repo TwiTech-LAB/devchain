@@ -58,7 +58,7 @@ async function applyPreset(projectId: string, presetName: string): Promise<Apply
     { backend: HOME_BACKEND },
   );
   if (!res.ok) throw new Error('Failed to apply preset');
-  return res.json();
+  return res.json() as Promise<ApplyPresetResponse>;
 }
 
 export function PresetSelector({
@@ -95,7 +95,7 @@ export function PresetSelector({
     enabled: !!projectId && agents.length > 0,
   });
 
-  const presets = presetsData?.presets || [];
+  const presets = useMemo(() => presetsData?.presets || [], [presetsData]);
   const activePreset = presetsData?.activePreset ?? null;
   const hasPresets = presets.length > 0;
 

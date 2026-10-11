@@ -1,8 +1,13 @@
-import { projectCompose } from '../docker/docker-project-compose';
+import {
+  foreignProjectOwner,
+  projectContainer,
+  projectVolume,
+} from '../docker/docker-project-resources';
 import { DockerArchiveJournal } from '../../core/controllers/docker-archive-journal';
 import { Inject, Injectable, Optional } from '@nestjs/common';
+import { Header, Pax } from 'tar';
 import { createHash } from 'node:crypto';
-import { lstat, mkdir, readdir, realpath, rm, stat } from 'node:fs/promises';
+import { lstat, mkdir, readdir, realpath, rm, stat, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { isIPv4 } from 'node:net';
 import { basename, join, resolve, dirname, isAbsolute, normalize } from 'node:path';
@@ -16,6 +21,7 @@ import {
   changeDockerContainerState,
   isDockerNotFound,
   optionalDockerJson,
+  readDockerImageProgress,
   selectDockerApiVersion,
   DockerVersion,
 } from '../../core/controllers/docker-engine.client';
@@ -52,6 +58,7 @@ import {
   DockerImageLoadResult,
 } from './host-docker.dto';
 import { HOST_IPV4_ROUTES, readHostIPv4Routes, type HostIPv4RouteReader } from './host-ipv4-routes';
+import { HostDockerVolumeAssociationsStore } from './host-docker-volume-associations.store';
 
 type Labels = Record<string, string>;
 type Volume = { Name: string; Labels?: Labels };
@@ -59,13 +66,18 @@ type MatchedImage = { ref: string; id: string; metadata: Record<string, unknown>
 type Container = {
   Id: string;
   Config: { Labels?: Labels };
-  Mounts?: Array<{ Type: string; Name?: string }>;
+  Mounts?: Array<{ Type: string; Name?: string; Source?: string }>;
 };
+const projectMounted = (container: Container) => ({
+  labels: container.Config.Labels ?? {},
+  mounts: (container.Mounts ?? []).map((mount) => ({ type: mount.Type, source: mount.Source })),
+});
 
 @Injectable()
 export class HostDockerService {
   constructor(
     private readonly archives: DockerArchiveJournal,
+    private readonly associations: HostDockerVolumeAssociationsStore,
     @Optional()
     @Inject(HOST_IPV4_ROUTES)
     private readonly routes: HostIPv4RouteReader = readHostIPv4Routes,
@@ -98,6 +110,7 @@ export class HostDockerService {
       Array<{
         Id: string;
         ImageID?: string;
+        Image?: string;
         Names: string[];
         Labels?: Labels;
         Mounts?: Array<{ Type: string; Name?: string; Source?: string; Destination: string }>;
@@ -149,43 +162,53 @@ export class HostDockerService {
       }
     }
     const metadata = new Map<string, DockerHolderMetadata>();
-    if (holderVolumes) {
-      const holders = containers.filter((container) =>
-        container.Mounts?.some(
-          (m) =>
-            (m.Type === 'volume' && m.Name && holderVolumes.includes(m.Name)) ||
-            (m.Type === 'bind' &&
-              m.Source &&
-              paths.some((p) => inside(p, m.Source!) || inside(m.Source!, p))),
-        ),
-      );
-      await Promise.all(
-        holders.map(async (container) => {
-          try {
-            const inspect = await client.json<DockerInspectTimes>(
-              'GET',
-              `/containers/${encodeURIComponent(container.Id)}/json`,
-              undefined,
-              { signal },
-            );
+    const users = new Map<string, string>();
+    const holderIds = new Set(
+      holderVolumes
+        ? containers
+            .filter((container) =>
+              container.Mounts?.some(
+                (m) =>
+                  (m.Type === 'volume' && m.Name && holderVolumes.includes(m.Name)) ||
+                  (m.Type === 'bind' &&
+                    m.Source &&
+                    paths.some((p) => inside(p, m.Source!) || inside(m.Source!, p))),
+              ),
+            )
+            .map((container) => container.Id)
+        : [],
+    );
+    await Promise.all(
+      containers.map(async (container) => {
+        try {
+          const inspect = await client.json<DockerInspectTimes & { Config?: { User?: string } }>(
+            'GET',
+            `/containers/${encodeURIComponent(container.Id)}/json`,
+            undefined,
+            { signal },
+          );
+          if (typeof inspect.Config?.User === 'string')
+            users.set(container.Id, inspect.Config.User);
+          if (holderIds.has(container.Id))
             metadata.set(container.Id, {
               created: inspect.Created,
               startedAt: inspect.State?.StartedAt,
               running: inspect.State?.Running,
             });
-          } catch {
-            signal?.throwIfAborted();
-            metadata.set(container.Id, {});
-          }
-        }),
-      );
-    }
+        } catch {
+          signal?.throwIfAborted();
+          if (holderIds.has(container.Id)) metadata.set(container.Id, {});
+        }
+      }),
+    );
     signal?.throwIfAborted();
     return {
       architecture: info.Architecture,
       containers: containers.map((container) => ({
         id: container.Id,
         ...(container.ImageID ? { image: container.ImageID } : {}),
+        ...(container.Image ? { imageReference: container.Image } : {}),
+        ...(users.has(container.Id) ? { user: users.get(container.Id) } : {}),
         ...(metadata.has(container.Id) && { metadata: metadata.get(container.Id) }),
         name: container.Names[0]?.replace(/^\//, '') ?? container.Id,
         labels: container.Labels ?? {},
@@ -320,17 +343,7 @@ export class HostDockerService {
       signal,
     });
     const references: string[] = [];
-    let line = '';
-    const consume = (value: string) => {
-      if (!value.trim()) return;
-      let message: { error?: unknown; errorDetail?: unknown; stream?: unknown };
-      try {
-        message = JSON.parse(value);
-      } catch {
-        throw new DockerEngineError('invalid-response', 'Invalid Docker image load response');
-      }
-      if (message.error || message.errorDetail)
-        throw new DockerEngineError('engine-error', 'Docker image load failed');
+    await readDockerImageProgress(response, 'load', (message) => {
       if (typeof message.stream !== 'string') return;
       // Both image stores print these lines, also with quiet=1: the text after the
       // prefix is a tag, or the ID the engine gave an untagged image — the only way
@@ -340,25 +353,7 @@ export class HostDockerService {
         const reference = message.stream.slice(prefix.length).replace(/\n$/, '');
         if (reference) references.push(reference);
       }
-    };
-    try {
-      for await (const chunk of response) {
-        line += chunk.toString('utf8');
-        let newline: number;
-        while ((newline = line.indexOf('\n')) >= 0) {
-          consume(line.slice(0, newline));
-          line = line.slice(newline + 1);
-        }
-        if (line.length > 1024 * 1024)
-          throw new DockerEngineError(
-            'invalid-response',
-            'Docker image load response exceeds limit',
-          );
-      }
-      consume(line);
-    } finally {
-      response.destroy();
-    }
+    });
     return references;
   }
 
@@ -503,17 +498,29 @@ export class HostDockerService {
   ): Promise<void> {
     await this.validateProjectRoot(projectRoot);
     const client = await this.engine(signal, apiVersion);
-    const resource = await client.json<Container & { Labels?: Labels }>(
-      'GET',
-      `/${kind}/${encodeURIComponent(id)}${kind === 'containers' ? '/json' : ''}`,
-      undefined,
-      { signal },
-    );
+    // A volume the engine no longer has keeps no Compose association.
+    const forgetGoneVolume = async (error: unknown): Promise<void> => {
+      if (kind === 'volumes' && isDockerNotFound(error)) await this.associations.delete(id);
+    };
+    let resource: Container & { Labels?: Labels };
+    try {
+      resource = await client.json(
+        'GET',
+        `/${kind}/${encodeURIComponent(id)}${kind === 'containers' ? '/json' : ''}`,
+        undefined,
+        { signal },
+      );
+    } catch (error) {
+      await forgetGoneVolume(error);
+      throw error;
+    }
     const labels = kind === 'containers' ? resource.Config.Labels : resource.Labels;
-    if (labels?.[DOCKER_PROJECT_LABEL] !== projectId) {
+    if (kind === 'volumes') {
+      await this.requireVolume(client, { Name: id, Labels: labels }, projectId, signal);
+    } else if (labels?.[DOCKER_PROJECT_LABEL] !== projectId) {
       if (
         kind !== 'containers' ||
-        labels?.[DOCKER_PROJECT_LABEL] !== undefined ||
+        foreignProjectOwner(labels, projectId) ||
         !(await this.composeHolder(client, resource, projectId, signal, projectRoot))
       )
         this.requireOwner(labels, projectId);
@@ -522,8 +529,17 @@ export class HostDockerService {
     if (!exactId)
       throw new DockerEngineError('invalid-response', 'Docker resource identity is missing');
     // A graceful stop first: removing a running database container with force kills it mid-write.
-    if (kind === 'containers') await changeDockerContainerState(client, exactId, 'stop', signal);
-    await client.json('DELETE', `/${kind}/${encodeURIComponent(exactId)}`, undefined, { signal });
+    if (kind === 'containers') {
+      await this.recordMountedVolumes(client, resource, projectId, signal, projectRoot);
+      await changeDockerContainerState(client, exactId, 'stop', signal);
+    }
+    try {
+      await client.json('DELETE', `/${kind}/${encodeURIComponent(exactId)}`, undefined, { signal });
+    } catch (error) {
+      await forgetGoneVolume(error);
+      throw error;
+    }
+    if (kind === 'volumes') await this.associations.delete(id);
   }
 
   /** The digest covers the bytes received, so the sender can verify the whole transfer. */
@@ -560,15 +576,15 @@ export class HostDockerService {
    * subtree first, so a reconnect leaves no VM-only files; the caller chooses
    * only subtrees it owns, and the home folder itself is never replaced.
    * `copyUIDGID=false` preserves archive owners, so emptying runs as root in the clear helper.
-   * A single `file` gets only its folder: the restore writes the file and replaces
-   * whatever is at its path.
+   * A single `file` normally gets only its parent folder for restore. An explicit
+   * reset instead leaves an empty regular file with the requested owner.
    */
   async prepareBinds(
     input: DockerBindPrepare,
     signal?: AbortSignal,
     apiVersion?: string,
   ): Promise<void> {
-    for (const { path, replace, image, file } of input.paths) {
+    for (const { path, replace, image, file, owner } of input.paths) {
       signal?.throwIfAborted();
       const { existing, resolved } = await assertVmHomePath(path, {
         code: 'DOCKER_BIND_OUTSIDE_HOME',
@@ -577,21 +593,68 @@ export class HostDockerService {
       });
       if (file) {
         await mkdir(dirname(path), { recursive: true });
-        continue;
+        if (!replace) continue;
+        if (existing === path && (await lstat(resolved)).isDirectory())
+          await this.clearBindUnlessEmpty(path, resolved, image!, signal, apiVersion);
+        await rm(path, { recursive: true, force: true });
+        await writeFile(path, '', { flag: 'wx' });
+      } else {
+        if (replace && existing === path) {
+          if (!(await lstat(resolved)).isDirectory()) await rm(path, { force: true });
+          else await this.clearBindUnlessEmpty(path, resolved, image!, signal, apiVersion);
+        }
+        await mkdir(path, { recursive: true });
       }
-      if (replace && existing === path) {
-        if (!(await lstat(resolved)).isDirectory()) await rm(path, { force: true });
-        // A folder this user cannot list (a service's 0700 data folder) is not empty.
-        else if (
-          !(await readdir(resolved).then(
-            (entries) => entries.length === 0,
-            () => false,
-          ))
-        )
-          await this.clearBind(path, resolved, image!, signal, apiVersion);
+      // Kept folders retain their owners. Only a newly created or explicitly reset
+      // path receives the requested runtime owner.
+      if (
+        owner &&
+        (existing !== path || replace) &&
+        (replace || owner.uid !== process.getuid?.() || owner.gid !== process.getgid?.())
+      ) {
+        const client = await this.engine(signal, apiVersion);
+        const helper = await this.archives.create(
+          client,
+          image!,
+          [{ Type: 'bind', Source: dirname(path), Target: '/data' }],
+          signal,
+        );
+        try {
+          const header = new Header({
+            path: basename(path),
+            type: file ? 'File' : 'Directory',
+            mode: file ? 0o644 : 0o755,
+            uid: owner.uid,
+            gid: owner.gid,
+            size: 0,
+          });
+          const needsPax = header.encode();
+          const blocks = [
+            ...(needsPax ? [new Pax(header).encode()] : []),
+            header.block!,
+            Buffer.alloc(1024),
+          ];
+          await writeDockerArchive(client, helper.id, Readable.from(blocks), signal, '/data');
+        } finally {
+          await this.archives.cleanup(client, helper);
+        }
       }
-      await mkdir(path, { recursive: true });
     }
+  }
+
+  /** A folder this user cannot list (a service's 0700 data folder) is not empty. */
+  private async clearBindUnlessEmpty(
+    path: string,
+    target: string,
+    image: string,
+    signal?: AbortSignal,
+    apiVersion?: string,
+  ): Promise<void> {
+    const empty = await readdir(target).then(
+      (entries) => entries.length === 0,
+      () => false,
+    );
+    if (!empty) await this.clearBind(path, target, image, signal, apiVersion);
   }
 
   private async clearBind(
@@ -640,8 +703,7 @@ export class HostDockerService {
   }
 
   /**
-   * Stops a container with the project's DevChain label, project-root Compose
-   * labels, or a Compose project that owns an imported volume.
+   * Stops a container recognized by the shared project rule, using this engine's evidence.
    */
   async stopContainer(
     id: string,
@@ -659,12 +721,8 @@ export class HostDockerService {
       { signal },
     );
     const labels = container.Config.Labels ?? {};
-    if (labels[DOCKER_PROJECT_LABEL] !== projectId) {
-      const owned =
-        labels[DOCKER_PROJECT_LABEL] === undefined &&
-        (await this.composeOwnsProjectVolume(client, labels, projectId, signal, projectRoot));
-      if (!owned) this.requireOwner(labels, projectId);
-    }
+    if (!(await this.projectHolder(client, container, projectId, signal, projectRoot)))
+      this.requireOwner(labels, projectId);
     await changeDockerContainerState(client, container.Id, 'stop', signal);
   }
 
@@ -674,7 +732,7 @@ export class HostDockerService {
     apiVersion?: string,
   ): Promise<Readable> {
     const client = await this.engine(signal, apiVersion);
-    const source = await this.archiveSource(client, input, signal);
+    const source = await this.archiveSource(client, input, signal, true);
     const layout = dockerArchiveLayout(input.mountType, source);
     const helper = await this.archives.create(
       client,
@@ -728,30 +786,38 @@ export class HostDockerService {
         conflict ? 409 : 403,
       );
   }
-  /** Compose labels link to this project, or its Compose project owns an imported volume. */
-  private async composeOwnsProjectVolume(
+  private async projectHolder(
     client: DockerEngineClient,
-    labels: Labels,
+    container: Container,
     projectId: string,
     signal?: AbortSignal,
     projectRoot?: string,
   ): Promise<boolean> {
-    if (projectRoot && projectCompose(labels, projectRoot, projectId)) return true;
-    const compose = labels[COMPOSE_PROJECT_LABEL];
-    if (!compose) return false;
+    const mounted = projectMounted(container);
+    if (projectContainer(mounted, projectRoot, projectId)) return true;
+    // A matching owner was admitted above, so a set owner label here is a foreign one.
+    if (foreignProjectOwner(mounted.labels, projectId) || !mounted.labels[COMPOSE_PROJECT_LABEL])
+      return false;
+    return projectContainer(
+      mounted,
+      projectRoot,
+      projectId,
+      await this.projectVolumes(client, projectId, signal),
+    );
+  }
+
+  private async projectVolumes(
+    client: DockerEngineClient,
+    projectId: string,
+    signal?: AbortSignal,
+  ) {
     const { Volumes } = await client.json<{ Volumes: Volume[] | null }>(
       'GET',
       `/volumes?filters=${encodeURIComponent(JSON.stringify({ label: [`${DOCKER_PROJECT_LABEL}=${projectId}`] }))}`,
       undefined,
       { signal },
     );
-    return (
-      Volumes?.some(
-        (volume) =>
-          volume.Labels?.[DOCKER_PROJECT_LABEL] === projectId &&
-          volume.Labels?.[COMPOSE_PROJECT_LABEL] === compose,
-      ) ?? false
-    );
+    return (Volumes ?? []).map((volume) => ({ labels: volume.Labels ?? {} }));
   }
 
   private async composeHolder(
@@ -761,8 +827,8 @@ export class HostDockerService {
     signal?: AbortSignal,
     projectRoot?: string,
   ): Promise<boolean> {
-    if (projectRoot && projectCompose(container.Config.Labels ?? {}, projectRoot, projectId))
-      return true;
+    const mounted = projectMounted(container);
+    if (projectContainer(mounted, projectRoot, projectId)) return true;
     const compose = container.Config.Labels?.[COMPOSE_PROJECT_LABEL];
     if (!compose) return false;
     for (const mount of container.Mounts ?? []) {
@@ -773,10 +839,8 @@ export class HostDockerService {
         undefined,
         { signal },
       );
-      if (
-        volume.Labels?.[DOCKER_PROJECT_LABEL] === projectId &&
-        volume.Labels?.[COMPOSE_PROJECT_LABEL] === compose
-      )
+      // Removal retains the imported-volume holder boundary; a stateless Compose match is insufficient.
+      if (projectContainer(mounted, projectRoot, projectId, [{ labels: volume.Labels ?? {} }]))
         return true;
     }
     return false;
@@ -785,7 +849,9 @@ export class HostDockerService {
     client: DockerEngineClient,
     input: DockerArchiveRequest,
     signal?: AbortSignal,
+    read = false,
   ): Promise<string> {
+    await this.validateProjectRoot(input.projectRoot);
     if (input.mountType === 'volume') {
       const volume = await client.json<Volume>(
         'GET',
@@ -793,7 +859,7 @@ export class HostDockerService {
         undefined,
         { signal },
       );
-      this.requireOwner(volume.Labels, input.projectId);
+      await this.requireVolume(client, volume, input.projectId, signal, read, input.projectRoot);
       return volume.Name;
     }
     try {
@@ -813,6 +879,82 @@ export class HostDockerService {
         403,
       );
     }
+  }
+
+  /** Every container on the engine, as the labels and mounts the ownership rules read. */
+  private async liveContainers(client: DockerEngineClient, signal?: AbortSignal) {
+    const containers = await client.json<
+      Array<{ Labels?: Labels; Mounts?: Array<{ Type: string; Source?: string }> }>
+    >('GET', '/containers/json?all=true', undefined, { signal });
+    return containers.map((container) => ({
+      labels: container.Labels ?? {},
+      mounts: (container.Mounts ?? []).map((mount) => ({
+        type: mount.Type,
+        source: mount.Source,
+      })),
+    }));
+  }
+
+  private async requireVolume(
+    client: DockerEngineClient,
+    volume: Volume,
+    projectId: string,
+    signal?: AbortSignal,
+    read = false,
+    projectRoot?: string,
+  ): Promise<void> {
+    if (volume.Labels?.[DOCKER_PROJECT_LABEL] === projectId) return;
+    const labels = volume.Labels ?? {};
+    if (foreignProjectOwner(labels, projectId) || !labels[COMPOSE_PROJECT_LABEL])
+      this.requireOwner(labels, projectId);
+    if (this.associations.matches(projectId, volume.Name, labels[COMPOSE_PROJECT_LABEL])) return;
+    if (!read) this.requireOwner(labels, projectId);
+    const live = await this.liveContainers(client, signal);
+    if (
+      !projectVolume(labels, live, projectRoot, projectId) &&
+      !projectVolume(
+        labels,
+        live,
+        projectRoot,
+        projectId,
+        await this.projectVolumes(client, projectId, signal),
+      )
+    )
+      this.requireOwner(labels, projectId);
+  }
+
+  private async recordMountedVolumes(
+    client: DockerEngineClient,
+    container: Container,
+    projectId: string,
+    signal?: AbortSignal,
+    projectRoot?: string,
+  ): Promise<void> {
+    const names = [
+      ...new Set(
+        (container.Mounts ?? []).filter((m) => m.Type === 'volume' && m.Name).map((m) => m.Name!),
+      ),
+    ];
+    if (!names.length) return;
+    const live = await this.liveContainers(client, signal);
+    const volumes = await this.projectVolumes(client, projectId, signal);
+    const records: Array<{ volume: string; composeProject: string }> = [];
+    for (const name of names) {
+      const volume = await optionalDockerJson<Volume>(
+        client,
+        `/volumes/${encodeURIComponent(name)}`,
+        signal,
+      );
+      const labels = volume?.Labels ?? {};
+      if (
+        volume &&
+        labels[DOCKER_PROJECT_LABEL] === undefined &&
+        labels[COMPOSE_PROJECT_LABEL] &&
+        projectVolume(labels, live, projectRoot, projectId, volumes)
+      )
+        records.push({ volume: name, composeProject: labels[COMPOSE_PROJECT_LABEL] });
+    }
+    await this.associations.record(projectId, records);
   }
 }
 

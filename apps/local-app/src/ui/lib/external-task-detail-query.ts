@@ -7,7 +7,7 @@ import {
   validIntegrationProjectId,
   withIntegrationProjectId,
 } from '@/ui/lib/integration-project-scope';
-import { fetchJsonOrThrow, type FetchFn } from '@/ui/lib/sessions';
+import { fetchJsonOrThrow, type FetchFn } from '@/ui/lib/http-json';
 
 /**
  * Canonical task-detail query options. Every task-detail read — the dialog

@@ -15,9 +15,7 @@ describe('Export/Import Round-Trip (E2E)', () => {
       imports: [AppModule],
     }).compile();
 
-    app = moduleFixture.createNestApplication<NestFastifyApplication>(
-      new FastifyAdapter(),
-    );
+    app = moduleFixture.createNestApplication<NestFastifyApplication>(new FastifyAdapter());
 
     await app.init();
     await app.getHttpAdapter().getInstance().ready();
@@ -35,10 +33,14 @@ describe('Export/Import Round-Trip (E2E)', () => {
       payload: { name },
     });
     expect([200, 201]).toContain(res.statusCode);
-    return JSON.parse(res.payload);
+    return JSON.parse(res.payload).provider;
   }
 
-  async function createProjectFromTemplate(name: string, rootPath: string, templateId = 'empty-project') {
+  async function createProjectFromTemplate(
+    name: string,
+    rootPath: string,
+    templateId = 'empty-project',
+  ) {
     const res = await app.inject({
       method: 'POST',
       url: '/api/projects/from-template',
@@ -50,7 +52,11 @@ describe('Export/Import Round-Trip (E2E)', () => {
   }
 
   it('dryRun import returns missingProviders when provider not installed', async () => {
-    const target = await createProjectFromTemplate('Target Project', '/tmp/target', 'empty-project');
+    const target = await createProjectFromTemplate(
+      'Target Project',
+      '/tmp/target',
+      'empty-project',
+    );
 
     const dryRun = await app.inject({
       method: 'POST',
@@ -80,7 +86,11 @@ describe('Export/Import Round-Trip (E2E)', () => {
     const provider = await createProvider('claude');
 
     // Create source project and seed entities
-    const source = await createProjectFromTemplate('Source Project', '/tmp/source', 'empty-project');
+    const source = await createProjectFromTemplate(
+      'Source Project',
+      '/tmp/source',
+      'empty-project',
+    );
 
     // Create prompt in source
     const pRes = await app.inject({
@@ -98,8 +108,6 @@ describe('Export/Import Round-Trip (E2E)', () => {
       payload: {
         projectId: source.id,
         name: 'Runner',
-        providerId: provider.id,
-        options: '--model claude-3-5-sonnet',
         systemPrompt: null,
         instructions: 'do work',
         temperature: 0.1,
@@ -109,11 +117,30 @@ describe('Export/Import Round-Trip (E2E)', () => {
     expect([200, 201]).toContain(profRes.statusCode);
     const profile = JSON.parse(profRes.payload);
 
+    const configRes = await app.inject({
+      method: 'POST',
+      url: `/api/profiles/${profile.id}/provider-configs`,
+      payload: {
+        name: 'Claude',
+        providerId: provider.id,
+        options: '--model claude-3-5-sonnet',
+        env: {},
+      },
+    });
+    expect(configRes.json()).toMatchObject({ id: expect.any(String), profileId: profile.id });
+    expect(configRes.statusCode).toBe(201);
+    const providerConfig = JSON.parse(configRes.payload);
+
     // Create agent in source
     const agentRes = await app.inject({
       method: 'POST',
       url: '/api/agents',
-      payload: { projectId: source.id, profileId: profile.id, name: 'CC2' },
+      payload: {
+        projectId: source.id,
+        profileId: profile.id,
+        providerConfigId: providerConfig.id,
+        name: 'CC2',
+      },
     });
     expect([200, 201]).toContain(agentRes.statusCode);
 
@@ -136,7 +163,11 @@ describe('Export/Import Round-Trip (E2E)', () => {
     expect(exportPayload.initialPrompt?.title).toBe('Init Prompt');
 
     // Create target project and import
-    const target = await createProjectFromTemplate('Target Project 2', '/tmp/target2', 'empty-project');
+    const target = await createProjectFromTemplate(
+      'Target Project 2',
+      '/tmp/target2',
+      'empty-project',
+    );
 
     const dry = await app.inject({
       method: 'POST',

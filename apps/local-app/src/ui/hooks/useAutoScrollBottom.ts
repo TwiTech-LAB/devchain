@@ -55,7 +55,8 @@ export function useAutoScrollBottom({
     if (enabled && isAtBottom && bottomRef.current?.scrollIntoView) {
       bottomRef.current.scrollIntoView({ behavior: 'smooth' });
     }
-  }, [enabled, triggerDep]); // isAtBottom intentionally omitted to avoid re-trigger loops
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- Scroll on new content only; changes in scroll position must not trigger scrolling.
+  }, [enabled, triggerDep]);
 
   return {
     scrollContainerRef,

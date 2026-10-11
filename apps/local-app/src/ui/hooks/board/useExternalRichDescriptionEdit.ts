@@ -499,14 +499,14 @@ export function useExternalRichDescriptionEdit(
       retrySamePayload,
       refreshSession,
       verify,
-      reload,
       verifyCurrentSession,
+      reload,
       reloadCurrentSession,
-      isCurrentScope,
       save.isPending,
-      verify.isPending,
-      reload.isPending,
+      save.variables,
+      isCurrentScope,
       openSession.isPending,
+      openSession.variables,
     ],
   );
 }

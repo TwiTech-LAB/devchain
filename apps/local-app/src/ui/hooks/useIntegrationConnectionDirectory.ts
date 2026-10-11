@@ -1,3 +1,4 @@
+import type { ManagedSubtaskSyncController } from '@/modules/external-integrations/connections/managed-subtask-sync.controller';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { throwIntegrationApiError } from './useIntegrationConnections';
 import { useFetchFactory } from './useFetchFactory';
@@ -18,7 +19,7 @@ export function useIntegrationConnectionDirectory({ enabled = true }: { enabled?
     queryFn: async ({ signal }): Promise<IntegrationConnectionDirectory> => {
       const response = await apiFetch('/api/integrations/connections/directory', { signal });
       if (!response.ok) return throwIntegrationApiError(response);
-      return response.json();
+      return response.json() as Promise<IntegrationConnectionDirectory>;
     },
     staleTime: 10_000,
     enabled,
@@ -126,7 +127,7 @@ export function useLegacyManagedSubtaskSyncHealth(
         { signal },
       );
       if (!response.ok) return throwIntegrationApiError(response);
-      return response.json();
+      return response.json() as Promise<ManagedSubtaskSyncHealth>;
     },
     enabled,
     staleTime: 10_000,
@@ -145,7 +146,9 @@ export function useLegacyManagedSubtaskSyncHealth(
         },
       );
       if (!response.ok) return throwIntegrationApiError(response);
-      return response.json();
+      return response.json() as Promise<
+        Awaited<ReturnType<ManagedSubtaskSyncController['retryLegacy']>>
+      >;
     },
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey });

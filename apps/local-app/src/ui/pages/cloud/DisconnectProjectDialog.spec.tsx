@@ -4,6 +4,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import type { DockerSyncState } from '@/modules/remotes/docker/docker-copy-back.dto';
+import { FOLLOWS_USER_SKIP_REASON } from '@/modules/remotes/docker/docker-copy-back.dto';
 import { apiFetch } from '@/ui/lib/api-transport';
 import { fileSyncFailures } from './testing/file-sync-failures.fixture';
 import { DisconnectProjectDialog } from './DisconnectProjectDialog';
@@ -79,15 +80,15 @@ beforeEach(() => {
 });
 
 describe('DisconnectProjectDialog Docker copy home', () => {
-  it('keeps Disconnect usable without a copy option when the VM user ids differ', async () => {
+  it('keeps Disconnect usable without a copy option when the VM user ids are unknown', async () => {
     mockApiFetch.mockResolvedValue(
       answer(
         syncState({
           availability: {
             available: false,
             side: 'remote',
-            reason: { code: 'vm-user-mismatch', message: 'The user ids differ.' },
-            userMismatch: { homeUid: 1000, homeGid: 1000, vmUid: 1001, vmGid: 1000 },
+            reason: { code: 'vm-user-mismatch', message: 'The VM user ids are unknown.' },
+            userMismatch: { homeUid: 1000, homeGid: 1000, vmUid: null, vmGid: null },
           },
           groups: [],
         }),
@@ -96,9 +97,169 @@ describe('DisconnectProjectDialog Docker copy home', () => {
     const { onDisconnect } = renderDialog();
     const note = await screen.findByRole('note', { name: 'Docker copy-back unavailable' });
     expect(note).toHaveTextContent(
-      'Docker data is not copied back automatically, because the user ids differ (1000:1000 here, 1001:1000 on the VM). Copy what you need yourself, for example with a volume export and import.',
+      'Docker cannot determine the user ids on this PC and the VM. Refresh the VM information before copying Docker data back.',
     );
     expect(checkbox()).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: 'Disconnect' }));
+    expect(onDisconnect).toHaveBeenCalledWith(false, undefined);
+  });
+
+  it('copies exact groups with differing ids while unknown follows-user representations stay on the VM with a reason', async () => {
+    const heldReason = FOLLOWS_USER_SKIP_REASON;
+    const held = {
+      ...syncState().groups[1],
+      itemNames: ['follows-user'],
+      skipReason: heldReason,
+      createdOnVm: true,
+    };
+    mockApiFetch.mockResolvedValue(
+      answer(
+        syncState({
+          availability: {
+            available: true,
+            side: null,
+            reason: null,
+            userMismatch: { homeUid: 1000, homeGid: 1000, vmUid: 1001, vmGid: 1000 },
+          },
+          groups: [...syncState().groups.slice(0, 1), held],
+        }),
+      ),
+    );
+    const { onDisconnect } = renderDialog();
+    expect(await screen.findByRole('checkbox', { name: /Copy Docker data/ })).toBeChecked();
+    expect(screen.getByText('1 of 1 data group copies home')).toBeInTheDocument();
+    expect(row('Docker data', 'app-db-1')).toHaveTextContent('Copied home');
+    const heldRow = row('Docker data', 'follows-user');
+    expect(heldRow).toHaveTextContent('Stays on the VM');
+    expect(heldRow).toHaveTextContent(heldReason);
+    expect(heldRow).not.toHaveTextContent('Owners change');
+    expect(within(heldRow).queryByRole('combobox')).not.toBeInTheDocument();
+    expect(heldRow).not.toHaveAttribute('data-marked');
+    await userEvent.click(screen.getByRole('button', { name: 'Disconnect' }));
+    expect(onDisconnect).toHaveBeenCalledWith(false, { choices: {} });
+  });
+
+  // Component interaction verifies the public resource snapshots together with the submitted choice.
+  it.each([
+    { kind: 'mapped', createdOnVm: false, held: false, fileSync: false },
+    { kind: 'mapped', createdOnVm: true, held: false, fileSync: false },
+    { kind: 'mixed', createdOnVm: false, held: false, fileSync: false },
+    { kind: 'exact', createdOnVm: false, held: false, fileSync: false },
+    { kind: 'unknown', createdOnVm: false, held: true, fileSync: false },
+    { kind: 'mapped', createdOnVm: true, held: false, fileSync: true },
+  ])(
+    'offers $kind snapshots (VM-created=$createdOnVm, held=$held, fileSync=$fileSync) with resource-specific owners',
+    async ({ kind, createdOnVm, held, fileSync }) => {
+      const identity = { home: { uid: 1000, gid: 1000 }, vm: { uid: 1001, gid: 1000 } };
+      const group = {
+        ...syncState().groups[0],
+        volumes: ['app_db', ...(kind === 'mixed' ? ['exact_cache'] : [])],
+        bindPaths: ['/project/state'],
+        needsChoice: true,
+        createdOnVm,
+        ...(held && { skipReason: FOLLOWS_USER_SKIP_REASON }),
+        ...(fileSync && { syncedByFileSync: ['/project/state'] }),
+        dataRepresentations: [
+          {
+            volumes: ['app_db'],
+            bindPaths: ['/project/state'],
+            ...(kind !== 'unknown' && {
+              representation: {
+                ...identity,
+                kind: kind === 'exact' ? ('exact' as const) : ('mapped' as const),
+              },
+            }),
+          },
+          ...(kind === 'mixed'
+            ? [
+                {
+                  volumes: ['exact_cache'],
+                  bindPaths: [],
+                  representation: { ...identity, kind: 'exact' as const },
+                },
+              ]
+            : []),
+        ],
+      };
+      mockApiFetch.mockResolvedValue(
+        answer(syncState({ imported: !createdOnVm, groups: [group] })),
+      );
+      const { onDisconnect } = renderDialog();
+      const option = await screen.findByRole('checkbox', { name: /Copy Docker data/ });
+      if (held || fileSync) {
+        expect(option).toBeDisabled();
+        const heldRow = row('Docker data that stays on the VM', 'app-db-1');
+        expect(heldRow).not.toHaveTextContent('Owners change');
+        expect(within(heldRow).queryByRole('combobox')).not.toBeInTheDocument();
+        await userEvent.click(screen.getByRole('button', { name: 'Disconnect' }));
+        expect(onDisconnect).toHaveBeenCalledWith(false, undefined);
+        return;
+      }
+      expect(option).toBeChecked();
+      const target = row('Docker data', 'app-db-1');
+      if (kind === 'exact') expect(target).not.toHaveTextContent('Owners change');
+      else {
+        const notice = within(target).getByText(/Owners change to your user on this PC/);
+        expect(notice).toHaveTextContent('(1000:1000): app_db, /project/state');
+        expect(notice).not.toHaveTextContent('exact_cache');
+      }
+      expect(screen.getByRole('button', { name: 'Disconnect' })).toBeDisabled();
+      await userEvent.click(within(target).getByRole('combobox'));
+      await userEvent.click(screen.getByRole('option', { name: "Keep this PC's data" }));
+      expect(target).not.toHaveTextContent('Owners change');
+      await userEvent.click(within(target).getByRole('combobox'));
+      await userEvent.click(screen.getByRole('option', { name: "Copy the VM's data to this PC" }));
+      await userEvent.click(screen.getByRole('button', { name: 'Disconnect' }));
+      expect(onDisconnect).toHaveBeenCalledWith(false, { choices: { [group.key]: 'copy-home' } });
+    },
+  );
+
+  it('shows the ownership hold reason alongside file sync paths and offers no Docker overwrite', async () => {
+    mockApiFetch.mockResolvedValue(
+      answer(
+        syncState({
+          groups: [
+            {
+              ...syncState().groups[0],
+              syncedByFileSync: ['state'],
+              skipReason: 'Follows-user ownership stays on the VM.',
+            },
+          ],
+        }),
+      ),
+    );
+    const { onDisconnect } = renderDialog();
+    expect(await screen.findByRole('checkbox', { name: /Copy Docker data/ })).toBeDisabled();
+    const held = row('Docker data that stays on the VM', 'app-db-1');
+    expect(held).toHaveTextContent('Follows-user ownership stays on the VM.');
+    expect(held).toHaveTextContent('state: synced by file sync');
+    expect(within(held).queryByRole('combobox')).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: 'Disconnect' }));
+    expect(onDisconnect).toHaveBeenCalledWith(false, undefined);
+  });
+
+  it('shows held ownership data even when in sync and sends no copy request when all groups are held', async () => {
+    mockApiFetch.mockResolvedValue(
+      answer(
+        syncState({
+          groups: [
+            {
+              ...syncState().groups[0],
+              state: 'in-sync',
+              needsChoice: false,
+              skipReason: 'Recorded follows-user ownership stays on the VM.',
+            },
+          ],
+        }),
+      ),
+    );
+    const { onDisconnect } = renderDialog();
+    const option = await screen.findByRole('checkbox', { name: /Copy Docker data/ });
+    expect(option).toBeDisabled();
+    expect(option).not.toBeChecked();
+    expect(row('Docker data that stays on the VM', 'app-db-1')).toHaveTextContent(
+      'Recorded follows-user ownership stays on the VM.',
+    );
     await userEvent.click(screen.getByRole('button', { name: 'Disconnect' }));
     expect(onDisconnect).toHaveBeenCalledWith(false, undefined);
   });
@@ -148,6 +309,104 @@ describe('DisconnectProjectDialog Docker copy home', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Disconnect' }));
     expect(onDisconnect).toHaveBeenCalledWith(false, undefined);
   });
+
+  it('offers VM-created data by default without a prior import when home has no target data', async () => {
+    mockApiFetch.mockResolvedValue(
+      answer(
+        syncState({
+          imported: false,
+          groups: [{ ...syncState().groups[0], bindPaths: ['/home/u/p/data'], createdOnVm: true }],
+        }),
+      ),
+    );
+    const { onDisconnect } = renderDialog();
+
+    expect(await screen.findByRole('checkbox', { name: /Copy Docker data/ })).toBeChecked();
+    const created = row('Docker data', 'app-db-1');
+    expect(created).toHaveTextContent('Created on the VM');
+    expect(created).toHaveTextContent('Copied home');
+    expect(within(created).queryByRole('combobox')).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: 'Disconnect' }));
+    expect(onDisconnect).toHaveBeenCalledWith(false, { choices: {} });
+  });
+
+  it.each([
+    ["Copy the VM's data to this PC", 'copy-home'],
+    ["Keep this PC's data", 'keep-home'],
+  ] as const)(
+    'requires an explicit %s choice for VM-created data with an existing home target',
+    async (label, choice) => {
+      mockApiFetch.mockResolvedValue(
+        answer(
+          syncState({
+            imported: false,
+            groups: [
+              { ...syncState().groups[1], createdOnVm: true, state: 'unknown', needsChoice: true },
+            ],
+          }),
+        ),
+      );
+      const { onDisconnect } = renderDialog();
+
+      expect(await screen.findByRole('checkbox', { name: /Copy Docker data/ })).toBeChecked();
+      const created = row('Docker data', 'runner');
+      expect(created).toHaveTextContent('Created on the VM');
+      expect(created).toHaveTextContent(
+        'This PC already has data here. It can be an incomplete copy from file sync. Copying replaces it.',
+      );
+      expect(
+        screen.getByText('0 of 1 data group copy home; 1 needs your choice'),
+      ).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Disconnect' })).toBeDisabled();
+      await userEvent.click(within(created).getByRole('combobox', { name: 'Choice for runner' }));
+      await userEvent.click(await screen.findByRole('option', { name: label }));
+      expect(screen.getByRole('button', { name: 'Disconnect' })).toBeEnabled();
+      await userEvent.click(screen.getByRole('button', { name: 'Disconnect' }));
+      expect(onDisconnect).toHaveBeenCalledWith(false, { choices: { bbbbbbbbbbbbbbbb: choice } });
+    },
+  );
+
+  it.each([
+    [false, 'vm-newer'],
+    [true, 'unknown'],
+  ] as const)(
+    'does not offer a file-synced VM-created bind for copy-back (with other copyable data: %s)',
+    async (copyable, state) => {
+      const blocked = {
+        ...syncState().groups[1],
+        createdOnVm: true,
+        state,
+        needsChoice: false,
+        syncedByFileSync: ['/home/u/p/state'],
+      };
+      mockApiFetch.mockResolvedValue(
+        answer(
+          syncState({
+            imported: false,
+            groups: copyable ? [syncState().groups[0], blocked] : [blocked],
+          }),
+        ),
+      );
+      const { onDisconnect } = renderDialog();
+
+      const option = await screen.findByRole('checkbox', { name: /Copy Docker data/ });
+      const table = copyable ? 'Docker data' : 'Docker data that stays on the VM';
+      const excluded = row(table, 'runner');
+      expect(excluded).toHaveTextContent('/home/u/p/state: synced by file sync');
+      expect(excluded).not.toHaveTextContent('Copied home');
+      expect(within(excluded).queryByRole('combobox')).not.toBeInTheDocument();
+      if (copyable) {
+        expect(option).toBeChecked();
+        expect(screen.getByText('1 of 1 data group copies home')).toBeInTheDocument();
+      } else {
+        expect(option).not.toBeChecked();
+        expect(option).toBeDisabled();
+      }
+      expect(screen.getByRole('button', { name: 'Disconnect' })).toBeEnabled();
+      await userEvent.click(screen.getByRole('button', { name: 'Disconnect' }));
+      expect(onDisconnect).toHaveBeenCalledWith(false, copyable ? { choices: {} } : undefined);
+    },
+  );
 
   it('requires a choice for both-changed groups and sends it', async () => {
     const inSync = {
@@ -216,7 +475,7 @@ describe('DisconnectProjectDialog Docker copy home', () => {
     );
   });
 
-  it('hides the option when home Docker is unusable, nothing was imported, or the check failed', async () => {
+  it('hides the option when home Docker is unusable, no VM data exists, or the check failed', async () => {
     for (const [response, failed] of [
       [
         answer(

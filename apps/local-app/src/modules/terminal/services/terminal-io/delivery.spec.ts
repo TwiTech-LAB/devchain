@@ -1,5 +1,6 @@
 import { TerminalIOService } from './terminal-io.service';
 import {
+  CliForegroundExecutor,
   FakeProcessExecutor,
   type CannedResponse,
 } from '../process-executor/fake-process-executor';
@@ -8,6 +9,7 @@ import type { EventsService } from '../../../events/services/events.service';
 import type { SettingsService } from '../../../settings/services/settings.service';
 import { HumanPromptStateService } from '../human-prompt-state.service';
 import { FOLLOW_NOTE } from '../../../../common/follow-note';
+import { ShellForegroundError } from './delivery';
 
 jest.mock('../../../../common/delivery-nonce', () => ({
   generateDeliveryNonce: () => 'abc1234',
@@ -17,7 +19,7 @@ const target: SessionTarget = { name: 'test-session' };
 const NONCE = 'abc1234';
 
 function makeService(followNoteEnabled = true) {
-  const fake = new FakeProcessExecutor();
+  const fake = new CliForegroundExecutor();
   const events = { publish: jest.fn() } as unknown as EventsService;
   const promptState = new HumanPromptStateService();
   const settings = {
@@ -25,6 +27,10 @@ function makeService(followNoteEnabled = true) {
   } as unknown as SettingsService;
   const svc = new TerminalIOService(fake, events, promptState, settings);
   return { fake, promptState, svc };
+}
+
+function deliveryCalls(fake: FakeProcessExecutor) {
+  return fake.calls.filter((call) => call.argv[1] !== 'display-message' && call.argv[0] !== 'ps');
 }
 
 async function advanceDelivery<T>(pending: Promise<T>): Promise<T> {
@@ -43,6 +49,30 @@ describe('TerminalIOService delivery', () => {
   beforeEach(() => jest.useFakeTimers());
   afterEach(() => jest.useRealTimers());
   describe('deliver', () => {
+    // The executor boundary and fake timers reproduce a CLI exit during the launch handshake.
+    it('refuses the paste and submit when the CLI exits during the pre-delay', async () => {
+      const { fake, svc } = makeService();
+      setTimeout(() => {
+        fake.foregroundGroup = '1234';
+      }, 1000);
+
+      await expect(
+        advanceDelivery(
+          svc.deliver(target, 'echo AUTOMATED_TEXT', {
+            agentId: 'agent-1',
+            preKeys: ['Enter'],
+            preDelayMs: 2000,
+          }),
+        ),
+      ).rejects.toBeInstanceOf(ShellForegroundError);
+
+      expect(fake.calls.filter((call) => call.argv[1] === 'paste-buffer')).toHaveLength(0);
+      expect(
+        fake.calls.filter((call) => call.argv[1] === 'send-keys').map((call) => call.argv),
+      ).toEqual([['tmux', 'send-keys', '-t', '=test-session:', 'Enter']]);
+      expect(fake.calls.at(-1)?.argv[1]).toBe('delete-buffer');
+    });
+
     it('sends bracketed-paste via load-buffer + paste-buffer argv sequence', async () => {
       const { fake, svc } = makeService();
       // captureStrict baseline
@@ -155,8 +185,8 @@ describe('TerminalIOService delivery', () => {
       ).rejects.toThrow(/Failed to send keys/);
 
       // Only 1 call — no retry for pre-keys
-      expect(fake.calls).toHaveLength(1);
-      expect(fake.calls[0].argv).toContain('Escape');
+      expect(deliveryCalls(fake)).toHaveLength(1);
+      expect(deliveryCalls(fake)[0].argv).toContain('Escape');
     });
 
     it('no submit keys: helper is no-op when submitKeys is empty', async () => {
@@ -300,7 +330,7 @@ describe('TerminalIOService delivery', () => {
         });
       await jest.advanceTimersByTimeAsync(499);
       expect(settled).toBe(false);
-      expect(fake.calls).toHaveLength(before);
+      expect(fake.calls).toHaveLength(before + 2);
       await jest.advanceTimersByTimeAsync(1);
       expect(await second).toMatchObject({ confirmed: true });
       expect(fake.calls.filter((call) => call.argv[1] === 'paste-buffer')).toHaveLength(2);
@@ -376,7 +406,7 @@ describe('TerminalIOService delivery', () => {
         expect.objectContaining({ confirmed: true, method: 'nonce', retryCount: 0 }),
       );
       expect(promptState.getState(target.name).phase).toBe('inactive');
-      expect(fake.calls.map((call) => call.argv[1])).toEqual([
+      expect(deliveryCalls(fake).map((call) => call.argv[1])).toEqual([
         'capture-pane',
         'load-buffer',
         'paste-buffer',
@@ -455,7 +485,8 @@ describe('TerminalIOService delivery', () => {
       const result = await advanceDelivery(svc.deliver(target, 'hello', NOTE_OPTS));
 
       expect(result.confirmed).toBe(true);
-      expect(fake.calls.map((c) => c.argv[1])).toEqual([
+      const calls = deliveryCalls(fake);
+      expect(calls.map((c) => c.argv[1])).toEqual([
         'capture-pane',
         'load-buffer',
         'paste-buffer',
@@ -464,8 +495,8 @@ describe('TerminalIOService delivery', () => {
         'send-keys',
         'send-keys',
       ]);
-      expect(fake.calls[5].argv).toEqual(NOTE_ARGV);
-      expect(fake.calls[6].argv).toEqual(ENTER_ARGV);
+      expect(calls[5].argv).toEqual(NOTE_ARGV);
+      expect(calls[6].argv).toEqual(ENTER_ARGV);
     });
 
     it('waits at least 100 ms between the note and the submit keys', async () => {
@@ -506,7 +537,8 @@ describe('TerminalIOService delivery', () => {
         }),
       );
 
-      expect(fake.calls.map((c) => c.argv[1])).toEqual([
+      const calls = deliveryCalls(fake);
+      expect(calls.map((c) => c.argv[1])).toEqual([
         'load-buffer',
         'paste-buffer',
         'delete-buffer',
@@ -518,10 +550,10 @@ describe('TerminalIOService delivery', () => {
         'send-keys',
         'send-keys',
       ]);
-      expect(fake.calls[3].argv).toEqual(NOTE_ARGV);
-      expect(fake.calls[4].argv).toEqual(ENTER_ARGV);
-      expect(fake.calls[8].argv).toEqual(NOTE_ARGV);
-      expect(fake.calls[9].argv).toEqual(ENTER_ARGV);
+      expect(calls[3].argv).toEqual(NOTE_ARGV);
+      expect(calls[4].argv).toEqual(ENTER_ARGV);
+      expect(calls[8].argv).toEqual(NOTE_ARGV);
+      expect(calls[9].argv).toEqual(ENTER_ARGV);
     });
 
     it('types the note once, after the attempt that succeeds', async () => {
@@ -540,12 +572,13 @@ describe('TerminalIOService delivery', () => {
 
       expect(result).toEqual(expect.objectContaining({ confirmed: true, retryCount: 1 }));
       expect(noteCalls(fake)).toHaveLength(1);
-      const noteIndex = fake.calls.findIndex((c) => c.argv.includes(FOLLOW_NOTE));
-      const lastPasteIndex = fake.calls.map((c) => c.argv[1]).lastIndexOf('paste-buffer');
-      const escapeIndex = fake.calls.findIndex((c) => c.argv.includes('Escape'));
+      const calls = deliveryCalls(fake);
+      const noteIndex = calls.findIndex((c) => c.argv.includes(FOLLOW_NOTE));
+      const lastPasteIndex = calls.map((c) => c.argv[1]).lastIndexOf('paste-buffer');
+      const escapeIndex = calls.findIndex((c) => c.argv.includes('Escape'));
       expect(escapeIndex).toBeLessThan(lastPasteIndex);
       expect(noteIndex).toBeGreaterThan(lastPasteIndex);
-      expect(fake.calls[noteIndex + 1].argv).toEqual(ENTER_ARGV);
+      expect(calls[noteIndex + 1].argv).toEqual(ENTER_ARGV);
     });
 
     it('writes the note once when the submit keys fail and the retry succeeds', async () => {
@@ -649,7 +682,7 @@ describe('TerminalIOService delivery', () => {
       );
 
       expect(result).toEqual({ deferred: 'human_draft' });
-      expect(fake.calls.map((c) => c.argv[1])).toEqual(['load-buffer', 'delete-buffer']);
+      expect(deliveryCalls(fake).map((c) => c.argv[1])).toEqual(['load-buffer', 'delete-buffer']);
     });
 
     it('keeps the note free of paste-confirmation and submit triggers', () => {
@@ -677,7 +710,7 @@ describe('TerminalIOService delivery', () => {
             });
           }
           expect(noteCalls(fake)).toHaveLength(0);
-          expect(fake.calls.map((c) => c.argv[1])).toEqual([
+          expect(deliveryCalls(fake).map((c) => c.argv[1])).toEqual([
             'load-buffer',
             'paste-buffer',
             'delete-buffer',

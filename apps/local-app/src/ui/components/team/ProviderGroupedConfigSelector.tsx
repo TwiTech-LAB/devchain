@@ -32,7 +32,10 @@ export function ProviderGroupedConfigSelector<
   onChange,
   templateSelections,
 }: ProviderGroupedConfigSelectorProps<TProfileKey, TConfigKey>) {
-  const configs = focusedProfileKey ? (configsByProfile[focusedProfileKey] ?? []) : [];
+  const configs = useMemo(
+    () => (focusedProfileKey ? (configsByProfile[focusedProfileKey] ?? []) : []),
+    [focusedProfileKey, configsByProfile],
+  );
 
   /**
    * When a `templateSelections` baseline is provided in `subset` mode, hide

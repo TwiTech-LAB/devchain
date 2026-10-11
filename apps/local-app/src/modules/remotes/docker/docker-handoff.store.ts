@@ -1,5 +1,6 @@
 import type { DockerImportInventory } from '../operations/docker-import-inventory.store';
 import type { DockerNetworkCreate } from '../host/host-docker.dto';
+import type { DockerCopyBackExclusionProof } from './docker-copy-back-exclusions';
 import { Injectable } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
 import { chmod, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
@@ -10,9 +11,24 @@ import type {
   DockerSelectionMode,
   DockerDataGroup,
   DockerDataState,
+  DockerOwnershipDecision,
+  DockerOwnershipRecord,
+  DockerDataRepresentation,
+  DockerDataRepresentationGroup,
+  DockerDataMembers,
+  DockerUserIds,
 } from './docker-plan.dto';
 
+export interface DockerHandoffDataGroup extends DockerDataGroup {
+  /** Copied/reset groups use this transfer snapshot; kept groups retain their recorded snapshot. */
+  representation?: DockerDataRepresentation;
+}
+
 export interface DockerHandoffItem {
+  ownership?: DockerOwnershipDecision;
+  retainedOwnership?: DockerOwnershipRecord;
+  targetUser?: string;
+  resetData?: boolean;
   id: string;
   name: string;
   kind: DockerPlanItem['kind'];
@@ -28,12 +44,14 @@ export interface DockerHandoffItem {
   sizeBytes: number | null;
 }
 export interface DockerHandoffVolume {
+  alreadyTargetEntries?: number;
   name: string;
   /** The image the never-started archive helpers run on both engines. */
   helperImage: string;
   sizeBytes: number;
 }
 export interface DockerHandoffBind {
+  alreadyTargetEntries?: number;
   path: string;
   /** In-project data subtrees are emptied on the VM before restore. */
   replace: boolean;
@@ -49,6 +67,16 @@ export interface DockerHandoffNetwork {
   ipam?: DockerNetworkCreate['ipam'];
 }
 
+export interface DockerHandoffEmptyBind {
+  path: string;
+  image: string;
+  reset: boolean;
+  /** Home layout captured before sync/reset; false records a directory. */
+  file?: boolean;
+  prepared?: boolean;
+  owner?: DockerUserIds;
+}
+
 /**
  * What one Connect's Docker steps decided and did. Secret-free by design: it
  * is written after every VM or home change, so retry and cancel act on what
@@ -56,12 +84,13 @@ export interface DockerHandoffNetwork {
  */
 export interface DockerHandoffRecord {
   inventoryBefore?: DockerImportInventory | null;
-  dataGroups?: DockerDataGroup[];
-  keptGroups?: DockerDataGroup[];
-  discardedHomeGroups?: DockerDataGroup[];
+  dataGroups?: DockerHandoffDataGroup[];
+  keptGroups?: DockerHandoffDataGroup[];
+  discardedHomeGroups?: DockerHandoffDataGroup[];
   keptInventory?: DockerImportInventory['items'];
   ensureVolumes?: string[];
   ensureBinds?: string[];
+  emptyBinds?: DockerHandoffEmptyBind[];
   copiedData?: { volumes: string[]; binds: string[] };
   inventoryStampedAt?: string;
   apiVersion: string;
@@ -99,18 +128,30 @@ export interface DockerCopyBackGroup {
   label: string;
   state: DockerDataState;
   action: 'copy-home' | 'keep-home' | 'skip';
+  ownership?: DockerOwnershipRecord;
+  dataRepresentations?: DockerCopyBackDataGroup[];
+  skipReason?: string;
   /** The members to copy: those present on the VM. */
   volumes: string[];
   bindPaths: string[];
   /**
    * Image IDs of the group's items; the helpers run one present on each engine.
-   * `images` are home IDs; `vmImages[i]` is the VM engine's ID for `images[i]`,
-   * equal to it on same-store engines. Absent from records written before the
-   * field existed, which then use `images` for both engines.
+   * For an imported group, `images` are home IDs and `vmImages[i]` is the VM
+   * engine's ID for `images[i]`, equal to it on same-store engines. A group
+   * created on the VM (`createdOnVm`) holds VM engine IDs in both lists. Absent
+   * from records written before the field existed, which then use `images` for
+   * both engines.
    */
   images: string[];
   vmImages?: string[];
+  imageReferences?: string[];
+  createdOnVm?: boolean;
   sizeBytes: number;
+}
+export interface DockerCopyBackDataGroup extends DockerDataRepresentationGroup {
+  ownership?: DockerOwnershipRecord;
+  /** Newly resolved members must be checked again; imported snapshots stay authoritative. */
+  createdOnVm?: boolean;
 }
 /** What one Disconnect's copy-back decided and did; written before each home change. */
 export interface DockerCopyBackRecord {
@@ -121,9 +162,20 @@ export interface DockerCopyBackRecord {
   /** Groups whose home data may have been emptied; recorded before the first clear. */
   started: string[];
   /** Verified groups: the members copied and the time of their inventory stamp. */
-  verified: Record<string, { at: string; volumes: string[]; bindPaths: string[] }>;
+  verified: Record<
+    string,
+    DockerDataMembers & {
+      at: string;
+      dataRepresentations?: DockerCopyBackDataGroup[];
+      alreadyTargetEntries?: number;
+    }
+  >;
   /** Groups to copy that had nothing on the VM. */
   absent: string[];
+  /** Each copy attempt consumes preparation and still reads both peers before clearing. */
+  exclusions?: DockerCopyBackExclusionProof;
+  /** Groups left intact because a bind subtree could still be changed by file sync. */
+  fileSyncSkipped?: Record<string, string[]>;
   /** When "Keep home data" choices were applied to the inventory. */
   keptAt?: string;
   /**

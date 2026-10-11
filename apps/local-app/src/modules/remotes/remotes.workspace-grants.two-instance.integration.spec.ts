@@ -11,7 +11,7 @@ import {
 import { TunnelHandlerService } from '../cloud-tunnel/services/tunnel-handler.service';
 import { E2eeDeviceStoreService } from '../e2ee/services/e2ee-device-store.service';
 import { PairedDeviceWorkspaceAccessService } from '../e2ee/services/paired-device-workspace-access.service';
-import { readRevokedDeviceKids } from '../e2ee/services/device-revocation-history';
+import { readRevokedDeviceKids } from '../storage/local/helpers/device-revocation-history';
 import { DEFAULT_PROJECT_WORKSPACE_ID } from '../storage/db/schema';
 import type { RemoteOperation } from '../storage/models/domain.models';
 import { ensureProvider } from './replica/__fixtures__/replica-seed';

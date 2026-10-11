@@ -1,10 +1,6 @@
 import { useEffect, useState, type FormEvent } from 'react';
 import { X } from 'lucide-react';
 import { useMutation } from '@tanstack/react-query';
-import { isGiveOwnershipEligible } from '@/modules/file-sync/sync-path-inspection.dto';
-import { SYNC_CHOWN_PATHS_MAX } from '@/modules/file-sync/sync-chown.dto';
-import { useRemoteVmApi } from './lib/remote-vm-api-context';
-import { fileSyncAutoFixQueryKey } from './lib/remote-vm-query-keys';
 import type {
   FailedSyncFile,
   ForceSyncOffer,
@@ -118,9 +114,7 @@ export function FixFileSyncDialog({
   warning?: string | null;
   onForceSync: (offer: ForceSyncOffer) => void;
 }) {
-  const api = useRemoteVmApi();
   const failed = useProjectFileSyncFailures(projectId);
-  const queryClient = useHomeQueryClient();
   const ignores = useProjectIgnores(projectId);
   const saveIgnores = useSaveProjectIgnores();
   const [baseline, setBaseline] = useState<{ list: string[]; revision: number } | null>(null);
@@ -209,33 +203,7 @@ export function FixFileSyncDialog({
       setCopyError(getErrorMessage(error, 'Could not copy the command.'));
     }
   };
-  const give = useMutation(
-    {
-      mutationFn: async (paths: string[]) => {
-        const outcomes = [];
-        for (let offset = 0; offset < paths.length; offset += SYNC_CHOWN_PATHS_MAX) {
-          const result = await api.giveFileOwnership(
-            projectId,
-            paths.slice(offset, offset + SYNC_CHOWN_PATHS_MAX),
-          );
-          outcomes.push(...result.items);
-        }
-        return outcomes;
-      },
-      onSuccess: async (items) => {
-        const reasons = [...new Set(items.flatMap((item) => (item.reason ? [item.reason] : [])))];
-        setMessage(reasons.length ? reasons.join(' ') : 'The VM user now owns these files.');
-        await failed.refetch();
-        await queryClient.invalidateQueries({
-          queryKey: fileSyncAutoFixQueryKey(projectId),
-        });
-      },
-    },
-    queryClient,
-  );
-  const eligible = failed.data?.groups.filter(isGiveOwnershipEligible) ?? [];
-  const vmUser = failed.data?.vmUser?.name ?? 'VM user';
-  const busy = mutation.isPending || give.isPending;
+  const busy = mutation.isPending;
   const forceSync = failed.data?.forceSync;
   const openForceSync = () => {
     if (forceSync?.offered) onForceSync(forceSync);
@@ -268,8 +236,8 @@ export function FixFileSyncDialog({
               <section aria-label="Why this happens" className="space-y-1">
                 <h3 className="font-medium">Why this happens</h3>
                 <p>
-                  File sync cannot read or change files owned by another user. A program, often a
-                  Docker container, may have written these files as{' '}
+                  These files are owned by another user. Exclude runtime output that Git ignores. A
+                  program, often a Docker container, may have written these files as{' '}
                   {owners.length ? owners.join(', ') : 'another user'}.
                 </p>
               </section>
@@ -364,21 +332,10 @@ export function FixFileSyncDialog({
               (side) =>
                 failed.data?.[side].entries.length ||
                 failed.data?.[side].readError ||
-                (side === 'vm' && eligible.length > 0) ||
                 failed.data?.groups.some((group) => group.side === side || group.chown?.[side]),
             ).map((side) => (
               <section key={side} aria-label={SIDE_LABELS[side]} className="space-y-2">
                 <h3 className="font-medium">{SIDE_LABELS[side]}</h3>
-                {side === 'vm' && eligible.length > 0 && (
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    disabled={busy}
-                    onClick={() => give.mutate([...new Set(eligible.map((group) => group.path))])}
-                  >
-                    Give all to {vmUser}
-                  </Button>
-                )}
                 {failed.data?.[side].readError && <p role="alert">{failed.data[side].readError}</p>}
                 <ul className="space-y-2">
                   {failed.data?.[side].entries.map((file) => {
@@ -405,15 +362,11 @@ export function FixFileSyncDialog({
                   })}
                 </ul>
                 {failed.data?.groups
-                  .filter(
-                    (group) =>
-                      group.side === side || (side === 'vm' && isGiveOwnershipEligible(group)),
-                  )
+                  .filter((group) => group.side === side)
                   .map((group) => (
                     <div key={groupKey(group)} className="space-y-1">
                       <div className="flex flex-wrap items-center gap-2">
-                        {group.side !== side && <code className="break-all">{group.path}</code>}
-                        {group.side === side && isSelectableExclusion(group) && (
+                        {isSelectableExclusion(group) && (
                           <label className="flex items-center gap-2">
                             <Checkbox
                               aria-label={`Exclude ${group.path} on ${SIDE_LABELS[side]}`}
@@ -429,26 +382,7 @@ export function FixFileSyncDialog({
                             <code className="break-all">{group.pattern ?? group.path}</code>
                           </label>
                         )}
-                        {side === 'vm' && isGiveOwnershipEligible(group) && (
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            disabled={busy}
-                            onClick={() => give.mutate([group.path])}
-                          >
-                            Give to {vmUser}
-                          </Button>
-                        )}
                       </div>
-                      {side === 'vm' && isGiveOwnershipEligible(group) && (
-                        <p>
-                          Give to {vmUser} makes your VM user the owner of these files. Then file
-                          sync can read and change them, and they sync to this PC like your own
-                          files. Use it for files that belong to your code, for example a new
-                          migration. For data or build output, exclude them instead. DevChain never
-                          does this automatically.
-                        </p>
-                      )}
                       {group.pathCount !== undefined && (
                         <p>
                           covers {group.pathCount} {group.pathCount === 1 ? 'path' : 'paths'} ·{' '}
@@ -516,11 +450,6 @@ export function FixFileSyncDialog({
               </section>
             ))}
             <FileSyncAutoFixControls projectId={projectId} disabled={busy} />
-            {failed.data.ownershipNotes?.map((note) => (
-              <p key={note} role="status">
-                {note}
-              </p>
-            ))}
             {failed.data.overLimit && (
               <p role="alert">
                 These suggestions would pass the limit of {IGNORE_PATTERNS_MAX} patterns.
@@ -542,11 +471,6 @@ export function FixFileSyncDialog({
         {mutation.error && (
           <p role="alert" className="text-sm text-destructive">
             {mutation.error.message}
-          </p>
-        )}
-        {give.error && (
-          <p role="alert" className="text-sm text-destructive">
-            {give.error.message}
           </p>
         )}
         {copyError && (

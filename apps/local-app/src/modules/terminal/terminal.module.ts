@@ -1,3 +1,4 @@
+import { SessionRowsModule } from '../storage/sessions/session-rows.module';
 import { Module } from '@nestjs/common';
 import { TerminalStreamService } from './services/terminal-stream.service';
 import { PtyService } from './services/pty.service';
@@ -22,6 +23,7 @@ import { HooksModule } from '../hooks/hooks.module';
 
 @Module({
   imports: [
+    SessionRowsModule,
     TerminalDeliveryModule,
     ProcessExecutorModule,
     EventsCoreModule,

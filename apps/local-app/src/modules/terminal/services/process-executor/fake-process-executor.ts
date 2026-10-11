@@ -134,3 +134,29 @@ export class FakeProcessExecutor extends ProcessExecutor {
     return { text: text.slice(0, maxBytes), truncated: true };
   }
 }
+
+/**
+ * Answers the shell-guard reads as if the agent CLI is in front: `tmux display-message`
+ * returns pane PID 1234 and `ps` returns `foregroundGroup`. Other commands use the
+ * canned responses.
+ */
+export class CliForegroundExecutor extends FakeProcessExecutor {
+  foregroundGroup = '2345';
+  processStates = '1 S\n';
+
+  async run(options: ProcessExecutorOptions): Promise<ExecutorResult> {
+    const stdout = this.foregroundRead(options.argv);
+    if (stdout === undefined) return super.run(options);
+    this.calls.push(options);
+    return { success: true, exitCode: 0, stdout, stderr: '', timedOut: false, truncated: false };
+  }
+
+  private foregroundRead(argv: readonly string[]): string | undefined {
+    if (argv[0] === 'tmux' && argv[1] === 'display-message' && argv.at(-1) === '#{pane_pid}') {
+      return '1234';
+    }
+    if (argv[0] === 'ps' && argv[2] === 'tpgid=') return this.foregroundGroup;
+    if (argv[0] === 'ps' && argv[3] === 'ppid=,stat=') return this.processStates;
+    return undefined;
+  }
+}

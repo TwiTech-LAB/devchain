@@ -13,10 +13,7 @@ import { STORAGE_SERVICE } from '../../storage/interfaces/storage.interface';
 import { ValidationError } from '../../../common/errors/error-types';
 import type { Provider } from '../../storage/models/domain.models';
 import { ProcessExecutor } from '../../terminal/services/process-executor/process-executor.port';
-import {
-  disableClaudeAutoCompact,
-  enableClaudeAutoCompact,
-} from '../../sessions/utils/claude-config';
+import { disableClaudeAutoCompact, enableClaudeAutoCompact } from '../utils/claude-config';
 import { DEFAULT_CLAUDE_LAUNCH_SETTINGS_JSON } from '@devchain/shared';
 
 jest.mock('fs/promises', () => ({
@@ -24,7 +21,7 @@ jest.mock('fs/promises', () => ({
   access: jest.fn(),
 }));
 
-jest.mock('../../sessions/utils/claude-config', () => ({
+jest.mock('../utils/claude-config', () => ({
   disableClaudeAutoCompact: jest.fn(),
   enableClaudeAutoCompact: jest.fn(),
 }));

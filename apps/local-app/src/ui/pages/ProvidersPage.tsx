@@ -1,3 +1,5 @@
+import type { ProjectsQueryData } from '@/ui/pages/projects/lib/project-contracts';
+import type { ProvidersController } from '@/modules/providers/controllers/providers.controller';
 import { useRef, useState, useMemo } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { providerConfigQueryPredicates } from '@/ui/lib/provider-configs';
@@ -55,7 +57,7 @@ import {
   providerEffortQueryKeys,
   type ProviderEffort,
 } from '@/ui/lib/provider-efforts';
-import { providersQueryKeys } from '@/ui/lib/providers-query-keys';
+import { providersQueryKeys, fetchProviders, type Provider } from '@/ui/lib/providers-query-keys';
 import { useSelectedProject } from '@/ui/hooks/useProjectSelection';
 import {
   useCrudMutation,
@@ -91,21 +93,6 @@ function getDefaultBinPathForType(t: ProviderType) {
   return '';
 }
 
-interface Provider {
-  id: string;
-  name: string;
-  binPath: string | null;
-  autoCompactThreshold: number | null;
-  env: Record<string, string> | null;
-  envScopes: Record<string, string[]>;
-  mcpConfigured: boolean;
-  mcpEndpoint: string | null;
-  mcpRegisteredAt: string | null;
-  claudeLaunchSettingsJson: string | null;
-  createdAt: string;
-  updatedAt: string;
-}
-
 interface ProviderModel {
   id: string;
   providerId: string;
@@ -128,12 +115,6 @@ interface ProvidersQueryData {
   total?: number;
   limit?: number;
   offset?: number;
-}
-
-async function fetchProviders(fetchFn: FetchFn) {
-  const res = await fetchFn('/api/providers');
-  if (!res.ok) throw new Error('Failed to fetch providers');
-  return res.json();
 }
 
 async function createProvider(
@@ -161,7 +142,7 @@ async function createProvider(
     }
     throw mutationError;
   }
-  return res.json();
+  return res.json() as Promise<Awaited<ReturnType<ProvidersController['createProvider']>>>;
 }
 
 async function updateProvider(
@@ -190,7 +171,7 @@ async function updateProvider(
     }
     throw mutationError;
   }
-  return res.json();
+  return res.json() as Promise<Awaited<ReturnType<ProvidersController['updateProvider']>>>;
 }
 
 async function deleteProvider(fetchFn: FetchFn, id: string) {
@@ -214,7 +195,7 @@ async function ensureProviderMcp(fetchFn: FetchFn, id: string, projectPath?: str
     const error = await res.json().catch(() => ({ message: 'Failed to ensure MCP configuration' }));
     throw new Error(error.message || 'Failed to ensure MCP configuration');
   }
-  return res.json();
+  return res.json() as Promise<Awaited<ReturnType<ProvidersController['ensureMcp']>>>;
 }
 
 async function fetchProviderModels(fetchFn: FetchFn, providerId: string): Promise<ProviderModel[]> {
@@ -223,7 +204,7 @@ async function fetchProviderModels(fetchFn: FetchFn, providerId: string): Promis
     const error = await res.json().catch(() => ({ message: 'Failed to fetch provider models' }));
     throw new Error(error.message || 'Failed to fetch provider models');
   }
-  return res.json();
+  return res.json() as Promise<ProviderModel[]>;
 }
 
 async function addProviderModel(
@@ -240,7 +221,7 @@ async function addProviderModel(
     const error = await res.json().catch(() => ({ message: 'Failed to add model' }));
     throw new Error(error.message || 'Failed to add model');
   }
-  return res.json();
+  return res.json() as Promise<ProviderModel>;
 }
 
 async function removeProviderModel(
@@ -266,7 +247,7 @@ async function discoverProviderModels(
     const error = await res.json().catch(() => ({ message: 'Failed to auto-discover models' }));
     throw new Error(error.message || 'Failed to auto-discover models');
   }
-  return res.json();
+  return res.json() as Promise<{ added: string[]; existing: string[]; total: number }>;
 }
 
 async function addProviderEffort(
@@ -283,7 +264,7 @@ async function addProviderEffort(
     const error = await res.json().catch(() => ({ message: 'Failed to add effort' }));
     throw new Error(error.message || 'Failed to add effort');
   }
-  return res.json();
+  return res.json() as Promise<ProviderEffort>;
 }
 
 async function removeProviderEffort(
@@ -322,7 +303,7 @@ async function rescanProviders(fetchFn: FetchFn): Promise<RescanResult> {
     const error = await res.json().catch(() => ({ message: 'Rescan failed' }));
     throw new Error(error.message || 'Failed to rescan providers');
   }
-  return res.json();
+  return res.json() as Promise<RescanResult>;
 }
 
 function invalidateProviderConfigQueries(queryClient: ReturnType<typeof useQueryClient>) {
@@ -756,8 +737,8 @@ export function ProvidersPage() {
   const { data: allProjectsData } = useQuery({
     queryKey: ['projects', 'all'],
     queryFn: () =>
-      apiFetch('/api/projects?limit=10000', undefined, { backend: HOME_BACKEND }).then((r) =>
-        r.json(),
+      apiFetch('/api/projects?limit=10000', undefined, { backend: HOME_BACKEND }).then(
+        (r) => r.json() as Promise<ProjectsQueryData>,
       ),
     staleTime: 60000,
   });
@@ -790,7 +771,7 @@ export function ProvidersPage() {
   const providersListKey = providersQueryKeys.list();
 
   const createMutation = useCrudMutation<
-    { provider: Provider; sync: SyncResult | null; syncError?: string },
+    Awaited<ReturnType<typeof createProvider>>,
     Parameters<typeof createProvider>[1],
     void
   >({

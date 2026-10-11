@@ -140,11 +140,6 @@ test("a claim creates the user, private auth files, the service and the record",
   assert.match(sudoers, /^alice ALL=\(ALL\) NOPASSWD:ALL$/m);
   assert.ok(
     sudoers.includes(
-      `alice ALL=(root) NOPASSWD: ${sys.paths.binDir}/devchain-host-project-chown\n`,
-    ),
-  );
-  assert.ok(
-    sudoers.includes(
       `devchain-host-update, ${sys.paths.binDir}/devchain-host-project-root\n`,
     ),
   );

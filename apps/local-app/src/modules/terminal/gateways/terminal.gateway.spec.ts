@@ -991,7 +991,11 @@ describe('TerminalGateway.handleSubscribe', () => {
     });
 
     const session = registry.get('session-stopped-unwire')!;
-    gateway.handleSessionStopped({ sessionId: 'session-stopped-unwire' });
+    gateway.handleSessionStopped({
+      sessionId: 'session-stopped-unwire',
+      source: 'web-api',
+      reason: 'user-requested',
+    });
 
     roomEmit.mockClear();
     session.stream.emit('frame', {
@@ -2661,7 +2665,11 @@ describe('TerminalGateway lifecycle cleanup parity', () => {
     jest.useFakeTimers();
     const { gateway, streamService, seedService, ptyService } = createGateway();
 
-    gateway.handleSessionStopped({ sessionId: 'cleanup-stopped' });
+    gateway.handleSessionStopped({
+      sessionId: 'cleanup-stopped',
+      source: 'web-api',
+      reason: 'user-requested',
+    });
 
     expect(seedService.invalidateCache).toHaveBeenCalledWith('cleanup-stopped');
     expect(streamService.clearBuffer).not.toHaveBeenCalled();
@@ -2679,7 +2687,11 @@ describe('TerminalGateway lifecycle cleanup parity', () => {
     jest.useFakeTimers();
     const { gateway, streamService } = createGateway({ autoCreateRegistrySessions: false });
 
-    gateway.handleSessionStopped({ sessionId: 'restore-before-expiry' });
+    gateway.handleSessionStopped({
+      sessionId: 'restore-before-expiry',
+      source: 'web-api',
+      reason: 'user-requested',
+    });
     expect(streamService.clearBuffer).not.toHaveBeenCalled();
 
     // A restore inside the 60s window must cancel the pending clearBuffer so the live
@@ -2740,7 +2752,11 @@ describe('TerminalGateway sequence-domain recovery isolation (Task 2)', () => {
 
       // Stop schedules the 60s retention timer but leaves the terminal subscription recorded, so the
       // client can still start a recovery in the window.
-      gateway.handleSessionStopped({ sessionId: 'window-sess' });
+      gateway.handleSessionStopped({
+        sessionId: 'window-sess',
+        source: 'web-api',
+        reason: 'user-requested',
+      });
       await gateway.handleResyncRequest(client as unknown as Socket, {
         sessionId: 'window-sess',
         reason: 'client_write_overflow',
@@ -2878,7 +2894,7 @@ describe('TerminalGateway.handleInput authority guard', () => {
     expect(terminalIO.deliverImmediate).toHaveBeenCalledWith(
       { name: 'tmux_auth-session-nc' },
       'hello',
-      { bracketed: true },
+      { bracketed: true, requireForegroundProgram: false },
     );
   });
 
@@ -3178,7 +3194,7 @@ describe('TerminalGateway prompt-paste acknowledgement and idempotency', () => {
     return { ...setup, client };
   }
 
-  it('delivers one bracketed no-submit paste and returns a plain typed ack', async () => {
+  it('opts human prompt paste out of the shell guard and returns a plain typed ack', async () => {
     const { gateway, client, terminalIO } = await createAuthorizedPromptClient('prompt-success');
     const payload = promptPastePayload('prompt-success');
 
@@ -3188,7 +3204,7 @@ describe('TerminalGateway prompt-paste acknowledgement and idempotency', () => {
     expect(terminalIO.deliverImmediate).toHaveBeenCalledWith(
       { name: 'tmux_prompt-success' },
       'selected prompt',
-      { bracketed: true, submitKeys: [] },
+      { bracketed: true, submitKeys: [], requireForegroundProgram: false },
     );
     expect(result).toEqual({ ok: true, code: 'OK', requestId: payload.requestId });
     expect(result).not.toHaveProperty('event');
@@ -3401,7 +3417,11 @@ describe('TerminalGateway prompt-paste acknowledgement and idempotency', () => {
     const original = promptPastePayload('prompt-lifecycle');
 
     await gateway.handleInput(client, original);
-    gateway.handleSessionStopped({ sessionId: 'prompt-lifecycle' });
+    gateway.handleSessionStopped({
+      sessionId: 'prompt-lifecycle',
+      source: 'web-api',
+      reason: 'user-requested',
+    });
     gateway.handleSessionRestored({
       sessionId: 'prompt-lifecycle',
       epicId: null,
@@ -3631,7 +3651,11 @@ describe('TerminalGateway.handleTheme', () => {
       backgroundHex: bg,
     });
 
-    gateway.handleSessionStopped({ sessionId: 'stopped-sess' });
+    gateway.handleSessionStopped({
+      sessionId: 'stopped-sess',
+      source: 'web-api',
+      reason: 'user-requested',
+    });
 
     (terminalIO.applyWindowTheme as jest.Mock).mockClear();
     await gateway.handleTheme(client as unknown as Socket, {

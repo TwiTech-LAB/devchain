@@ -112,7 +112,7 @@ export async function fetchSubscribableEvents(
   if (!response.ok) {
     throw new Error('Failed to fetch subscribable events');
   }
-  const data = await response.json();
+  const data = (await response.json()) as { events: SubscribableEventDefinition[] };
   return data.events;
 }
 
@@ -125,7 +125,7 @@ export async function fetchSubscribers(fetchFn: FetchFn, projectId: string): Pro
   if (!response.ok) {
     throw new Error('Failed to fetch subscribers');
   }
-  return response.json();
+  return response.json() as Promise<Subscriber[]>;
 }
 
 /**
@@ -136,7 +136,7 @@ export async function fetchSubscriber(fetchFn: FetchFn, id: string): Promise<Sub
   if (!response.ok) {
     throw new Error('Failed to fetch subscriber');
   }
-  return response.json();
+  return response.json() as Promise<Subscriber>;
 }
 
 /**
@@ -155,7 +155,7 @@ export async function createSubscriber(
     const error = await response.json().catch(() => ({ message: 'Failed to create subscriber' }));
     throw new Error(error.message || 'Failed to create subscriber');
   }
-  return response.json();
+  return response.json() as Promise<Subscriber>;
 }
 
 /**
@@ -175,7 +175,7 @@ export async function updateSubscriber(
     const error = await response.json().catch(() => ({ message: 'Failed to update subscriber' }));
     throw new Error(error.message || 'Failed to update subscriber');
   }
-  return response.json();
+  return response.json() as Promise<Subscriber>;
 }
 
 /**
@@ -206,5 +206,5 @@ export async function toggleSubscriber(
   if (!response.ok) {
     throw new Error('Failed to toggle subscriber');
   }
-  return response.json();
+  return response.json() as Promise<Subscriber>;
 }

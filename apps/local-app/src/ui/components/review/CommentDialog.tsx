@@ -143,7 +143,7 @@ export function CommentDialog({
     enabled: open && !!projectId,
   });
 
-  const agents = agentsData?.items ?? [];
+  const agents = useMemo(() => agentsData?.items ?? [], [agentsData]);
 
   // @ mention autocomplete
   const {

@@ -1,5 +1,5 @@
 import { lstat, opendir } from 'node:fs/promises';
-import { join, relative, isAbsolute } from 'node:path';
+import { join, relative, isAbsolute, resolve } from 'node:path';
 import type { DockerPlanSize } from './docker-plan.dto';
 
 export function within(root: string, path: string): boolean {
@@ -10,6 +10,11 @@ export function within(root: string, path: string): boolean {
       rel !== '..' &&
       !isAbsolute(rel))
   );
+}
+
+/** `within`, excluding the root itself; both sides are resolved before they are compared. */
+export function strictlyWithin(root: string, path: string): boolean {
+  return within(root, path) && resolve(path) !== resolve(root);
 }
 
 /**

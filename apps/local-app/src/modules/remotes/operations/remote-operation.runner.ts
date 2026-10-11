@@ -48,7 +48,10 @@ export const PROGRESS_PUBLISH_INTERVAL_MS = 1_000;
 @Injectable()
 export class RemoteOperationRunner implements OnApplicationBootstrap, OnApplicationShutdown {
   private readonly definitions: ReadonlyMap<RemoteOperationKind, RemoteOperationDefinition>;
+  /** Operations with a run, a retry write or a rollback in progress in this process. */
   private readonly active = new Map<string, Promise<void>>();
+  /** Rollbacks of failed operations that a cancel started; a second cancel joins them. */
+  private readonly rollbacks = new Map<string, Promise<RemoteOperation>>();
   private readonly cancelRequested = new Set<string>();
   private readonly lastPublishedAt = new Map<string, number>();
   private stopped = false;
@@ -147,14 +150,16 @@ export class RemoteOperationRunner implements OnApplicationBootstrap, OnApplicat
       });
     }
     const from = this.definition(current.kind).retryFrom?.(current) ?? null;
-    const operation = await this.persist(current, {
+    const reopened = this.persist(current, {
       state: 'running',
       // A takeover may have cancelled it since the read.
       expectedState: 'failed',
       steps: stepsFrom(current.steps, from, true),
     });
-    this.launch(id);
-    return operation;
+    // Active before the write, so a cancel during it stops the run instead of
+    // rolling back beside it.
+    this.launch(id, reopened);
+    return reopened;
   }
 
   /**
@@ -163,6 +168,8 @@ export class RemoteOperationRunner implements OnApplicationBootstrap, OnApplicat
    */
   async cancel(id: string): Promise<RemoteOperation> {
     const current = await this.storage.getRemoteOperation(id);
+    const rollingBack = this.rollbacks.get(id);
+    if (rollingBack) return rollingBack;
     if (current.state !== 'running' && current.state !== 'failed') {
       throw new ConflictError(`Operation is already ${current.state}.`, {
         code: 'REMOTE_OPERATION_FINISHED',
@@ -188,7 +195,7 @@ export class RemoteOperationRunner implements OnApplicationBootstrap, OnApplicat
       }
       return after;
     }
-    return this.rollback(current, definition);
+    return this.rollbackFailed(current, definition);
   }
 
   /**
@@ -259,8 +266,39 @@ export class RemoteOperationRunner implements OnApplicationBootstrap, OnApplicat
     return definition;
   }
 
-  private launch(id: string): void {
-    const run = this.execute(id)
+  /**
+   * Rolls back a failed operation that has no run. The rollback counts as
+   * active, so a retry or a takeover cannot start beside it.
+   */
+  private rollbackFailed(
+    operation: RemoteOperation,
+    definition: RemoteOperationDefinition,
+  ): Promise<RemoteOperation> {
+    const rollback = this.rollback(operation, definition).finally(() => {
+      this.rollbacks.delete(operation.id);
+      this.active.delete(operation.id);
+    });
+    this.rollbacks.set(operation.id, rollback);
+    this.active.set(
+      operation.id,
+      rollback.then(
+        () => undefined,
+        () => undefined,
+      ),
+    );
+    return rollback;
+  }
+
+  /** Runs the operation in the background; with `reopened`, only after that write succeeds. */
+  private launch(id: string, reopened?: Promise<unknown>): void {
+    const started = reopened
+      ? reopened.then(
+          () => this.execute(id),
+          // The retry's caller receives the write's rejection.
+          () => undefined,
+        )
+      : this.execute(id);
+    const run = started
       .catch((error: unknown) => {
         if (!this.stopped) {
           logger.error({ error, operationId: id }, 'Remote operation runner crashed');

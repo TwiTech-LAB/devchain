@@ -36,6 +36,11 @@ import type { SessionReaderAdapterFactory } from '../session-reader/adapters/ses
 import type { StorageService } from '../storage/interfaces/storage.interface';
 import type { ProviderAdapterFactory } from '../providers/adapters';
 import type { ClaudeHooksSessionStartedEventPayload } from '../events/catalog/claude.hooks.session.started';
+import type { SessionRowStore } from '../storage/sessions/session-row.store';
+
+type HookSessionStore = jest.Mocked<
+  Pick<SessionRowStore, 'getTranscriptMetadata' | 'bindTranscriptFromHook'>
+>;
 
 const PROJECT_ID = '11111111-1111-1111-1111-111111111111';
 const AGENT_ID = '22222222-2222-2222-2222-222222222222';
@@ -141,32 +146,25 @@ describe('Copilot lifecycle seam: relay → HookEventSchema → HooksService →
   let listener: TranscriptPersistenceListener;
   let listenerEvents: EventsService;
   let validator: { validateShape: jest.Mock };
-  let listenerMockGet: jest.Mock;
-  let listenerMockRun: jest.Mock;
+  let sessionStore: HookSessionStore;
 
   beforeEach(() => {
     serviceEvents = eventsStub();
     listenerEvents = eventsStub();
     service = createHooksService(serviceEvents).service;
 
-    // Listener DB: the Copilot session is already bound by Phase-1
-    // (deterministic `--session-id` bind), so the hook must confirm, not rebind.
-    listenerMockGet = jest.fn().mockReturnValue({
-      transcript_path: COPILOT_TRANSCRIPT,
-      provider_session_id: 'cp-sess-e2e-1',
-    });
-    listenerMockRun = jest.fn().mockReturnValue({ changes: 1 });
-
-    // Rebuild the listener with a DB routing to the per-test mocks above.
+    // The deterministic session-id launch bind already supplied Copilot metadata.
+    sessionStore = {
+      getTranscriptMetadata: jest.fn().mockReturnValue({
+        transcript_path: COPILOT_TRANSCRIPT,
+        provider_session_id: 'cp-sess-e2e-1',
+      }),
+      bindTranscriptFromHook: jest.fn().mockReturnValue(1),
+    };
     const db = {
       session: {
         client: {
-          prepare: jest.fn((sql: string) => {
-            if (sql.includes('UPDATE sessions')) return { run: listenerMockRun };
-            if (sql.includes('SELECT transcript_path, provider_session_id'))
-              return { get: listenerMockGet };
-            return { get: jest.fn(), run: jest.fn() };
-          }),
+          prepare: jest.fn(),
         },
       },
     };
@@ -180,6 +178,7 @@ describe('Copilot lifecycle seam: relay → HookEventSchema → HooksService →
       { getAdapter: jest.fn().mockReturnValue(null) } as unknown as SessionReaderAdapterFactory,
       {} as StorageService,
       mockProviderAdapterFactory() as unknown as ProviderAdapterFactory as never,
+      sessionStore as unknown as SessionRowStore,
     );
   });
 
@@ -210,7 +209,8 @@ describe('Copilot lifecycle seam: relay → HookEventSchema → HooksService →
     await listener.handleHookSessionStarted(published as ClaudeHooksSessionStartedEventPayload);
 
     // NEVER (re)binds and never re-discovers — Phase-1 already bound it.
-    expect(listenerMockRun).not.toHaveBeenCalled();
+    expect(sessionStore.getTranscriptMetadata).toHaveBeenCalledWith(SESSION_ID);
+    expect(sessionStore.bindTranscriptFromHook).not.toHaveBeenCalled();
     expect(validator.validateShape).not.toHaveBeenCalled();
     expect(listenerEvents.publish).not.toHaveBeenCalled();
   });
@@ -239,22 +239,21 @@ describe('Claude regression seam: the same pipeline binds the transcript FROM th
   let listener: TranscriptPersistenceListener;
   let listenerEvents: EventsService;
   let validator: { validateShape: jest.Mock };
-  let listenerMockRun: jest.Mock;
+  let sessionStore: HookSessionStore;
 
   beforeEach(() => {
     serviceEvents = eventsStub();
     listenerEvents = eventsStub();
     service = createHooksService(serviceEvents).service;
 
-    const mockRun = jest.fn().mockReturnValue({ changes: 1 });
-    listenerMockRun = mockRun;
+    sessionStore = {
+      getTranscriptMetadata: jest.fn(),
+      bindTranscriptFromHook: jest.fn().mockReturnValue(1),
+    };
     const db = {
       session: {
         client: {
-          prepare: jest.fn((sql: string) => {
-            if (sql.includes('UPDATE sessions')) return { run: mockRun };
-            return { get: jest.fn(), run: jest.fn() };
-          }),
+          prepare: jest.fn(),
         },
       },
     };
@@ -270,6 +269,7 @@ describe('Claude regression seam: the same pipeline binds the transcript FROM th
       { getAdapter: jest.fn().mockReturnValue(null) } as unknown as SessionReaderAdapterFactory,
       {} as StorageService,
       mockProviderAdapterFactory() as unknown as ProviderAdapterFactory as never,
+      sessionStore as unknown as SessionRowStore,
     );
   });
 
@@ -299,12 +299,12 @@ describe('Claude regression seam: the same pipeline binds the transcript FROM th
       CLAUDE_RELAY_SESSION_START.transcriptPath,
       'claude',
     );
-    expect(listenerMockRun).toHaveBeenCalledWith(
-      '/home/user/.claude/projects/-home-user-proj/claude-sess-e2e-1.jsonl',
-      'claude-sess-e2e-1',
-      expect.any(String), // updated_at
-      SESSION_ID,
-    );
+    expect(sessionStore.bindTranscriptFromHook).toHaveBeenCalledWith({
+      sessionId: SESSION_ID,
+      transcriptPath: '/home/user/.claude/projects/-home-user-proj/claude-sess-e2e-1.jsonl',
+      providerSessionId: 'claude-sess-e2e-1',
+      updatedAt: expect.any(String),
+    });
     expect(listenerEvents.publish).toHaveBeenCalledWith(
       'session.transcript.discovered',
       expect.objectContaining({

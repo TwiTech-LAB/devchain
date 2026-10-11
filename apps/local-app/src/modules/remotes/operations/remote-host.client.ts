@@ -64,8 +64,6 @@ import type {
   ForceCopyBackup,
   ReceiveOnlyChanges,
 } from '../../file-sync/file-sync.dto';
-import { unsupportedChown } from '../../file-sync/sync-chown.dto';
-import type { SyncChownRequest, SyncChownResult } from '../../file-sync/sync-chown.dto';
 import type {
   SyncInspectRequest,
   SyncPathInspection,
@@ -760,6 +758,10 @@ export class RemoteHostClient {
     return (await this.call(remoteId, hostRoutes.syncFolderConfiguration, { folderId })).body;
   }
 
+  async syncFolderIgnores(remoteId: string, folderId: string) {
+    return (await this.call(remoteId, hostRoutes.syncFolderIgnores, { folderId })).body;
+  }
+
   /** Stops sharing the folder on the host; a folder the host no longer has counts as removed. */
   async syncRemoveFolder(remoteId: string, folderId: string): Promise<void> {
     await this.call(remoteId, hostRoutes.syncRemoveFolder, { folderId });
@@ -808,11 +810,6 @@ export class RemoteHostClient {
 
   async syncInspect(remoteId: string, input: SyncInspectRequest): Promise<SyncPathInspection> {
     return (await this.call(remoteId, hostRoutes.syncInspect, {}, { body: input })).body;
-  }
-
-  async syncChown(remoteId: string, input: SyncChownRequest): Promise<SyncChownResult> {
-    const response = await this.call(remoteId, hostRoutes.syncChown, {}, { body: input });
-    return response.status === 404 ? unsupportedChown(null, input.items) : response.body;
   }
 
   /** Sets the host's tunnel-attestation label; keeps the phone's instance name in sync. */

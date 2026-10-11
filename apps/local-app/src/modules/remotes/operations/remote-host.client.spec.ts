@@ -57,6 +57,34 @@ afterEach(() => {
   mockPinnedTo.length = 0;
 });
 
+it.each([{}, { ignore: 'data' }, { ignore: [null] }])(
+  'rejects invalid installed-ignore response %p',
+  async (body) => {
+    stubHost(200, body);
+    await expect(makeClient().syncFolderIgnores(REMOTE.id, 'code:p1')).rejects.toBeInstanceOf(
+      RemoteHostRequestError,
+    );
+  },
+);
+
+it('reads installed ignore lines through the normal authenticated host route', async () => {
+  stubHost(200, { ignore: ['/data'], expanded: ['/data', '/data/**'] });
+  const client = new RemoteHostClient(
+    { getRemote: async () => REMOTE } as never,
+    { get: async () => 'vm-api-key' } as never,
+  );
+  await expect(client.syncFolderIgnores(REMOTE.id, 'code:p1')).resolves.toEqual({
+    ignore: ['/data'],
+  });
+  expect(global.fetch).toHaveBeenCalledWith(
+    `${REMOTE.baseUrl}/api/host/sync/folders/code%3Ap1/ignores`,
+    expect.objectContaining({
+      method: 'GET',
+      headers: expect.objectContaining({ authorization: 'Bearer vm-api-key' }),
+    }),
+  );
+});
+
 it.each(['ubuntu', null])('parses the runtime claim identity with holder %p', async (holder) => {
   const body = {
     uid: 1001,
@@ -92,29 +120,6 @@ it('posts public keys to the claimed host with its VM API key', async () => {
     body: JSON.stringify({ keys: ['public-key'] }),
     signal: expect.any(AbortSignal),
   });
-});
-
-it.each([200, 404])('posts owner repairs and handles a host response of %s', async (status) => {
-  const input = {
-    root: '/home/alice/project',
-    items: [{ path: 'source.ts', mode: 'automatic' as const }],
-  };
-  const body = {
-    user: { uid: 1001, name: 'alice' },
-    items: [{ path: 'source.ts', state: 'repaired', paths: ['source.ts'] }],
-  };
-  const fetchMock = jest.fn(async () => new Response(JSON.stringify(body), { status }));
-  global.fetch = fetchMock as typeof fetch;
-  const result = await makeClient().syncChown(REMOTE.id, input);
-  expect(fetchMock).toHaveBeenCalledWith(
-    `${REMOTE.baseUrl}/api/host/sync/chown`,
-    expect.objectContaining({ method: 'POST', body: JSON.stringify(input) }),
-  );
-  expect(result.items[0]).toMatchObject({
-    path: 'source.ts',
-    state: status === 200 ? 'repaired' : 'unsupported',
-  });
-  if (status === 404) expect(result.items[0].reason).toContain('copy command');
 });
 
 describe('RemoteHostClient.freeze', () => {

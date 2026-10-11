@@ -174,7 +174,7 @@ describe('AddVmDialog', () => {
       const onCreate = renderDialog();
       await userEvent.type(screen.getByLabelText('Name'), 'custom');
       await userEvent.click(screen.getByRole('button', { name: /^Custom/ }));
-      const memory = screen.getByLabelText('Memory (MiB)');
+      const memory = screen.getByRole('spinbutton', { name: 'Memory (MiB)' });
       await userEvent.clear(memory);
       await userEvent.type(memory, '2048');
       expect(screen.getByText('Memory must be at least 4096 MiB.')).toBeInTheDocument();
@@ -182,7 +182,7 @@ describe('AddVmDialog', () => {
 
       await userEvent.clear(memory);
       await userEvent.type(memory, '6144');
-      const cores = screen.getByLabelText('Cores');
+      const cores = screen.getByRole('spinbutton', { name: 'Cores' });
       await userEvent.clear(cores);
       await userEvent.type(cores, '3');
       await next();
@@ -191,6 +191,29 @@ describe('AddVmDialog', () => {
 
       expect(onCreate).toHaveBeenCalledWith(
         expect.objectContaining({ cores: 3, memory: 6144, disk: 30 }),
+      );
+    });
+
+    it('keeps the slider and the typed value in step', async () => {
+      const onCreate = renderDialog();
+      await userEvent.type(screen.getByLabelText('Name'), 'custom');
+      await userEvent.click(screen.getByRole('button', { name: /^Custom/ }));
+      fireEvent.keyDown(screen.getByRole('slider', { name: 'Memory (MiB)' }), {
+        key: 'ArrowRight',
+      });
+      expect(screen.getByRole('spinbutton', { name: 'Memory (MiB)' })).toHaveValue(5120);
+
+      // A typed value above the slider range is kept; the slider stops at its end.
+      const cores = screen.getByRole('spinbutton', { name: 'Cores' });
+      await userEvent.clear(cores);
+      await userEvent.type(cores, '48');
+      expect(screen.getByRole('slider', { name: 'Cores' })).toHaveAttribute('aria-valuenow', '32');
+      await next();
+      await next();
+      await create();
+
+      expect(onCreate).toHaveBeenCalledWith(
+        expect.objectContaining({ cores: 48, memory: 5120, disk: 30 }),
       );
     });
 

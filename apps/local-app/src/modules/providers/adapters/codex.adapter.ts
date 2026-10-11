@@ -18,7 +18,7 @@ import type {
   ProvisioningResult,
 } from './capabilities';
 import type { ProviderPluginCatalogEntry } from '../dtos/provider-plugin.dto';
-import { ensureCodexProjectTrusted } from '../../sessions/utils/codex-config';
+import { ensureCodexProjectTrusted } from '../utils/codex-config';
 import {
   optionalBoolean,
   optionalString,

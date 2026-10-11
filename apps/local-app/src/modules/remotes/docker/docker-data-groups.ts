@@ -1,10 +1,7 @@
 import { createHash } from 'node:crypto';
 import type { DockerDataGroupRecord } from '../operations/docker-import-inventory.store';
-import {
-  DOCKER_PROJECT_LABEL,
-  type DockerHolderMetadata,
-  type DockerScanResult,
-} from '../host/host-docker.dto';
+import { type DockerHolderMetadata, type DockerScanResult } from '../host/host-docker.dto';
+import { projectVolume } from './docker-project-resources';
 import { potentialDataMounts } from './docker-plan-fit';
 import { within } from './docker-plan-files';
 import {
@@ -66,15 +63,20 @@ export function supersedeGroupRecords(
   ];
 }
 
-/** The members the VM holds for the project: its labelled volumes and existing folders. */
+/** The members the VM holds for the project: associated volumes and existing folders. */
 export function presentOnVm(
   members: DockerDataMembers,
   vm: DockerScanResult,
   projectId: string,
+  projectRoot?: string,
 ): DockerDataMembers {
   return {
     volumes: members.volumes.filter((name) =>
-      vm.volumes.some((v) => v.name === name && v.labels[DOCKER_PROJECT_LABEL] === projectId),
+      vm.volumes.some(
+        (v) =>
+          v.name === name &&
+          projectVolume(v.labels, vm.containers, projectRoot, projectId, vm.volumes),
+      ),
     ),
     bindPaths: members.bindPaths.filter((path) =>
       vm.paths.some((p) => p.path === path && 'exists' in p && p.exists),
@@ -99,8 +101,13 @@ export function usedAfter(
   );
 }
 
-export function groupDockerData(items: DockerPlanItem[], root: string): DockerDataGroup[] {
-  const members = items
+export function groupDockerData(
+  items: Array<Pick<DockerPlanItem, 'id' | 'mounts' | 'temporary'>>,
+  root: string,
+  recorded: DockerDataMembers[] = [],
+  consumers: DockerDataMembers[] = [],
+): DockerDataGroup[] {
+  const members: DockerDataGroup[] = items
     .map((item) => {
       // Decisions need the potential data even when the current choice omits its copy.
       const mounts = potentialDataMounts(item, root);
@@ -110,7 +117,22 @@ export function groupDockerData(items: DockerPlanItem[], root: string): DockerDa
         bindPaths: mounts.filter((m) => !isVolumeMount(m.kind)).map((m) => m.source),
       };
     })
+    .concat(recorded.map((group) => ({ ...group, itemIds: [] })))
     .filter((m) => m.volumes.length || m.bindPaths.length);
+  const addedConsumers = new Set<DockerDataMembers>();
+  for (const member of members)
+    for (const consumer of consumers)
+      if (!addedConsumers.has(consumer) && overlapsData(member, consumer)) {
+        addedConsumers.add(consumer);
+        // A broader holder bind can join data folders without turning its code or host root into data.
+        members.push({
+          volumes: consumer.volumes,
+          bindPaths: [...new Set(members.flatMap((entry) => entry.bindPaths))].filter((path) =>
+            overlapsData({ volumes: [], bindPaths: [path] }, consumer),
+          ),
+          itemIds: [],
+        });
+      }
   const groups: DockerDataGroup[] = [];
   const visited = new Set<DockerDataGroup>();
   for (const member of members) {
@@ -153,6 +175,7 @@ export function checkDockerDataGroup(
   home: DockerDataHolder[] | null,
   vm: DockerScanResult | null,
   projectId: string,
+  projectRoot?: string,
 ): DockerDataGroupCheck {
   const present: DockerDataMembers = {
     volumes: group.volumes.filter((name) => !vm || vm.volumes.some((v) => v.name === name)),
@@ -200,7 +223,8 @@ export function checkDockerDataGroup(
       combine(...relevant.map((r) => baseline(r, 'vmDiscardedAt'))),
     );
     // A resource the VM does not hold for the project counts as changed there.
-    vmChanged ||= !vm || !sameDataGroup(presentOnVm(resource, vm, projectId), resource);
+    vmChanged ||=
+      !vm || !sameDataGroup(presentOnVm(resource, vm, projectId, projectRoot), resource);
   }
   return { ...group, state: dataState(unknown, homeChanged, vmChanged) };
 }

@@ -6,81 +6,58 @@ import { ConnectDockerSection, NO_DOCKER_STATE } from './ConnectDockerSection';
 
 jest.mock('@/ui/lib/api-transport', () => ({ HOME_BACKEND: 'home', apiFetch: jest.fn() }));
 
-it.each([
-  { holder: 'ubuntu', managedVm: false },
-  { holder: null, managedVm: false },
-  { holder: 'ubuntu', managedVm: true },
-])(
-  'explains the unavailable automatic move with holder $holder, managed VM $managedVm',
-  async ({ holder, managedVm }) => {
-    const plan: DockerPlan = {
-      projectId: 'p1',
-      remoteId: 'r1',
-      scannedAt: '',
-      availability: {
-        available: false,
-        side: 'remote',
-        reason: { code: 'vm-user-mismatch', message: 'The user ids differ.' },
-        userMismatch: {
-          homeUid: 1000,
-          homeGid: 1000,
-          vmUid: 1001,
-          vmGid: 1000,
-          uidConflict: { requestedUid: 1000, holder },
-        },
+it('explains unknown user ids without advising account removal', async () => {
+  const plan: DockerPlan = {
+    projectId: 'p1',
+    remoteId: 'r1',
+    scannedAt: '',
+    availability: {
+      available: false,
+      side: 'remote',
+      reason: { code: 'vm-user-mismatch', message: 'Old VM-wide warning' },
+      userMismatch: {
+        homeUid: 1000,
+        homeGid: 1000,
+        vmUid: null,
+        vmGid: null,
+        uidConflict: { requestedUid: 1000, holder: 'ubuntu' },
       },
-      apiVersion: null,
-      items: [],
-      filesystems: [],
-      copySize: { bytes: 0, unknown: false },
-      fit: 'unknown',
-      canConnect: false,
-      warnings: [],
-      managedExclusions: [],
-      codePaths: [],
-      reconnect: null,
-      estimate: null,
-    };
-    jest.mocked(apiFetch).mockResolvedValue({ ok: true, json: async () => plan } as Response);
-    const onStateChange = jest.fn();
-    render(
-      <ConnectDockerSection
-        projectId="p1"
-        presence="present"
-        remoteId="r1"
-        disabled={false}
-        initialIncludeDocker
-        managedVm={managedVm}
-        onStateChange={onStateChange}
-      />,
-    );
-
-    const note = await screen.findByRole('note', { name: 'Docker availability' });
-    expect(note).toHaveTextContent('Automatic Docker move is off for this VM.');
-    expect(note).toHaveTextContent(
-      'Connect, file sync and agents work as usual. Only the automatic move of containers and their data needs the same user ids on this PC and the VM: here 1000:1000 and 1001:1000.',
-    );
-    expect(note).toHaveTextContent(
-      'You can still move what you need yourself, for example with docker save and docker load for images, and a volume export and import for data.',
-    );
-    if (holder) expect(note).toHaveTextContent('(uid 1000 belongs to ubuntu on the VM)');
-    else expect(note).not.toHaveTextContent('belongs to');
-    if (holder && !managedVm)
-      expect(note).toHaveTextContent(
-        'To turn it on, set up the VM from another account and remove ubuntu, or use a VM where uid 1000 is free.',
-      );
-    else expect(note).not.toHaveTextContent('To turn it on');
-    await waitFor(() =>
-      expect(onStateChange).toHaveBeenLastCalledWith(
-        expect.objectContaining({
-          items: [],
-          ready: false,
-          pending: false,
-        }),
-      ),
-    );
-  },
-);
+    },
+    apiVersion: null,
+    items: [],
+    filesystems: [],
+    copySize: { bytes: 0, unknown: false },
+    fit: 'unknown',
+    canConnect: false,
+    warnings: [],
+    managedExclusions: [],
+    codePaths: [],
+    reconnect: null,
+    estimate: null,
+  };
+  jest.mocked(apiFetch).mockResolvedValue({ ok: true, json: async () => plan } as Response);
+  const onStateChange = jest.fn();
+  render(
+    <ConnectDockerSection
+      projectId="p1"
+      presence="present"
+      remoteId="r1"
+      disabled={false}
+      initialIncludeDocker
+      onStateChange={onStateChange}
+    />,
+  );
+  const note = await screen.findByRole('note', { name: 'Docker availability' });
+  expect(note).toHaveTextContent(
+    'Docker cannot determine the user ids on this PC and the VM. Refresh the VM information and try again.',
+  );
+  expect(note).not.toHaveTextContent('remove ubuntu');
+  await waitFor(() =>
+    expect(onStateChange).toHaveBeenLastCalledWith(
+      expect.objectContaining({ items: [], ready: false, pending: false }),
+    ),
+  );
+});
 
 it.each([
   { presence: 'absent', initialIncludeDocker: false, visible: false, pending: false },

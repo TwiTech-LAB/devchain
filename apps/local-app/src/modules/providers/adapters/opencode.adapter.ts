@@ -10,7 +10,7 @@ import type {
 } from './provider-adapter.interface';
 import type { EffortCapability } from './capabilities';
 import { ValidationError } from '../../../common/errors/error-types';
-import { EnvBuilderError } from '../../sessions/utils/env-builder';
+import { EnvBuilderError } from '../utils/env-builder';
 
 /** Env var opencode reads as a per-process JSON config overlay (highest layer). */
 const OPENCODE_CONFIG_CONTENT_ENV = 'OPENCODE_CONFIG_CONTENT';

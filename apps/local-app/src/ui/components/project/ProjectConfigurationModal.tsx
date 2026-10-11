@@ -49,20 +49,13 @@ import { cn } from '@/ui/lib/utils';
 import { useFetchFactory, useHomeFetch } from '@/ui/hooks/useFetchFactory';
 import { validatePresetAvailability } from '@/ui/lib/preset-validation';
 import type { Preset } from '@/ui/lib/preset-types';
-import { providersQueryKeys } from '@/ui/lib/providers-query-keys';
+import { providersQueryKeys, fetchProviders } from '@/ui/lib/providers-query-keys';
 import { HOME_BACKEND, apiFetch as apiFetchTransport } from '@/ui/lib/api-transport';
-import type { FetchFn } from '@/ui/lib/api-transport';
 
 interface ProjectConfigurationModalProps {
   projectId: string;
   open: boolean;
   onOpenChange: (open: boolean) => void;
-}
-
-async function fetchProviders(fetchFn: FetchFn) {
-  const res = await fetchFn('/api/providers');
-  if (!res.ok) throw new Error('Failed to fetch providers');
-  return res.json();
 }
 
 async function applyPreset(
@@ -79,7 +72,7 @@ async function applyPreset(
     { backend: HOME_BACKEND },
   );
   if (!res.ok) throw new Error('Failed to apply preset');
-  return res.json();
+  return res.json() as Promise<{ applied: number; warnings: string[]; agents: Agent[] }>;
 }
 
 export function ProjectConfigurationModal({
@@ -136,7 +129,7 @@ export function ProjectConfigurationModal({
     if (open && projectId) {
       fetchAgentPresence(projectId, apiFetch).then(setPresence).catch(console.error);
     }
-  }, [open, projectId]);
+  }, [apiFetch, open, projectId]);
 
   // Fetch provider configs for all unique profileIds used by agents
   useEffect(() => {
@@ -255,8 +248,8 @@ export function ProjectConfigurationModal({
 
   const isLoading =
     agentsLoading || profilesLoading || providersLoading || configsLoading || presetsLoading;
-  const agents: Agent[] = agentsData?.items || [];
-  const presets: Preset[] = presetsData?.presets || [];
+  const agents: Agent[] = useMemo(() => agentsData?.items || [], [agentsData]);
+  const presets: Preset[] = useMemo(() => presetsData?.presets || [], [presetsData]);
   const hasPresets = presets.length > 0;
 
   // Validate preset availability and sort (green first, then by name)

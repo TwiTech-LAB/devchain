@@ -1,4 +1,4 @@
-import { providersQueryKeys } from './providers-query-keys';
+import { providersQueryKeys, fetchProviders } from './providers-query-keys';
 
 describe('providersQueryKeys', () => {
   describe('list', () => {
@@ -42,5 +42,27 @@ describe('providersQueryKeys', () => {
       expect(scoped.slice(0, broad.length)).toEqual(broad);
       expect(providersQueryKeys.preflight().slice(0, broad.length)).toEqual(broad);
     });
+  });
+});
+
+// Fetcher unit tests check the transport/error contract without rendering its consumers.
+describe('fetchProviders', () => {
+  it('returns the list including envScopes using the supplied fetcher', async () => {
+    const payload = {
+      items: [{ id: 'provider-1', envScopes: { TOKEN: ['project-1'] } }],
+      total: 1,
+    };
+    const fetchFn = jest.fn().mockResolvedValue({ ok: true, json: async () => payload });
+    await expect(fetchProviders(fetchFn)).resolves.toEqual(payload);
+    expect(fetchFn).toHaveBeenCalledWith('/api/providers');
+  });
+
+  it('throws the fixed plain Error without reading the error body', async () => {
+    const json = jest.fn();
+    const fetchFn = jest.fn().mockResolvedValue({ ok: false, status: 500, json });
+    const error = await fetchProviders(fetchFn).catch((e) => e);
+    expect(error.constructor).toBe(Error);
+    expect(error.message).toBe('Failed to fetch providers');
+    expect(json).not.toHaveBeenCalled();
   });
 });

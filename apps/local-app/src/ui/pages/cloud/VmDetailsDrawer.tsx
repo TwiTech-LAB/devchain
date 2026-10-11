@@ -17,7 +17,7 @@ import { Label } from '@/ui/components/ui/label';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/ui/components/ui/tabs';
 import { Spinner } from '@/ui/components/ui/spinner';
 import type { ProviderAuthEntryItem, RemoteOperationDto } from './lib/remote-vm-contracts';
-import { vmUserWarning } from '@/modules/remotes/vm-user-identity';
+import { userIds } from '@/modules/remotes/vm-user-identity';
 import { getErrorMessage } from '@/ui/lib/toast-helpers';
 import { ActivityGroup } from './ActivityDialog';
 import { LOGIN_PROVIDERS, providerName } from './login-choices';
@@ -248,6 +248,7 @@ function Overview({
   onMenu: (key: VmMenuKey) => void;
 }) {
   const spec = remote.kind === 'proxmox' ? remote.vmSpec : null;
+  const mismatch = remote.dockerUserMismatch;
   return (
     <div className="space-y-4 text-sm">
       <dl className="space-y-2">
@@ -294,9 +295,12 @@ function Overview({
         </Fact>
         <Fact label="Last seen">{seenFact(remote)}</Fact>
       </dl>
-      {remote.dockerUserMismatch && (
+      {mismatch && (
         <p role="note" aria-label="Docker user ids" className="text-muted-foreground">
-          {vmUserWarning(remote.dockerUserMismatch)}
+          This PC: {userIds(mismatch.homeUid, mismatch.homeGid)}. VM:{' '}
+          {userIds(mismatch.vmUid, mismatch.vmGid)}.
+          {mismatch.uidConflict?.holder &&
+            ` uid ${mismatch.uidConflict.requestedUid} is used by ${mismatch.uidConflict.holder} on the VM.`}
         </p>
       )}
       {vmReachable(remote) && <RemoteMetricsStrip remoteId={remote.id} remoteName={remote.name} />}

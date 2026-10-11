@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Card, CardHeader, CardTitle, CardContent } from '@/ui/components/ui/card';
 import { Badge, OpaqueBadge } from '@/ui/components/ui/badge';
@@ -51,7 +51,7 @@ async function fetchTemplates(): Promise<TemplatesResponse> {
   if (!res.ok) {
     throw new Error('Failed to fetch templates');
   }
-  return res.json();
+  return res.json() as Promise<TemplatesResponse>;
 }
 
 /**
@@ -417,7 +417,7 @@ export function DownloadedTemplates() {
   };
 
   // Show all templates (bundled + downloaded from registry)
-  const installedTemplates = data?.templates || [];
+  const installedTemplates = useMemo(() => data?.templates || [], [data]);
 
   // Check for updates when templates change
   useEffect(() => {
@@ -437,7 +437,7 @@ export function DownloadedTemplates() {
     };
 
     checkUpdates();
-  }, [data]); // Re-run when templates data changes
+  }, [installedTemplates]); // Re-run when the installed templates change
 
   if (isLoading) {
     return (

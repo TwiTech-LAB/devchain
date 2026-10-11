@@ -5,7 +5,10 @@ import { resolve, join } from 'path';
 import { CodexPluginProfileMaterializerService } from './codex-plugin-profile-materializer.service';
 
 const codexVersion = spawnSync('codex', ['--version'], { encoding: 'utf8' });
-const codexVersionMatch = /^codex-cli (\d+)\.(\d+)\.(\d+)$/.exec(codexVersion.stdout.trim());
+// stdout is null when codex is not installed.
+const codexVersionMatch = /^codex-cli (\d+)\.(\d+)\.(\d+)$/.exec(
+  (codexVersion.stdout ?? '').trim(),
+);
 const codexVersionAtLeast0147 =
   codexVersion.status === 0 &&
   codexVersionMatch !== null &&

@@ -384,13 +384,14 @@ export function SubscriberDialog({ open, onOpenChange, subscriber }: SubscriberD
         return next;
       });
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- Sanitize only when the action contract changes; editing inputs must not re-sanitize the form.
   }, [open, formData.actionType, selectedAction]);
 
   // Metadata loads async; clear a stored enabled retry once the selected action is
   // known to be non-retryable so it can never be saved back.
   useEffect(() => {
     if (!open || !retryDisabled || !formData.retryOnError) return;
-    updateField('retryOnError', false);
+    setFormData((prev) => ({ ...prev, retryOnError: false }));
   }, [open, retryDisabled, formData.retryOnError]);
 
   // Clear invalid eventField selections when event changes

@@ -16,7 +16,7 @@ export function useRelationTargetFacts(targetId: string | null) {
     queryFn: async ({ signal }): Promise<{ parentId: string | null; projectId: string }> => {
       const res = await apiFetch(`/api/epics/${encodeURIComponent(targetId!)}`, { signal });
       if (!res.ok) throw new Error('The linked Epic could not be loaded.');
-      return res.json();
+      return res.json() as Promise<{ parentId: string | null; projectId: string }>;
     },
     enabled: targetId !== null,
     staleTime: 60_000,

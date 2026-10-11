@@ -1,3 +1,4 @@
+import { SessionRowStore } from '../../../storage/sessions/session-row.store';
 import { Injectable, Inject } from '@nestjs/common';
 import type Database from 'better-sqlite3';
 import { BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
@@ -72,6 +73,7 @@ export class SessionRestorePipeline {
     private readonly providerRuntimePreparation: ProviderRuntimePreparationService,
     private readonly preflightService: PreflightService,
     private readonly mcpEnsureService: ProviderMcpEnsureService,
+    private readonly sessionRows: SessionRowStore,
   ) {
     this.sqlite = getRawSqliteClient(db);
   }
@@ -182,24 +184,15 @@ export class SessionRestorePipeline {
 
         // Phase 6: flipToRunning (BEFORE createTmuxSession)
         const now = new Date().toISOString();
-        this.sqlite
-          .prepare(
-            `UPDATE sessions SET status = 'running', tmux_session_id = ?, ended_at = NULL,
-             last_activity_at = ?, updated_at = ? WHERE id = ?`,
-          )
-          .run(tmuxSessionName, now, now, locked.id);
+        this.sessionRows.restoreRunning(locked.id, tmuxSessionName, now);
         cleanup.push('flipToRunning', async () => {
-          this.sqlite
-            .prepare(
-              `UPDATE sessions SET status = ?, ended_at = ?, tmux_session_id = ?, updated_at = ? WHERE id = ?`,
-            )
-            .run(
-              prior.status,
-              prior.ended_at,
-              prior.tmux_session_id,
-              new Date().toISOString(),
-              locked.id,
-            );
+          this.sessionRows.rollbackRestore(
+            locked.id,
+            prior.status,
+            prior.ended_at,
+            prior.tmux_session_id,
+            new Date().toISOString(),
+          );
         });
         const providerRuntime =
           await this.providerRuntimePreparation.materialize(providerRuntimePlan);

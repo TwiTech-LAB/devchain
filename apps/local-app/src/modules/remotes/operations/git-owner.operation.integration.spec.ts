@@ -179,6 +179,7 @@ describe('persisted Git switches', () => {
       { get: () => ({ enabled: false }) } as never,
       {} as never,
       owners,
+      {} as never,
     );
     live = new RemoteLiveSyncService(
       healthPort as never,

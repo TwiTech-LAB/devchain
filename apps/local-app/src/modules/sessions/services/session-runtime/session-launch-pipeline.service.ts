@@ -1,3 +1,4 @@
+import { SessionRowStore } from '../../../storage/sessions/session-row.store';
 import { Injectable, Inject } from '@nestjs/common';
 import { randomUUID } from 'crypto';
 import { PROCESS_BOOT_ID } from '../../../../common/process-identity';
@@ -32,6 +33,7 @@ import {
   isProjectProvisioningCapable,
 } from '../../../providers/adapters/capabilities';
 import { TerminalIOService } from '../../../terminal/services/terminal-io/terminal-io.service';
+import { ShellForegroundError } from '../../../terminal/services/terminal-io/delivery';
 
 import { PtyService } from '../../../terminal/services/pty.service';
 import { TerminalSessionRegistry } from '../../../terminal/services/terminal-session/terminal-session-registry';
@@ -82,6 +84,7 @@ export class SessionLaunchPipeline {
     private readonly teamsStore: TeamsStore,
     private readonly sessionTerminalRuntime: SessionTerminalRuntimeService,
     private readonly providerRuntimePreparation: ProviderRuntimePreparationService,
+    private readonly sessionRows: SessionRowStore,
   ) {
     this.sqlite = getRawSqliteClient(db);
   }
@@ -169,7 +172,7 @@ export class SessionLaunchPipeline {
         await this.setupHooksConfig(provider, project.rootPath);
 
         // Phase 7: createSession (SQLite write)
-        this.createSessionRow(
+        this.sessionRows.insertSession(
           sessionId,
           epicId ?? null,
           agentId,
@@ -178,9 +181,7 @@ export class SessionLaunchPipeline {
           now,
         );
         cleanup.push('createSession', async () => {
-          this.sqlite
-            .prepare('UPDATE sessions SET status = ?, ended_at = ?, updated_at = ? WHERE id = ?')
-            .run('failed', new Date().toISOString(), new Date().toISOString(), sessionId);
+          this.sessionRows.markLaunchFailed(sessionId!, new Date().toISOString());
         });
         const providerRuntime =
           await this.providerRuntimePreparation.materialize(providerRuntimePlan);
@@ -345,9 +346,7 @@ export class SessionLaunchPipeline {
     }
 
     // Orphaned session — mark as stopped
-    this.sqlite
-      .prepare(`UPDATE sessions SET status = 'stopped', ended_at = ?, updated_at = ? WHERE id = ?`)
-      .run(new Date().toISOString(), new Date().toISOString(), row.id);
+    this.sessionRows.stopOrphan(row.id as string, new Date().toISOString());
     await this.sessionTerminalRuntime.releaseProviderArtifacts(row.id as string);
 
     return null;
@@ -516,32 +515,6 @@ export class SessionLaunchPipeline {
     return this.hooksConfigService;
   }
 
-  private createSessionRow(
-    sessionId: string,
-    epicId: string | null,
-    agentId: string,
-    tmuxSessionName: string,
-    providerName: string,
-    now: string,
-  ): void {
-    this.sqlite
-      .prepare(
-        `INSERT INTO sessions (id, epic_id, agent_id, tmux_session_id, status, started_at, provider_name_at_launch, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      )
-      .run(
-        sessionId,
-        epicId,
-        agentId,
-        tmuxSessionName,
-        'running',
-        now,
-        providerName.toLowerCase(),
-        now,
-        now,
-      );
-  }
-
   private async launchCliAndPastePrompt(
     sessionId: string,
     tmuxSessionName: string,
@@ -579,10 +552,13 @@ export class SessionLaunchPipeline {
     // bracketed paste). Either way the fragile post-launch paste is skipped.
     if (context.seedMode) {
       if (context.seedMode === 'stdin' && context.seededPrompt) {
-        await this.terminalIO.deliverImmediate({ name: tmuxSessionName }, context.seededPrompt, {
-          bracketed: false,
-          confirm: false,
-        });
+        const seededPrompt = context.seededPrompt;
+        await this.keepSessionOnShellRefusal(sessionId, tmuxSessionName, () =>
+          this.terminalIO.deliverImmediate({ name: tmuxSessionName }, seededPrompt, {
+            bracketed: false,
+            confirm: false,
+          }),
+        );
       }
       return;
     }
@@ -682,12 +658,34 @@ export class SessionLaunchPipeline {
     const behavior = this.providerAdapterFactory.getAdapter(
       params.provider.name,
     ).runtimePromptBehavior;
-    await this.terminalIO.deliver({ name: params.tmuxSessionName }, rendered, {
-      agentId: params.agentId,
-      preKeys: params.launchHandshake?.preKeys,
-      preDelayMs: params.launchHandshake?.preDelayMs,
-      followNote: behavior?.followNote === true,
-    });
+    await this.keepSessionOnShellRefusal(params.sessionId, params.tmuxSessionName, () =>
+      this.terminalIO.deliver({ name: params.tmuxSessionName }, rendered, {
+        agentId: params.agentId,
+        preKeys: params.launchHandshake?.preKeys,
+        preDelayMs: params.launchHandshake?.preDelayMs,
+        followNote: behavior?.followNote === true,
+      }),
+    );
+  }
+
+  /**
+   * A refused initial prompt leaves the session running, so the pane keeps the
+   * CLI's own startup output instead of a launch rollback destroying it.
+   */
+  private async keepSessionOnShellRefusal(
+    sessionId: string,
+    tmuxSessionName: string,
+    deliverPrompt: () => Promise<unknown>,
+  ): Promise<void> {
+    try {
+      await deliverPrompt();
+    } catch (error) {
+      if (!(error instanceof ShellForegroundError)) throw error;
+      logger.warn(
+        { sessionId, tmuxSessionName, error: error.message },
+        'Initial prompt refused; keeping session running and terminal pane available',
+      );
+    }
   }
 
   private buildSessionDetail(

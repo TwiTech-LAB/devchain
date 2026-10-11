@@ -1,7 +1,8 @@
+import { SessionRowStore } from '../../storage/sessions/session-row.store';
+import { OnCatalogEvent } from '../../events/catalog/on-catalog-event';
 import {
   Injectable,
   Inject,
-  forwardRef,
   OnApplicationBootstrap,
   OnModuleDestroy,
   Optional,
@@ -23,7 +24,7 @@ import {
   SESSION_TURN_HOOK_SIGNAL,
   type SessionTranscriptTurnSignal,
   type SessionTurnHookSignal,
-} from './session-turn-signals';
+} from '../../events/signals/session-turn-signals';
 
 const logger = createLogger('TerminalActivityService');
 
@@ -72,8 +73,8 @@ export class TerminalActivityService implements OnApplicationBootstrap, OnModule
     @Inject(DB_CONNECTION) db: BetterSQLite3Database,
     private readonly eventEmitter: EventEmitter2,
     private readonly settingsService: SettingsService,
-    @Inject(forwardRef(() => TerminalSessionRegistry))
     private readonly registry: TerminalSessionRegistry,
+    private readonly sessionRows: SessionRowStore,
     @Optional() private readonly pendingQuestions?: PendingAskUserQuestionService,
   ) {
     this.sqlite = getRawSqliteClient(db);
@@ -119,7 +120,7 @@ export class TerminalActivityService implements OnApplicationBootstrap, OnModule
    * new value takes effect without a restart. Re-reading on every sync is
    * idempotent when the value did not change.
    */
-  @OnEvent('remote.project.synced', { async: true })
+  @OnCatalogEvent('remote.project.synced', { async: true })
   handleRemoteProjectSynced(): void {
     this.refreshIdleTimeout();
   }
@@ -403,12 +404,7 @@ export class TerminalActivityService implements OnApplicationBootstrap, OnModule
       return;
     }
     const now = new Date().toISOString();
-    this.sqlite
-      .prepare(
-        `UPDATE sessions SET activity_state = 'busy', busy_since = ?, last_activity_at = ?,
-                updated_at = ? WHERE id = ?`,
-      )
-      .run(now, now, now, sessionId);
+    this.sessionRows.markBusy(sessionId, now);
     this.eventEmitter.emit('session.activity.changed', {
       sessionId,
       state: 'busy',
@@ -475,9 +471,7 @@ export class TerminalActivityService implements OnApplicationBootstrap, OnModule
   /** Agent time reads `last_activity_at`; a busy session's activity moves it forward. */
   private stampLastActivity(sessionId: string): void {
     const now = new Date().toISOString();
-    this.sqlite
-      .prepare(`UPDATE sessions SET last_activity_at = ?, updated_at = ? WHERE id = ?`)
-      .run(now, now, sessionId);
+    this.sessionRows.stampLastActivity(sessionId, now);
   }
 
   private clearTimer(timers: Map<string, NodeJS.Timeout>, sessionId: string): void {
@@ -502,16 +496,9 @@ export class TerminalActivityService implements OnApplicationBootstrap, OnModule
 
     const now = new Date().toISOString();
     if (stampActivity) {
-      this.sqlite
-        .prepare(
-          `UPDATE sessions SET activity_state = 'idle', last_activity_at = ?, updated_at = ?
-            WHERE id = ?`,
-        )
-        .run(now, now, sessionId);
+      this.sessionRows.markIdleWithActivity(sessionId, now);
     } else {
-      this.sqlite
-        .prepare(`UPDATE sessions SET activity_state = 'idle', updated_at = ? WHERE id = ?`)
-        .run(now, sessionId);
+      this.sessionRows.markIdle(sessionId, now);
     }
     this.eventEmitter.emit('session.activity.changed', {
       sessionId,

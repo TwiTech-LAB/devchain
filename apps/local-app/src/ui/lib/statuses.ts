@@ -2,7 +2,7 @@ import { queryOptions } from '@tanstack/react-query';
 import type { Status } from '@/modules/storage/models/domain.models';
 import type { ListResult } from '@/modules/storage/interfaces/storage.interface';
 import type { FetchFn } from './api-transport';
-import { fetchJsonOrThrow } from './sessions';
+import { fetchJsonOrThrow } from './http-json';
 
 export type { Status };
 

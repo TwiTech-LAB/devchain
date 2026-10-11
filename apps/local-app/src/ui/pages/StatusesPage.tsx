@@ -1,3 +1,4 @@
+import type { StatusesController } from '@/modules/statuses/controllers/statuses.controller';
 import { useState, useMemo, useCallback, useRef, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { settingsQueries, settingsQueryKeys } from '@/ui/lib/settings';
@@ -64,7 +65,7 @@ async function createStatus(
     const error = await res.json().catch(() => ({ message: 'Failed to create status' }));
     throw new Error(error.message || 'Failed to create status');
   }
-  return res.json();
+  return res.json() as Promise<Awaited<ReturnType<StatusesController['createStatus']>>>;
 }
 
 async function updateStatus(fetchFn: FetchFn, id: string, data: Partial<Status>) {
@@ -77,7 +78,7 @@ async function updateStatus(fetchFn: FetchFn, id: string, data: Partial<Status>)
     const error = await res.json().catch(() => ({ message: 'Failed to update status' }));
     throw new Error(error.message || 'Failed to update status');
   }
-  return res.json();
+  return res.json() as Promise<Awaited<ReturnType<StatusesController['updateStatus']>>>;
 }
 
 async function deleteStatus(fetchFn: FetchFn, id: string) {
@@ -98,7 +99,7 @@ async function reorderStatuses(fetchFn: FetchFn, projectId: string, statusIds: s
     const error = await res.json().catch(() => ({ message: 'Failed to reorder statuses' }));
     throw new Error(error.message || 'Failed to reorder statuses');
   }
-  return res.json();
+  return res.json() as Promise<Awaited<ReturnType<StatusesController['reorderStatuses']>>>;
 }
 
 async function updateAutoCleanStatusIds(
@@ -117,7 +118,7 @@ async function updateAutoCleanStatusIds(
       .catch(() => ({ message: 'Failed to update auto-clean settings' }));
     throw new Error(error.message || 'Failed to update auto-clean settings');
   }
-  return res.json();
+  return res.json() as Promise<{ statusIds: string[] }>;
 }
 
 // Status List with Drag-and-Drop

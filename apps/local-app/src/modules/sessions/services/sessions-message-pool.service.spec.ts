@@ -18,6 +18,7 @@ import type { SessionsService } from './sessions.service';
 import type { SessionCoordinatorService } from './session-coordinator.service';
 import type { MessageActivityStreamService } from './message-activity-stream.service';
 import type { TerminalIOService } from '../../terminal/services/terminal-io/terminal-io.service';
+import { ShellForegroundError } from '../../terminal/services/terminal-io/delivery';
 import type { SettingsService } from '../../settings/services/settings.service';
 import type { StorageService } from '../../storage/interfaces/storage.interface';
 import { IOError } from '../../../common/errors/error-types';
@@ -349,6 +350,22 @@ describe('SessionsMessagePoolService', () => {
           error: expect.stringContaining('No active session'),
         }),
       ]);
+    });
+
+    it('records shell_foreground for a refused immediate delivery', async () => {
+      mockTerminalIO.deliverImmediate.mockRejectedValue(new ShellForegroundError('tmux-1'));
+      const result = await service.enqueue('agent-1', 'Message', {
+        source: 'test',
+        immediate: true,
+      });
+      expect(result).toMatchObject({
+        status: 'failed',
+        error: expect.stringContaining('CLI is not running'),
+      });
+      expect(service.getMessageLog()[0]).toMatchObject({
+        status: 'failed',
+        failureCode: 'shell_foreground',
+      });
     });
 
     it('classifies protected immediate failures without retaining provider details', async () => {
@@ -1685,6 +1702,20 @@ describe('SessionsMessagePoolService', () => {
       expect(result.success).toBe(false);
       expect(result.discardedCount).toBe(1);
       expect(result.reason).toBe('Tmux connection failed');
+    });
+
+    it.each([
+      new ShellForegroundError('tmux-1'),
+      new Error(new ShellForegroundError('tmux-1').message),
+    ])('classifies shell refusal by error type: %s', async (error) => {
+      mockTerminalIO.deliver.mockRejectedValue(error);
+      await service.enqueue('agent-1', 'Message', { source: 'test' });
+      const result = await service.flushNow('agent-1');
+      expect(result).toMatchObject({ success: false, discardedCount: 1, reason: error.message });
+      expect(service.getMessageLog()[0]).toMatchObject({
+        status: 'failed',
+        failureCode: error instanceof ShellForegroundError ? 'shell_foreground' : 'tmux_error',
+      });
     });
 
     it('classifies protected no-session failures across log, activity, notifier, and flush', async () => {

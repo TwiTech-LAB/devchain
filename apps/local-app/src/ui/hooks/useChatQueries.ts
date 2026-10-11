@@ -8,7 +8,7 @@ import {
   type AgentPresenceMap,
 } from '@/ui/lib/sessions';
 import { fetchPreflightChecks, type PreflightResult } from '@/ui/lib/preflight';
-import { providersQueryKeys } from '@/ui/lib/providers-query-keys';
+import { fetchProviders, providersQueryKeys } from '@/ui/lib/providers-query-keys';
 import { useFetchFactory } from '@/ui/hooks/useFetchFactory';
 import { compareCanonicalAgents } from '@/ui/lib/agent-ordering';
 
@@ -120,13 +120,7 @@ export function useChatQueries({
   // Providers query
   const { data: providersResponse = [] } = useQuery({
     queryKey: chatQueryKeys.providers(),
-    queryFn: async () => {
-      const response = await apiFetch('/api/providers');
-      if (!response.ok) {
-        throw new Error('Failed to fetch providers');
-      }
-      return response.json();
-    },
+    queryFn: () => fetchProviders(apiFetch),
   });
 
   // Preflight query

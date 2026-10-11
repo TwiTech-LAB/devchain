@@ -2,9 +2,6 @@ import { Injectable } from '@nestjs/common';
 import type { IntegrationCredentials } from '../../storage/models/domain.models';
 import { JiraProviderError } from '../errors/external-provider.errors';
 import {
-  MAX_EXTERNAL_SUBTASK_DESCRIPTION_LENGTH,
-  MAX_EXTERNAL_SUBTASK_TITLE_LENGTH,
-  EXTERNAL_SUBTASK_SOURCE_ID_PATTERN,
   MAX_TASK_COMMENT_BODY_LENGTH,
   MAX_TASK_COMMENT_CURSOR_LENGTH,
   MAX_TASK_COMMENT_ID_LENGTH,
@@ -255,9 +252,9 @@ export class JiraExternalTaskProvider implements ExternalTaskProvider {
   ): Promise<ExternalSubtaskSnapshot> {
     const site = this.resolveSite(credentials);
     const parentTaskId = this.validate.requiredTaskId(input.parentRemoteTaskId);
-    const ownershipToken = this.requireSubtaskOwnershipToken(input.ownershipToken);
-    const title = this.requireSubtaskTitle(input.title);
-    const description = this.requireSubtaskDescription(input.description);
+    const ownershipToken = this.validate.subtaskOwnershipToken(input.ownershipToken);
+    const title = this.validate.subtaskTitle(input.title);
+    const description = this.validate.subtaskDescription(input.description);
     const parent = await this.loadSubtaskParent(site, parentTaskId);
     const issueTypeId = await this.loadSubtaskIssueType(site, context, parent.workAreaRemoteId);
     const identity = await this.loadIdentity(site);
@@ -392,11 +389,11 @@ export class JiraExternalTaskProvider implements ExternalTaskProvider {
     const current = await this.assertOwnedSubtask(credentials, context, input);
     const fields: Record<string, unknown> = {};
     if (input.title !== undefined) {
-      fields.summary = this.requireSubtaskTitle(input.title);
+      fields.summary = this.validate.subtaskTitle(input.title);
     }
     if (input.description !== undefined) {
       fields.description = this.managedDescriptionAdf(
-        this.requireSubtaskDescription(input.description),
+        this.validate.subtaskDescription(input.description),
       );
     }
     if (Object.keys(fields).length === 0) {
@@ -418,7 +415,7 @@ export class JiraExternalTaskProvider implements ExternalTaskProvider {
     if (current === null) {
       return { outcome: 'already_absent' };
     }
-    this.assertSubtaskProof(current, proof);
+    this.validate.subtaskProof(current, proof);
     try {
       await this.requestNoContent(
         this.resolveSite(credentials),
@@ -442,7 +439,7 @@ export class JiraExternalTaskProvider implements ExternalTaskProvider {
   ): Promise<ExternalSubtaskChildrenResult> {
     const site = this.resolveSite(credentials);
     const parentTaskId = this.validate.requiredTaskId(parentRemoteTaskId);
-    const normalizedToken = this.requireSubtaskOwnershipToken(ownershipToken);
+    const normalizedToken = this.validate.subtaskOwnershipToken(ownershipToken);
     const url = new URL(`${site.origin}/rest/api/3/issue/${encodeURIComponent(parentTaskId)}`);
     url.searchParams.set('fields', 'subtasks');
     const payload = await this.requestJson(site, `${url.pathname}${url.search}`);
@@ -504,22 +501,8 @@ export class JiraExternalTaskProvider implements ExternalTaskProvider {
     if (current === null) {
       throw new JiraProviderError('not_found');
     }
-    this.assertSubtaskProof(current, proof);
+    this.validate.subtaskProof(current, proof);
     return current;
-  }
-
-  private assertSubtaskProof(
-    current: ExternalSubtaskSnapshot,
-    proof: ExternalSubtaskOwnershipProof,
-  ): void {
-    const ownershipToken = this.requireSubtaskOwnershipToken(proof.ownershipToken);
-    const expectedParent = this.validate.requiredTaskId(proof.expectedParentRemoteTaskId);
-    if (current.ownershipToken !== ownershipToken) {
-      throw new JiraProviderError('ownership_mismatch');
-    }
-    if (current.parentRemoteTaskId !== expectedParent) {
-      throw new JiraProviderError('parent_mismatch');
-    }
   }
 
   private normalizeManagedSubtask(value: unknown): ExternalSubtaskSnapshot {
@@ -561,7 +544,7 @@ export class JiraExternalTaskProvider implements ExternalTaskProvider {
     if (!isRecord(value) || value.version !== 1 || typeof value.sourceId !== 'string') {
       return null;
     }
-    return this.isSubtaskOwnershipToken(value.sourceId) ? value.sourceId : null;
+    return this.validate.isSubtaskOwnershipToken(value.sourceId) ? value.sourceId : null;
   }
 
   /**
@@ -588,38 +571,6 @@ export class JiraExternalTaskProvider implements ExternalTaskProvider {
       return null;
     }
     return this.flattenAdfText(value, 'preserve') || null;
-  }
-
-  private requireSubtaskTitle(value: unknown): string {
-    if (
-      typeof value !== 'string' ||
-      !value.trim() ||
-      value.length > MAX_EXTERNAL_SUBTASK_TITLE_LENGTH
-    ) {
-      throw new JiraProviderError('request_rejected');
-    }
-    return value.trim();
-  }
-
-  private requireSubtaskDescription(value: unknown): string | null {
-    if (value === null || value === '') {
-      return null;
-    }
-    if (typeof value !== 'string' || value.length > MAX_EXTERNAL_SUBTASK_DESCRIPTION_LENGTH) {
-      throw new JiraProviderError('request_rejected');
-    }
-    return value;
-  }
-
-  private isSubtaskOwnershipToken(value: string): boolean {
-    return EXTERNAL_SUBTASK_SOURCE_ID_PATTERN.test(value);
-  }
-
-  private requireSubtaskOwnershipToken(value: unknown): string {
-    if (typeof value !== 'string' || !this.isSubtaskOwnershipToken(value)) {
-      throw new JiraProviderError('request_rejected');
-    }
-    return value;
   }
 
   /** One exact-comment read; Jira documents GET comment by id. */

@@ -6,8 +6,8 @@ import type {
   ExternalSessionVerifyResult,
   ExternalSessionWriteOutcome,
 } from '@/modules/external-integrations/models/external-edit-session.models';
-import type { FetchFn } from '@/ui/lib/sessions';
-import { fetchJsonOrThrow } from '@/ui/lib/sessions';
+import type { FetchFn } from '@/ui/lib/http-json';
+import { fetchJsonOrThrow } from '@/ui/lib/http-json';
 import { withIntegrationProjectId } from '@/ui/lib/integration-project-scope';
 
 /**

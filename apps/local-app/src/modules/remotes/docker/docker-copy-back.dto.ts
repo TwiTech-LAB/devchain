@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import type { DockerDataState, DockerPlan } from './docker-plan.dto';
+import type { DockerDataRepresentationGroup, DockerDataState, DockerPlan } from './docker-plan.dto';
 
 export const DockerSyncStateRequestSchema = z.object({ remoteId: z.string().uuid() }).strict();
 
@@ -18,6 +18,12 @@ export const DockerCopyBackRequestSchema = z
   .strict();
 export type DockerCopyBackRequest = z.infer<typeof DockerCopyBackRequestSchema>;
 
+/** Why Disconnect leaves a bind folder out of the copy: file sync still carries it. */
+export const FILE_SYNC_SKIP_REASON = 'still synced by file sync' as const;
+
+export const FOLLOWS_USER_SKIP_REASON =
+  'Data whose owners follow the developer user stays on the VM because its recorded owner representation is unknown. Verify or replace the data through Connect before copying it home.';
+
 export interface DockerSyncGroup {
   /** Stable for the same volumes and folders; the key of a choice. */
   key: string;
@@ -25,6 +31,11 @@ export interface DockerSyncGroup {
   volumes: string[];
   bindPaths: string[];
   state: DockerDataState;
+  dataRepresentations?: DockerDataRepresentationGroup[];
+  createdOnVm?: boolean;
+  skipReason?: string;
+  /** Bind targets whose whole subtree is not excluded on both file-sync peers. */
+  syncedByFileSync?: string[];
   /** both-changed and unknown: the Disconnect needs a choice to copy or keep. */
   needsChoice: boolean;
 }
@@ -42,4 +53,5 @@ export interface DockerCopyBackResult {
   copied: string[];
   kept: string[];
   skipped: string[];
+  alreadyTargetEntries?: number;
 }

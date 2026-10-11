@@ -14,6 +14,11 @@ import { RemoteFileSyncService } from './remote-file-sync.service';
 import { GitOwnerStore } from '../git-owner.store';
 import { FileSyncAutoFixStore } from '../../file-sync/file-sync-auto-fix.store';
 import { FileSyncFailuresService } from './file-sync-failures.service';
+import { FileSyncSuggestionsService } from './file-sync-suggestions.service';
+import type {
+  ProjectExclusionSuggestions,
+  SyncPathInspection,
+} from '../../file-sync/sync-path-inspection.dto';
 
 // Service units isolate complete raw lists and eligibility gates without network transfers.
 async function setup() {
@@ -41,12 +46,34 @@ async function setup() {
   };
   const health = { online: true, versionMatches: true, apiKeyRejected: false };
   const storage = { listRemoteOperations: jest.fn(async () => [] as { id: string }[]) };
+  const inspection: SyncPathInspection = {
+    rootPath: '/checkout',
+    exists: true,
+    repository: true,
+    projectOwner: { uid: 1000, name: 'user' },
+    gitState: 'repo',
+    candidates: [],
+    requestedPaths: [],
+    entries: [],
+  };
+  const suggestions = {
+    vmSuggestions: jest
+      .fn<Promise<ProjectExclusionSuggestions>, [string, string]>()
+      .mockResolvedValue({
+        ownerSide: 'vm',
+        home: inspection,
+        vm: inspection,
+        groups: [],
+        overLimit: false,
+      }),
+  };
   const module = await Test.createTestingModule({
     providers: [
       RemoteFileSyncService,
       { provide: GitOwnerStore, useValue: { get: () => 'vm' } },
       { provide: FileSyncAutoFixStore, useValue: {} },
       { provide: FileSyncFailuresService, useValue: {} },
+      { provide: FileSyncSuggestionsService, useValue: suggestions },
       { provide: FileSyncService, useValue: files },
       { provide: RemoteHostClient, useValue: host },
       {

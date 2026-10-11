@@ -10,6 +10,7 @@ import {
   DropdownMenuTrigger,
 } from '../ui/dropdown-menu';
 import { Cloud, LogOut, RefreshCw, UserCog } from 'lucide-react';
+import { createCloudGitHubSignInUrl } from '@/ui/lib/cloud-target';
 
 interface CloudAccountMenuProps {
   userId: string;
@@ -32,8 +33,7 @@ export function CloudAccountMenu({
 }: CloudAccountMenuProps) {
   const handleSwitch = useCallback(() => {
     onDisconnect();
-    const redirectUri = window.location.origin + '/auth/cloud/callback';
-    const url = `${identityServiceUrl}/auth/github?response_mode=fragment_full&redirect_uri=${encodeURIComponent(redirectUri)}`;
+    const url = createCloudGitHubSignInUrl(identityServiceUrl);
     setTimeout(() => {
       window.open(url, 'devchain-cloud-auth', 'width=600,height=700');
     }, 100);

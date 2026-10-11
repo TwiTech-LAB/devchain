@@ -6,6 +6,7 @@ export type CompiledIgnorePattern =
       ignored: boolean;
       deletable: boolean;
       matches: (path: string) => boolean;
+      couldMatchSubtree: (path: string) => boolean;
     }
   | { kind: 'comment' }
   | { kind: 'include' }
@@ -91,6 +92,19 @@ function globExpression(pattern: string): string {
   return sequence(false);
 }
 
+/** The leading literal text of an anchored pattern, and whether a wildcard ended it. */
+function literalPrefix(pattern: string): { prefix: string; wildcard: boolean } {
+  let prefix = '';
+  for (let i = 1; i < pattern.length; i++) {
+    if (pattern[i] === '\\') {
+      if (i + 1 < pattern.length) prefix += pattern[++i];
+    } else if ('*?[]{}'.includes(pattern[i])) {
+      return { prefix, wildcard: true };
+    } else prefix += pattern[i];
+  }
+  return { prefix, wildcard: false };
+}
+
 export function compileIgnorePattern(line: string): CompiledIgnorePattern {
   let pattern = line.trim().normalize('NFC');
   if (!pattern || pattern.startsWith('//')) return { kind: 'comment' };
@@ -131,14 +145,31 @@ export function compileIgnorePattern(line: string): CompiledIgnorePattern {
     const regexes = expressions.map(
       (item) => new RegExp(`^(?:${globExpression(item)})(?![\\s\\S])`, 'u'),
     );
+    const fold = (path: string): string => {
+      const normalized = path.normalize('NFC');
+      return folded ? normalized.toLowerCase() : normalized;
+    };
+    const anchored = pattern.startsWith('/') ? literalPrefix(pattern) : null;
     return {
       kind: 'pattern',
       ignored,
       deletable: ignored && deletable,
       matches: (path: string): boolean => {
-        const normalized = path.normalize('NFC');
-        const candidate = folded ? normalized.toLowerCase() : normalized;
+        const candidate = fold(path);
         return regexes.some((regex) => regex.test(candidate));
+      },
+      couldMatchSubtree: (path: string): boolean => {
+        if (!anchored) return true;
+        const { prefix, wildcard } = anchored;
+        const candidate = fold(path);
+        if (wildcard) return candidate.startsWith(prefix) || prefix.startsWith(candidate + '/');
+        const literalPath = prefix.replace(/\/$/, '');
+        if (!literalPath) return true;
+        return (
+          candidate === literalPath ||
+          candidate.startsWith(literalPath + '/') ||
+          literalPath.startsWith(candidate + '/')
+        );
       },
     };
   } catch (error: unknown) {
@@ -149,24 +180,42 @@ export function compileIgnorePattern(line: string): CompiledIgnorePattern {
   }
 }
 
+/** The first decision of an already compiled list for one path. */
+export function firstCompiledMatch(
+  compiled: readonly CompiledIgnorePattern[],
+  path: string,
+): IgnoreMatch {
+  for (const [index, line] of compiled.entries()) {
+    if (line.kind === 'include') return { kind: 'unknown', index, reason: 'include' };
+    if (line.kind === 'error')
+      return { kind: 'unknown', index, reason: 'syntax', error: line.error };
+    if (line.kind === 'pattern' && line.matches(path)) {
+      return { kind: 'matched', index, ignored: line.ignored, deletable: line.deletable };
+    }
+  }
+  return { kind: 'none' };
+}
+
 /** Compiles an ordered list once; the returned function gives each path's first match. */
 export function compileIgnoreList(lines: readonly string[]): (path: string) => IgnoreMatch {
   const compiled = lines.map(compileIgnorePattern);
-  return (path) => {
-    for (const [index, line] of compiled.entries()) {
-      if (line.kind === 'include') return { kind: 'unknown', index, reason: 'include' };
-      if (line.kind === 'error')
-        return { kind: 'unknown', index, reason: 'syntax', error: line.error };
-      if (line.kind === 'pattern' && line.matches(path)) {
-        return { kind: 'matched', index, ignored: line.ignored, deletable: line.deletable };
-      }
-    }
-    return { kind: 'none' };
-  };
+  return (path) => firstCompiledMatch(compiled, path);
 }
 
 export function firstMatch(lines: readonly string[], path: string): IgnoreMatch {
   return compileIgnoreList(lines)(path);
+}
+
+/** Includes and intersecting keep rules prevent proof, even if the target itself is excluded. */
+export function ignoreListExcludesSubtree(lines: readonly string[], path: string): boolean {
+  const compiled = lines.map(compileIgnorePattern);
+  const match = firstCompiledMatch(compiled, path);
+  if (match.kind !== 'matched' || !match.ignored) return false;
+  return compiled.every(
+    (line) =>
+      line.kind === 'comment' ||
+      (line.kind === 'pattern' && (line.ignored || !line.couldMatchSubtree(path))),
+  );
 }
 
 export function ignorePatternProblem(list: readonly string[], pattern: string): string | null {

@@ -1,11 +1,4 @@
-import {
-  Injectable,
-  Inject,
-  OnModuleInit,
-  OnModuleDestroy,
-  forwardRef,
-  Optional,
-} from '@nestjs/common';
+import { Injectable, Inject, OnModuleInit, OnModuleDestroy, Optional } from '@nestjs/common';
 import { ProjectWriteGate } from '../../storage/write-gate/project-write-gate';
 import { createLogger } from '../../../common/logging/logger';
 import { STORAGE_SERVICE, GuestStorage } from '../../storage/interfaces/storage.interface';
@@ -23,9 +16,9 @@ export class GuestHealthService implements OnModuleInit, OnModuleDestroy {
 
   constructor(
     @Inject(STORAGE_SERVICE) private readonly storage: GuestStorage,
-    @Inject(forwardRef(() => TerminalIOService)) private readonly terminalIO: TerminalIOService,
-    @Inject(forwardRef(() => EventsService)) private readonly eventsService: EventsService,
-    @Inject(forwardRef(() => GuestsService)) private readonly guestsService: GuestsService,
+    private readonly terminalIO: TerminalIOService,
+    private readonly eventsService: EventsService,
+    private readonly guestsService: GuestsService,
     @Optional() private readonly gate?: ProjectWriteGate,
   ) {
     logger.info('GuestHealthService initialized');

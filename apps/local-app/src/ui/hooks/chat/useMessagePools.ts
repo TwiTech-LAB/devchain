@@ -108,7 +108,7 @@ async function forceDeferred(
   if (!response.ok) {
     throw new Error('Failed to force-send messages.');
   }
-  return response.json();
+  return response.json() as Promise<ForceDeliveryResult>;
 }
 
 async function releaseHumanHold(

@@ -13,7 +13,7 @@ jest.mock('node:fs/promises', () => ({
 }));
 const home = homedir();
 const nested = join(home, 'nested');
-const service = new HostDockerService({} as DockerArchiveJournal);
+const service = new HostDockerService({} as DockerArchiveJournal, {} as never);
 
 beforeEach(() => {
   jest.resetAllMocks();

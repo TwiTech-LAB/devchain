@@ -83,99 +83,6 @@ beforeEach(() => {
   });
 });
 
-it('gives only eligible VM groups individually or together, explains the code decision, and refreshes failures', async () => {
-  const base = exclusion();
-  const eligible = (path: string) =>
-    exclusion({
-      path,
-      pattern: `(?d)/${path}`,
-      patterns: [`(?d)/${path}`],
-      vm: { ...base.vm!, path, ignored: false, tracked: false, trackedDescendants: [] },
-    });
-  failures = fileSyncFailures({
-    vmUser: { uid: 1001, name: 'alice' },
-    groups: [
-      eligible('migration.ts'),
-      eligible('new-package'),
-      exclusion({ path: 'ignored' }),
-      exclusion({ path: 'tracked', vm: { ...base.vm!, tracked: true, ignored: false } }),
-      exclusion({
-        path: 'owned',
-        vm: { ...base.vm!, foreignOwner: false, foreignOwners: [], ignored: false },
-      }),
-      exclusion({ path: 'unchecked', gitUnchecked: true, vm: { ...base.vm!, ignored: false } }),
-      exclusion({ path: 'home', side: 'home', vm: null }),
-      { ...eligible('shared.ts'), side: 'home' },
-    ],
-  });
-  const gives: string[][] = [];
-  const fallback = transport.getMockImplementation()!;
-  transport.mockImplementation(async (url, init, context) => {
-    if (String(url).endsWith('/give-ownership')) {
-      const { paths } = JSON.parse(String(init?.body)) as { paths: string[] };
-      gives.push(paths);
-      return response({
-        user: failures.vmUser,
-        items: paths.map((path) => ({ path, state: 'repaired', paths: [path] })),
-      });
-    }
-    return fallback(url, init, context);
-  });
-  renderDialog();
-  const buttons = await screen.findAllByRole('button', { name: 'Give to alice' });
-  expect(buttons).toHaveLength(3);
-  expect(
-    within(screen.getByRole('region', { name: 'This PC' })).queryByRole('button', {
-      name: 'Give to alice',
-    }),
-  ).not.toBeInTheDocument();
-  expect(
-    screen.getAllByText(/Use it for files that belong to your code, for example a new migration/),
-  ).toHaveLength(3);
-  await userEvent.click(buttons[0]);
-  await waitFor(() => expect(reads).toBe(2));
-  expect(gives[0]).toEqual(['migration.ts']);
-  await userEvent.click(screen.getByRole('button', { name: 'Give all to alice' }));
-  await waitFor(() => expect(reads).toBe(3));
-  expect(gives[1]).toEqual(['migration.ts', 'new-package', 'shared.ts']);
-});
-
-it('shows the host refusal reason and keeps VM copy commands available', async () => {
-  const base = exclusion();
-  failures = fileSyncFailures({
-    vmUser: { uid: 1001, name: 'alice' },
-    groups: [
-      exclusion({
-        path: 'migration.ts',
-        vm: { ...base.vm!, ignored: false },
-        chown: { vm: 'sudo chown alice migration.ts' },
-      }),
-    ],
-  });
-  const fallback = transport.getMockImplementation()!;
-  transport.mockImplementation(async (url, init, context) =>
-    String(url).endsWith('/give-ownership')
-      ? response({
-          user: null,
-          items: [
-            {
-              path: 'migration.ts',
-              state: 'unsupported',
-              paths: [],
-              reason: 'Update the VM or use the copy command.',
-            },
-          ],
-        })
-      : fallback(url, init, context),
-  );
-  renderDialog();
-  await userEvent.click(await screen.findByRole('button', { name: 'Give to alice' }));
-  await screen.findByText('Update the VM or use the copy command.');
-  expect(
-    screen.getByRole('button', { name: 'Copy command on The VM: sudo chown alice migration.ts' }),
-  ).toBeEnabled();
-});
-
 it.each(['Applied to the VM and this PC.', 'Saved, not applied yet: the VM is offline.'])(
   'saves default exclusions in order, shows "%s" and reloads remaining failures',
   async (message) => {
@@ -322,23 +229,27 @@ it('names the blocking pattern and opens settings instead of offering an exclusi
   expect(saves).toEqual([]);
 });
 
-it('copies tracked-file repairs on the correct side without offering exclusions', async () => {
-  failures.vm.entries = [
-    failedFile({ git: { ...failedFile().git!, tracked: true, ignored: false } }),
-  ];
-  failures.groups = [
-    exclusion({ patterns: [], chown: { vm: "sudo chown -R alice '/project/logs/error.txt'" } }),
-  ];
-  const user = userEvent.setup();
-  const copy = jest.spyOn(navigator.clipboard, 'writeText');
-  renderDialog();
-  const side = await screen.findByRole('region', { name: 'The VM' });
-  await user.click(await within(side).findByRole('button', { name: /Copy command/ }));
-  expect(copy).toHaveBeenCalledWith("sudo chown -R alice '/project/logs/error.txt'");
-  expect(side).toHaveTextContent('Tracked by Git');
-  expect(screen.queryByRole('checkbox', { name: /^Exclude / })).not.toBeInTheDocument();
-  expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled();
-});
+it.each(['home', 'vm'] as const)(
+  'copies a tracked-file owner command on %s without offering exclusions',
+  async (side) => {
+    failures[side].entries = [
+      failedFile({ git: { ...failedFile().git!, tracked: true, ignored: false } }),
+    ];
+    const command = "sudo chown -R alice '/project/logs/error.txt'";
+    failures.groups = [exclusion({ side, patterns: [], chown: { [side]: command } })];
+    const user = userEvent.setup();
+    const copy = jest.spyOn(navigator.clipboard, 'writeText');
+    renderDialog();
+    const region = await screen.findByRole('region', {
+      name: side === 'home' ? 'This PC' : 'The VM',
+    });
+    await user.click(await within(region).findByRole('button', { name: /Copy command/ }));
+    expect(copy).toHaveBeenCalledWith(command);
+    expect(region).toHaveTextContent('Tracked by Git');
+    expect(screen.queryByRole('checkbox', { name: /^Exclude / })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled();
+  },
+);
 
 it.each(['server', 'merged'] as const)(
   'uses the final list instead of the %s suggestion count to enable Save',

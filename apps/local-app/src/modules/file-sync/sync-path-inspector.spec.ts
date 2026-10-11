@@ -63,6 +63,73 @@ describe('SyncPathInspector', () => {
     jest.restoreAllMocks();
   });
 
+  it.each([true, false])(
+    'prunes excluded trees before ownership IO with repository=%s',
+    async (repository) => {
+      if (!repository) rmSync(join(root, '.git'), { recursive: true });
+      write('.gitignore', 'node_modules/\noutput/\n');
+      write('node_modules/nested/foreign.js');
+      write('output/cache/file');
+      write('output/wanted/file');
+      for (const path of [
+        'node_modules',
+        'node_modules/nested/foreign.js',
+        'output/cache',
+        'output/wanted',
+      ])
+        uids.set(join(root, path), 48);
+      const lstat = jest.spyOn(files, 'lstat');
+      const readdir = jest.spyOn(files, 'readdir');
+      const result = await inspector.inspect(root, true, [], undefined, [
+        '/.git',
+        '(?d)node_modules',
+        '/output/cache',
+      ]);
+      for (const spy of [lstat, readdir])
+        expect(
+          spy.mock.calls.some(
+            ([path]) =>
+              String(path).startsWith(join(root, 'node_modules')) ||
+              String(path).startsWith(join(root, 'output/cache')),
+          ),
+        ).toBe(false);
+      expect(result.candidates).toEqual(repository ? ['output'] : ['output/wanted']);
+      expect(result.entries[0].fileCount).toBe(1);
+    },
+  );
+
+  it.each([
+    ['earlier keep', ['!node_modules/keep.js', 'node_modules']],
+    ['include', ['#include custom.ignore', 'node_modules']],
+    ['invalid syntax', ['[', 'node_modules']],
+  ])('keeps an uncertain tree visible with %s', async (_reason, skipIgnores) => {
+    write('.gitignore', 'node_modules/\n');
+    write('node_modules/keep.js');
+    uids.set(join(root, 'node_modules/keep.js'), 48);
+    const read = jest.spyOn(files, 'readdir');
+    const result = await inspector.inspect(root, true, [], undefined, skipIgnores as string[]);
+    expect(read).toHaveBeenCalledWith(join(root, 'node_modules'));
+    expect(result.candidates).toEqual(['node_modules']);
+  });
+
+  it('honors first-match order and ignores pruning inputs for explicit safety checks', async () => {
+    write('.gitignore', 'node_modules/\n');
+    write('node_modules/file.js');
+    uids.set(join(root, 'node_modules/file.js'), 48);
+    const read = jest.spyOn(files, 'readdir');
+    const skipIgnores = ['node_modules', '!node_modules/file.js'];
+    expect((await inspector.inspect(root, true, [], undefined, skipIgnores)).candidates).toEqual(
+      [],
+    );
+    expect(read).not.toHaveBeenCalledWith(join(root, 'node_modules'));
+    const result = await inspector.inspect(root, false, ['node_modules'], undefined, skipIgnores);
+    expect(read).toHaveBeenCalledWith(join(root, 'node_modules'));
+    expect(result.entries[0]).toMatchObject({
+      foreignOwners: [{ uid: 48, name: 'apache' }],
+      fileCount: 1,
+    });
+  });
+
   it('excludes only foreign-owned output in a netbox-shaped Git repository', async () => {
     write('.gitignore', '*__pycache__/\n*.egg-info/\ntmp/\n');
     write('device-type-importer/.gitignore', '.env*\n__pycache__/\nrepo\n');

@@ -19,6 +19,7 @@ const APP_ROOT = resolve(__dirname, '..', '..', '..');
 const SRC_ROOT = join(APP_ROOT, 'src');
 const UI_ROOT = join(SRC_ROOT, 'ui');
 const OWNED_QUERY_ROOTS = new Map([
+  ['providers', join(UI_ROOT, 'lib', 'providers-query-keys.ts')],
   ['agents', join(UI_ROOT, 'lib', 'agents.ts')],
   ['health', join(UI_ROOT, 'lib', 'health.ts')],
   ['provider-efforts', join(UI_ROOT, 'lib', 'provider-efforts.ts')],
@@ -281,6 +282,16 @@ function resolveSourceImport(importerPath: string, specifier: string): string | 
     return resolve(dirname(importerPath), specifier).replace(/\.[cm]?[jt]sx?$/, '');
   }
   return null;
+}
+
+function importsSessionsOrTerminalFeature(importerPath: string, specifier: string): boolean {
+  const importedPath = resolveSourceImport(importerPath, specifier);
+  return (
+    importedPath !== null &&
+    /^(?:sessions|terminal)(?:\/|$)/.test(
+      relative(MODULES_ROOT, importedPath).replaceAll('\\', '/'),
+    )
+  );
 }
 
 function resolveLocalTypeScriptImport(importerPath: string, specifier: string): string | null {
@@ -671,12 +682,33 @@ describe('Phase 7 architecture invariants', () => {
 
   it('Session-terminal runtime source imports neither Sessions nor Terminal', () => {
     const files = listNonSpecSourceFiles(join(MODULES_ROOT, 'session-terminal-runtime'));
-    const forbiddenImport = /from\s+['"][^'"]*(?:\/sessions\/|\/terminal\/)[^'"]*['"]/;
     const offenders = files
-      .filter((file) => forbiddenImport.test(readText(file)))
+      .filter((file) =>
+        sourceImportSpecifiers(readText(file)).some((specifier) =>
+          importsSessionsOrTerminalFeature(file, specifier),
+        ),
+      )
       .map((file) => relative(APP_ROOT, file));
 
     expect(offenders).toEqual([]);
+  });
+
+  // Path fixtures exercise the boundary without changing production imports.
+  it.each<[string, boolean]>([
+    ['../sessions/services/sessions.service', true],
+    ['../terminal/terminal.module', true],
+    ['../storage/../sessions/sessions.module', true],
+    ['../storage/sessions/../../terminal/terminal.module', true],
+    ['../sessions', true],
+    ['@/modules/sessions/sessions.module', true],
+    ['@/modules/terminal/terminal.module', true],
+    ['../storage/sessions/session-row.store', false],
+    ['../storage/sessions/session-rows.module', false],
+    ['@/modules/storage/sessions/session-row.store', false],
+    ['@nestjs/common', false],
+  ])('resolves the Sessions/Terminal feature boundary for %s', (specifier, forbidden) => {
+    const importer = join(MODULES_ROOT, 'session-terminal-runtime', 'service.ts');
+    expect(importsSessionsOrTerminalFeature(importer, specifier)).toBe(forbidden);
   });
 
   it('Feature-module non-test source files contain zero forwardRef calls (post-Phase-7)', () => {
@@ -688,6 +720,11 @@ describe('Phase 7 architecture invariants', () => {
       'registry',
       'agents',
       'subscribers',
+      'guests',
+      'watchers',
+      'sessions',
+      'terminal',
+      'cloud',
     ];
 
     const offenders = featureModuleDirs.flatMap((dir) => {

@@ -9,6 +9,8 @@ jest.mock('../../common/logging/logger', () => ({
   createLogger: jest.fn(() => mockLogger),
 }));
 
+import { SessionRowStore } from '../storage/sessions/session-row.store';
+import { SessionRowsModule } from '../storage/sessions/session-rows.module';
 import { MODULE_METADATA } from '@nestjs/common/constants';
 import { Test, type TestingModule } from '@nestjs/testing';
 import Database from 'better-sqlite3';
@@ -67,6 +69,7 @@ describe('SessionTerminalRuntimeService', () => {
     const db = drizzle(sqlite) as BetterSQLite3Database;
     moduleRef = await Test.createTestingModule({
       providers: [
+        SessionRowStore,
         SessionTerminalRuntimeService,
         { provide: DB_CONNECTION, useValue: db },
         { provide: ProviderAdapterFactory, useValue: providerAdapterFactory },
@@ -84,8 +87,9 @@ describe('SessionTerminalRuntimeService', () => {
     if (sqlite.open) sqlite.close();
   });
 
-  it('declares only the three locked module imports and exports the concrete service', () => {
+  it('declares the runtime module imports and exports the concrete service', () => {
     expect(Reflect.getMetadata(MODULE_METADATA.IMPORTS, SessionTerminalRuntimeModule)).toEqual([
+      SessionRowsModule,
       DbModule,
       ProviderAdaptersModule,
       RuntimeContextCaptureModule,

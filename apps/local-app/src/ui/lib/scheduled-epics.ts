@@ -223,7 +223,7 @@ export async function fetchScheduledEpics(
   if (!response.ok) {
     await throwOnError(response, 'Failed to fetch scheduled epics');
   }
-  return response.json();
+  return response.json() as Promise<ScheduledEpic[]>;
 }
 
 /**
@@ -234,7 +234,7 @@ export async function fetchScheduledEpic(fetchFn: FetchFn, id: string): Promise<
   if (!response.ok) {
     await throwOnError(response, 'Failed to fetch scheduled epic');
   }
-  return response.json();
+  return response.json() as Promise<ScheduledEpic>;
 }
 
 /**
@@ -252,7 +252,7 @@ export async function createScheduledEpic(
   if (!response.ok) {
     await throwOnError(response, 'Failed to create scheduled epic');
   }
-  return response.json();
+  return response.json() as Promise<ScheduledEpic>;
 }
 
 /**
@@ -272,7 +272,7 @@ export async function updateScheduledEpic(
   if (!response.ok) {
     await throwOnError(response, 'Failed to update scheduled epic');
   }
-  return response.json();
+  return response.json() as Promise<ScheduledEpic>;
 }
 
 /**
@@ -305,7 +305,7 @@ export async function toggleScheduledEpic(
   if (!response.ok) {
     await throwOnError(response, 'Failed to toggle scheduled epic');
   }
-  return response.json();
+  return response.json() as Promise<ScheduledEpic>;
 }
 
 /**
@@ -321,7 +321,7 @@ export async function runScheduledEpicNow(
   if (!response.ok) {
     await throwOnError(response, 'Failed to trigger scheduled epic run');
   }
-  return response.json();
+  return response.json() as Promise<ScheduledEpicRunNowResult>;
 }
 
 /**
@@ -343,5 +343,5 @@ export async function fetchScheduledEpicRuns(
   if (!response.ok) {
     await throwOnError(response, 'Failed to fetch scheduled epic runs');
   }
-  return response.json();
+  return response.json() as Promise<ScheduledEpicRunsPage>;
 }

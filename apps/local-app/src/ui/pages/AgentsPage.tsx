@@ -1,3 +1,4 @@
+import type { AgentsController } from '@/modules/agents/controllers/agents.controller';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { projectPresetQueries } from '@/ui/lib/project-presets';
@@ -6,7 +7,7 @@ import { agentQueries, agentQueryKeys, type Agent, type AgentOrGuestItem } from 
 import type { WsEnvelope } from '@/ui/lib/socket';
 import { useAppSocket } from '@/ui/hooks/useAppSocket';
 import type { Socket } from 'socket.io-client';
-import { providersQueryKeys } from '@/ui/lib/providers-query-keys';
+import { providersQueryKeys, fetchProviders, type Provider } from '@/ui/lib/providers-query-keys';
 import { Button } from '@/ui/components/ui/button';
 import {
   Dialog,
@@ -36,24 +37,8 @@ import type { FetchFn } from '@/ui/lib/api-transport';
 import { useFetchFactory, useHomeFetch } from '@/ui/hooks/useFetchFactory';
 
 // ============================================
-// Types
-// ============================================
-
-interface Provider {
-  id: string;
-  name: string;
-  binPath?: string | null;
-}
-
-// ============================================
 // Fetch functions
 // ============================================
-
-async function fetchProviders(fetchFn: FetchFn) {
-  const res = await fetchFn('/api/providers');
-  if (!res.ok) throw new Error('Failed to fetch providers');
-  return res.json();
-}
 
 async function createAgent(
   fetchFn: FetchFn,
@@ -76,7 +61,7 @@ async function createAgent(
     const error = await res.json().catch(() => ({ message: 'Failed to create agent' }));
     throw new Error(error.message || 'Failed to create agent');
   }
-  return res.json();
+  return res.json() as Promise<Awaited<ReturnType<AgentsController['createAgent']>>>;
 }
 
 async function deleteAgent(fetchFn: FetchFn, id: string) {
@@ -109,7 +94,7 @@ async function updateAgentRequest(
     const error = await res.json().catch(() => ({ message: 'Failed to update agent' }));
     throw new Error(error.message || 'Failed to update agent');
   }
-  return res.json();
+  return res.json() as Promise<Agent>;
 }
 
 // ============================================

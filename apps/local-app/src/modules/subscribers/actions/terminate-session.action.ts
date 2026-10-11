@@ -52,6 +52,53 @@ export interface TerminateSessionFamilyResultData {
 
 type TerminateSessionTargetMode = TerminateSessionResultData['resolvedBy'] | 'familySlug';
 
+export const BUSY_GUARD_INPUT_NAME = 'skipWhileAgentsBusy';
+
+/** A target session that blocked termination while the busy guard was on. */
+export interface TerminateSessionBusyTarget {
+  agentId: string;
+  /** Null on the event path, which does not load the agent. */
+  name: string | null;
+  sessionId: string;
+  /** Null when the session has reported no activity yet. */
+  activityState: 'busy' | null;
+}
+
+/** The subscriber dialog stores a checkbox as the string 'true' or 'false'. */
+function isBusyGuardOn(raw: unknown): boolean {
+  return raw === true || (typeof raw === 'string' && raw.trim().toLowerCase() === 'true');
+}
+
+/** A running session blocks unless it reports idle; a stopped one has no work to lose. */
+function toBusyTarget(
+  session: SessionDto,
+  agentId: string,
+  name: string | null,
+): TerminateSessionBusyTarget | null {
+  if (session.status !== 'running' || session.activityState === 'idle') return null;
+  return {
+    agentId,
+    name,
+    sessionId: session.id,
+    activityState: session.activityState === 'busy' ? 'busy' : null,
+  };
+}
+
+function describeBusyTarget(target: TerminateSessionBusyTarget): string {
+  const agent =
+    target.name === null ? `[${target.agentId}]` : `"${target.name}" [${target.agentId}]`;
+  return `${agent} session ${target.sessionId} (${target.activityState ?? 'unknown'})`;
+}
+
+function busySkippedResult(busy: TerminateSessionBusyTarget[]): ActionResult {
+  return {
+    success: true,
+    message: `Skipped: ${busy.length} target agent(s) not idle: ${busy.map(describeBusyTarget).join(', ')}`,
+    data: { skipped: true, busy },
+    retryable: false,
+  };
+}
+
 function compareText(left: string, right: string): number {
   if (left < right) return -1;
   if (left > right) return 1;
@@ -87,6 +134,7 @@ function getTargetMode(agentName: string, familySlug: string): TerminateSessionT
 async function terminateFamilySessions(
   context: ActionContext,
   familySlug: string,
+  skipWhileBusy: boolean,
 ): Promise<ActionResult> {
   const { sessionsService, storage, projectId, logger } = context;
   const targets = await resolveFamilyAgentTargets(storage, projectId, familySlug);
@@ -109,12 +157,23 @@ async function terminateFamilySessions(
 
   const targetIds = new Set(targets.map((target) => target.id));
   const activeSessions = await sessionsService.listActiveSessions(projectId, targetIds);
-
-  for (const target of targets) {
-    const sessions = activeSessions
+  const sessionsByTarget = targets.map((target) => ({
+    target,
+    sessions: activeSessions
       .filter((session) => session.agentId === target.id)
-      .sort((left, right) => compareText(left.id, right.id));
+      .sort((left, right) => compareText(left.id, right.id)),
+  }));
 
+  if (skipWhileBusy) {
+    const busy = sessionsByTarget.flatMap(({ target, sessions }) =>
+      sessions.flatMap((session) => toBusyTarget(session, target.id, target.name) ?? []),
+    );
+    if (busy.length > 0) {
+      return busySkippedResult(busy);
+    }
+  }
+
+  for (const { target, sessions } of sessionsByTarget) {
     if (sessions.length === 0) {
       data.inactive.push({ id: target.id, name: target.name });
       continue;
@@ -161,6 +220,9 @@ async function terminateFamilySessions(
  * The event path accepts a session in any status; termination of an exact
  * session is idempotent. The agentName path requires a currently running
  * session, so the overall action is not idempotent when retried by name.
+ *
+ * With the busy guard on, one running target session that is not idle skips
+ * the whole action before any termination, on every target path.
  */
 export const terminateSessionAction: ActionDefinition = {
   type: 'terminate_session',
@@ -189,6 +251,15 @@ export const terminateSessionAction: ActionDefinition = {
       placeholder: 'e.g., engineering',
     },
     statusGuardInput,
+    {
+      name: BUSY_GUARD_INPUT_NAME,
+      label: 'Skip while any target agent is busy',
+      type: 'boolean',
+      allowedSources: ['custom'],
+      required: false,
+      description:
+        'Optional: when any target session is running and not idle, the action skips and terminates nothing. A session that has reported no activity yet counts as busy. A skipped run is not repeated later.',
+    },
   ],
 
   execute: async (
@@ -199,7 +270,9 @@ export const terminateSessionAction: ActionDefinition = {
     const agentName = typeof inputs.agentName === 'string' ? inputs.agentName.trim() : '';
     const familySlug = typeof inputs.familySlug === 'string' ? inputs.familySlug.trim() : '';
     const targetMode = getTargetMode(agentName, familySlug);
+    const skipWhileBusy = isBusyGuardOn(inputs[BUSY_GUARD_INPUT_NAME]);
     let targetSession: SessionDto;
+    let targetName: string | null = null;
 
     try {
       const guard = await resolveStatusGuard(storage, projectId, inputs[STATUS_GUARD_INPUT_NAME]);
@@ -240,12 +313,13 @@ export const terminateSessionAction: ActionDefinition = {
           };
         }
         targetSession = activeSession;
+        targetName = agent.name;
         logger.debug(
           { agentName, sessionId: activeSession.id },
           'Resolved active session by agent name',
         );
       } else if (targetMode === 'familySlug') {
-        const familyResult = await terminateFamilySessions(context, familySlug);
+        const familyResult = await terminateFamilySessions(context, familySlug, skipWhileBusy);
         return familyResult;
       } else {
         if (!contextSessionId) {
@@ -269,6 +343,12 @@ export const terminateSessionAction: ActionDefinition = {
 
       const { id: sessionId, agentId, status: previousStatus } = targetSession;
       const resolvedAgentId = agentId!;
+      const busyTarget = skipWhileBusy
+        ? toBusyTarget(targetSession, resolvedAgentId, targetName)
+        : null;
+      if (busyTarget) {
+        return busySkippedResult([busyTarget]);
+      }
       await sessionsService.terminateSession(sessionId, {
         source: 'subscriber',
         reason: 'user-requested',

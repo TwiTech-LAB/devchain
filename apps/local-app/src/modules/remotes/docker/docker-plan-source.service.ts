@@ -23,10 +23,16 @@ import {
 import {
   COMPOSE_PROJECT_LABEL,
   COMPOSE_SERVICE_LABEL,
+  COMPOSE_VOLUME_LABEL,
   type DockerInspectTimes,
 } from '../host/host-docker.dto';
 import type { DockerDataHolder } from './docker-data-groups';
-import { measureDockerBind, within } from './docker-plan-files';
+import {
+  classifyDockerOwnership,
+  literalHomeComposeUser,
+  type DockerOwnershipConsumer,
+} from './docker-ownership';
+import { measureDockerBind, strictlyWithin, within } from './docker-plan-files';
 import {
   composeRootLinks,
   containerLinksProject,
@@ -42,6 +48,10 @@ import {
   type DockerPlanMount,
   type DockerPlanSize,
   type DockerPresence,
+  type DockerOwnershipContext,
+  type DockerOwnershipDecision,
+  type DockerPlanIssue,
+  type DockerUserIds,
 } from './docker-plan.dto';
 
 interface Mount {
@@ -83,14 +93,33 @@ export interface DockerSourceScan {
   items: DockerPlanItem[];
   homePath: string;
   codePaths: string[];
+  ownershipConsumers?: DockerOwnershipConsumer[];
 }
 export interface DockerSourceScanOptions {
+  ownership?: DockerOwnershipContext;
   reuse?: boolean;
   /** Absolute in-project paths from previous imports, including unselected items. */
   previousBindPaths?: readonly string[];
   /** Absolute paths whose data is still excluded during Disconnect. */
   dataBindPaths?: readonly string[];
 }
+/** A Compose aggregate takes the first of these classes that any of its services carries. */
+const AGGREGATE_OWNERSHIP_CLASSES = [
+  'needs-user-fix',
+  'follows-user',
+  'image-user-hint',
+] as const satisfies ReadonlyArray<DockerOwnershipDecision['class']>;
+
+type ComposeOwnershipSet = { directory: string; files: string[] } & (
+  | { state: 'resolved'; home: ComposeConfig; vm: ComposeConfig }
+  | {
+      state: 'unresolved';
+      home: ComposeConfig | null;
+      vm: ComposeConfig | null;
+      fallback?: ComposeConfig;
+      issue: DockerPlanIssue;
+    }
+);
 
 /** The Compose labels that link a container to the project root. */
 export function containerProjectLinks(root: string, inspect: Container): string[] {
@@ -141,7 +170,7 @@ async function hasRootCompose(root: string): Promise<boolean> {
   return false;
 }
 
-const unknownSize = (): DockerPlanSize => ({ bytes: 0, unknown: true });
+export const unknownSize = (): DockerPlanSize => ({ bytes: 0, unknown: true });
 const size = (value: number | undefined): DockerPlanSize =>
   typeof value === 'number' && value >= 0 && Number.isFinite(value)
     ? { bytes: value, unknown: false }
@@ -170,6 +199,11 @@ export class DockerPlanSourceService {
     folders: Map<string, DockerPlanSize>;
     compose: Map<string, ComposeConfig | Error | null>;
   } | null = null;
+
+  /** A source edit makes all cached Compose resolutions obsolete. */
+  invalidate(): void {
+    this.recent = null;
+  }
 
   /** Throws DockerAvailabilityError with a stable reason for each unusable home engine. */
   async connect(signal?: AbortSignal): Promise<DockerEngineClient> {
@@ -303,7 +337,7 @@ export class DockerPlanSourceService {
           timeout: 30_000,
           maxBuffer: 16 * 1024 * 1024,
           signal: options.signal,
-          env: options.env,
+          env: options.env ? { ...process.env, ...options.env } : undefined,
         },
         (error, stdout) => {
           // Compose output and stderr can contain interpolated secrets.
@@ -346,20 +380,67 @@ export class DockerPlanSourceService {
     client: DockerEngineClient,
     root: string,
     signal?: AbortSignal,
-    { reuse = false, previousBindPaths = [], dataBindPaths = [] }: DockerSourceScanOptions = {},
+    {
+      reuse = false,
+      previousBindPaths = [],
+      dataBindPaths = [],
+      ownership,
+    }: DockerSourceScanOptions = {},
   ): Promise<DockerSourceScan> {
     const recent = reuse && this.recent && reusable(this.recent.at) ? this.recent : null;
     const composeCache = new Map(recent?.compose);
-    const readCompose = async (directory: string, files: string[]) => {
-      const key = JSON.stringify([resolve(directory), files]);
+    const readCompose = async (directory: string, files: string[], ids?: DockerUserIds) => {
+      const key = JSON.stringify([resolve(directory), files, ids]);
       if (!composeCache.has(key)) {
-        const config = await this.compose(directory, { files, signal }).catch(
+        const config = await this.compose(directory, {
+          files,
+          signal,
+          ...(ids
+            ? {
+                allProfiles: true,
+                env: {
+                  ...process.env,
+                  DEVCHAIN_UID: String(ids.uid),
+                  DEVCHAIN_GID: String(ids.gid),
+                },
+              }
+            : {}),
+        }).catch(
           (error: unknown): Error => (error instanceof Error ? error : new Error(String(error))),
         );
         signal?.throwIfAborted();
         composeCache.set(key, config);
       }
       return composeCache.get(key)!;
+    };
+    const composeOwnershipSets = new Map<string, ComposeOwnershipSet>();
+    const readOwnershipCompose = async (directory: string, files: string[]) => {
+      if (!ownership) return undefined;
+      const key = JSON.stringify([resolve(directory), files]);
+      if (!composeOwnershipSets.has(key)) {
+        const [home, vm] = await Promise.all([
+          readCompose(directory, files, ownership.home),
+          readCompose(directory, files, ownership.vm),
+        ]);
+        composeOwnershipSets.set(
+          key,
+          home && vm && !(home instanceof Error) && !(vm instanceof Error)
+            ? { state: 'resolved', directory, files, home, vm }
+            : {
+                state: 'unresolved',
+                directory,
+                files,
+                home: home instanceof Error ? null : home,
+                vm: vm instanceof Error ? null : vm,
+                issue: {
+                  code: 'compose-ownership-unreadable',
+                  message:
+                    'Cannot resolve Docker Compose ownership with both home and VM user ids. Fix the Compose configuration and verify again.',
+                },
+              },
+        );
+      }
+      return composeOwnershipSets.get(key);
     };
     const [listed, usage, volumes, composeAttempt] = await Promise.all([
       client.json<Array<{ Id: string; Labels?: Record<string, string> | null; Mounts?: Mount[] }>>(
@@ -377,17 +458,26 @@ export class DockerPlanSourceService {
       ),
     ]);
     const items: DockerPlanItem[] = [];
+    const ownershipConsumers: DockerOwnershipConsumer[] = [];
+    const ownershipInputs = new Map<
+      string,
+      {
+        inspect: Container;
+        compose?: { directory: string; files: string[]; service: string };
+        configs?: ComposeOwnershipSet;
+      }
+    >();
     const imageCache = new Map<string, DockerPlanImage>();
+    const imageUsers = new Map<string, string | undefined>();
     const bindCache = new Map<string, DockerPlanSize>(recent?.folders);
     const image = async (ref: string) => {
       let result = imageCache.get(ref);
       if (!result) {
-        const info = await client.json<{ Id: string; Architecture: string }>(
-          'GET',
-          `/images/${encodeURIComponent(ref)}/json`,
-          undefined,
-          { signal },
-        );
+        const info = await client.json<{
+          Id: string;
+          Architecture: string;
+          Config?: { User?: string };
+        }>('GET', `/images/${encodeURIComponent(ref)}/json`, undefined, { signal });
         if (!info?.Id || !info.Architecture)
           throw new DockerEngineError('invalid-response', 'Invalid Docker image metadata');
         result = {
@@ -396,6 +486,7 @@ export class DockerPlanSourceService {
           size: size(usage.Images?.find((entry) => entry.Id === info.Id)?.Size),
         };
         imageCache.set(ref, result);
+        imageUsers.set(ref, info.Config?.User);
       }
       return result;
     };
@@ -494,9 +585,7 @@ export class DockerPlanSourceService {
           const named =
             explicitlyNamed(inspect, mount) ||
             Boolean(
-              volumes.Volumes?.find((v) => v.Name === mount.Name)?.Labels?.[
-                'com.docker.compose.volume'
-              ],
+              volumes.Volumes?.find((v) => v.Name === mount.Name)?.Labels?.[COMPOSE_VOLUME_LABEL],
             );
           item.mounts.push(
             volumeMount(mount.Name ?? mount.Source, mount.Destination, named, !mount.RW),
@@ -518,13 +607,24 @@ export class DockerPlanSourceService {
       // Only a linked container can be selected, so only its Compose set is read.
       const composeSet = item.linkedReasons.length ? composeLabelSet(root, inspect) : null;
       if (composeSet?.service) {
-        const config = await readCompose(composeSet.directory, composeSet.files);
+        const configs = await readOwnershipCompose(composeSet.directory, composeSet.files);
+        if (configs?.state === 'unresolved') item.blockers.push(configs.issue);
+        ownershipInputs.set(item.id, {
+          inspect,
+          compose: { ...composeSet, service: composeSet.service },
+          configs,
+        });
+        const config = configs?.home ?? (await readCompose(composeSet.directory, composeSet.files));
+        if (configs?.state === 'unresolved' && config && !(config instanceof Error))
+          configs.fallback = config;
         if (
           !(config instanceof Error) &&
           buildsInProject(root, config?.services?.[composeSet.service])
         )
           item.buildsFromProject = true;
       }
+      if (!ownershipInputs.has(item.id)) ownershipInputs.set(item.id, { inspect });
+      item.runtimeUser = inspect.Config.User as string | undefined;
       items.push(item);
     }
     if (composeAttempt instanceof Error) {
@@ -532,6 +632,7 @@ export class DockerPlanSourceService {
       const item = baseItem(`compose:${name}`, name, 'compose-project');
       item.composeProject = name;
       item.linkedReasons.push('compose-file-at-project-root');
+      if (ownership) item.ownership = { ...ownership, class: 'exact' };
       item.blockers.push({
         code: 'compose-unreadable',
         message: `${name}: ${composeAttempt.message}`,
@@ -542,9 +643,15 @@ export class DockerPlanSourceService {
       !items.some((item) => item.composeProject === composeAttempt.name)
     ) {
       const compose = composeAttempt;
+      const configs = await readOwnershipCompose(root, []);
       const item = baseItem(`compose:${compose.name}`, compose.name, 'compose-project');
       item.composeProject = compose.name;
       item.linkedReasons.push('compose-file-at-project-root');
+      if (configs?.state === 'unresolved') {
+        configs.fallback = compose;
+        item.blockers.push(configs.issue);
+        item.ownership = { ...ownership!, class: 'exact', refusalReasons: [configs.issue] };
+      }
       item.notes.push(
         'compose up recreates the containers on the VM. Only existing volumes and present images are copied.',
       );
@@ -565,6 +672,29 @@ export class DockerPlanSourceService {
         if (volumes.Volumes?.some((v) => v.Name === name))
           item.mounts.push(volumeMount(name, '', true, false));
       }
+      for (const config of Object.values(compose.services ?? {}))
+        for (const mount of config.volumes ?? []) {
+          if (mount.type !== 'bind' || !mount.source) continue;
+          const source = resolve(root, mount.source);
+          if (
+            !strictlyWithin(root, source) ||
+            !previousBindPaths.some((path) => within(path, source) || within(source, path))
+          )
+            continue;
+          item.mounts.push({
+            kind: await this.bindKind(
+              root,
+              source,
+              mount.read_only ?? false,
+              dataBindPaths,
+              signal,
+            ),
+            source,
+            destination: mount.target ?? '',
+            readOnly: mount.read_only ?? false,
+            size: unknownSize(),
+          });
+        }
       items.push(item);
     }
     const previous = await Promise.all(
@@ -583,7 +713,7 @@ export class DockerPlanSourceService {
         .filter((mount) => mount.kind === 'project-bind')
         .map((mount) => mount.source),
       ...previous.filter((mount) => mount.kind === 'project-bind').map((mount) => mount.source),
-      ...dataBindPaths.filter((path) => within(root, path) && resolve(path) !== resolve(root)),
+      ...dataBindPaths.filter((path) => strictlyWithin(root, path)),
     ];
     const classified = [...projectMounts, ...previous];
     for (const mount of classified)
@@ -594,6 +724,148 @@ export class DockerPlanSourceService {
         classified.filter((mount) => mount.kind === 'project-code').map((mount) => mount.source),
       ),
     ];
+    if (ownership) {
+      for (const item of items) {
+        const input = ownershipInputs.get(item.id);
+        if (!input) continue;
+        const { inspect, compose, configs } = input;
+        const imageUser = imageUsers.get(inspect.Image);
+        const homeService = compose ? configs?.home?.services?.[compose.service] : undefined;
+        const vmService = compose ? configs?.vm?.services?.[compose.service] : undefined;
+        // Unlinked containers remain exact consumers even when their numeric user matches home.
+        item.ownership = item.linkedReasons.length
+          ? classifyDockerOwnership(
+              ownership,
+              item.runtimeUser,
+              imageUser,
+              item.mounts.some((mount) => mount.kind === 'project-code'),
+              compose && configs?.state === 'resolved'
+                ? {
+                    source: compose,
+                    homeUser: homeService?.user,
+                    vmUser: vmService?.user,
+                    vmGroupAdd: vmService?.group_add,
+                  }
+                : undefined,
+              item.composeProject !== null,
+              ((inspect.HostConfig.GroupAdd ?? []) as Array<string | number>).map(String),
+            )
+          : { ...ownership, class: 'exact' };
+        if (configs?.state === 'unresolved') {
+          item.ownership.compose = compose;
+          item.ownership.refusalReasons = [configs.issue];
+        }
+        ownershipConsumers.push({
+          name: item.name,
+          itemId: item.id,
+          ownership: item.ownership,
+          user: homeService?.user ?? item.runtimeUser,
+          imageUser,
+          literalHomeUser: Boolean(
+            configs?.state === 'resolved' &&
+              literalHomeComposeUser(ownership, homeService?.user, vmService?.user),
+          ),
+          volumes: item.mounts
+            .filter((mount) => isVolumeMount(mount.kind))
+            .map((mount) => mount.source),
+          bindPaths: item.mounts
+            // Parent code binds can access child data without becoming Docker copy sources.
+            .filter((mount) => !isVolumeMount(mount.kind))
+            .map((mount) => mount.source),
+        });
+      }
+      for (const set of composeOwnershipSets.values()) {
+        const config = set.home ?? set.vm ?? (set.state === 'unresolved' ? set.fallback : null);
+        if (!config) continue;
+        const aggregate = items.find(
+          (item) => item.kind === 'compose-project' && item.composeProject === config.name,
+        );
+        for (const [service, serviceConfig] of Object.entries(config.services ?? {})) {
+          const inspected = [...ownershipInputs.values()].find(
+            (input) => input.configs === set && input.compose?.service === service,
+          );
+          const ref =
+            inspected?.inspect.Image ?? serviceConfig.image ?? `${config.name}-${service}`;
+          let imageUser = imageUsers.get(ref);
+          if (!imageCache.has(ref)) {
+            try {
+              await image(ref);
+              imageUser = imageUsers.get(ref);
+            } catch (error) {
+              if (!isDockerNotFound(error)) throw error;
+            }
+          }
+          const mounts = await Promise.all(
+            (serviceConfig.volumes ?? []).map(async (mount) => ({
+              ...mount,
+              kind:
+                mount.type === 'bind' && mount.source
+                  ? await this.bindKind(
+                      root,
+                      resolve(set.directory, mount.source),
+                      mount.read_only ?? false,
+                      dataBindPaths,
+                      signal,
+                    )
+                  : undefined,
+            })),
+          );
+          const vmConfig = set.vm?.services?.[service];
+          const decision =
+            set.state === 'resolved'
+              ? classifyDockerOwnership(
+                  ownership,
+                  serviceConfig.user ?? imageUser,
+                  imageUser,
+                  mounts.some((mount) => mount.kind === 'project-code'),
+                  {
+                    source: { directory: set.directory, files: set.files, service },
+                    homeUser: serviceConfig.user,
+                    vmUser: vmConfig?.user,
+                    vmGroupAdd: vmConfig?.group_add,
+                  },
+                  true,
+                )
+              : {
+                  ...ownership,
+                  class: 'exact' as const,
+                  compose: { directory: set.directory, files: set.files, service },
+                  refusalReasons: [set.issue],
+                };
+          if (aggregate) (aggregate.serviceOwnership ??= []).push({ service, ownership: decision });
+          ownershipConsumers.push({
+            name: `${config.name}/${service}`,
+            itemId: aggregate?.id,
+            user: serviceConfig.user ?? imageUser,
+            imageUser,
+            ownership: decision,
+            literalHomeUser:
+              set.state === 'resolved' &&
+              literalHomeComposeUser(ownership, serviceConfig.user, vmConfig?.user),
+            volumes: mounts
+              .filter((mount) => mount.type === 'volume' && mount.source)
+              .map((mount) => {
+                const volume = config.volumes?.[mount.source!];
+                return (
+                  volume?.name ??
+                  (volume?.external ? mount.source! : `${config.name}_${mount.source}`)
+                );
+              }),
+            bindPaths: mounts
+              .filter((mount) => mount.type === 'bind' && mount.source)
+              .map((mount) => resolve(set.directory, mount.source!)),
+          });
+        }
+        if (aggregate) {
+          const classes = aggregate.serviceOwnership?.map((entry) => entry.ownership.class) ?? [];
+          aggregate.ownership = {
+            ...ownership,
+            ...(set.state === 'unresolved' ? { refusalReasons: [set.issue] } : {}),
+            class: AGGREGATE_OWNERSHIP_CLASSES.find((cls) => classes.includes(cls)) ?? 'exact',
+          };
+        }
+      }
+    }
     // Measure only after nested code has inherited its enclosing data classification.
     for (const mount of items.flatMap((item) => item.mounts)) {
       if (isVolumeMount(mount.kind)) continue;
@@ -626,6 +898,7 @@ export class DockerPlanSourceService {
       items,
       homePath: this.homePath(),
       codePaths,
+      ...(ownership ? { ownershipConsumers } : {}),
       holders: inspects.map((c) => ({
         volumes: (c.Mounts ?? []).filter((m) => m.Type === 'volume').map((m) => m.Name ?? m.Source),
         bindPaths: (c.Mounts ?? []).filter((m) => m.Type === 'bind').map((m) => m.Source),

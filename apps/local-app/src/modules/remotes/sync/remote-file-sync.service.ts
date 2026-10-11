@@ -8,13 +8,11 @@ import { FileSyncManagedExclusionsStore } from '../../file-sync/file-sync-manage
 import { FileSyncAutoFixStore } from '../../file-sync/file-sync-auto-fix.store';
 import type { FileSyncAutoFix } from '../../file-sync/file-sync-auto-fix.dto';
 import {
-  isGiveOwnershipEligible,
   isSelectableExclusion,
-  within,
+  type ExclusionSuggestion,
 } from '../../file-sync/sync-path-inspection.dto';
-import { SYNC_CHOWN_PATHS_MAX, type SyncChownResult } from '../../file-sync/sync-chown.dto';
-import type { ProjectFileSyncFailures } from './remote-file-sync.dto';
 import { FileSyncFailuresService } from './file-sync-failures.service';
+import { FileSyncSuggestionsService } from './file-sync-suggestions.service';
 import {
   codeIgnores,
   IgnorePatternsSchema,
@@ -47,11 +45,9 @@ import {
 
 const logger = createLogger('RemoteFileSyncService');
 const CHECK_INTERVAL_MS = 30_000;
+const OWNERSHIP_SCAN_INTERVAL_MS = 2 * 60_000;
 const PROBLEM_GRACE_MS = 2 * 60_000;
 const STALLED_MS = 10 * 60_000;
-/** A second repair of a file within this window means a container keeps writing it. */
-const REPEAT_REPAIR_MS = 60 * 60_000;
-
 interface SyncObservation {
   since: number;
   count: number;
@@ -75,12 +71,9 @@ interface ProjectState {
   observations?: Map<string, SyncObservation>;
   failed?: FileSyncFailedCounts;
   autoFixAttempt?: { at: number; home: number; vm: number };
+  ownershipScan?: { attemptedAt: number; inspectedSequence?: number };
   /** Sides whose code folder a restart paused and has not yet resumed. */
   resume?: Set<'home' | 'vm'>;
-  repairAttempts?: Map<string, number>;
-  repairedAt?: Map<string, number>;
-  /** Path to the time of its latest repeat repair; the note expires after REPEAT_REPAIR_MS. */
-  ownershipNotes?: Map<string, number>;
 }
 
 /** File upkeep shares live sync's queue; persisted operations can hold it across restarts. */
@@ -100,6 +93,7 @@ export class RemoteFileSyncService {
     private readonly autoFix: FileSyncAutoFixStore,
     private readonly failures: FileSyncFailuresService,
     private readonly gitOwner: GitOwnerStore,
+    private readonly suggestions: FileSyncSuggestionsService,
   ) {}
 
   getIgnores(projectId: string): { ignores: string[]; revision: number } {
@@ -115,64 +109,6 @@ export class RemoteFileSyncService {
 
   setAutoFix(projectId: string, enabled: boolean): FileSyncAutoFix {
     return this.autoFix.setEnabled(projectId, enabled);
-  }
-
-  ownershipNotes(projectId: string): string[] {
-    const notes = this.projects.get(projectId)?.ownershipNotes;
-    if (!notes) return [];
-    const now = Date.now();
-    for (const [path, at] of notes) if (now - at >= REPEAT_REPAIR_MS) notes.delete(path);
-    return [...notes.keys()].map((path) => `A container keeps writing as another user in ${path}.`);
-  }
-
-  async giveOwnership(
-    projectId: string,
-    paths: string[],
-    active: () => boolean,
-  ): Promise<SyncChownResult> {
-    await this.assertNoHold(projectId);
-    const binding = await this.bindings.get(projectId);
-    if (binding?.state !== 'remote' || !active())
-      throw new ConflictError('The project must be connected to repair VM owners.');
-    const health = this.health.getState(binding.remoteId);
-    if (!health.online || health.apiKeyRejected || !health.versionMatches)
-      throw new ConflictError('The VM must be online with an accepted key and matching version.');
-    const failed = await this.failures.failed(projectId);
-    const eligible = new Set(
-      failed.groups.filter(isGiveOwnershipEligible).map((group) => group.path),
-    );
-    const accepted = [...new Set(paths)].filter((path) => eligible.has(path));
-    const refused: SyncChownResult['items'] = paths
-      .filter((path) => !eligible.has(path))
-      .map((path) => ({
-        path,
-        state: 'refused',
-        paths: [],
-        reason: 'Give to requires a foreign-owned VM path Git neither tracks nor ignores.',
-      }));
-    if (!accepted.length) return { user: failed.vmUser ?? null, items: refused };
-    await this.assertNoHold(projectId);
-    if (!active()) throw new ConflictError('The connection is changing.');
-    const { rootPath } = await this.storage.getProject(projectId);
-    const result = await this.host.syncChown(binding.remoteId, {
-      root: rootPath,
-      items: accepted.map((path) => ({ path, mode: 'give' })),
-    });
-    this.recordRepairs(projectId, result, Date.now());
-    if (result.items.some((item) => item.paths.length))
-      await this.retryPullErrors(projectId, 'vm', binding.remoteId, active);
-    return { ...result, items: [...result.items, ...refused] };
-  }
-
-  private recordRepairs(projectId: string, result: SyncChownResult, now: number): void {
-    const paths = [...new Set(result.items.flatMap((item) => item.paths))];
-    for (let offset = 0; offset < paths.length; offset += SYNC_CHOWN_PATHS_MAX)
-      this.autoFix.record(projectId, {
-        at: new Date(now).toISOString(),
-        kind: 'chown',
-        side: 'vm',
-        paths: paths.slice(offset, offset + SYNC_CHOWN_PATHS_MAX),
-      });
   }
 
   warning(projectId: string): string | null {
@@ -618,6 +554,8 @@ export class RemoteFileSyncService {
           now,
           active,
         );
+      if (vmStatus?.sequence !== undefined && active())
+        await this.scanVmOwnership(projectId, state, vmStatus.sequence, now, active);
     } catch (error) {
       if (!active()) return;
       state.checkProblem = 'error';
@@ -647,89 +585,87 @@ export class RemoteFileSyncService {
       const revision = this.files.getIgnoresRevision(projectId);
       const failed = await this.failures.failed(projectId);
       if (!active() || !this.autoFix.get(projectId).enabled) return;
-      await this.repairAutomatically(projectId, state, failed, now, active);
-      if (!active() || !this.autoFix.get(projectId).enabled) return;
-      const groups = failed.groups.filter(
-        (group) =>
-          isSelectableExclusion(group) &&
-          group.selected &&
-          group.reasonKind === 'foreignOwner' &&
-          !group.home?.tracked &&
-          !group.vm?.tracked &&
-          group.patternChecksPassed === true,
-      );
-      const current = this.files.getIgnores(projectId);
-      const additions = groups
-        .flatMap((group) => group.patterns)
-        .filter((pattern) => !current.includes(pattern));
-      const list = [...new Set([...current, ...additions])];
-      if (additions.length === 0 || !IgnorePatternsSchema.safeParse(list).success) return;
-      if (await this.hasOpenHold(projectId)) return;
-      if (!active()) return;
-      await this.saveIgnores(projectId, list, active, revision);
-      for (const side of ['home', 'vm'] as const) {
-        const patterns = [
-          ...new Set(
-            groups
-              .filter((group) => group.side === side)
-              .flatMap((group) => group.patterns)
-              .filter((pattern) => additions.includes(pattern)),
-          ),
-        ];
-        if (patterns.length)
-          this.autoFix.record(projectId, {
-            at: new Date(now).toISOString(),
-            kind: 'exclude',
-            side,
-            patterns,
-          });
-      }
+      await this.applyAutomaticExclusions(projectId, failed.groups, revision, now, active);
     } catch (error) {
       logger.warn({ error, projectId }, 'Automatic file sync exclusions will retry');
     }
   }
 
-  private async repairAutomatically(
+  private async scanVmOwnership(
     projectId: string,
     state: ProjectState,
-    failed: Omit<ProjectFileSyncFailures, 'forceSync'>,
+    sequence: number,
     now: number,
     active: () => boolean,
   ): Promise<void> {
-    const attempts = (state.repairAttempts ??= new Map());
-    // A failed tracked file may already have the right owner while its parent blocks the pull.
-    // The host rechecks both owners; a copy command alone is not evidence of VM tracking.
-    const paths = (failed.vm?.entries ?? [])
-      .filter(
-        (entry) =>
-          entry.git?.state === 'repo' &&
-          entry.git.tracked === true &&
-          failed.groups.some((group) => group.chown && within(entry.path, group.path)) &&
-          now - (attempts.get(entry.path) ?? -Infinity) >= STALLED_MS,
-      )
-      .map((entry) => entry.path);
-    if (!paths.length || (await this.hasOpenHold(projectId)) || !active()) return;
-    const { rootPath } = await this.storage.getProject(projectId);
+    if (!this.autoFix.get(projectId).enabled) return;
+    const previous = state.ownershipScan;
+    if (
+      previous &&
+      (sequence === previous.inspectedSequence ||
+        now - previous.attemptedAt < OWNERSHIP_SCAN_INTERVAL_MS)
+    )
+      return;
+    const scan = { ...previous, attemptedAt: now };
+    state.ownershipScan = scan;
     try {
+      const revision = this.files.getIgnoresRevision(projectId);
+      const result = await this.suggestions.vmSuggestions(projectId, state.remoteId);
       if (!active() || !this.autoFix.get(projectId).enabled) return;
-      for (const path of paths) attempts.set(path, now);
-      const result = await this.host.syncChown(state.remoteId, {
-        root: rootPath,
-        items: paths.map((path) => ({ path, mode: 'automatic' })),
-      });
-      this.recordRepairs(projectId, result, now);
-      const repaired = (state.repairedAt ??= new Map());
-      for (const item of result.items.filter((item) => item.paths.length > 0)) {
-        const previous = repaired.get(item.path);
-        if (previous !== undefined && now - previous < REPEAT_REPAIR_MS)
-          (state.ownershipNotes ??= new Map()).set(item.path, now);
-        repaired.set(item.path, now);
-      }
-      if (result.items.some((item) => item.paths.length))
-        await this.retryPullErrors(projectId, 'vm', state.remoteId, active);
+      if (
+        await this.applyAutomaticExclusions(projectId, result.groups, revision, now, active, 'vm')
+      )
+        scan.inspectedSequence = sequence;
     } catch (error) {
-      logger.warn({ error, projectId }, 'Automatic VM ownership repair will retry');
+      logger.warn({ error, projectId }, 'VM ownership exclusions will retry');
     }
+  }
+
+  private async applyAutomaticExclusions(
+    projectId: string,
+    suggestions: ExclusionSuggestion[],
+    revision: number,
+    now: number,
+    active: () => boolean,
+    sourceSide?: 'vm',
+  ): Promise<boolean> {
+    const groups = suggestions.filter(
+      (group) =>
+        isSelectableExclusion(group) &&
+        group.selected &&
+        group.reasonKind === 'foreignOwner' &&
+        !group.home?.tracked &&
+        !group.vm?.tracked &&
+        group.patternChecksPassed === true,
+    );
+    const current = this.files.getIgnores(projectId);
+    const additions = groups
+      .flatMap((group) => group.patterns)
+      .filter((pattern) => !current.includes(pattern));
+    const list = [...new Set([...current, ...additions])];
+    if (additions.length === 0) return true;
+    if (!IgnorePatternsSchema.safeParse(list).success) return false;
+    if (await this.hasOpenHold(projectId)) return false;
+    if (!active()) return false;
+    const saved = await this.saveIgnores(projectId, list, active, revision);
+    for (const side of ['home', 'vm'] as const) {
+      const patterns = [
+        ...new Set(
+          groups
+            .filter((group) => (sourceSide ?? group.side) === side)
+            .flatMap((group) => group.patterns)
+            .filter((pattern) => additions.includes(pattern)),
+        ),
+      ];
+      if (patterns.length)
+        this.autoFix.record(projectId, {
+          at: new Date(now).toISOString(),
+          kind: 'exclude',
+          side,
+          patterns,
+        });
+    }
+    return saved.applied;
   }
 
   private async move(projectId: string, state: ProjectState, active: () => boolean): Promise<void> {

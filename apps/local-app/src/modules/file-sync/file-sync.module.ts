@@ -21,7 +21,6 @@ import {
   SyncthingManager,
 } from './syncthing-manager.service';
 import { SyncthingSettingsStore } from './syncthing-settings.store';
-import { SyncChownService } from './sync-chown.service';
 
 @Module({
   imports: [DbModule, StorageModule, GitModule, ProcessExecutorModule],
@@ -42,7 +41,6 @@ import { SyncChownService } from './sync-chown.service';
     FileSyncManagedExclusionsStore,
     FileSyncService,
     SyncPathInspector,
-    SyncChownService,
     HomeGitGuardService,
   ],
   exports: [

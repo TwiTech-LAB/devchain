@@ -126,6 +126,7 @@ export function ChatPage() {
     projectId,
     projectRootPath: selectedProject?.rootPath,
   });
+  const { refetchPreflight } = queries;
 
   const {
     pools: messagePools,
@@ -236,6 +237,13 @@ export function ChatPage() {
     presenceReady: queries.presenceReady,
     onInlineTerminalAttach: handleInlineTerminalAttach,
   });
+  const {
+    handleRestartSession,
+    handleTerminateSession,
+    handleTerminateAllAgents,
+    setTerminateAllConfirm,
+    setTerminateConfirm,
+  } = sessionControls;
 
   // ============================================
   // Pending Restart State Management
@@ -269,24 +277,24 @@ export function ChatPage() {
   // Wrapped session handlers that clear pending restart state
   const handleRestartSessionWithClear = useCallback(
     async (agentId: string) => {
-      await sessionControls.handleRestartSession(agentId);
+      await handleRestartSession(agentId);
       clearPendingRestart(restartKeyForMain(agentId));
     },
-    [sessionControls.handleRestartSession, clearPendingRestart],
+    [handleRestartSession, clearPendingRestart],
   );
 
   const handleTerminateSessionWithClear = useCallback(
     async (agentId: string, sessionId: string) => {
-      await sessionControls.handleTerminateSession(agentId, sessionId);
+      await handleTerminateSession(agentId, sessionId);
       clearPendingRestart(restartKeyForMain(agentId));
     },
-    [sessionControls.handleTerminateSession, clearPendingRestart],
+    [handleTerminateSession, clearPendingRestart],
   );
 
   const handleTerminateAllAgentsWithClear = useCallback(async () => {
-    await sessionControls.handleTerminateAllAgents();
+    await handleTerminateAllAgents();
     clearAllPendingRestarts();
-  }, [sessionControls.handleTerminateAllAgents, clearAllPendingRestarts]);
+  }, [handleTerminateAllAgents, clearAllPendingRestarts]);
 
   // ============================================
   // Preset Query & Mutation
@@ -674,7 +682,7 @@ export function ChatPage() {
 
   const handleVerifyMcp = useCallback(async (): Promise<boolean> => {
     queryClient.invalidateQueries({ queryKey: ['preflight'] });
-    const result = await queries.refetchPreflight();
+    const result = await refetchPreflight();
     const data = result.data as
       | { providers?: Array<{ id: string; mcpStatus: string }> }
       | undefined;
@@ -683,7 +691,7 @@ export function ChatPage() {
       (p) => p.id === sessionControls.pendingLaunchAgent!.providerId,
     );
     return providerCheck?.mcpStatus === 'pass';
-  }, [queryClient, queries.refetchPreflight, sessionControls.pendingLaunchAgent]);
+  }, [queryClient, refetchPreflight, sessionControls.pendingLaunchAgent]);
 
   // ESC key interception for terminal sessions
   useEffect(() => {
@@ -715,7 +723,13 @@ export function ChatPage() {
 
     document.addEventListener('keydown', handleGlobalEscape, { capture: true });
     return () => document.removeEventListener('keydown', handleGlobalEscape, { capture: true });
-  }, [customPromptPickerOpen, showInlineTerminal, inlineTerminalSessionId, focusedWindowId]);
+  }, [
+    customPromptPickerOpen,
+    showInlineTerminal,
+    inlineTerminalSessionId,
+    focusedWindowId,
+    socketRef,
+  ]);
 
   // ============================================
   // Render CTAs
@@ -827,11 +841,10 @@ export function ChatPage() {
       terminatingAll: sessionControls.terminatingAll,
       onSelectAgent: handleSelectMainAgent,
       onStartAllAgents: sessionControls.handleStartAllAgents,
-      onTerminateAllConfirm: () => sessionControls.setTerminateAllConfirm(true),
+      onTerminateAllConfirm: () => setTerminateAllConfirm(true),
       onLaunchSession: sessionControls.handleLaunchSession,
       onRestartSession: handleRestartSessionWithClear,
-      onTerminateConfirm: (agentId, sessionId) =>
-        sessionControls.setTerminateConfirm({ agentId, sessionId }),
+      onTerminateConfirm: (agentId, sessionId) => setTerminateConfirm({ agentId, sessionId }),
       onReleaseHeldMessages: handleOpenHumanRelease,
       onForceDelivery: handleOpenForceDelivery,
       forcingAgentId,
@@ -849,10 +862,10 @@ export function ChatPage() {
       sessionControls.terminatingAll,
       handleSelectMainAgent,
       sessionControls.handleStartAllAgents,
-      sessionControls.setTerminateAllConfirm,
+      setTerminateAllConfirm,
       sessionControls.handleLaunchSession,
       handleRestartSessionWithClear,
-      sessionControls.setTerminateConfirm,
+      setTerminateConfirm,
       handleOpenHumanRelease,
       handleOpenForceDelivery,
       releasingAgentId,
@@ -1011,9 +1024,9 @@ export function ChatPage() {
 
       <SessionLifecycleModals
         terminateConfirm={sessionControls.terminateConfirm}
-        setTerminateConfirm={sessionControls.setTerminateConfirm}
+        setTerminateConfirm={setTerminateConfirm}
         terminateAllConfirm={sessionControls.terminateAllConfirm}
-        setTerminateAllConfirm={sessionControls.setTerminateAllConfirm}
+        setTerminateAllConfirm={setTerminateAllConfirm}
         mcpModalOpen={sessionControls.mcpModalOpen}
         setMcpModalOpen={sessionControls.setMcpModalOpen}
         agentsWithSessions={sessionControls.agentsWithSessions}

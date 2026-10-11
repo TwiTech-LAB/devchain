@@ -3,7 +3,7 @@ import type { AgentOrGuestItem } from '@/modules/agents/controllers/agents.contr
 import type { ListResult } from '@/modules/storage/interfaces/storage.interface';
 import type { Agent } from '@/modules/storage/models/domain.models';
 import type { FetchFn } from './api-transport';
-import { fetchJsonOrThrow } from './sessions';
+import { fetchJsonOrThrow } from './http-json';
 
 export type { Agent, AgentOrGuestItem };
 

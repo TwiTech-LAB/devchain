@@ -1,3 +1,4 @@
+import type { EpicsController } from '@/modules/epics/controllers/epics.controller';
 import type { Epic } from '@/ui/types';
 import type { FetchFn } from '@/ui/lib/api-transport';
 
@@ -16,13 +17,13 @@ export async function fetchEpics(
   const params = new URLSearchParams({ projectId, limit: '1000', type: archived });
   const res = await fetchFn(`/api/epics?${params.toString()}`);
   if (!res.ok) throw new Error('Failed to fetch epics');
-  return res.json();
+  return res.json() as Promise<Awaited<ReturnType<EpicsController['listEpics']>>>;
 }
 
 export async function fetchSubEpics(parentId: string, fetchFn: FetchFn) {
   const res = await fetchFn(`/api/epics?parentId=${parentId}`);
   if (!res.ok) throw new Error('Failed to fetch sub-epics');
-  return res.json();
+  return res.json() as Promise<Awaited<ReturnType<EpicsController['listEpics']>>>;
 }
 
 export async function fetchSubEpicCounts(
@@ -31,7 +32,7 @@ export async function fetchSubEpicCounts(
 ): Promise<Record<string, number>> {
   const res = await fetchFn(`/api/epics/${epicId}/sub-epics/counts`);
   if (!res.ok) throw new Error('Failed to fetch sub-epic counts');
-  return res.json();
+  return res.json() as Promise<Record<string, number>>;
 }
 
 export async function createEpic(data: Partial<Epic>, fetchFn: FetchFn) {
@@ -44,7 +45,7 @@ export async function createEpic(data: Partial<Epic>, fetchFn: FetchFn) {
     const error = await res.json().catch(() => ({ message: 'Failed to create epic' }));
     throw new Error(error.message || 'Failed to create epic');
   }
-  return res.json();
+  return res.json() as Promise<Awaited<ReturnType<EpicsController['createEpic']>>>;
 }
 
 export async function updateEpic(id: string, data: Partial<Epic>, fetchFn: FetchFn) {
@@ -57,7 +58,7 @@ export async function updateEpic(id: string, data: Partial<Epic>, fetchFn: Fetch
     const error = await res.json().catch(() => ({ message: 'Failed to update epic' }));
     throw new Error(error.message || 'Failed to update epic');
   }
-  return res.json();
+  return res.json() as Promise<Awaited<ReturnType<EpicsController['updateEpic']>>>;
 }
 
 export async function bulkUpdateEpicsApi(payload: BulkUpdateEpicsPayload, fetchFn: FetchFn) {
@@ -70,7 +71,7 @@ export async function bulkUpdateEpicsApi(payload: BulkUpdateEpicsPayload, fetchF
     const error = await res.json().catch(() => ({ message: 'Failed to update epics' }));
     throw new Error(error.message || 'Failed to apply bulk updates');
   }
-  return res.json();
+  return res.json() as Promise<Awaited<ReturnType<EpicsController['bulkUpdateEpics']>>>;
 }
 
 export async function deleteEpic(id: string, fetchFn: FetchFn) {

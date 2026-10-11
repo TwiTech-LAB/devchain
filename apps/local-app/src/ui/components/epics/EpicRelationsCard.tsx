@@ -695,7 +695,7 @@ export function EpicRelationsCard({
         signal,
       });
       if (!res.ok) throw new Error('The focal project could not be loaded.');
-      return res.json();
+      return res.json() as Promise<FocalProjectSummary>;
     },
     enabled: Boolean(focalProjectId) && selectedProject?.id !== focalProjectId,
     staleTime: 60_000,

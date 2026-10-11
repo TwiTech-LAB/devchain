@@ -65,20 +65,8 @@ export function SessionSwitcher({ currentSessionId, onSessionSwitch }: SessionSw
   // Keyboard shortcuts for session switching
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      console.log('SessionSwitcher keydown:', {
-        key: e.key,
-        ctrlKey: e.ctrlKey,
-        shiftKey: e.shiftKey,
-        altKey: e.altKey,
-        metaKey: e.metaKey,
-        activeSessions: activeSessions.length,
-        currentSessionId,
-      });
-
       // Check for Ctrl+Shift+1-9 (avoiding browser conflicts)
       if (e.ctrlKey && e.shiftKey && !e.altKey && !e.metaKey) {
-        console.log('SessionSwitcher: Ctrl+Shift detected');
-
         // Use event.code instead of event.key to handle shifted characters
         // e.g., Ctrl+Shift+1 gives key='!' but code='Digit1'
         let numberKey: number | null = null;
@@ -90,87 +78,34 @@ export function SessionSwitcher({ currentSessionId, onSessionSwitch }: SessionSw
         else if (['!', '@', '#', '$', '%', '^', '&', '*', '('].includes(e.key)) {
           const shiftedKeys = ['!', '@', '#', '$', '%', '^', '&', '*', '('];
           const index = shiftedKeys.indexOf(e.key);
-          console.log('SessionSwitcher: Shifted character detection:', {
-            key: e.key,
-            foundIndex: index,
-            calculatedNumber: index + 1,
-            shiftedKeys,
-          });
           if (index !== -1) {
             numberKey = index + 1;
           }
         }
 
-        console.log('SessionSwitcher: Number key:', numberKey, 'from code:', e.code, 'key:', e.key);
-
-        // Special debug for key 3
-        if (e.key === '#' || e.code === 'Digit3') {
-          console.log('SessionSwitcher: DEBUGGING Ctrl+Shift+3:', {
-            key: e.key,
-            code: e.code,
-            detectedNumber: numberKey,
-            shouldBe3: true,
-          });
-        }
-
         if (numberKey && numberKey >= 1 && numberKey <= 9) {
-          console.log('SessionSwitcher: Valid number key, preventing default');
           e.preventDefault();
           e.stopPropagation();
 
           // Find session at this position (1-indexed) from current ordering
-          const orderedSessions = activeSessions;
-          const targetSession = orderedSessions[numberKey - 1];
-          console.log('SessionSwitcher: Target session details:', {
-            numberKey,
-            arrayIndex: numberKey - 1,
-            targetSessionId: targetSession?.id,
-            targetSessionAgent: targetSession?.agentId,
-            currentSessionId,
-            totalSessions: activeSessions.length,
-            allSessionIds: activeSessions.map((s) => s.id),
-            isCurrentSession: targetSession?.id === currentSessionId,
-          });
-
+          const targetSession = activeSessions[numberKey - 1];
           if (targetSession && targetSession.id !== currentSessionId) {
-            console.log('SessionSwitcher: SWITCHING to session:', targetSession.id);
             onSessionSwitch(targetSession);
-          } else if (!targetSession) {
-            console.log(
-              'SessionSwitcher: ERROR - Target session not found at index',
-              numberKey - 1,
-            );
-          } else if (targetSession.id === currentSessionId) {
-            console.log('SessionSwitcher: SKIPPING - Already on target session:', targetSession.id);
-          } else {
-            console.log('SessionSwitcher: UNKNOWN - No switch performed');
           }
         }
       }
     };
 
-    console.log('SessionSwitcher: Adding keydown listener');
     document.addEventListener('keydown', handleKeyDown, { capture: true });
     return () => {
-      console.log('SessionSwitcher: Removing keydown listener');
       document.removeEventListener('keydown', handleKeyDown, { capture: true });
     };
   }, [activeSessions, currentSessionId, onSessionSwitch]);
 
-  console.log('SessionSwitcher render:', {
-    selectedProjectId,
-    activeSessionsLength: activeSessions.length,
-    currentSessionId,
-    currentOrder: activeSessions.map((s) => ({ id: s.id, agentId: s.agentId })),
-  });
-
   // Don't show switcher if there's only one session or no project
   if (!selectedProjectId || activeSessions.length <= 1) {
-    console.log('SessionSwitcher: Not rendering - only', activeSessions.length, 'sessions');
     return null;
   }
-
-  console.log('SessionSwitcher: Rendering with', activeSessions.length, 'sessions');
 
   return (
     <div className="flex items-center gap-1 mx-3">

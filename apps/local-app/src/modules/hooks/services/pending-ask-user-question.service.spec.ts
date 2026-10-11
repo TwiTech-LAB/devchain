@@ -111,13 +111,17 @@ describe('PendingAskUserQuestionService', () => {
 
   it('clears the session on session.stopped', () => {
     service.set(input({ toolUseId: 'a' }));
-    service.onSessionStopped({ sessionId: SESSION_A });
+    service.onSessionStopped({
+      sessionId: SESSION_A,
+      source: 'web-api',
+      reason: 'user-requested',
+    });
     expect(service.getBySession(SESSION_A, 2000)).toHaveLength(0);
   });
 
   it('clears the session on session.crashed', () => {
     service.set(input({ toolUseId: 'a' }));
-    service.onSessionCrashed({ sessionId: SESSION_A });
+    service.onSessionCrashed({ sessionId: SESSION_A, sessionName: 'session-a' });
     expect(service.getBySession(SESSION_A, 2000)).toHaveLength(0);
   });
 });

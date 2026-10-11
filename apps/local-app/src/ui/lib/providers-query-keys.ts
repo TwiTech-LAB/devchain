@@ -1,15 +1,16 @@
-/**
- * Query-key factory for provider-list and providers-page preflight queries.
- *
- * Replaces the raw `['providers']` and `['preflight', 'providers-page', ...]`
- * arrays that were scattered across the app. Mirrors the shape of
- * `providerModelQueryKeys` / `providerEffortQueryKeys` (sibling factories for
- * the provider sub-resources) and `teamsQueryKeys` (the list-factory precedent).
- *
- * Scope: the global provider list and the providers-page preflight subtree.
- * Profile provider-config reads and their invalidation predicates are owned
- * by `provider-configs.ts`, including single-profile and aggregate keys.
- */
+import type { ProvidersController } from '@/modules/providers/controllers/providers.controller';
+import type { FetchFn } from './api-transport';
+
+export type ProvidersResponse = Awaited<ReturnType<ProvidersController['listProviders']>>;
+export type Provider = ProvidersResponse['items'][number];
+
+export async function fetchProviders(fetchFn: FetchFn): Promise<ProvidersResponse> {
+  const res = await fetchFn('/api/providers');
+  if (!res.ok) throw new Error('Failed to fetch providers');
+  return res.json() as Promise<ProvidersResponse>;
+}
+
+/** Provider-list and providers-page preflight keys. */
 export const providersQueryKeys = {
   /** Global provider list. No project scoping — providers are top-level resources. */
   list: () => ['providers'] as const,

@@ -31,7 +31,7 @@ type FetchFn = (input: RequestInfo | URL, init?: RequestInit) => Promise<Respons
 async function fetchSubEpics(parentId: string, fetchFn: FetchFn): Promise<SubEpicsResponse> {
   const res = await fetchFn(`/api/epics?parentId=${encodeURIComponent(parentId)}`);
   if (!res.ok) throw new Error('Failed to fetch sub-epics');
-  return res.json();
+  return res.json() as Promise<SubEpicsResponse>;
 }
 
 export interface EpicTableRowProps {

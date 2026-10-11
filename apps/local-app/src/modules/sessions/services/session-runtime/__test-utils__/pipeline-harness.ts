@@ -1,3 +1,5 @@
+import { SessionRowStore } from '../../../../storage/sessions/session-row.store';
+import type { BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
 /**
  * Test harness for SessionLaunchPipeline and SessionRestorePipeline.
  *
@@ -267,6 +269,7 @@ export function createLaunchPipelineHarness() {
     runtimeContextCapture,
     claudeLaunchSettings,
     codexPluginProfiles,
+    new SessionRowStore(sqliteMock.db as unknown as BetterSQLite3Database),
   );
   const pipeline = new SessionLaunchPipeline(
     sqliteMock.db, // @Inject(DB_CONNECTION)
@@ -284,6 +287,7 @@ export function createLaunchPipelineHarness() {
     teamsService, // TeamsService
     sessionTerminalRuntime, // SessionTerminalRuntimeService
     providerRuntimePreparation, // ProviderRuntimePreparationService
+    new SessionRowStore(sqliteMock.db as unknown as BetterSQLite3Database),
   );
 
   return {
@@ -490,6 +494,7 @@ export function createRestorePipelineHarness<
     providerRuntimePreparation, // ProviderRuntimePreparationService
     preflightService, // PreflightService
     mcpEnsureService, // ProviderMcpEnsureService
+    new SessionRowStore(sqliteMock.db as unknown as BetterSQLite3Database),
   );
 
   /**

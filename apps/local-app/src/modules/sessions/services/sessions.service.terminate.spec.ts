@@ -1,9 +1,10 @@
+import { SessionRowStore } from '../../storage/sessions/session-row.store';
 /**
  * Unit tests for terminateSession — size_bytes best-effort population.
  * Isolated from the full sessions.service.spec.ts to keep stat() mocking clean.
  */
 
-jest.mock('../utils/claude-config', () => ({
+jest.mock('../../providers/utils/claude-config', () => ({
   checkAutoCompactConfig: jest.fn(),
 }));
 
@@ -145,6 +146,7 @@ describe('SessionsService.terminateSession — size_bytes', () => {
         runTerminationResetSync: jest.fn(),
       } as unknown as EpicTimeStore,
       { listRemoteOwnedProjectIds: () => [] } as never,
+      new SessionRowStore(dbMock),
     );
   });
 

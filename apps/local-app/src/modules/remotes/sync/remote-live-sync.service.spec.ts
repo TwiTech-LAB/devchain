@@ -157,6 +157,7 @@ describe('RemoteLiveSyncService', () => {
           {} as never,
           {} as never,
           {} as never,
+          {} as never,
         );
         service = new RemoteLiveSyncService(
           health as never,

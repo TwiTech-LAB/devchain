@@ -1,4 +1,4 @@
-import { Injectable, OnModuleInit, OnModuleDestroy, Inject, forwardRef } from '@nestjs/common';
+import { Injectable, OnModuleInit, OnModuleDestroy, Inject } from '@nestjs/common';
 import * as jose from 'jose';
 import { createLogger } from '../../../common/logging/logger';
 import { EncryptedTokenStoreService } from './encrypted-token-store.service';
@@ -34,7 +34,6 @@ export class CloudSessionManagerService implements OnModuleInit, OnModuleDestroy
 
   constructor(
     private readonly tokenStore: EncryptedTokenStoreService,
-    @Inject(forwardRef(() => EventsService))
     private readonly eventsService: EventsService,
     @Inject(REALTIME_BROADCASTER)
     private readonly broadcaster: RealtimeBroadcaster,

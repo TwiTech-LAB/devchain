@@ -1,3 +1,4 @@
+import type { RegistryController } from '@/modules/registry/controllers/registry.controller';
 import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Badge } from '@/ui/components/ui/badge';
@@ -35,7 +36,7 @@ async function fetchCachedVersions(slug: string) {
     { backend: HOME_BACKEND },
   );
   if (!res.ok) throw new Error('Failed to fetch cached versions');
-  return res.json();
+  return res.json() as Promise<Awaited<ReturnType<RegistryController['getCachedVersions']>>>;
 }
 
 async function downloadTemplateVersion(slug: string, version: string) {
@@ -45,7 +46,7 @@ async function downloadTemplateVersion(slug: string, version: string) {
     { backend: HOME_BACKEND },
   );
   if (!res.ok) throw new Error('Failed to download template');
-  return res.json();
+  return res.json() as Promise<Awaited<ReturnType<RegistryController['downloadTemplate']>>>;
 }
 
 export function VersionList({ versions, slug }: VersionListProps) {

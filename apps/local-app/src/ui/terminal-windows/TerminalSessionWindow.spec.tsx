@@ -1,5 +1,5 @@
 import React from 'react';
-import { render, act } from '@testing-library/react';
+import { render, act, fireEvent, screen } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { TerminalSessionWindowContent } from './TerminalSessionWindow';
 import type { ActiveSession } from '@/ui/lib/sessions';
@@ -29,10 +29,12 @@ jest.mock('@/ui/lib/sessions', () => ({
 }));
 
 jest.mock('@/ui/components/Terminal', () => ({
-  Terminal: React.forwardRef((_props: unknown, ref: React.ForwardedRef<unknown>) => {
-    React.useImperativeHandle(ref, () => ({}));
-    return React.createElement('div', { 'data-testid': 'terminal' });
-  }),
+  Terminal: React.forwardRef(
+    ({ onSessionEnded }: { onSessionEnded: () => void }, ref: React.ForwardedRef<unknown>) => {
+      React.useImperativeHandle(ref, () => ({}));
+      return React.createElement('button', { onClick: onSessionEnded }, 'End session');
+    },
+  ),
 }));
 
 jest.mock('@/ui/components/shared/ConfirmDialog', () => ({
@@ -87,6 +89,35 @@ describe('TerminalSessionWindowContent', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
+  });
+
+  // A component test exercises the rename state and terminal event callback without a real PTY.
+  it('uses the renamed session name in the completion toast', async () => {
+    const onRequestClose = jest.fn();
+    render(
+      <TerminalSessionWindowContent
+        session={makeSession({ name: 'Original name' })}
+        onRequestClose={onRequestClose}
+      />,
+      { wrapper: createWrapper() },
+    );
+
+    const sessionDetail = () =>
+      mockUpdateWindowMeta.mock.calls
+        .at(-1)![1]
+        .details.find((detail: { label: string }) => detail.label === 'Session');
+    act(() => sessionDetail().onRenameStart());
+    act(() => sessionDetail().onDraftChange('Renamed session'));
+    await act(async () => {
+      sessionDetail().onRenameKeyDown({ key: 'Enter' } as React.KeyboardEvent<HTMLInputElement>);
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: 'End session' }));
+    expect(mockToast).toHaveBeenCalledWith({
+      title: 'Session ended',
+      description: 'Session Renamed session has completed.',
+    });
+    expect(onRequestClose).toHaveBeenCalledTimes(1);
   });
 
   it.each([

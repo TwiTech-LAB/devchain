@@ -1,3 +1,4 @@
+import type { EgressConfigController } from '@/modules/cloud/controllers/egress-config.controller';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { Folder } from 'lucide-react';
 import { HOME_BACKEND, apiFetch } from '@/ui/lib/api-transport';
@@ -29,7 +30,7 @@ export function ProjectForwardingRow({
         backend: HOME_BACKEND,
       });
       if (!res.ok) throw new Error('Failed to fetch egress config');
-      return res.json();
+      return res.json() as Promise<ReturnType<EgressConfigController['getProject']>>;
     },
   });
 

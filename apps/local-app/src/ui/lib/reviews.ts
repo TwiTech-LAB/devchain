@@ -147,7 +147,7 @@ export async function fetchReviews(
   if (!response.ok) {
     throw new Error('Failed to fetch reviews');
   }
-  return response.json();
+  return response.json() as Promise<ReviewsListResponse>;
 }
 
 /**
@@ -158,7 +158,7 @@ export async function fetchReview(fetchFn: FetchFn, reviewId: string): Promise<R
   if (!response.ok) {
     throw new Error('Failed to fetch review');
   }
-  return response.json();
+  return response.json() as Promise<Review>;
 }
 
 /**
@@ -177,7 +177,7 @@ export async function createReview(
   if (!response.ok) {
     throw new Error('Failed to create review');
   }
-  return response.json();
+  return response.json() as Promise<Review>;
 }
 
 /**
@@ -197,7 +197,7 @@ export async function updateReview(
   if (!response.ok) {
     throw new Error('Failed to update review');
   }
-  return response.json();
+  return response.json() as Promise<Review>;
 }
 
 /**
@@ -250,7 +250,7 @@ export async function fetchReviewComments(
   if (!response.ok) {
     throw new Error('Failed to fetch review comments');
   }
-  return response.json();
+  return response.json() as Promise<CommentsListResponse>;
 }
 
 // Status badge color mapping
@@ -322,7 +322,7 @@ export async function fetchCommits(
   if (!response.ok) {
     throw new Error('Failed to fetch commits');
   }
-  return response.json();
+  return response.json() as Promise<GitCommit[]>;
 }
 
 /**
@@ -333,7 +333,7 @@ export async function fetchBranches(fetchFn: FetchFn, projectId: string): Promis
   if (!response.ok) {
     throw new Error('Failed to fetch branches');
   }
-  return response.json();
+  return response.json() as Promise<GitBranch[]>;
 }
 
 /**
@@ -344,7 +344,7 @@ export async function fetchTags(fetchFn: FetchFn, projectId: string): Promise<Gi
   if (!response.ok) {
     throw new Error('Failed to fetch tags');
   }
-  return response.json();
+  return response.json() as Promise<GitTag[]>;
 }
 
 /**
@@ -361,7 +361,7 @@ export async function fetchChangedFiles(
   if (!response.ok) {
     throw new Error('Failed to fetch changed files');
   }
-  return response.json();
+  return response.json() as Promise<ChangedFile[]>;
 }
 
 /**
@@ -378,7 +378,7 @@ export async function fetchDiff(
   if (!response.ok) {
     throw new Error('Failed to fetch diff');
   }
-  const data = await response.json();
+  const data = (await response.json()) as { diff: string };
   return data.diff;
 }
 
@@ -418,7 +418,7 @@ export async function fetchWorkingTree(
   if (!response.ok) {
     throw new Error('Failed to fetch working tree');
   }
-  return response.json();
+  return response.json() as Promise<WorkingTreeResponse>;
 }
 
 /**
@@ -434,7 +434,7 @@ export async function fetchCommitDiff(
   if (!response.ok) {
     throw new Error('Failed to fetch commit diff');
   }
-  return response.json();
+  return response.json() as Promise<{ sha: string; diff: string; changedFiles: ChangedFile[] }>;
 }
 
 /**
@@ -449,7 +449,7 @@ export async function fetchActiveReview(
   if (!response.ok) {
     throw new Error('Failed to fetch active review');
   }
-  const data = await response.json();
+  const data = (await response.json()) as { review: Review | null };
   return data.review;
 }
 
@@ -469,7 +469,7 @@ export async function closeReview(
   if (!response.ok) {
     throw new Error('Failed to close review');
   }
-  return response.json();
+  return response.json() as Promise<Review>;
 }
 
 // ============================================

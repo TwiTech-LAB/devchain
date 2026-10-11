@@ -9,6 +9,7 @@ jest.mock('../../../common/logging/logger', () => ({
   createLogger: jest.fn(() => mockSessionsLogger),
 }));
 
+import { SessionRowStore } from '../../storage/sessions/session-row.store';
 import { SessionsService } from './sessions.service';
 import { ForbiddenError, NotFoundError, ValidationError } from '../../../common/errors/error-types';
 import type { StorageService } from '../../storage/interfaces/storage.interface';
@@ -168,6 +169,7 @@ describe('SessionsService', () => {
         runtimeContextCapture as unknown as RuntimeContextCaptureService,
         claudeLaunchSettings as never,
         codexPluginProfiles as never,
+        new SessionRowStore(dbMock),
       ),
       {
         readActivationSettings: jest
@@ -176,6 +178,7 @@ describe('SessionsService', () => {
         runTerminationResetSync: jest.fn(),
       } as unknown as EpicTimeStore,
       { listRemoteOwnedProjectIds: () => [] } as never,
+      new SessionRowStore(dbMock),
     );
   });
 

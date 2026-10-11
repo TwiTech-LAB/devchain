@@ -20,6 +20,11 @@ export interface VmUserMismatch {
   vmGid: number | null;
   uidConflict?: VmUidConflict;
 }
+export function hasUnknownUserIds(mismatch: VmUserMismatch): boolean {
+  return [mismatch.homeUid, mismatch.homeGid, mismatch.vmUid, mismatch.vmGid].some(
+    (id) => id === null,
+  );
+}
 
 export function vmUserMismatch(
   homeUid: number | null,
@@ -53,7 +58,11 @@ export function vmUserWarning(mismatch: VmUserMismatch): string {
   const reason = uidConflict?.holder
     ? `uid ${uidConflict.requestedUid} is used by ${uidConflict.holder} on the VM; the VM user got ${userIds(vmUid, vmGid)}.`
     : `The user ids differ (${userIds(homeUid, homeGid)} here, ${userIds(vmUid, vmGid)} on the VM).`;
-  return `${reason} Automatic Docker moves are off for this VM.`;
+  // With both ids known, Connect decides Docker ownership per container.
+  const docker = hasUnknownUserIds(mismatch)
+    ? 'Automatic Docker moves are off for this VM.'
+    : 'Docker moves still work; Connect shows any container that needs a user fix.';
+  return `${reason} ${docker}`;
 }
 
 export function dockerCopyBackMismatchMessage(mismatch: VmUserMismatch): string {

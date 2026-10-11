@@ -62,7 +62,7 @@ async function fetchEpics(fetchFn: FetchFn, projectId: string): Promise<EpicList
   if (!res.ok) {
     throw new Error('Failed to load epics');
   }
-  return res.json();
+  return res.json() as Promise<EpicListResponse>;
 }
 
 async function fetchRecords(
@@ -78,7 +78,7 @@ async function fetchRecords(
   if (!res.ok) {
     throw new Error('Failed to load records');
   }
-  return res.json();
+  return res.json() as Promise<RecordsListResponse>;
 }
 
 const TYPE_ALL = 'all';
@@ -154,7 +154,7 @@ export function RecordsPage() {
     setSelectedRecord(record);
   }, []);
 
-  const records = recordsData?.items ?? [];
+  const records = useMemo(() => recordsData?.items ?? [], [recordsData]);
 
   const typeOptions = useMemo(() => {
     const unique = new Set<string>();

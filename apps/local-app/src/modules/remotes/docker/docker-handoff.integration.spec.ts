@@ -1,18 +1,24 @@
+import { HostDockerVolumeAssociationsStore } from '../host/host-docker-volume-associations.store';
 import { Scope } from '@nestjs/common';
 // Fake engines on both sides; the VM side runs the real host routes behind the real LAN client.
 import { Test, type TestingModule } from '@nestjs/testing';
 import { FastifyAdapter, type NestFastifyApplication } from '@nestjs/platform-fastify';
 import { existsSync } from 'node:fs';
-import { mkdir, mkdtemp, readdir, rm, stat, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Header } from 'tar';
 import { AllExceptionsFilter } from '../../../common/filters/http-exception.filter';
+import { tarArchive, tarEntries } from '../../../common/test/docker-tar.fixture';
 import { FakeDockerEngine, type FakeMount } from '../../../common/test/fake-docker-engine.server';
 import { fixtureTls, installFixtureTlsFront } from '../../../common/test/tls-fixture';
 import { DockerArchiveJournal } from '../../core/controllers/docker-archive-journal';
 import { DockerEngineClient, DockerEngineError } from '../../core/controllers/docker-engine.client';
 import type { RemoteOperation } from '../../storage/models/domain.models';
+import { codeIgnores, type SyncFolderIgnores } from '../../file-sync/file-sync.dto';
+import { codeFolderId, type FileSyncService } from '../../file-sync/file-sync.service';
+import { FakeFileSyncService } from '../../file-sync/testing/fake-file-sync.service';
+import { firstMatch } from '../../file-sync/ignore-pattern-matcher';
 import { HostDockerController } from '../host/host-docker.controller';
 import { HostDockerService } from '../host/host-docker.service';
 import { HOST_IPV4_ROUTES } from '../host/host-ipv4-routes';
@@ -21,7 +27,8 @@ import { DockerScanRequestSchema } from '../host/host-docker.dto';
 import type { DockerImportInventory } from '../operations/docker-import-inventory.store';
 import { RemoteHostClient } from '../operations/remote-host.client';
 import type { RemoteOperationStepRun } from '../operations/remote-operation.types';
-import { DockerHandoff } from './docker-handoff';
+import { FileSyncHandoff } from '../operations/file-sync-handoff';
+import { buildRecord, DockerHandoff } from './docker-handoff';
 import { DockerHandoffStore } from './docker-handoff.store';
 import type { DockerTransferDetails } from './docker-plan.dto';
 import { DockerPlanService } from './docker-plan.service';
@@ -47,11 +54,13 @@ let state: string;
 let home: FakeDockerEngine;
 let vm: FakeDockerEngine;
 let app: NestFastifyApplication;
+let associationsDatabase: ReturnType<typeof createTestDatabase>;
 let handoff: DockerHandoff;
 let plans: DockerPlanService;
 let store: DockerHandoffStore;
 let inventory: Map<string, DockerImportInventory>;
 let exclusions: Map<string, string[]>;
+let files: { installedIgnores: jest.Mock<Promise<SyncFolderIgnores>, [string]> };
 let savedDockerHost: string | undefined;
 let progress: Array<Record<string, unknown>>;
 let host: RemoteHostClient;
@@ -268,43 +277,57 @@ it('keeps the home user for a read-only volume containing a 0600 file', async ()
   expect(new Header(vm.data.get('app_db')!)).toMatchObject({ uid: 1000, gid: 1000, mode: 0o600 });
 });
 
-it('reconnect drops old code exclusions, keeps unselected data, and retains original exclusions on retry', async () => {
-  git.setDefaultResponse({ type: 'success', stdout: 'state/main.py\0' });
-  const prior: DockerImportInventory = {
-    importedAt: '2026-09-01T00:00:00.000Z',
-    items: [
-      { name: 'runner', imageId: 'sha256:web', volumes: [], bindPaths: ['/state'], sizeBytes: 5 },
-      {
-        name: 'absent',
-        imageId: 'sha256:web',
-        volumes: [],
-        bindPaths: ['/retired-data'],
-        sizeBytes: 5,
-      },
-    ],
-  };
-  inventory.set(`${PROJECT}/${REMOTE}`, prior);
-  exclusions.set(PROJECT, ['/state', '/retired-data']);
-  details.dockerSelection = { items: [{ id: 'runner-id', mode: 'container-and-data' }] };
-  git.enqueueResponse(
-    { type: 'success', stdout: 'state/main.py\0' },
-    { type: 'success', stdout: 'state/main.py\0' },
-    { type: 'success' },
-  );
-  await handoff.preflight(run());
-  expect(exclusions.get(PROJECT)).toEqual(['/retired-data']);
-  expect(details.managedExclusionsBefore).toEqual(['/state', '/retired-data']);
-  git.enqueueResponse(
-    { type: 'success', stdout: 'state/main.py\0' },
-    { type: 'success', stdout: 'state/main.py\0' },
-    { type: 'success' },
-  );
-  await handoff.preflight(run());
-  expect(exclusions.get(PROJECT)).toEqual(['/retired-data']);
-  expect(details.managedExclusionsBefore).toEqual(['/state', '/retired-data']);
-  await handoff.rollback(operation());
-  expect(inventory.get(`${PROJECT}/${REMOTE}`)).toEqual(prior);
-});
+it.each(['items', 'groups'] as const)(
+  'reconnect carries %s exclusions, drops code and retains original exclusions on retry',
+  async (form) => {
+    git.setDefaultResponse({ type: 'success', stdout: 'state/main.py\0' });
+    const prior: DockerImportInventory = {
+      importedAt: '2026-09-01T00:00:00.000Z',
+      items: [
+        { name: 'runner', imageId: 'sha256:web', volumes: [], bindPaths: ['/state'], sizeBytes: 5 },
+        {
+          name: 'absent',
+          imageId: 'sha256:web',
+          volumes: [],
+          bindPaths: ['/retired-data'],
+          sizeBytes: 5,
+        },
+      ],
+    };
+    if (form === 'groups') {
+      prior.items = [];
+      prior.groups = [
+        {
+          volumes: [],
+          bindPaths: [state, join(root, 'retired-data')],
+          lastSyncedAt: prior.importedAt,
+          lastSyncDirection: 'to-home',
+        },
+      ];
+    }
+    inventory.set(`${PROJECT}/${REMOTE}`, prior);
+    exclusions.set(PROJECT, ['/state', '/retired-data']);
+    details.dockerSelection = { items: [{ id: 'runner-id', mode: 'container-and-data' }] };
+    git.enqueueResponse(
+      { type: 'success', stdout: 'state/main.py\0' },
+      { type: 'success', stdout: 'state/main.py\0' },
+      { type: 'success' },
+    );
+    await handoff.preflight(run());
+    expect(exclusions.get(PROJECT)).toEqual(['/retired-data']);
+    expect(details.managedExclusionsBefore).toEqual(['/state', '/retired-data']);
+    git.enqueueResponse(
+      { type: 'success', stdout: 'state/main.py\0' },
+      { type: 'success', stdout: 'state/main.py\0' },
+      { type: 'success' },
+    );
+    await handoff.preflight(run());
+    expect(exclusions.get(PROJECT)).toEqual(['/retired-data']);
+    expect(details.managedExclusionsBefore).toEqual(['/state', '/retired-data']);
+    await handoff.rollback(operation());
+    expect(inventory.get(`${PROJECT}/${REMOTE}`)).toEqual(prior);
+  },
+);
 const vmContainer = (name: string) =>
   [...vm.containers.values()].find((c) => c.Name === `/${name}`);
 const docker = () => details.docker as DockerTransferDetails;
@@ -314,6 +337,16 @@ const networkSteps = () =>
     .map((patch) => (patch.docker as DockerTransferDetails | undefined)?.item)
     .filter((item) => item?.phase === 'network')
     .map((item) => item!.name);
+/** Home runs as 1000:1000; the VM reports the given ids. */
+async function differentIds(vmIds = { uid: 1001, gid: 1002 }): Promise<void> {
+  jest.spyOn(source, 'uid').mockReturnValue(1000);
+  jest.spyOn(source, 'gid').mockReturnValue(1000);
+  jest.mocked(host.remoteRuntime).mockResolvedValue({
+    ...(await host.remoteRuntime(REMOTE)),
+    ...vmIds,
+  });
+}
+
 function fixedRunner(): void {
   home.networks.set('shared-network', {
     labels: {},
@@ -335,10 +368,15 @@ beforeAll(async () => {
   state = join(root, 'state');
   await mkdir(state, { recursive: true });
   savedDockerHost = process.env.DOCKER_HOST;
+  associationsDatabase = createTestDatabase();
   const module = await Test.createTestingModule({
     controllers: [HostDockerController],
     providers: [
       HostDockerService,
+      {
+        provide: HostDockerVolumeAssociationsStore,
+        useValue: new HostDockerVolumeAssociationsStore(associationsDatabase.db),
+      },
       { provide: HOST_IPV4_ROUTES, useValue: async () => vmRoutes },
       HostDockerBodyParser,
       { provide: DockerArchiveJournal, useValue: new DockerArchiveJournal(join(scratch, 'vm')) },
@@ -386,6 +424,9 @@ beforeAll(async () => {
 });
 
 beforeEach(async () => {
+  associationsDatabase.sqlite
+    .prepare('DELETE FROM settings WHERE key = ?')
+    .run('host.dockerVolumeAssociations');
   choicesDatabase = createTestDatabase();
   choices = new ConnectChoicesStore(choicesDatabase.db);
   await mkdir(state, { recursive: true });
@@ -450,6 +491,14 @@ beforeEach(async () => {
   );
   store = new DockerHandoffStore(join(scratch, 'home'));
   homeJournal = new DockerArchiveJournal(join(scratch, 'home'));
+  files = {
+    installedIgnores: jest.fn(async (_folder: string) => ({
+      ignore: codeIgnores(exclusions.get(PROJECT) ?? [], []),
+    })),
+  };
+  jest
+    .spyOn(host, 'syncFolderIgnores')
+    .mockImplementation(async (_remote, folder) => files.installedIgnores(folder));
   handoff = new DockerHandoff(
     plans,
     source,
@@ -462,6 +511,7 @@ beforeEach(async () => {
     } as never,
     inventoryStore as never,
     choices,
+    files as never,
   );
 });
 afterEach(async () => {
@@ -479,6 +529,7 @@ afterEach(async () => {
 
 afterAll(async () => {
   await app?.close();
+  associationsDatabase.sqlite.close();
   await sourceModule?.close();
   await rm(scratch, { recursive: true, force: true });
   await rm(fixture, { recursive: true, force: true });
@@ -503,6 +554,197 @@ it('records preflight inclusion, exclusions and modes without data or privileged
       Object.keys(entry).every((key) => ['included', 'mode'].includes(key)),
     ),
   ).toBe(true);
+});
+
+// Only the real planner/record/sync/reset boundary can catch a reset deletion escaping into code sync.
+it('excludes every start-empty bind on both peers before resetting, preserving home data and code', async () => {
+  await differentIds({ uid: 1001, gid: 1000 });
+  const runner = home.containers.get('runner-id')!;
+  runner.Config.User = '1000:1000';
+  home.images.get('sha256:web')!.metadata = { Config: { User: '' } };
+  // The two fake engines use the same logical path; first Connect has no VM folder yet.
+  const scan = host.dockerScan.bind(host);
+  const scanVm = jest.spyOn(host, 'dockerScan').mockImplementation(async (...args) => ({
+    ...(await scan(...args)),
+    paths: args[1].map((path) => ({ path, exists: false })),
+  }));
+  details.dockerSelection = { items: [{ id: 'runner-id', mode: 'without-data' }] };
+  const first = await plans.plan(PROJECT, {
+    remoteId: REMOTE,
+    ...(details.dockerSelection as object),
+  });
+  expect(first.canConnect).toBe(true);
+  expect(first.items.find((item) => item.id === 'runner-id')?.dataAction).toBe('start-empty');
+  const record = buildRecord(
+    first.items,
+    first.items.filter((item) => item.selectedMode),
+    first.apiVersion!,
+    root,
+    first.networks,
+    first.dataGroups,
+    { uid: 1000, gid: 1000 },
+    null,
+  );
+  expect(record.emptyBinds).toContainEqual(expect.objectContaining({ path: state, reset: true }));
+  expect(first.managedExclusions).toContain('/state');
+
+  // A later explicit group reset includes a deselected sibling and a recorded-only bind.
+  scanVm.mockImplementation(scan);
+  const sibling = join(root, 'db-private');
+  const groupOnly = join(root, 'old-state');
+  const paths = [state, sibling, groupOnly];
+  const homeBytes = new Map(paths.map((path) => [path, Buffer.from(`home:${path}`)]));
+  for (const path of paths) {
+    await mkdir(path, { recursive: true });
+    await writeFile(join(path, 'vm-rows'), 'VM data to reset');
+    home.data.set(path, homeBytes.get(path)!);
+    vm.data.set(path, Buffer.from('VM data to reset'));
+  }
+  await writeFile(join(root, 'README.md'), 'project code');
+  git.setDefaultResponse({ type: 'success', stdout: '' });
+  runner.Mounts.push(volumeMount('app_db', '/shared'), {
+    Type: 'bind',
+    Source: root,
+    Destination: '/code',
+    RW: true,
+  });
+  (runner.HostConfig.Binds as string[]).push('app_db:/shared', `${root}:/code`);
+  const db = home.containers.get('db-id')!;
+  db.Config.User = '0';
+  db.Mounts.push({ Type: 'bind', Source: sibling, Destination: '/private', RW: true });
+  db.HostConfig.Binds = [`${sibling}:/private`];
+  inventory.set(`${PROJECT}/${REMOTE}`, {
+    importedAt: new Date().toISOString(),
+    items: [],
+    groups: [{ volumes: ['app_db'], bindPaths: [groupOnly] }],
+  });
+  details.dockerSelection = {
+    items: [{ id: 'runner-id', mode: 'container-and-data', dataChoice: 'start-empty' }],
+  };
+  const shared = await plans.plan(PROJECT, {
+    remoteId: REMOTE,
+    ...(details.dockerSelection as object),
+  });
+  expect(shared.canConnect).toBe(true);
+  expect(shared.items.find((item) => item.id === 'runner-id')).toMatchObject({
+    ownership: { class: 'follows-user' },
+    dataAction: 'start-empty',
+  });
+  expect(shared.items.find((item) => item.id === 'db-id')?.selectedMode).toBeNull();
+  expect(shared.items.find((item) => item.id === 'runner-id')?.mounts).toContainEqual(
+    expect.objectContaining({ source: root, kind: 'project-code' }),
+  );
+  expect(shared.managedExclusions.sort()).toEqual(['/db-private', '/old-state', '/state']);
+  await handoff.preflight(run());
+  const resets = (await store.read(operation().id))!.emptyBinds!;
+  expect(resets.map((bind) => bind.path).sort()).toEqual([...paths].sort());
+  expect(resets.every((bind) => bind.reset)).toBe(true);
+  expect(exclusions.get(PROJECT)?.sort()).toEqual(shared.managedExclusions);
+  await handoff.stopHome(run());
+  await handoff.push(run());
+
+  const homeSync = new FakeFileSyncService();
+  const peerSync = new FakeFileSyncService();
+  const events: string[] = [];
+  files.installedIgnores.mockImplementation(async (folder) => {
+    events.push('home:read');
+    return homeSync.installedIgnores(folder);
+  });
+  jest.mocked(host.syncFolderIgnores).mockImplementation(async (_remote, folder) => {
+    events.push('vm:read');
+    return peerSync.installedIgnores(folder);
+  });
+  jest
+    .spyOn(host, 'removeGitGuard')
+    .mockResolvedValue({ removed: false, warning: null, indexRefreshed: null });
+  jest
+    .spyOn(host, 'syncFolderExists')
+    .mockImplementation(async (_remote, id) => peerSync.folders.has(id));
+  jest.spyOn(host, 'syncDevice').mockImplementation(async () => peerSync.device());
+  jest
+    .spyOn(host, 'syncPeer')
+    .mockImplementation(async (_remote, device) => peerSync.addPeer(device));
+  jest
+    .spyOn(host, 'syncFolders')
+    .mockImplementation(async (_remote, request) => peerSync.ensureFolder(request));
+  jest
+    .spyOn(host, 'syncFolderType')
+    .mockImplementation(async (_remote, id, patch) => peerSync.updateFolder(id, patch));
+  jest
+    .spyOn(host, 'syncStatus')
+    .mockImplementation(async (_remote, id, device) => peerSync.status(id, device));
+  jest.spyOn(host, 'syncScan').mockResolvedValue(undefined);
+  const sync = new FileSyncHandoff(
+    homeSync as unknown as FileSyncService,
+    host,
+    { get: (projectId: string) => exclusions.get(projectId) ?? [] } as never,
+    {} as never,
+    git,
+    { get: () => 'vm' } as never,
+  );
+  const prepare = host.dockerPrepareBinds.bind(host);
+  const prepareBinds = jest
+    .spyOn(host, 'dockerPrepareBinds')
+    .mockImplementation(async (...args) => {
+      for (const bind of args[1].paths) if (bind.replace) events.push(`reset:${bind.path}`);
+      await prepare(...args);
+    });
+  const refuse = async () => {
+    const error = await handoff.createHost(run()).catch((failure: Error) => failure);
+    expect(error).toMatchObject({ code: 'DOCKER_RESET_EXCLUSIONS_UNCONFIRMED' });
+    expect((error as Error).message).not.toContain(SECRET);
+    expect(prepareBinds).not.toHaveBeenCalled();
+    expect((await store.read(operation().id))!.emptyBinds!.every((bind) => !bind.prepared)).toBe(
+      true,
+    );
+    for (const path of paths) {
+      expect(vm.data.get(path)?.toString()).toBe('VM data to reset');
+      expect(home.data.get(path)).toEqual(homeBytes.get(path));
+    }
+  };
+  // Absent folders are not proof, even though preflight has persisted the desired exclusions.
+  await refuse();
+  await sync.initial(run(), PROJECT);
+  await sync.flipToHost(run(), PROJECT);
+  const folderId = codeFolderId(PROJECT);
+  for (const peer of [homeSync, peerSync]) {
+    expect(peer.folders.get(folderId)).toMatchObject({ type: 'sendreceive', paused: false });
+    expect((await peer.installedIgnores(folderId)).ignore).toEqual(
+      codeIgnores(shared.managedExclusions, homeSync.getIgnores(PROJECT)),
+    );
+  }
+  const installed = [...peerSync.folders.get(folderId)!.ignores];
+  peerSync.folders.get(folderId)!.ignores = [];
+  await refuse();
+  peerSync.folders.get(folderId)!.ignores = installed;
+  homeSync.folders.get(folderId)!.ignores = ['!/state/private', ...installed];
+  await refuse();
+  homeSync.folders.get(folderId)!.ignores = [...installed];
+  jest.mocked(host.syncFolderIgnores).mockRejectedValueOnce(new Error(SECRET));
+  await refuse();
+
+  events.length = 0;
+  await handoff.createHost(run());
+  expect(events).toHaveLength(paths.length * 3);
+  for (let offset = 0; offset < events.length; offset += 3) {
+    expect(events.slice(offset, offset + 2).sort()).toEqual(['home:read', 'vm:read']);
+    expect(events[offset + 2]).toMatch(/^reset:/);
+  }
+  expect((await store.read(operation().id))!.emptyBinds!.every((bind) => bind.prepared)).toBe(true);
+  for (const path of paths) {
+    expect(await readdir(path)).toEqual([]);
+    expect(vm.data.has(path)).toBe(false);
+    expect(home.data.get(path)).toEqual(homeBytes.get(path));
+  }
+  expect(await readdir(root)).toContain('README.md');
+  expect(firstMatch((await homeSync.installedIgnores(folderId)).ignore, 'README.md')).toMatchObject(
+    {
+      kind: 'none',
+    },
+  );
+  const accepted = events.length;
+  await handoff.createHost(run());
+  expect(events).toHaveLength(accepted);
 });
 
 it('an older VM refuses networks during preflight before any home stop or VM write', async () => {
@@ -917,6 +1159,83 @@ it('moves a bound single file as a file and never puts a folder in its place', a
   expect(vm.data.get(caddyfile)?.toString()).toBe('home-caddy');
   expect((await stat(caddyfile)).isFile()).toBe(true);
   expect(vmContainer('proxy')?.State.Running).toBe(false);
+});
+
+// The real handoff and host routes must preserve file layout through reset and a saved retry.
+it('resets a single-file data bind to an empty file with its VM owner across retries', async () => {
+  await differentIds();
+  inventory.clear();
+  vm.containers.clear();
+  vm.volumes.clear();
+  const dataFile = join(root, 'single-file.db');
+  await writeFile(dataFile, 'home contents');
+  const runner = home.containers.get('runner-id')!;
+  runner.Config.User = '1000:1000';
+  home.images.get('sha256:web')!.metadata = { Config: { User: '' } };
+  runner.Mounts = [{ Type: 'bind', Source: dataFile, Destination: '/app/data.db', RW: true }];
+  runner.HostConfig.Binds = [`${dataFile}:/app/data.db`];
+  details.dockerSelection = {
+    items: [{ id: 'runner-id', mode: 'container-and-data', dataChoice: 'start-empty' }],
+  };
+  const prepare = host.dockerPrepareBinds.bind(host);
+  const prepares = jest.spyOn(host, 'dockerPrepareBinds');
+  await handoff.preflight(run());
+  await handoff.stopHome(run());
+  await handoff.push(run());
+  prepares.mockImplementationOnce(async (...args) => {
+    await prepare(...args);
+    throw new Error('Reset answer lost before its checkpoint');
+  });
+  await expect(handoff.createHost(run())).rejects.toThrow('The Docker copy failed.');
+  const info = await stat(dataFile);
+  expect(info.isFile()).toBe(true);
+  expect(info.size).toBe(0);
+  expect(vm.fileOwners.get(dataFile)).toEqual({ uid: 1001, gid: 1002 });
+  expect(prepares.mock.calls[0][1].paths).toEqual([
+    expect.objectContaining({
+      path: dataFile,
+      replace: true,
+      file: true,
+      owner: { uid: 1001, gid: 1002 },
+    }),
+  ]);
+  const resumedStore = new DockerHandoffStore(join(scratch, 'home'));
+  expect((await resumedStore.read(operation().id))!.emptyBinds).toEqual([
+    expect.objectContaining({ path: dataFile, file: true, reset: true }),
+  ]);
+  expect((await resumedStore.read(operation().id))!.emptyBinds![0].prepared).toBeUndefined();
+  await rm(dataFile);
+  handoff = new DockerHandoff(
+    plans,
+    source,
+    host,
+    resumedStore,
+    homeJournal,
+    { get: (p: string) => exclusions.get(p) ?? [] } as never,
+    {
+      get: (p: string, r: string) => inventory.get(`${p}/${r}`) ?? null,
+      set: (p: string, r: string, value: DockerImportInventory) => {
+        inventory.set(`${p}/${r}`, value);
+        return value;
+      },
+    } as never,
+    choices,
+    files as never,
+  );
+  await handoff.createHost(run());
+  expect(await stat(dataFile)).toMatchObject({ size: 0 });
+  expect((await stat(dataFile)).isFile()).toBe(true);
+  expect(vm.fileOwners.get(dataFile)).toEqual({ uid: 1001, gid: 1002 });
+  expect(vmContainer('runner')?.created?.User).toBe('1001:1002');
+  expect((await resumedStore.read(operation().id))!.emptyBinds![0]).toMatchObject({
+    file: true,
+    prepared: true,
+  });
+  await writeFile(dataFile, 'VM data after reset');
+  await handoff.createHost(run());
+  expect(prepares).toHaveBeenCalledTimes(2);
+  expect((await stat(dataFile)).size).toBe(Buffer.byteLength('VM data after reset'));
+  expect(vm.calls.some((call) => call.includes('/start'))).toBe(false);
 });
 
 it('a reconnect of a subset keeps an earlier item folder excluded and in the inventory', async () => {
@@ -1485,6 +1804,9 @@ describe('with a containerd-store VM', () => {
   const imageLoads = () => vm.calls.filter((call) => call === 'POST /images/load').length;
 
   beforeEach(async () => {
+    associationsDatabase.sqlite
+      .prepare('DELETE FROM settings WHERE key = ?')
+      .run('host.dockerVolumeAssociations');
     await vm.close();
     vm = new FakeDockerEngine('vm-engine', { imageStore: 'containerd' });
     await vm.listen(join(scratch, 'vm.sock'));
@@ -1838,5 +2160,565 @@ describe('with a containerd-store VM', () => {
       `The VM loaded image sha256:db, but none of the images it reported (${vmIdOf('postgres:17')}, ${vmIdOf('app-web:latest')}) has the same layers. The VM engine can store images under its own IDs. Retry the copy.`,
     );
     expect((await store.read(operation().id))?.verified.images).toEqual([]);
+  });
+});
+
+// Paired Compose resolution controls the real create request; every unrelated
+// numeric setting and the archive-helper lifecycle remain unchanged.
+describe('different user ids', () => {
+  function composeRunner(fixed = true) {
+    const runner = home.containers.get('runner-id')!;
+    runner.Config.User = '1000:1000';
+    runner.Config.Env = ['DEVCHAIN_UID=1000', 'DEVCHAIN_GID=1000', SECRET, 'PORT=1000'];
+    runner.HostConfig.GroupAdd = ['1000', '1000'];
+    runner.Config.Labels = {
+      [COMPOSE]: 'app',
+      'com.docker.compose.service': 'web',
+      'com.docker.compose.project.working_dir': root,
+      'com.docker.compose.project.config_files': join(root, 'compose.yml'),
+    };
+    jest.mocked(source.compose).mockImplementation(async (_directory, options) => ({
+      name: 'app',
+      services: {
+        web: {
+          image: 'app-web:latest',
+          user: fixed
+            ? `${options?.env?.DEVCHAIN_UID ?? '1000'}:${options?.env?.DEVCHAIN_GID ?? '1000'}`
+            : '1000:1000',
+          group_add: ['1000', options?.env?.DEVCHAIN_GID ?? '1000'],
+          volumes: [
+            { type: 'bind', source: state, target: '/state' },
+            { type: 'bind', source: root, target: '/code' },
+          ],
+        },
+      },
+    }));
+    return runner;
+  }
+  function ownerArchive(uid = 1000, gid = 1000): Buffer {
+    return tarArchive([
+      { path: 'data/', type: 'Directory', uid, gid, mode: 0o700, contents: '' },
+      { path: 'data/private', type: 'File', uid, gid, mode: 0o600, contents: 'secret' },
+      { path: 'data/root', type: 'File', uid: 0, gid: 0, mode: 0o600, contents: 'root' },
+      { path: 'data/service', type: 'File', uid: 999, gid: 999, mode: 0o600, contents: 'db' },
+      { path: 'data/target', type: 'File', uid: 1001, gid: 1002, mode: 0o600, contents: 'target' },
+      { path: 'data/mixed', type: 'File', uid: 1001, gid: 1000, mode: 0o600, contents: 'mixed' },
+    ]);
+  }
+  async function mappedRunner() {
+    await differentIds();
+    home.images.get('sha256:web')!.metadata = { Config: { User: '' } };
+    const runner = home.containers.get('runner-id')!;
+    runner.Config.User = '1000:1000';
+    runner.Mounts.push(volumeMount('app_db', '/shared'));
+    (runner.HostConfig.Binds as string[]).push('app_db:/shared');
+    home.containers.get('db-id')!.Config.User = '0';
+    home.containers.get('tmp-id')!.Config.User = '999';
+    for (const name of ['app_db', state, 'anon0123', 'cache']) home.data.set(name, ownerArchive());
+  }
+
+  // The real handoff/host routes are the cheapest layer that can catch hashing or per-resource wiring errors.
+  it.each(['container-and-data', 'data-only'] as const)(
+    'copies follows-user %s data with VM owners while root/999 resources stay exact',
+    async (mode) => {
+      await mappedRunner();
+      details.dockerSelection = {
+        items: [
+          { id: 'runner-id', mode, dataChoice: 'replace-home' },
+          { id: 'db-id', mode: 'container-and-data', dataChoice: 'replace-home' },
+          { id: 'tmp-id', mode: 'data-only', dataChoice: 'replace-home' },
+        ],
+      };
+      const original = home.data.get('app_db')!;
+      await connect();
+      for (const name of ['app_db', state])
+        expect(tarEntries(vm.data.get(name)!)).toEqual(
+          tarEntries(original).map((entry) => ({
+            ...entry,
+            uid: entry.uid === 1000 ? 1001 : entry.uid,
+            gid: entry.gid === 1000 ? 1002 : entry.gid,
+          })),
+        );
+      expect(home.data.get('app_db')).toEqual(original);
+      expect(vm.data.get('anon0123')).toEqual(original);
+      expect(vm.data.get('cache')).toEqual(original);
+      expect(vmContainer('app-db-1')?.created?.User).toBe('0');
+      if (mode === 'container-and-data')
+        expect(vmContainer('runner')?.created?.User).toBe('1001:1002');
+      else expect(vmContainer('runner')).toBeUndefined();
+      const saved = inventory.get(`${PROJECT}/${REMOTE}`)!;
+      expect(
+        saved.groups?.find((group) => group.volumes.includes('app_db'))?.representation,
+      ).toEqual({
+        kind: 'mapped',
+        home: { uid: 1000, gid: 1000 },
+        vm: { uid: 1001, gid: 1002 },
+      });
+      expect(
+        saved.groups?.find((group) => group.volumes.includes('anon0123'))?.representation?.kind,
+      ).toBe('exact');
+      expect(
+        saved.items.find((item) => item.name === 'runner')?.dataRepresentations,
+      ).toContainEqual(
+        expect.objectContaining({ representation: expect.objectContaining({ kind: 'mapped' }) }),
+      );
+      expect(docker().result?.alreadyTargetEntries).toBe(4);
+      await handoff.createHost(run());
+      expect(docker().result?.alreadyTargetEntries).toBe(4);
+    },
+  );
+
+  // The transfer boundary must preserve an unchanged dimension and equal-id archive bytes.
+  it.each([
+    { uid: 1001, gid: 1000, count: 4 },
+    { uid: 1000, gid: 1002, count: 2 },
+    { uid: 1000, gid: 1000, count: 0 },
+  ])(
+    'copies independent VM dimensions $uid:$gid with count $count',
+    async ({ uid, gid, count }) => {
+      await mappedRunner();
+      await differentIds({ uid, gid });
+      details.dockerSelection = {
+        items: [{ id: 'runner-id', mode: 'container-and-data', dataChoice: 'replace-home' }],
+      };
+      await connect();
+      const original = ownerArchive();
+      expect(tarEntries(vm.data.get('app_db')!)).toEqual(
+        tarEntries(original).map((entry) => ({
+          ...entry,
+          uid: entry.uid === 1000 ? uid : entry.uid,
+          gid: entry.gid === 1000 ? gid : entry.gid,
+        })),
+      );
+      expect(docker().result?.alreadyTargetEntries).toBe(count);
+      if (uid === 1000 && gid === 1000) expect(vm.data.get('app_db')).toEqual(original);
+      else
+        expect(
+          inventory
+            .get(`${PROJECT}/${REMOTE}`)!
+            .groups?.find((group) => group.volumes.includes('app_db'))?.representation,
+        ).toEqual({ kind: 'mapped', home: { uid: 1000, gid: 1000 }, vm: { uid, gid } });
+    },
+  );
+
+  // A down Compose aggregate is one choice but its separate consumers require separate archive representations.
+  it('maps only follows-user service volumes in one Compose aggregate and keeps an image-H exact volume', async () => {
+    await differentIds();
+    home.containers.delete('db-id');
+    await writeFile(join(root, 'compose.yaml'), 'services: {}\n');
+    home.images.get('sha256:web')!.metadata = { Config: { User: '1000:1000' } };
+    for (const name of ['app_follow', 'app_exact']) {
+      home.volumes.set(name, { labels: { [COMPOSE]: 'app' }, driver: 'local' });
+      home.data.set(name, ownerArchive());
+    }
+    jest.mocked(source.compose).mockImplementation(async (_directory, options) => ({
+      name: 'app',
+      services: {
+        follow: {
+          image: 'app-web:latest',
+          user: `${options?.env?.DEVCHAIN_UID ?? '1000'}:${options?.env?.DEVCHAIN_GID ?? '1000'}`,
+          volumes: [{ type: 'volume', source: 'follow', target: '/data' }],
+        },
+        exact: {
+          image: 'app-web:latest',
+          volumes: [{ type: 'volume', source: 'exact', target: '/data' }],
+        },
+      },
+      volumes: { follow: { name: 'app_follow' }, exact: { name: 'app_exact' } },
+    }));
+    const plan = await plans.plan(PROJECT, { remoteId: REMOTE });
+    const aggregate = plan.items.find((item) => item.kind === 'compose-project')!;
+    expect(aggregate.serviceOwnership?.map((service) => service.ownership.class)).toEqual([
+      'follows-user',
+      'exact',
+    ]);
+    expect(aggregate.blockers).toEqual([]);
+    details.dockerSelection = { items: [{ id: aggregate.id, mode: 'data-only' }] };
+    await connect();
+    expect(
+      tarEntries(vm.data.get('app_follow')!).find((entry) => entry.path === 'data/private'),
+    ).toMatchObject({ uid: 1001, gid: 1002, mode: 0o600 });
+    expect(vm.data.get('app_exact')).toEqual(ownerArchive());
+    const saved = inventory.get(`${PROJECT}/${REMOTE}`)!;
+    expect(
+      saved.groups?.find((group) => group.volumes.includes('app_follow'))?.representation?.kind,
+    ).toBe('mapped');
+    expect(
+      saved.groups?.find((group) => group.volumes.includes('app_exact'))?.representation?.kind,
+    ).toBe('exact');
+    expect(docker().result?.alreadyTargetEntries).toBe(2);
+  });
+
+  // A destination digest failure occurs after restore, so retry must re-read home and clear the VM target.
+  it('retries mapped copies from untouched home and records target counts only after digest acceptance', async () => {
+    await mappedRunner();
+    details.dockerSelection = {
+      items: [{ id: 'runner-id', mode: 'container-and-data', dataChoice: 'replace-home' }],
+    };
+    await handoff.preflight(run());
+    await handoff.stopHome(run());
+    const write = host.dockerWriteArchive.bind(host);
+    const failed = jest
+      .spyOn(host, 'dockerWriteArchive')
+      .mockImplementationOnce(async (...args) => ({
+        ...(await write(...args)),
+        sha256: 'bad-digest',
+      }));
+    await expect(handoff.push(run())).rejects.toThrow('did not match on the VM');
+    expect((await store.read(operation().id))!.volumes[0].alreadyTargetEntries).toBeUndefined();
+    expect((await store.read(operation().id))!.copiedData?.volumes).toEqual([]);
+    expect(home.data.get('app_db')).toEqual(ownerArchive());
+    failed.mockRestore();
+    vm.calls.length = 0;
+    await handoff.push(run());
+    expect(vm.calls).toContain('DELETE /volumes/app_db');
+    const afterPush = (await store.read(operation().id))!;
+    expect(afterPush.volumes[0].alreadyTargetEntries).toBe(2);
+    expect(
+      afterPush.dataGroups?.find((group) => group.volumes.includes('app_db'))?.representation?.kind,
+    ).toBe('mapped');
+    const copies = vm.calls.filter(
+      (call) => call.startsWith('PUT ') && call.endsWith('/archive'),
+    ).length;
+    await handoff.push(run());
+    expect(
+      vm.calls.filter((call) => call.startsWith('PUT ') && call.endsWith('/archive')),
+    ).toHaveLength(copies);
+    await handoff.createHost(run());
+    expect(docker().result?.alreadyTargetEntries).toBe(4);
+    expect(
+      tarEntries(vm.data.get('app_db')!).find((entry) => entry.path === 'data/mixed'),
+    ).toMatchObject({ uid: 1001, gid: 1002 });
+  });
+  // This observes retained bytes and container identity across real preflight/persistence/create steps.
+  it.each(['mapped', 'exact', 'unknown', 'wrong-ids', 'missing-member'] as const)(
+    'uses the durable %s representation for reconnect instead of the container class',
+    async (kind) => {
+      await mappedRunner();
+      details.dockerSelection = {
+        items: [
+          { id: 'runner-id', mode: 'container-and-data', dataChoice: 'replace-home' },
+          { id: 'db-id', mode: 'container-and-data', dataChoice: 'replace-home' },
+        ],
+      };
+      await connect();
+      const old = vmContainer('runner')!;
+      old.Config.User = '1000:1000';
+      const saved = inventory.get(`${PROJECT}/${REMOTE}`)!;
+      for (const group of saved.groups ?? []) {
+        if (group.representation?.kind !== 'mapped') continue;
+        if (kind === 'unknown') delete group.representation;
+        else if (kind === 'exact') group.representation.kind = 'exact';
+        else if (kind === 'wrong-ids') group.representation.vm.uid = 2000;
+        else if (kind === 'missing-member') group.bindPaths = [];
+      }
+      if (kind === 'exact' || kind === 'unknown') {
+        vm.data.set('app_db', ownerArchive());
+        vm.data.set(state, ownerArchive());
+      }
+      const held = Buffer.from(vm.data.get('app_db')!);
+      const priorGroups = structuredClone(saved.groups);
+      await store.remove(operation().id);
+      details.dockerSelection = {
+        items: [{ id: 'runner-id', mode: 'container-and-data', dataChoice: 'keep-vm' }],
+      };
+      const plan = await plans.plan(PROJECT, {
+        remoteId: REMOTE,
+        ...(details.dockerSelection as object),
+      });
+      const row = plan.items.find((entry) => entry.id === 'runner-id')!;
+      expect(plan.canConnect).toBe(true);
+      expect(row.dataChoices).toEqual(['keep-vm', 'replace-home', 'start-empty']);
+      expect(row.targetAction).toBe(kind === 'mapped' ? 'replace' : 'leave-as-is');
+      vm.calls.length = 0;
+      await connect();
+      expect(vmContainer('runner')!.Id === old.Id).toBe(kind !== 'mapped');
+      expect(vm.data.get('app_db')).toEqual(held);
+      expect(vm.calls.some((call) => call.startsWith('PUT ') && call.endsWith('/archive'))).toBe(
+        false,
+      );
+      expect(docker().result?.alreadyTargetEntries).toBe(0);
+      const carried = (await store.read(operation().id))!;
+      const stamped = inventory.get(`${PROJECT}/${REMOTE}`)!;
+      expect(
+        stamped.groups?.find((group) => group.volumes.includes('app_db'))?.representation,
+      ).toEqual(priorGroups?.find((group) => group.volumes.includes('app_db'))?.representation);
+      expect(stamped.items.find((item) => item.name === 'runner')?.dataRepresentations).toEqual(
+        carried.keptInventory?.find((item) => item.name === 'runner')?.dataRepresentations,
+      );
+      expect(carried.keptInventory?.[0].dataRepresentations).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            volumes: ['app_db'],
+            ...(kind === 'mapped' || kind === 'exact' || kind === 'wrong-ids'
+              ? {
+                  representation: priorGroups?.find((group) => group.volumes.includes('app_db'))
+                    ?.representation,
+                }
+              : {}),
+          }),
+        ]),
+      );
+      if (kind === 'unknown')
+        expect(
+          carried.keptGroups
+            ?.filter((group) => group.volumes.includes('app_db') || group.bindPaths.includes(state))
+            .some((group) => group.representation !== undefined),
+        ).toBe(false);
+      if (kind !== 'mapped') {
+        await store.remove(operation().id);
+        details.dockerSelection = {
+          items: [{ id: 'runner-id', mode: 'container-and-data', dataChoice: 'replace-home' }],
+        };
+        await connect();
+        expect(vmContainer('runner')?.created?.User).toBe('1001:1002');
+        expect(
+          inventory
+            .get(`${PROJECT}/${REMOTE}`)!
+            .groups?.find((group) => group.volumes.includes('app_db'))?.representation?.kind,
+        ).toBe('mapped');
+      }
+    },
+  );
+  it('creates a Compose follower as V, keeps literal groups/env, and owns empty data without copying', async () => {
+    await differentIds();
+    composeRunner();
+    const scan = host.dockerScan.bind(host);
+    jest.spyOn(host, 'dockerScan').mockImplementation(async (...args) => {
+      const result = await scan(...args);
+      return { ...result, paths: result.paths.map((entry) => ({ ...entry, exists: false })) };
+    });
+    details.dockerSelection = { items: [{ id: 'runner-id', mode: 'without-data' }] };
+    await connect();
+    expect(vmContainer('runner')?.created).toMatchObject({
+      User: '1001:1002',
+      Env: ['DEVCHAIN_UID=1001', 'DEVCHAIN_GID=1002', SECRET, 'PORT=1000'],
+      HostConfig: { GroupAdd: ['1000', '1002'] },
+    });
+    expect(vm.directoryOwners.get(state)).toEqual({ uid: 1001, gid: 1002 });
+    expect(home.data.get(state)?.toString()).toBe('home-state');
+    expect(vm.data.has(state)).toBe(false);
+    const saved = inventory.get(`${PROJECT}/${REMOTE}`)!;
+    expect(saved.items.find((item) => item.name === 'runner')?.ownership).toEqual({
+      class: 'follows-user',
+      home: { uid: 1000, gid: 1000 },
+      vm: { uid: 1001, gid: 1002 },
+      targetUser: '1001:1002',
+    });
+    expect(saved.groups?.[0].ownership?.class).toBe('follows-user');
+    const record = (await store.read(operation().id))!;
+    expect(record.items[0].ownership?.class).toBe('follows-user');
+    const created = vmContainer('runner')!.Id;
+    await handoff.createHost(run());
+    expect(vmContainer('runner')!.Id).toBe(created);
+    expect(vm.calls.some((call) => call.includes('start'))).toBe(false);
+  });
+  it('creates an exact numeric user empty folder with its uid and keeps non-Compose groups unchanged', async () => {
+    await differentIds();
+    const runner = home.containers.get('runner-id')!;
+    runner.Config.User = '1000:1000';
+    home.images.get('sha256:web')!.metadata = { Config: { User: '1000:1000' } };
+    const scan = host.dockerScan.bind(host);
+    jest.spyOn(host, 'dockerScan').mockImplementation(async (...args) => {
+      const result = await scan(...args);
+      return { ...result, paths: result.paths.map((entry) => ({ ...entry, exists: false })) };
+    });
+    runner.HostConfig.GroupAdd = ['1000', '42'];
+    details.dockerSelection = { items: [{ id: 'runner-id', mode: 'without-data' }] };
+    await handoff.preflight(run());
+    await handoff.stopHome(run());
+    await handoff.push(run());
+    await rm(state, { recursive: true, force: true });
+    jest.spyOn(process, 'getuid').mockReturnValue(1001);
+    jest.spyOn(process, 'getgid').mockReturnValue(1002);
+    await handoff.createHost(run());
+    expect(vm.directoryOwners.get(state)).toEqual({ uid: 1000, gid: 1000 });
+    expect(vmContainer('runner')?.created).toMatchObject({
+      User: '1000:1000',
+      HostConfig: { GroupAdd: ['1000', '42'] },
+    });
+  });
+  it('retains an incompatible old counterpart and record, then resets explicitly before changing to V', async () => {
+    await differentIds();
+    const runner = composeRunner(false);
+    runner.Mounts.push({ Type: 'bind', Source: root, Destination: '/code', RW: true });
+    details.dockerSelection = {
+      items: [
+        {
+          id: 'runner-id',
+          mode: 'container-and-data',
+          dataChoice: 'replace-home',
+          moveWithoutUserFix: true,
+        },
+      ],
+    };
+    await connect();
+    const oldId = vmContainer('runner')!.Id;
+    await writeFile(join(state, 'private'), 'VM-only', { mode: 0o600 });
+    await chmod(state, 0o700);
+    expect(vmContainer('runner')?.created?.User).toBe('1000:1000');
+    const oldOwnership = inventory
+      .get(`${PROJECT}/${REMOTE}`)!
+      .items.find((item) => item.name === 'runner')!.ownership;
+    composeRunner(true);
+    await store.remove(operation().id);
+    const plan = await plans.plan(
+      PROJECT,
+      {
+        remoteId: REMOTE,
+        items: [{ id: 'runner-id', mode: 'container-and-data', dataChoice: 'keep-vm' }],
+      },
+      undefined,
+      { estimate: false, reuse: false },
+    );
+    const row = plan.items.find((item) => item.id === 'runner-id')!;
+    expect(plan.canConnect).toBe(true);
+    expect(row).toMatchObject({
+      targetAction: 'leave-as-is',
+      vmUser: '1000:1000',
+      retainedOwnership: oldOwnership,
+    });
+    expect(row.notes).toContain('runs as 1000:1000 until its data is reset or copied again');
+    details.dockerSelection = {
+      items: [{ id: 'runner-id', mode: 'container-and-data', dataChoice: 'keep-vm' }],
+    };
+    await connect();
+    expect(vmContainer('runner')!.Id).toBe(oldId);
+    expect((await stat(state)).mode & 0o777).toBe(0o700);
+    expect(vm.data.get(state)?.toString()).toBe('home-state');
+    expect(
+      inventory.get(`${PROJECT}/${REMOTE}`)!.items.find((item) => item.name === 'runner')!
+        .ownership,
+    ).toEqual(oldOwnership);
+    expect(inventory.get(`${PROJECT}/${REMOTE}`)!.groups![0].ownership?.class).toBe(
+      'needs-user-fix',
+    );
+    await store.remove(operation().id);
+    details.dockerSelection = {
+      items: [{ id: 'runner-id', mode: 'container-and-data', dataChoice: 'start-empty' }],
+    };
+    await connect();
+    expect(vmContainer('runner')!.Id).not.toBe(oldId);
+    expect(vmContainer('runner')?.created?.User).toBe('1001:1002');
+    expect(vm.directoryOwners.get(state)).toEqual({ uid: 1001, gid: 1002 });
+    expect(vm.data.get(state)?.length ?? 0).toBe(0);
+    expect(inventory.get(`${PROJECT}/${REMOTE}`)!.groups![0].ownership?.class).toBe('follows-user');
+  });
+  it('still refuses unrelated exact H consumers alongside a retained counterpart', async () => {
+    await differentIds();
+    composeRunner();
+    vm.addContainer({
+      Id: 'unrelated-holder',
+      Name: '/other-vm',
+      Image: 'sha256:web',
+      Config: { User: '1000', Labels: {} },
+      HostConfig: {},
+      Mounts: [{ Type: 'bind', Source: state, Destination: '/data', RW: true }],
+    });
+    const plan = await plans.plan(PROJECT, {
+      remoteId: REMOTE,
+      items: [{ id: 'runner-id', mode: 'container-and-data', dataChoice: 'keep-vm' }],
+    });
+    expect(plan.canConnect).toBe(false);
+    expect(plan.items.find((item) => item.id === 'runner-id')!.blockers).toEqual(
+      expect.arrayContaining([expect.objectContaining({ code: 'ownership-consumer-conflict' })]),
+    );
+  });
+});
+
+it('maps a non-Compose override and only DEVCHAIN env entries, leaving GroupAdd literal', async () => {
+  await differentIds();
+  const runner = home.containers.get('runner-id')!;
+  runner.Config.User = '1000:77';
+  runner.Config.Env = ['DEVCHAIN_UID=1000', 'DEVCHAIN_GID=1000', 'APP_UID=1000'];
+  runner.HostConfig.GroupAdd = ['1000', '77'];
+  home.images.get('sha256:web')!.metadata = { Config: { User: '' } };
+  const scan = host.dockerScan.bind(host);
+  jest.spyOn(host, 'dockerScan').mockImplementation(async (...args) => {
+    const result = await scan(...args);
+    return { ...result, paths: result.paths.map((entry) => ({ ...entry, exists: false })) };
+  });
+  details.dockerSelection = { items: [{ id: 'runner-id', mode: 'without-data' }] };
+  await connect();
+  expect(vmContainer('runner')?.created).toMatchObject({
+    User: '1001:77',
+    Env: ['DEVCHAIN_UID=1001', 'DEVCHAIN_GID=1002', 'APP_UID=1000'],
+    HostConfig: { GroupAdd: ['1000', '77'] },
+  });
+});
+
+it('preserves a long Unicode empty-folder name in the owner archive', async () => {
+  await differentIds();
+  const folder = join(root, `folder-${'é'.repeat(60)}`);
+  const runner = home.containers.get('runner-id')!;
+  runner.Config.User = '1000:1000';
+  runner.HostConfig.Binds = [`${folder}:/state`];
+  runner.Mounts = [{ Type: 'bind', Source: folder, Destination: '/state', RW: true }];
+  home.images.get('sha256:web')!.metadata = { Config: { User: '' } };
+  details.dockerSelection = { items: [{ id: 'runner-id', mode: 'without-data' }] };
+  await connect();
+  expect(vm.directoryOwners.get(folder)).toEqual({ uid: 1001, gid: 1002 });
+});
+
+it.each([
+  {
+    label: 'uid only changes',
+    uid: 1001,
+    gid: 1000,
+    user: '1000:1000',
+    compose: true,
+    target: '1001:1000',
+  },
+  {
+    label: 'gid only changes',
+    uid: 1000,
+    gid: 1002,
+    user: '1000:1000',
+    compose: true,
+    target: '1000:1002',
+  },
+  {
+    label: 'numeric uid only override',
+    uid: 1001,
+    gid: 1002,
+    user: '1000',
+    compose: false,
+    target: '1001',
+  },
+])('changes only the intended ids for $label', async ({ uid, gid, user, compose, target }) => {
+  await differentIds({ uid, gid });
+  const folder = join(root, 'empty-runtime-data');
+  const runner = home.containers.get('runner-id')!;
+  runner.Config.User = user;
+  runner.Config.Env = ['DEVCHAIN_UID=1000', 'DEVCHAIN_GID=1000', 'APP_GID=1000'];
+  runner.HostConfig.Binds = [`${folder}:/data`];
+  runner.HostConfig.GroupAdd = ['1000', '1000'];
+  runner.Mounts = [{ Type: 'bind', Source: folder, Destination: '/data', RW: true }];
+  home.images.get('sha256:web')!.metadata = { Config: { User: '' } };
+  if (compose) {
+    runner.Config.Labels = {
+      [COMPOSE]: 'app',
+      'com.docker.compose.service': 'web',
+      'com.docker.compose.project.working_dir': root,
+      'com.docker.compose.project.config_files': join(root, 'compose.yml'),
+    };
+    jest.mocked(source.compose).mockImplementation(async (_directory, options) => ({
+      name: 'app',
+      services: {
+        web: {
+          image: 'app-web:latest',
+          user: `${options?.env?.DEVCHAIN_UID ?? '1000'}:${options?.env?.DEVCHAIN_GID ?? '1000'}`,
+          group_add: ['1000', options?.env?.DEVCHAIN_GID ?? '1000'],
+          volumes: [{ type: 'bind', source: folder, target: '/data' }],
+        },
+      },
+    }));
+  }
+  details.dockerSelection = { items: [{ id: 'runner-id', mode: 'without-data' }] };
+  await connect();
+  expect(vmContainer('runner')?.created).toMatchObject({
+    User: target,
+    Env: [`DEVCHAIN_UID=${uid}`, `DEVCHAIN_GID=${gid}`, 'APP_GID=1000'],
+    HostConfig: { GroupAdd: ['1000', compose ? String(gid) : '1000'] },
   });
 });

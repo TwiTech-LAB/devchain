@@ -1,4 +1,4 @@
-import { Injectable, Inject, forwardRef } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import { createLogger } from '../../../common/logging/logger';
 import {
   SettingsService,
@@ -63,7 +63,6 @@ export class TerminalSeedService {
   constructor(
     private readonly settingsService: SettingsService,
     private readonly terminalSessionRegistry: TerminalSessionRegistry,
-    @Inject(forwardRef(() => TerminalIOService))
     private readonly terminalIO: TerminalIOService,
     private readonly sessionTerminalRuntime: SessionTerminalRuntimeService,
   ) {}

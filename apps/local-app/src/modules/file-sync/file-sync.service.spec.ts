@@ -1,4 +1,13 @@
-import { assertShareableFolder } from './file-sync-paths';
+import { Test } from '@nestjs/testing';
+import fs from 'fs/promises';
+import { STORAGE_SERVICE } from '../storage/interfaces/storage.interface';
+import {
+  FILE_SYNC_PATHS,
+  assertShareableFolder,
+  createProductionFileSyncPaths,
+} from './file-sync-paths';
+import { FileSyncIgnoresStore } from './file-sync-ignores.store';
+import { SyncthingManager } from './syncthing-manager.service';
 import { FolderSyncStatusSchema, SCAN_TIMEOUT_MS, type FolderSyncStatus } from './file-sync.dto';
 import {
   FileSyncService,
@@ -35,6 +44,67 @@ const PEER_DONE = {
   needBytes: 0,
   remoteState: 'valid',
 };
+
+describe('FileSyncService.ensureFolder ownership', () => {
+  // Unit: the full folder PUT is the contract; disk and REST are boundary mocks.
+  it.each(['code', 'git'] as const)(
+    'sets ownership copying both ways on every %s folder PUT',
+    async (kind) => {
+      const mkdir = jest.spyOn(fs, 'mkdir').mockResolvedValue(undefined);
+      const stat = jest.spyOn(fs, 'stat').mockRejectedValue(new Error('no Git directory'));
+      const request = jest.fn().mockResolvedValue(undefined);
+      let privileged = true;
+      const moduleRef = await Test.createTestingModule({
+        providers: [
+          FileSyncService,
+          {
+            provide: SyncthingManager,
+            useValue: {
+              getConnection: () => ({ client: { request } }),
+              getState: () => ({ privileged }),
+            },
+          },
+          { provide: FILE_SYNC_PATHS, useValue: createProductionFileSyncPaths('/home/test') },
+          {
+            provide: STORAGE_SERVICE,
+            useValue: {
+              getProject: async () => ({ id: 'p1', rootPath: '/srv/project' }),
+            },
+          },
+          { provide: FileSyncIgnoresStore, useValue: {} },
+        ],
+      }).compile();
+      try {
+        const service = moduleRef.get(FileSyncService);
+        for (const value of [true, false]) {
+          privileged = value;
+          await service.ensureFolder({
+            projectId: 'p1',
+            kind,
+            type: 'receiveonly',
+            peerDeviceId: 'HOME',
+            ignores: [],
+          });
+          expect(request).toHaveBeenLastCalledWith(
+            'PATCH',
+            `/rest/config/folders/${kind}%3Ap1`,
+            expect.objectContaining({ paused: false }),
+          );
+          expect(request).toHaveBeenCalledWith(
+            'PUT',
+            `/rest/config/folders/${kind}%3Ap1`,
+            expect.objectContaining({ copyOwnershipFromParent: value, paused: true }),
+          );
+          request.mockClear();
+        }
+      } finally {
+        await moduleRef.close();
+        mkdir.mockRestore();
+        stat.mockRestore();
+      }
+    },
+  );
+});
 
 describe('evaluateCompletion', () => {
   const sender = status({ peer: PEER_DONE });
@@ -501,13 +571,20 @@ describe('FileSyncService health status projection', () => {
   it('reads error and errors and requests peer completion on the home REST client', async () => {
     const { request, files } = setup();
     request
-      .mockResolvedValueOnce({ ...status(), error: 'disk full', errors: 2, pullErrors: 99 })
+      .mockResolvedValueOnce({
+        ...status(),
+        error: 'disk full',
+        errors: 2,
+        pullErrors: 99,
+        sequence: 42,
+      })
       .mockResolvedValueOnce(PEER_DONE);
     const result = await files.status('code:p1', 'HOSTAAA');
     expect(result).toMatchObject({
       error: 'disk full',
       errors: 2,
       pullErrors: 99,
+      sequence: 42,
       peer: PEER_DONE,
     });
     expect(request).toHaveBeenNthCalledWith(

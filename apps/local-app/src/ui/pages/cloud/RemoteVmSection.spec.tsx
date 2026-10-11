@@ -709,7 +709,7 @@ describe('RemoteVmSection.shell', () => {
     });
 
     // Existing page fixture is the smallest owner that opens real VM details.
-    it('shows the Docker conflict note in VM details while the account ids differ', async () => {
+    it('shows both Docker user ids and the uid holder as information in VM details', async () => {
       fx.remotesData = [
         {
           ...REMOTE,
@@ -729,7 +729,7 @@ describe('RemoteVmSection.shell', () => {
       renderSection('/?tab=vms&vm=r1');
       const drawer = await screen.findByRole('dialog', { name: 'lab-vm' });
       expect(within(drawer).getByRole('note', { name: 'Docker user ids' })).toHaveTextContent(
-        'uid 1000 is used by ubuntu on the VM; the VM user got 1001:1000. Automatic Docker moves are off for this VM.',
+        'This PC: 1000:1000. VM: 1001:1000. uid 1000 is used by ubuntu on the VM.',
       );
     });
 

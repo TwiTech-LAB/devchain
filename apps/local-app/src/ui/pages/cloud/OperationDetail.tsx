@@ -283,6 +283,16 @@ function FamilyPullLines({
   );
 }
 
+function AlreadyTargetOwners({ count }: { count?: number }) {
+  if (!count || count <= 0) return null;
+  return (
+    <p className="text-muted-foreground">
+      {count} {count === 1 ? 'entry already had' : 'entries already had'} the target user or group
+      id. Those ids are treated as your user&apos;s ids on both machines.
+    </p>
+  );
+}
+
 /** Everything an operation's details report beyond its steps. */
 function OperationNotes({
   operation,
@@ -320,9 +330,10 @@ function OperationNotes({
     (step) => step.id === 'transcripts_push' || step.id === 'transcripts_pull',
   );
   const docker = details.docker as Partial<DockerTransferDetails> | undefined;
-  // A container copied with its data needs no line, so a complete copy shows no note.
   const dockerResult =
-    docker?.result && docker.result.withoutData.length + docker.result.dataOnly.length > 0
+    docker?.result &&
+    (docker.result.withoutData.length + docker.result.dataOnly.length > 0 ||
+      (docker.result.alreadyTargetEntries ?? 0) > 0)
       ? docker.result
       : null;
   const dockerStopSkipped =
@@ -528,6 +539,7 @@ function OperationNotes({
               <li key={name}>{name}: data only, no container was created.</li>
             ))}
           </ul>
+          <AlreadyTargetOwners count={dockerResult.alreadyTargetEntries} />
         </Note>
       )}
       {copyBack && (
@@ -543,6 +555,7 @@ function OperationNotes({
               <li key={`skipped:${label}`}>{label}: not copied.</li>
             ))}
           </ul>
+          <AlreadyTargetOwners count={copyBack.alreadyTargetEntries} />
           <p className="text-muted-foreground">
             The containers on this PC stay stopped; start them when you need them.
           </p>

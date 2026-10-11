@@ -1,3 +1,4 @@
+import { SessionRowStore } from '../../storage/sessions/session-row.store';
 import { createTestDatabase } from '../../../common/test/test-database.helper';
 // Backend integration: real in-memory SQLite is the cheapest layer that proves
 // lifecycle publication windows and persisted row cardinality under contention.
@@ -236,6 +237,7 @@ describe('session lifecycle race serialization', () => {
       runtimeContextCapture as never,
       claudeLaunchSettings as never,
       codexPluginProfiles as never,
+      new SessionRowStore(db),
     );
     const launchPipeline = new SessionLaunchPipeline(
       db,
@@ -253,6 +255,7 @@ describe('session lifecycle race serialization', () => {
       teamsStore as never,
       sessionTerminalRuntime,
       providerRuntimePreparation as never,
+      new SessionRowStore(db),
     );
     const restorePipeline = new SessionRestorePipeline(
       db,
@@ -267,6 +270,7 @@ describe('session lifecycle race serialization', () => {
       providerRuntimePreparation as never,
       preflightService as never,
       mcpEnsureService as never,
+      new SessionRowStore(db),
     );
     sessionRuntime = new SessionRuntime(
       launchPipeline,
@@ -288,6 +292,7 @@ describe('session lifecycle race serialization', () => {
       sessionTerminalRuntime,
       store,
       { listRemoteOwnedProjectIds: () => [] } as never,
+      new SessionRowStore(db),
     );
     facade = new SessionLifecycleFacade(
       sessionRuntime,

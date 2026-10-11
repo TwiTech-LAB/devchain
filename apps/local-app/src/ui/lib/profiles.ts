@@ -1,7 +1,7 @@
 import { queryOptions } from '@tanstack/react-query';
 import type { ProfileListItem, ProfilesResponse } from '@/modules/profiles/dto';
 import type { FetchFn } from './api-transport';
-import { fetchJsonOrThrow } from './sessions';
+import { fetchJsonOrThrow } from './http-json';
 
 export type { ProfileListItem, ProfilesResponse };
 

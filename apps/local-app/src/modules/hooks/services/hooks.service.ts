@@ -19,7 +19,7 @@ import { RuntimeContextCaptureService } from '../../runtime-context-capture/runt
 import {
   SESSION_TURN_HOOK_SIGNAL,
   type SessionTurnHookSignal,
-} from '../../terminal/services/session-turn-signals';
+} from '../../events/signals/session-turn-signals';
 
 const logger = createLogger('HooksService');
 

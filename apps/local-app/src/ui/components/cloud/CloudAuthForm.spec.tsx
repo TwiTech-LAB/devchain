@@ -1,10 +1,14 @@
 /** @jest-environment jsdom */
 
-import { fireEvent, render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { CloudAuthForm } from './CloudAuthForm';
 import { useQrAuth } from '../../hooks/useQrAuth';
 import { HOME_BACKEND, type BackendId } from '@/ui/lib/api-transport';
-import { CLOUD_TARGET_STORAGE_KEY, readPersistedCloudTarget } from '@/ui/lib/cloud-target';
+import {
+  CLOUD_SIGN_IN_NONCE_STORAGE_KEY,
+  CLOUD_TARGET_STORAGE_KEY,
+  readPersistedCloudTarget,
+} from '@/ui/lib/cloud-target';
 
 jest.mock('../../hooks/useQrAuth');
 jest.mock('./QrDisplayPanel', () => ({
@@ -89,6 +93,26 @@ describe('CloudAuthForm', () => {
       expect(open).toHaveBeenCalled();
       open.mockRestore();
     });
+  });
+
+  // A component test verifies that form submission carries the nonce into the HTTP request.
+  it('sends the pending sign-in nonce in the magic-link redirect', async () => {
+    renderForm();
+    fireEvent.change(screen.getByPlaceholderText('Email address'), {
+      target: { value: 'test@example.com' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: /send magic link/i }));
+    await waitFor(() =>
+      expect(screen.getByText('Check your email for a sign-in link.')).toBeInTheDocument(),
+    );
+
+    const request = (global.fetch as jest.Mock).mock.calls.find(
+      (call) => String(call[0]) === 'http://localhost:3002/auth/magic-link/request',
+    );
+    const body = JSON.parse((request![1] as RequestInit).body as string);
+    const callback = new URL(body.redirect_uri);
+    const stored = JSON.parse(window.localStorage.getItem(CLOUD_SIGN_IN_NONCE_STORAGE_KEY)!);
+    expect(callback.searchParams.get('nonce')).toBe(stored.nonce);
   });
 
   describe('QR mode', () => {

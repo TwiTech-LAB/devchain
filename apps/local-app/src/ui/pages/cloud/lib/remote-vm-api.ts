@@ -11,7 +11,6 @@ import type {
   SaveProjectIgnoresResult,
   ProjectExclusionSuggestions,
   ProjectPatternPreview,
-  SyncChownResult,
   ProjectFileSyncStatus,
   DockerPlanRequest,
   DockerPlan,
@@ -127,11 +126,21 @@ export interface RemoteVmApi {
     pattern: string,
     signal: AbortSignal,
   ): Promise<ProjectPatternPreview>;
-  giveFileOwnership(projectId: string, paths: string[]): Promise<SyncChownResult>;
   readFileSyncStatus(projectId: string, signal: AbortSignal): Promise<ProjectFileSyncStatus>;
   readDockerPlan(
     projectId: string,
     input: DockerPlanRequest,
+    signal: AbortSignal,
+  ): Promise<DockerPlan>;
+  applyDockerUserFix(
+    projectId: string,
+    remoteId: string,
+    proposalId: string,
+    signal: AbortSignal,
+  ): Promise<void>;
+  verifyDockerUserFix(
+    projectId: string,
+    remoteId: string,
     signal: AbortSignal,
   ): Promise<DockerPlan>;
   readDockerPresence(projectId: string, signal: AbortSignal): Promise<DockerPresence>;

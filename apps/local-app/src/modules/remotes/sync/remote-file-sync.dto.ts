@@ -39,8 +39,6 @@ export interface FailedSyncSide {
 }
 
 export interface ProjectFileSyncFailures extends ExclusionSuggestions {
-  vmUser?: SyncPathOwner | null;
-  ownershipNotes?: string[];
   installedPrefix: string[];
   forceSync: ForceSyncOffer;
   ownerSide: 'vm';

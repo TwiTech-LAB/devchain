@@ -83,7 +83,7 @@ async function fetchTemplateDetail(slug: string): Promise<TemplateDetailResponse
     if (res.status === 404) return null;
     throw new Error('Failed to fetch template details');
   }
-  return res.json();
+  return res.json() as Promise<TemplateDetailResponse | null>;
 }
 
 async function fetchProjectsUsingTemplate(slug: string): Promise<ProjectsUsingTemplateResponse> {
@@ -91,7 +91,7 @@ async function fetchProjectsUsingTemplate(slug: string): Promise<ProjectsUsingTe
     backend: HOME_BACKEND,
   });
   if (!res.ok) throw new Error('Failed to fetch projects');
-  return res.json();
+  return res.json() as Promise<ProjectsUsingTemplateResponse>;
 }
 
 interface TemplateDetailDrawerProps {

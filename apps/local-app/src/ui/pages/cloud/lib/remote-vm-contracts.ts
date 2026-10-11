@@ -223,7 +223,6 @@ export type {
 } from '@/modules/remotes/sync/remote-file-sync.dto';
 export type { ProjectExclusionSuggestions } from '@/modules/file-sync/sync-path-inspection.dto';
 export type { FileSyncAutoFix } from '@/modules/file-sync/file-sync-auto-fix.dto';
-export type { SyncChownResult } from '@/modules/file-sync/sync-chown.dto';
 export type {
   DockerPlan,
   DockerPlanRequest,

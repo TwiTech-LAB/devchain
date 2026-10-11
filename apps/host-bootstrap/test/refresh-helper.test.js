@@ -90,6 +90,7 @@ async function executeBin(
   packages = async () => ({ skippedTools: [] }),
   claim = { refreshHostUnit: async () => false },
   system = { marker: true },
+  syncthing = async () => {},
 ) {
   let stdout = "";
   let stderr = "";
@@ -107,9 +108,12 @@ async function executeBin(
       require: (name) => {
         if (name === "../lib/system") return { createSystem: () => system };
         if (name === "../lib/clis") return { installClis: install };
+        if (name === "../lib/syncthing")
+          return { installPrivilegedSyncthing: syncthing };
         if (name === "../lib/packages") return { ensureBasePackages: packages };
         if (name === "../lib/update") return {};
-        if (name === "../lib/claim") return { ensureIdsProfile: () => {}, ...claim };
+        if (name === "../lib/claim")
+          return { ensureIdsProfile: () => {}, ...claim };
         return require(name);
       },
       process: {
@@ -155,8 +159,14 @@ test("--clis installs CLIs after skipped tools and emits exactly one JSON line",
       order.push("packages");
       return { skippedTools: ["renamed-tool"] };
     },
+    undefined,
+    undefined,
+    async (sys) => {
+      assert.equal(sys.marker, true);
+      order.push("syncthing");
+    },
   );
-  assert.deepEqual(order, ["packages", "clis"]);
+  assert.deepEqual(order, ["packages", "clis", "syncthing"]);
   assert.deepEqual(result, {
     stdout:
       '{"cliVersions":{"agy":"agy 2.0.0"},"skippedTools":["renamed-tool"]}\n',
@@ -184,8 +194,13 @@ test("--clis re-writes the host unit on a claimed VM after the CLIs, logging to 
         return true;
       },
     },
+    undefined,
+    async (sys) => {
+      assert.equal(sys.marker, true);
+      order.push("syncthing");
+    },
   );
-  assert.deepEqual(order, ["packages", "clis", "unit"]);
+  assert.deepEqual(order, ["packages", "clis", "syncthing", "unit"]);
   assert.deepEqual(result, {
     stdout: '{"cliVersions":{"agy":"agy 2.0.0"},"skippedTools":[]}\n',
     stderr: "devchain-host.service refreshed from this version's template.\n",
@@ -235,13 +250,14 @@ test("--clis installs the login ids profile and a second run preserves it", asyn
   const { sys, cleanup } = fakeSystem();
   t.after(cleanup);
   const profile = path.join(sys.paths.profileDir, "devchain-ids.sh");
-  const run = () => executeBin(
-    ["--clis", "0.25.0"],
-    async () => ({}),
-    async () => ({ skippedTools: [] }),
-    { ensureIdsProfile, refreshHostUnit: async () => false },
-    sys,
-  );
+  const run = () =>
+    executeBin(
+      ["--clis", "0.25.0"],
+      async () => ({}),
+      async () => ({ skippedTools: [] }),
+      { ensureIdsProfile, refreshHostUnit: async () => false },
+      sys,
+    );
   assert.equal((await run()).exitCode, 0);
   assert.equal(
     fs.readFileSync(profile, "utf8"),

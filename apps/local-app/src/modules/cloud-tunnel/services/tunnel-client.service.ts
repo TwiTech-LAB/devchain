@@ -1,3 +1,4 @@
+import { OnCatalogEvent } from '../../events/catalog/on-catalog-event';
 import {
   Injectable,
   OnApplicationBootstrap,
@@ -136,12 +137,12 @@ export class TunnelClientService
     this.disconnect();
   }
 
-  @OnEvent('session.cloud_connected')
+  @OnCatalogEvent('session.cloud_connected')
   handleCloudConnected() {
     this.connect();
   }
 
-  @OnEvent('session.cloud_disconnected')
+  @OnCatalogEvent('session.cloud_disconnected')
   handleCloudDisconnected() {
     this.disconnect();
   }

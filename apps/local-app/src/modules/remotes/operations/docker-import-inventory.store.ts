@@ -5,6 +5,7 @@ import { z } from 'zod';
 import { createLogger } from '../../../common/logging/logger';
 import { DB_CONNECTION } from '../../storage/db/db.provider';
 import { getRawSqliteClient } from '../../storage/db/sqlite-raw';
+import { projectAnchoredPath, strictlyWithin } from '../docker/docker-plan-files';
 
 const logger = createLogger('DockerImportInventoryStore');
 
@@ -15,6 +16,29 @@ const logger = createLogger('DockerImportInventoryStore');
  * next Connect knows what it replaces.
  */
 const SETTINGS_KEY = 'docker.importInventory';
+
+const userIds = z
+  .object({ uid: z.number().int().nonnegative(), gid: z.number().int().nonnegative() })
+  .strict();
+export const DockerOwnershipRecordSchema = z
+  .object({
+    class: z.enum(['exact', 'follows-user', 'needs-user-fix', 'image-user-hint']),
+    home: userIds,
+    vm: userIds,
+    targetUser: z.string().max(4096).optional(),
+  })
+  .strict();
+
+export const DockerDataRepresentationSchema = z
+  .object({ kind: z.enum(['exact', 'mapped']), home: userIds, vm: userIds })
+  .strict();
+const DataRepresentationGroupSchema = z
+  .object({
+    volumes: z.array(z.string().min(1).max(255)).max(1000),
+    bindPaths: z.array(z.string().min(1).max(4096)).max(1000),
+    representation: DockerDataRepresentationSchema.optional(),
+  })
+  .strict();
 
 /** A volume DevChain copied for an imported item. */
 const InventoryVolumeSchema = z
@@ -33,6 +57,8 @@ const InventoryItemSchema = z
   .object({
     /** The container's name on the home PC at import time. */
     name: z.string().min(1).max(255),
+    ownership: DockerOwnershipRecordSchema.optional(),
+    dataRepresentations: z.array(DataRepresentationGroupSchema).max(1000).optional(),
     /** The image the item's VM-side container is created from, by ID. */
     imageId: z.string().min(1).max(255),
     /**
@@ -52,6 +78,8 @@ export const DockerDataGroupRecordSchema = z
   .object({
     volumes: z.array(z.string().min(1).max(255)).max(1000),
     bindPaths: z.array(z.string().min(1).max(4096)).max(1000),
+    ownership: DockerOwnershipRecordSchema.optional(),
+    representation: DockerDataRepresentationSchema.optional(),
     lastSyncedAt: z.string().datetime().optional(),
     lastSyncDirection: z.enum(['to-vm', 'to-home']).optional(),
     homeDiscardedAt: z.string().datetime().optional(),
@@ -92,19 +120,38 @@ export function vmImageCandidates(
 }
 
 /**
+ * Item paths are project-anchored; group baselines retain absolute paths.
+ */
+export function inventoryBindPaths(
+  inventory: DockerImportInventory | null,
+  projectRoot: string,
+): string[] {
+  return [
+    ...new Set([
+      ...(inventory?.items.flatMap((item) => item.bindPaths) ?? []),
+      ...(inventory?.groups ?? [])
+        .flatMap((group) => group.bindPaths)
+        .filter((path) => strictlyWithin(projectRoot, path))
+        .map((path) => projectAnchoredPath(projectRoot, path)),
+    ]),
+  ];
+}
+
+/**
  * The file-sync exclusions that a Connect installs: the plan's data folders, plus earlier
  * imports' unselected data, which stays on the VM, except paths that file sync now carries.
  */
 export function connectExclusions(
   plan: { managedExclusions: readonly string[]; codePaths: readonly string[] },
   inventory: DockerImportInventory | null,
+  projectRoot: string,
 ): string[] {
   return [
     ...new Set([
       ...plan.managedExclusions,
-      ...(inventory?.items
-        .flatMap((item) => item.bindPaths)
-        .filter((path) => !plan.codePaths.includes(path)) ?? []),
+      ...inventoryBindPaths(inventory, projectRoot).filter(
+        (path) => !plan.codePaths.includes(path),
+      ),
     ]),
   ];
 }

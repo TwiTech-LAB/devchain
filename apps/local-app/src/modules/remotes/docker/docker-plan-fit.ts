@@ -17,19 +17,32 @@ export interface DockerPlanCapacity {
   dockerRoot: DockerFilesystem | null;
   binds: DockerPathCapacity[];
 }
-export function copiedMounts(item: DockerPlanItem): DockerPlanMount[] {
-  if (!item.selectedMode || item.selectedMode === 'without-data' || item.dataAction === 'keep-vm')
+export function copiedMounts(
+  item: Pick<DockerPlanItem, 'mounts' | 'temporary' | 'selectedMode' | 'dataAction'>,
+): DockerPlanMount[] {
+  if (
+    !item.selectedMode ||
+    item.selectedMode === 'without-data' ||
+    item.dataAction === 'keep-vm' ||
+    item.dataAction === 'start-empty'
+  )
     return [];
   return item.mounts.filter((mount) =>
     item.temporary ? mount.kind === 'named-volume' : COPYABLE_MOUNT_KINDS.includes(mount.kind),
   );
 }
 /** The mounts whose data the import copies, decided solely by their kinds. */
-export function copiedDataMounts(item: DockerPlanItem, _projectRoot: string): DockerPlanMount[] {
+export function copiedDataMounts(
+  item: Pick<DockerPlanItem, 'mounts' | 'temporary' | 'selectedMode' | 'dataAction'>,
+  _projectRoot: string,
+): DockerPlanMount[] {
   return copiedMounts(item);
 }
 /** The data the item could copy, whatever its current choice omits. */
-export function potentialDataMounts(item: DockerPlanItem, projectRoot: string): DockerPlanMount[] {
+export function potentialDataMounts(
+  item: Pick<DockerPlanItem, 'mounts' | 'temporary'>,
+  projectRoot: string,
+): DockerPlanMount[] {
   return copiedDataMounts(
     { ...item, selectedMode: 'container-and-data', dataAction: undefined },
     projectRoot,
@@ -42,7 +55,9 @@ export function potentialDataMounts(item: DockerPlanItem, projectRoot: string): 
 export function movesToVm(item: DockerPlanItem): boolean {
   return (
     Boolean(item.selectedMode) &&
-    (item.targetAction !== 'leave-as-is' || item.dataAction === 'keep-vm')
+    (item.targetAction !== 'leave-as-is' ||
+      item.dataAction === 'keep-vm' ||
+      item.dataAction === 'start-empty')
   );
 }
 /**

@@ -3,7 +3,7 @@
     "slug": "teams-dev",
     "name": "DevChain Development Flow",
     "description": "A multi-agent development workflow that automates software delivery through three phases:\n\n1. Planning — A Brainstormer agent collaborates with a technical validator to refine user requirements into an approved master plan, then breaks it down into epics and tasks.\n2. Execution — A Coder agent implements tasks while an Epic Manager reviews and controls the flow—approving, revising, or flagging issues until all work is complete.\n3. Code Review — A Code Reviewer audits the completed work against architectural standards, generating findings that feed back into new remediation tasks if needed.\n\nSupported agents: claude, codex, glm, agy",
-    "version": "1.1.61",
+    "version": "1.1.62",
     "category": "development",
     "tags": [
       "development",
@@ -15,13 +15,13 @@
     "authorName": "Devchain",
     "changelog": "",
     "minDevchainVersion": "0.12.0",
-    "publishedAt": "2026-10-02T22:44:05.546Z"
+    "publishedAt": "2026-10-11T12:36:42.279Z"
   },
   "version": 1,
-  "exportedAt": "2026-10-02T22:44:05.546Z",
+  "exportedAt": "2026-10-11T12:36:42.280Z",
   "prompts": [
     {
-      "id": "325b23a5-09d1-4f13-b0f5-4ff2713dbe24",
+      "id": "416dc8a5-9477-466b-bc7f-4ae950495bf5",
       "title": "Autonomous Code Reviewer",
       "content": {
         "$file": "prompts/001-autonomous-code-reviewer.md"
@@ -32,18 +32,18 @@
       ]
     },
     {
-      "id": "e9cb932a-972c-4085-8a65-2d237838f522",
+      "id": "f7581a11-4819-4538-80c0-94c1eea90895",
       "title": "Code Simplifier",
       "content": {
         "$file": "prompts/002-code-simplifier.md"
       },
-      "version": 2,
+      "version": 1,
       "tags": [
         "type:custom"
       ]
     },
     {
-      "id": "7b5d437b-f173-4a9a-801b-0e5af356a39c",
+      "id": "3dc03784-7bba-40ab-8929-5bcbad2f0e80",
       "title": "Code-Aware Technical Lead - SOP",
       "content": {
         "$file": "prompts/003-code-aware-technical-lead-sop.md"
@@ -55,30 +55,30 @@
       ]
     },
     {
-      "id": "8315f2b7-b5d6-4018-9f1e-5cb0153cec49",
+      "id": "509c4579-957b-4c6c-a27e-72a1cb5f0fec",
       "title": "Create commit",
       "content": {
         "$file": "prompts/004-create-commit.md"
       },
-      "version": 2,
+      "version": 1,
       "tags": [
         "type:custom"
       ]
     },
     {
-      "id": "87804a2f-2115-44ee-ae6d-e2e1bbaac0f8",
+      "id": "086988e3-4794-408a-92f9-b319fbf06e16",
       "title": "Development Standards",
       "content": {
         "$file": "prompts/005-development-standards.md"
       },
-      "version": 6,
+      "version": 1,
       "tags": [
         "docs:create-development-standards",
         "type:system"
       ]
     },
     {
-      "id": "32cea99c-de2a-4f51-b271-5a1fcf7b264b",
+      "id": "7e2095fb-7ae4-4962-841b-fd96d60cc3b3",
       "title": "Documentation Refactoring & Cleanup",
       "content": {
         "$file": "prompts/006-documentation-refactoring-cleanup.md"
@@ -90,30 +90,30 @@
       ]
     },
     {
-      "id": "adda6052-f1c8-4c66-b8fd-c744626e0f9a",
+      "id": "d6ab2b48-2429-467e-abfc-b4c6a69f5681",
       "title": "Epic Master - instructions SOP",
       "content": {
         "$file": "prompts/007-epic-master-instructions-sop.md"
       },
-      "version": 4,
+      "version": 1,
       "tags": [
         "agent:profile:epic-master",
         "type:system"
       ]
     },
     {
-      "id": "c2f04b8a-8aea-40f9-998b-1e92c7a341c8",
+      "id": "4ae994db-8539-40f2-b499-73fb10d7f0ec",
       "title": "Improve Codebase Architecture",
       "content": {
         "$file": "prompts/008-improve-codebase-architecture.md"
       },
-      "version": 2,
+      "version": 1,
       "tags": [
         "type:custom"
       ]
     },
     {
-      "id": "b7e9cc56-8ef3-4fc0-b5f6-d693c237cc65",
+      "id": "18283b6c-001f-42d3-b063-ed2134540442",
       "title": "Initialize Agent",
       "content": {
         "$file": "prompts/009-initialize-agent.md"
@@ -124,31 +124,31 @@
       ]
     },
     {
-      "id": "0987ce87-11f4-40f4-97ed-1ae5dcf28ad0",
+      "id": "279a8ec3-08c0-4c5f-a1f9-134d7d0537de",
       "title": "Initialize project documentation",
       "content": {
         "$file": "prompts/010-initialize-project-documentation.md"
       },
-      "version": 3,
+      "version": 1,
       "tags": [
         "docs:create-docs",
         "type:system"
       ]
     },
     {
-      "id": "2998e2e0-5ba1-4876-9887-52e99017e5a5",
+      "id": "229beff9-a98a-4293-ab8a-f71456a20e24",
       "title": "Reviewer/Architect — Plan Decomposition SOP",
       "content": {
         "$file": "prompts/011-reviewer-architect-plan-decomposition-sop.md"
       },
-      "version": 6,
+      "version": 2,
       "tags": [
         "agent:profile:architect",
         "type:system"
       ]
     },
     {
-      "id": "dde4fc1f-31a9-47b1-8304-b51f00d15c15",
+      "id": "d1762cbe-ac75-4026-99fd-4b2f0c4b2972",
       "title": "Team Management — Routing & Scaling",
       "content": {
         "$file": "prompts/012-team-management-routing-scaling.md"
@@ -160,7 +160,7 @@
       ]
     },
     {
-      "id": "71966b79-9014-43fb-99c5-f906e06454b5",
+      "id": "3ed8ff29-4432-4b8f-985f-c486aa3957e1",
       "title": "Test Prompt",
       "content": {
         "$file": "prompts/013-test-prompt.md"
@@ -171,24 +171,24 @@
       ]
     },
     {
-      "id": "31e9497c-10ec-48c8-a605-9108133ba15d",
+      "id": "74e93a49-5065-4ad2-9e14-dc40371a2ae4",
       "title": "Worker AI - Task Execution SOP",
       "content": {
         "$file": "prompts/014-worker-ai-task-execution-sop.md"
       },
-      "version": 5,
+      "version": 1,
       "tags": [
         "agent:profile:coder",
         "type:system"
       ]
     },
     {
-      "id": "daea8810-8a53-489b-b9e1-672c28bb42c3",
+      "id": "f76a34b8-ac2c-48a6-beb2-2734719743ed",
       "title": "project-skill-review",
       "content": {
         "$file": "prompts/015-project-skill-review.md"
       },
-      "version": 3,
+      "version": 1,
       "tags": [
         "type:custom"
       ]
@@ -196,7 +196,7 @@
   ],
   "profiles": [
     {
-      "id": "99526dbf-3b1d-423f-b391-6fa8cb11dabd",
+      "id": "7c92482e-3c9d-4f53-bbf8-ec1222f51e3d",
       "name": "Architect",
       "provider": {
         "id": "provider-claude",
@@ -267,7 +267,7 @@
       ]
     },
     {
-      "id": "deadf9be-c825-48b4-8fba-82c74cf40afe",
+      "id": "7b18aaa3-9773-4ac0-85fd-71d6ba1c3272",
       "name": "Architect/Planner",
       "provider": {
         "id": "provider-claude",
@@ -328,7 +328,7 @@
       ]
     },
     {
-      "id": "e8d9e987-b885-4ec7-8bd6-8eb7931b4f20",
+      "id": "7a7233b7-c4f3-4a1a-a1ec-a07dccc3412d",
       "name": "Code Reviewer",
       "provider": {
         "id": "provider-claude",
@@ -389,7 +389,7 @@
       ]
     },
     {
-      "id": "7f8c4f48-2d6a-48b1-9842-c15aca5efc4b",
+      "id": "97e4ceeb-8604-41af-a2dc-1265e76fea07",
       "name": "Coder",
       "provider": {
         "id": "provider-claude",
@@ -495,7 +495,7 @@
       ]
     },
     {
-      "id": "5654636b-12d4-4b91-9ef8-b254873feff3",
+      "id": "688ff4f9-be5b-46c2-bbdf-28f427fab71d",
       "name": "Red-Team Architect",
       "provider": {
         "id": "a4c87d4f-b0ec-40df-8f9d-56e4ca678fae",
@@ -541,7 +541,7 @@
       ]
     },
     {
-      "id": "432ecbb3-26dd-4570-868f-d509a2dd1aa7",
+      "id": "35d7e170-0ef3-4368-82c9-107d3b3c73cd",
       "name": "Reviewer",
       "provider": {
         "id": "provider-claude",
@@ -604,34 +604,34 @@
   ],
   "agents": [
     {
-      "id": "3174ed85-30e1-4967-80ab-12e25c04ccf3",
+      "id": "ad322def-1ea3-41f4-a66a-1629a5302d1b",
       "name": "Brainstormer",
-      "profileId": "deadf9be-c825-48b4-8fba-82c74cf40afe",
+      "profileId": "7b18aaa3-9773-4ac0-85fd-71d6ba1c3272",
       "description": "responsible for plan decomposition and epic creation",
       "modelOverride": null,
       "providerConfigName": "opus",
       "isProjectOwner": true
     },
     {
-      "id": "9585f1c4-4a5c-45d2-b4da-91e747a35d2b",
+      "id": "bbe83fa0-05b3-4ddf-99ed-2cb168c24406",
       "name": "Epic Manager",
-      "profileId": "432ecbb3-26dd-4570-868f-d509a2dd1aa7",
+      "profileId": "35d7e170-0ef3-4368-82c9-107d3b3c73cd",
       "description": null,
       "modelOverride": "sonnet",
       "providerConfigName": "opus"
     },
     {
-      "id": "81d45163-0e85-40fc-8231-d41bf122eb01",
+      "id": "191f4c06-7cea-47cc-86da-c0851e154413",
       "name": "Architect",
-      "profileId": "99526dbf-3b1d-423f-b391-6fa8cb11dabd",
+      "profileId": "7c92482e-3c9d-4f53-bbf8-ec1222f51e3d",
       "description": null,
       "modelOverride": null,
       "providerConfigName": "gpt"
     },
     {
-      "id": "45208f48-8e95-4ce6-be84-fc117a3f698b",
+      "id": "a9b820fb-e202-4b28-94f9-9cab3200418b",
       "name": "Code Reviewer",
-      "profileId": "e8d9e987-b885-4ec7-8bd6-8eb7931b4f20",
+      "profileId": "7a7233b7-c4f3-4a1a-a1ec-a07dccc3412d",
       "description": "responsible for code review of completed phases",
       "modelOverride": null,
       "providerConfigName": "gpt"
@@ -696,7 +696,7 @@
     }
   ],
   "initialPrompt": {
-    "promptId": "b7e9cc56-8ef3-4fc0-b5f6-d693c237cc65",
+    "promptId": "18283b6c-001f-42d3-b063-ed2134540442",
     "title": "Initialize Agent"
   },
   "projectSettings": {
@@ -800,43 +800,25 @@
   ],
   "watchers": [
     {
-      "id": "f810e2d6-9187-45da-9fa8-63868fbf08c1",
-      "name": "GLM compact",
+      "id": "9c54ef16-c4ca-474f-a5fa-4a48369b444b",
+      "name": "OpenCode - Compaction",
       "description": null,
       "enabled": true,
       "scope": "provider",
-      "scopeFilterName": "claude",
-      "pollIntervalMs": 30000,
-      "viewportLines": 30,
+      "scopeFilterName": "opencode",
+      "pollIntervalMs": 50000,
+      "viewportLines": 20,
       "idleAfterSeconds": 0,
       "condition": {
         "type": "contains",
-        "pattern": "context window limit"
+        "pattern": "Compaction"
       },
-      "cooldownMs": 90000,
+      "cooldownMs": 30000,
       "cooldownMode": "until_clear",
-      "eventName": "watcher.glm.context_limit"
+      "eventName": "watcher.opencode.compact"
     },
     {
-      "id": "8764cc57-4630-4300-ada3-b59df47b07ed",
-      "name": "Compact on idle",
-      "description": null,
-      "enabled": true,
-      "scope": "provider",
-      "scopeFilterName": "claude",
-      "pollIntervalMs": 60000,
-      "viewportLines": 20,
-      "idleAfterSeconds": 20,
-      "condition": {
-        "type": "regex",
-        "pattern": "Context low \\([0-7]% remaining\\)"
-      },
-      "cooldownMs": 180000,
-      "cooldownMode": "until_clear",
-      "eventName": "watcher.conversation.compact_request"
-    },
-    {
-      "id": "e824d6ec-3270-42ef-886e-4a5df48c2b3f",
+      "id": "82a8b3e8-7014-479c-aa9d-7b0055906a2f",
       "name": "GLM Network error",
       "description": null,
       "enabled": true,
@@ -854,7 +836,7 @@
       "eventName": "watcher.glm.network_error"
     },
     {
-      "id": "bb30f7a4-4536-4005-a886-229e0be55fe9",
+      "id": "e1818916-4e39-4495-b547-4cfb38fd7a6a",
       "name": "Limit reached",
       "description": null,
       "enabled": false,
@@ -873,7 +855,7 @@
       "eventName": "watcher.claude.limit_reached"
     },
     {
-      "id": "d6a0858e-4689-4ecf-a67e-7ac585d83e2c",
+      "id": "feb2fa6e-1449-4a45-9d24-dcd12993bf97",
       "name": "Compact monitor",
       "description": null,
       "enabled": true,
@@ -891,7 +873,7 @@
       "eventName": "watcher.conversation.compact_request"
     },
     {
-      "id": "9d3f78ae-0117-4b76-8c96-0d97453a2d95",
+      "id": "40fc9eb1-2fde-442c-ab64-4528030db642",
       "name": "Codex compacted",
       "description": null,
       "enabled": true,
@@ -909,28 +891,75 @@
       "eventName": "watcher.codex.context_compacted"
     },
     {
-      "id": "a5cae4ae-362e-4dc1-a8d1-bba1ca35087f",
-      "name": "OpenCode - Compaction",
+      "id": "ee6dfeaa-5428-4ddf-b345-e33058797cfc",
+      "name": "GLM compact",
       "description": null,
       "enabled": true,
       "scope": "provider",
-      "scopeFilterName": "opencode",
-      "pollIntervalMs": 50000,
-      "viewportLines": 20,
+      "scopeFilterName": "claude",
+      "pollIntervalMs": 30000,
+      "viewportLines": 30,
       "idleAfterSeconds": 0,
       "condition": {
         "type": "contains",
-        "pattern": "Compaction"
+        "pattern": "context window limit"
       },
-      "cooldownMs": 30000,
+      "cooldownMs": 90000,
       "cooldownMode": "until_clear",
-      "eventName": "watcher.opencode.compact"
+      "eventName": "watcher.glm.context_limit"
+    },
+    {
+      "id": "b6cfead3-667b-4c43-bfd7-35d6af3dc3a1",
+      "name": "Compact on idle",
+      "description": null,
+      "enabled": true,
+      "scope": "provider",
+      "scopeFilterName": "claude",
+      "pollIntervalMs": 60000,
+      "viewportLines": 20,
+      "idleAfterSeconds": 20,
+      "condition": {
+        "type": "regex",
+        "pattern": "Context low \\([0-7]% remaining\\)"
+      },
+      "cooldownMs": 180000,
+      "cooldownMode": "until_clear",
+      "eventName": "watcher.conversation.compact_request"
     }
   ],
   "subscribers": [
     {
-      "id": "6741873a-07ce-4165-8961-ebd5ccdbfd4a",
-      "name": "Architect Cleanup on Phase",
+      "id": "4a75cad9-0b0f-45a5-b9a7-7248f57c285a",
+      "name": "Continue on compact",
+      "description": null,
+      "enabled": true,
+      "eventName": "watcher.conversation.compact_request",
+      "eventFilter": null,
+      "actionType": "send_agent_message",
+      "actionInputs": {
+        "text": {
+          "source": "custom",
+          "customValue": "/compact"
+        },
+        "submitKey": {
+          "source": "custom",
+          "customValue": "Enter"
+        },
+        "immediate": {
+          "source": "custom",
+          "customValue": "true"
+        }
+      },
+      "delayMs": 0,
+      "cooldownMs": 60000,
+      "retryOnError": false,
+      "groupName": null,
+      "position": 0,
+      "priority": 0
+    },
+    {
+      "id": "7e5bfe9d-07ea-4203-a6bb-8b5104379c14",
+      "name": "RArchitect Cleanup on Phase",
       "description": null,
       "enabled": true,
       "eventName": "epic.created",
@@ -953,112 +982,121 @@
       "actionInputs": {
         "familySlug": {
           "source": "custom",
-          "customValue": "sub-architect"
+          "customValue": "t2-sub-architect"
+        },
+        "skipWhileEpicsInStatuses": {
+          "source": "custom",
+          "customValue": "Review"
+        },
+        "skipWhileAgentsBusy": {
+          "source": "custom",
+          "customValue": "true"
         }
       },
       "delayMs": 0,
       "cooldownMs": 5000,
       "retryOnError": false,
       "groupName": "Reset",
-      "position": 3,
-      "priority": 30
+      "position": 4,
+      "priority": 40
     },
     {
-      "id": "f802a42c-93cb-4607-88ca-db954a09aedd",
-      "name": "Epic Manage compact on Phase",
+      "id": "524c27ef-f604-4576-a73e-147e308004e8",
+      "name": "Continue on Limit reached",
       "description": null,
       "enabled": true,
-      "eventName": "epic.updated",
-      "eventFilter": {
-        "combinator": "and",
-        "filters": [
-          {
-            "field": "changes.statusId.currentName",
-            "operator": "equals",
-            "value": "Done"
-          },
-          {
-            "field": "parentId",
-            "operator": "is_null",
-            "value": ""
-          }
-        ]
-      },
+      "eventName": "watcher.claude.limit_reached",
+      "eventFilter": null,
       "actionType": "send_agent_message",
       "actionInputs": {
-        "agentName": {
-          "source": "custom",
-          "customValue": "Epic Manager"
-        },
         "text": {
           "source": "custom",
-          "customValue": "/compact"
-        },
-        "deliveryMode": {
-          "source": "custom",
-          "customValue": "on_idle"
+          "customValue": "continue"
         },
         "submitKey": {
           "source": "custom",
           "customValue": "Enter"
         }
       },
-      "delayMs": 60000,
+      "delayMs": 0,
       "cooldownMs": 5000,
       "retryOnError": false,
-      "groupName": "Reset",
+      "groupName": null,
+      "position": 0,
+      "priority": 0
+    },
+    {
+      "id": "41f14cfc-8790-428a-abc2-0cc2813bdaea",
+      "name": "Trigger Compact",
+      "description": null,
+      "enabled": true,
+      "eventName": "watcher.conversation.compact_request",
+      "eventFilter": null,
+      "actionType": "send_agent_message",
+      "actionInputs": {
+        "text": {
+          "source": "custom",
+          "customValue": "Your agent session id (sessionId): {{sessionIdShort}}\nYour agent name: {{agentName}}\n! Important: Re-load your agent profile by using devchain_get_agent_by_name to refresh SOP instructions and continue working !"
+        },
+        "submitKey": {
+          "source": "custom",
+          "customValue": "Enter"
+        }
+      },
+      "delayMs": 30000,
+      "cooldownMs": 60000,
+      "retryOnError": false,
+      "groupName": null,
       "position": 1,
-      "priority": 10
+      "priority": 0
     },
     {
-      "id": "fea380ed-f4e2-41c1-b1dd-206e85fb19bc",
-      "name": "Code Reviewer compact on Phase",
+      "id": "3710967f-e55b-47a0-9506-366c4d942ba2",
+      "name": "Opencode renew instructions",
       "description": null,
       "enabled": true,
-      "eventName": "epic.updated",
-      "eventFilter": {
-        "combinator": "and",
-        "filters": [
-          {
-            "field": "changes.statusId.currentName",
-            "operator": "equals",
-            "value": "Done"
-          },
-          {
-            "field": "parentId",
-            "operator": "is_null",
-            "value": ""
-          }
-        ]
-      },
+      "eventName": "watcher.opencode.compact",
+      "eventFilter": null,
       "actionType": "send_agent_message",
       "actionInputs": {
-        "agentName": {
-          "source": "custom",
-          "customValue": "Code Reviewer"
-        },
         "text": {
           "source": "custom",
-          "customValue": "/compact"
-        },
-        "deliveryMode": {
-          "source": "custom",
-          "customValue": "on_idle"
+          "customValue": "Your agent session id (sessionId): {{sessionIdShort}}\nYour agent name: {{agentName}}\n{{#if is_team_lead}}You lead team \"{{team_name}}\" {{/if}}\n! Important: Re-load your agent profile by using devchain_get_agent_by_name to refresh SOP instructions and continue working !"
         },
         "submitKey": {
           "source": "custom",
           "customValue": "Enter"
+        },
+        "immediate": {
+          "source": "custom",
+          "customValue": "true"
         }
       },
-      "delayMs": 60000,
-      "cooldownMs": 5000,
+      "delayMs": 0,
+      "cooldownMs": 50000,
       "retryOnError": false,
-      "groupName": "Reset",
-      "position": 2,
-      "priority": 10
+      "groupName": null,
+      "position": 0,
+      "priority": 0
     },
     {
-      "id": "ae6fca03-0cf9-4bfa-b892-9e61f18a5681",
+      "id": "289ef08c-d641-4dd0-8639-3db10451b4a7",
+      "name": "GLM compact",
+      "description": null,
+      "enabled": true,
+      "eventName": "watcher.glm.context_limit",
+      "eventFilter": null,
+      "actionType": "restart_agent",
+      "actionInputs": {},
+      "delayMs": 0,
+      "cooldownMs": 30000,
+      "retryOnError": false,
+      "groupName": null,
+      "position": 0,
+      "priority": 0
+    },
+    {
+      "id": "a8c70664-e22e-4a23-88ea-04a751f29ae6",
       "name": "Coder reset on Phase Done",
       "description": null,
       "enabled": true,
@@ -1097,7 +1135,7 @@
       "priority": 0
     },
     {
-      "id": "14edff28-54c8-4018-a630-bd7e5a1d3429",
+      "id": "48a4df55-2387-4fb6-ab38-f910cec4a79f",
       "name": "Renew instructions",
       "description": null,
       "enabled": true,
@@ -1130,7 +1168,7 @@
       "priority": 0
     },
     {
-      "id": "ad9368ce-d66c-405b-8f93-96320183f14c",
+      "id": "32ddbad9-4755-4319-aed3-2e98b95a3331",
       "name": "Epic Status Update",
       "description": "Acknowledge notifications to Brainstormer when Epic are done",
       "enabled": true,
@@ -1177,7 +1215,7 @@
       "priority": 0
     },
     {
-      "id": "7b2c2671-70bb-44de-ad81-fc7abd7b62c8",
+      "id": "985747a9-3718-4501-a099-fe70027392ef",
       "name": "Renew instructions Codex",
       "description": null,
       "enabled": true,
@@ -1202,7 +1240,7 @@
       "priority": 0
     },
     {
-      "id": "70fc49dc-ef5d-4631-94f6-a7c6ef78e82b",
+      "id": "3404ec79-784d-4c72-80ec-8fbeda5c2d7b",
       "name": "GLM continue on error",
       "description": null,
       "enabled": true,
@@ -1231,132 +1269,8 @@
       "priority": 0
     },
     {
-      "id": "8c74bae9-b83a-40fb-94f7-c5a8576ad6fe",
-      "name": "Continue on Limit reached",
-      "description": null,
-      "enabled": true,
-      "eventName": "watcher.claude.limit_reached",
-      "eventFilter": null,
-      "actionType": "send_agent_message",
-      "actionInputs": {
-        "text": {
-          "source": "custom",
-          "customValue": "continue"
-        },
-        "submitKey": {
-          "source": "custom",
-          "customValue": "Enter"
-        }
-      },
-      "delayMs": 0,
-      "cooldownMs": 5000,
-      "retryOnError": false,
-      "groupName": null,
-      "position": 0,
-      "priority": 0
-    },
-    {
-      "id": "14fffa45-5d78-475b-b9b5-6c2235c49f14",
-      "name": "Trigger Compact",
-      "description": null,
-      "enabled": true,
-      "eventName": "watcher.conversation.compact_request",
-      "eventFilter": null,
-      "actionType": "send_agent_message",
-      "actionInputs": {
-        "text": {
-          "source": "custom",
-          "customValue": "Your agent session id (sessionId): {{sessionIdShort}}\nYour agent name: {{agentName}}\n! Important: Re-load your agent profile by using devchain_get_agent_by_name to refresh SOP instructions and continue working !"
-        },
-        "submitKey": {
-          "source": "custom",
-          "customValue": "Enter"
-        }
-      },
-      "delayMs": 30000,
-      "cooldownMs": 60000,
-      "retryOnError": false,
-      "groupName": null,
-      "position": 1,
-      "priority": 0
-    },
-    {
-      "id": "cc03e94e-b927-409d-a877-a299fc84eafa",
-      "name": "Opencode renew instructions",
-      "description": null,
-      "enabled": true,
-      "eventName": "watcher.opencode.compact",
-      "eventFilter": null,
-      "actionType": "send_agent_message",
-      "actionInputs": {
-        "text": {
-          "source": "custom",
-          "customValue": "Your agent session id (sessionId): {{sessionIdShort}}\nYour agent name: {{agentName}}\n{{#if is_team_lead}}You lead team \"{{team_name}}\" {{/if}}\n! Important: Re-load your agent profile by using devchain_get_agent_by_name to refresh SOP instructions and continue working !"
-        },
-        "submitKey": {
-          "source": "custom",
-          "customValue": "Enter"
-        },
-        "immediate": {
-          "source": "custom",
-          "customValue": "true"
-        }
-      },
-      "delayMs": 0,
-      "cooldownMs": 50000,
-      "retryOnError": false,
-      "groupName": null,
-      "position": 0,
-      "priority": 0
-    },
-    {
-      "id": "94a3d844-b3d4-4658-aa5f-4a9b0da2417e",
-      "name": "GLM compact",
-      "description": null,
-      "enabled": true,
-      "eventName": "watcher.glm.context_limit",
-      "eventFilter": null,
-      "actionType": "restart_agent",
-      "actionInputs": {},
-      "delayMs": 0,
-      "cooldownMs": 30000,
-      "retryOnError": false,
-      "groupName": null,
-      "position": 0,
-      "priority": 0
-    },
-    {
-      "id": "76f21915-e104-4bf5-beae-e759340adca2",
-      "name": "Continue on compact",
-      "description": null,
-      "enabled": true,
-      "eventName": "watcher.conversation.compact_request",
-      "eventFilter": null,
-      "actionType": "send_agent_message",
-      "actionInputs": {
-        "text": {
-          "source": "custom",
-          "customValue": "/compact"
-        },
-        "submitKey": {
-          "source": "custom",
-          "customValue": "Enter"
-        },
-        "immediate": {
-          "source": "custom",
-          "customValue": "true"
-        }
-      },
-      "delayMs": 0,
-      "cooldownMs": 60000,
-      "retryOnError": false,
-      "groupName": null,
-      "position": 0,
-      "priority": 0
-    },
-    {
-      "id": "10b180f5-84bb-4ac0-8d16-3d1c3208f548",
-      "name": "RArchitect Cleanup on Phase",
+      "id": "d7b525ff-df77-442b-9861-134734362140",
+      "name": "Architect Cleanup on Phase",
       "description": null,
       "enabled": true,
       "eventName": "epic.created",
@@ -1379,15 +1293,117 @@
       "actionInputs": {
         "familySlug": {
           "source": "custom",
-          "customValue": "t2-sub-architect"
+          "customValue": "sub-architect"
+        },
+        "skipWhileEpicsInStatuses": {
+          "source": "custom",
+          "customValue": "Review"
+        },
+        "skipWhileAgentsBusy": {
+          "source": "custom",
+          "customValue": "true"
         }
       },
       "delayMs": 0,
       "cooldownMs": 5000,
       "retryOnError": false,
       "groupName": "Reset",
-      "position": 4,
-      "priority": 40
+      "position": 3,
+      "priority": 30
+    },
+    {
+      "id": "be1a0f50-4f49-4218-9b85-f77c7c0074ec",
+      "name": "Epic Manage compact on Phase",
+      "description": null,
+      "enabled": true,
+      "eventName": "epic.updated",
+      "eventFilter": {
+        "combinator": "and",
+        "filters": [
+          {
+            "field": "changes.statusId.currentName",
+            "operator": "equals",
+            "value": "Done"
+          },
+          {
+            "field": "parentId",
+            "operator": "is_null",
+            "value": ""
+          }
+        ]
+      },
+      "actionType": "send_agent_message",
+      "actionInputs": {
+        "agentName": {
+          "source": "custom",
+          "customValue": "Epic Manager"
+        },
+        "text": {
+          "source": "custom",
+          "customValue": "/compact"
+        },
+        "deliveryMode": {
+          "source": "custom",
+          "customValue": "on_idle"
+        },
+        "submitKey": {
+          "source": "custom",
+          "customValue": "Enter"
+        }
+      },
+      "delayMs": 60000,
+      "cooldownMs": 5000,
+      "retryOnError": false,
+      "groupName": "Reset",
+      "position": 1,
+      "priority": 10
+    },
+    {
+      "id": "a9d2fee6-5d28-498a-abfd-f3204b4749d0",
+      "name": "Code Reviewer compact on Phase",
+      "description": null,
+      "enabled": true,
+      "eventName": "epic.updated",
+      "eventFilter": {
+        "combinator": "and",
+        "filters": [
+          {
+            "field": "changes.statusId.currentName",
+            "operator": "equals",
+            "value": "Done"
+          },
+          {
+            "field": "parentId",
+            "operator": "is_null",
+            "value": ""
+          }
+        ]
+      },
+      "actionType": "send_agent_message",
+      "actionInputs": {
+        "agentName": {
+          "source": "custom",
+          "customValue": "Code Reviewer"
+        },
+        "text": {
+          "source": "custom",
+          "customValue": "/compact"
+        },
+        "deliveryMode": {
+          "source": "custom",
+          "customValue": "on_idle"
+        },
+        "submitKey": {
+          "source": "custom",
+          "customValue": "Enter"
+        }
+      },
+      "delayMs": 60000,
+      "cooldownMs": 5000,
+      "retryOnError": false,
+      "groupName": "Reset",
+      "position": 2,
+      "priority": 10
     }
   ],
   "teams": [
@@ -1396,8 +1412,8 @@
       "description": "Drives ideation and delivery planning. It evaluates options, shapes proposals, structures work into epics and tasks, sets priorities, and ensures execution starts with a clear, actionable plan",
       "teamLeadAgentName": "Brainstormer",
       "memberAgentNames": [
-        "Brainstormer",
-        "Architect"
+        "Architect",
+        "Brainstormer"
       ],
       "profileNames": [
         "Red-Team Architect",
@@ -1428,9 +1444,9 @@
         {
           "profileName": "Coder",
           "configNames": [
-            "sonnet",
             "opus",
             "gpt",
+            "sonnet",
             "gpt-med"
           ]
         }

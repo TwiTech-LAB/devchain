@@ -1,3 +1,4 @@
+import { SessionRowStore } from '../../storage/sessions/session-row.store';
 import { RemoteApiKeyService } from '../auth/remote-api-key.service';
 import { Controller, Get, ForbiddenException } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
@@ -142,7 +143,7 @@ describe('provider CLI policy across home and VM', () => {
       settings,
       executor,
       storage,
-      new ActiveSessionLookup(db),
+      new ActiveSessionLookup(new SessionRowStore(db)),
       { seedForProvider: async () => undefined } as never,
       { syncProviderToAllProjects: async () => undefined } as never,
     );

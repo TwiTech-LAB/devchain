@@ -17,7 +17,7 @@ async function updateSettings(
   if (!response.ok) {
     throw new Error('Failed to update settings');
   }
-  return response.json();
+  return response.json() as Promise<SettingsDto>;
 }
 
 export function useInstanceMode() {

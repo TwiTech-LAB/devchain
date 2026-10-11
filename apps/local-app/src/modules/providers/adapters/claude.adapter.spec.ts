@@ -1,7 +1,7 @@
 import { ClaudeAdapter } from './claude.adapter';
-import { ensureClaudeProjectTrusted } from '../../sessions/utils/claude-config';
+import { ensureClaudeProjectTrusted } from '../utils/claude-config';
 
-jest.mock('../../sessions/utils/claude-config', () => ({
+jest.mock('../utils/claude-config', () => ({
   ensureClaudeProjectTrusted: jest.fn(),
 }));
 

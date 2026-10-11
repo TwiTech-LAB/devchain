@@ -299,14 +299,6 @@ export function TerminalWindowsLayer() {
   const [portalNode, setPortalNode] = useState<HTMLElement | null>(null);
 
   const handleSessionSwitch = (windowId: string, newSession: ActiveSession) => {
-    console.log('TerminalWindowsLayer: handleSessionSwitch called', {
-      windowId,
-      newSessionId: newSession.id,
-      newSessionAgent: newSession.agentId,
-    });
-
-    console.log('TerminalWindowsLayer: Creating new content for session', newSession.id);
-
     // Update window content with new session
     const newContent = (
       <TerminalSessionWindowContent
@@ -316,11 +308,9 @@ export function TerminalWindowsLayer() {
       />
     );
 
-    console.log('TerminalWindowsLayer: Updating window content');
     updateWindowContent(windowId, newContent);
 
     // Update window sessionId using proper React state management
-    console.log('TerminalWindowsLayer: Updating window sessionId to', newSession.id);
     updateWindowMeta(windowId, { sessionId: newSession.id });
   };
 

@@ -1,4 +1,11 @@
-import { projectCompose } from './docker-project-compose';
+import {
+  dockerNumericUid,
+  dockerTargetConfig,
+  dockerTargetUser,
+  ownershipRecord,
+} from './docker-ownership';
+import { recordedDataRepresentation, splitDataRepresentations } from './docker-data-representation';
+import { projectContainer } from './docker-project-resources';
 import {
   dataGroupIdentity,
   groupDockerData,
@@ -9,12 +16,13 @@ import {
 import { Injectable } from '@nestjs/common';
 import { createHash } from 'node:crypto';
 import { stat } from 'node:fs/promises';
-import { Readable, Transform } from 'node:stream';
+import { PassThrough, Readable, Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { AppError } from '../../../common/errors/error-types';
 import { createLogger } from '../../../common/logging/logger';
 import { DockerArchiveJournal } from '../../core/controllers/docker-archive-journal';
 import { dockerArchiveLayout, readDockerArchive } from '../../core/controllers/docker-archive';
+import { DockerArchiveOwnerTransform } from '../../core/controllers/docker-archive-owners';
 import {
   vmImageIdForTags,
   type DockerImageInspectMetadata,
@@ -34,8 +42,10 @@ import {
   type DockerSettings,
 } from '../../core/controllers/docker-settings';
 import type { RemoteOperation } from '../../storage/models/domain.models';
-import { IGNORE_PATTERNS_MAX } from '../../file-sync/file-sync.dto';
+import { IGNORE_PATTERNS_MAX, type SyncFolderIgnores } from '../../file-sync/file-sync.dto';
+import { codeFolderId, FileSyncService } from '../../file-sync/file-sync.service';
 import { FileSyncManagedExclusionsStore } from '../../file-sync/file-sync-managed-exclusions.store';
+import { ignoreListExcludesSubtree } from '../../file-sync/ignore-pattern-matcher';
 import {
   connectExclusions,
   DockerImportInventoryStore,
@@ -51,7 +61,6 @@ import {
 } from '../operations/remote-operation.types';
 import {
   COMPOSE_PROJECT_LABEL,
-  DOCKER_PROJECT_LABEL,
   type DockerOwnerOptions,
   type DockerArchiveRequest,
   type DockerHostOptions,
@@ -66,13 +75,16 @@ import {
   writerStops,
   keptWriterStops,
 } from './docker-plan-fit';
-import { projectAnchoredPath, within } from './docker-plan-files';
+import { projectAnchoredPath, strictlyWithin, within } from './docker-plan-files';
 import {
   isVolumeMount,
   type DockerPlanItem,
+  type DockerPlanMount,
   type DockerPlanNetwork,
   type DockerSelection,
   type DockerTransferDetails,
+  type DockerDataRepresentation,
+  type DockerUserIds,
 } from './docker-plan.dto';
 import { blocksMode } from './docker-plan-policy';
 import { DockerPlanService } from './docker-plan.service';
@@ -82,6 +94,8 @@ import {
   DockerHandoffStore,
   type DockerCapturedContainer,
   type DockerHandoffBind,
+  type DockerHandoffDataGroup,
+  type DockerHandoffEmptyBind,
   type DockerHandoffItem,
   type DockerHandoffRecord,
   type DockerHandoffVolume,
@@ -141,6 +155,7 @@ export class DockerHandoff {
     private readonly exclusions: FileSyncManagedExclusionsStore,
     private readonly inventory: DockerImportInventoryStore,
     private readonly choices: ConnectChoicesStore,
+    private readonly files: FileSyncService,
   ) {}
 
   interrupt(operationId: string): void {
@@ -158,7 +173,7 @@ export class DockerHandoff {
         projectId,
         { remoteId: run.operation.remoteId, items: selection.items },
         signal,
-        { estimate: false },
+        { estimate: false, reuse: false },
       );
       if (!plan.availability.available || !plan.apiVersion)
         throw new RemoteOperationStepRefusedError(
@@ -191,19 +206,30 @@ export class DockerHandoff {
         plan.apiVersion,
         await this.plans.projectRoot(projectId),
         plan.networks,
+        plan.dataGroups,
+        { uid: this.source.uid() ?? 0, gid: this.source.gid() ?? 0 },
+        this.inventory.get(projectId, run.operation.remoteId),
       );
       const previousRecord = await this.store.read(run.operation.id);
+      for (const bind of record.emptyBinds ?? [])
+        if (bind.reset) bind.file = await resetBindIsFile(bind.path, true);
       record.inventoryBefore =
         previousRecord?.inventoryBefore !== undefined
           ? previousRecord.inventoryBefore
           : this.inventory.get(projectId, run.operation.remoteId);
       for (const kept of record.keptInventory ?? []) {
         const prior = record.inventoryBefore?.items.find((item) => item.name === kept.name);
+        if (
+          prior?.ownership &&
+          record.items.find((item) => item.name === kept.name)?.targetAction === 'leave-as-is'
+        )
+          kept.ownership = prior.ownership;
         if (prior?.vmImageId && prior.imageId === kept.imageId) kept.vmImageId = prior.vmImageId;
       }
       const managed = connectExclusions(
         plan,
         this.inventory.get(projectId, run.operation.remoteId),
+        await this.plans.projectRoot(projectId),
       );
       if (managed.length > IGNORE_PATTERNS_MAX)
         throw new RemoteOperationStepRefusedError(
@@ -418,6 +444,7 @@ export class DockerHandoff {
         // "Copy without its data" keeps a VM volume an earlier import left.
         if (
           !restore &&
+          !record.items.some((item) => item.resetData && item.volumes.includes(volume.name)) &&
           existing.has(volume.name) &&
           !record.created.volumes.includes(volume.name)
         ) {
@@ -436,13 +463,17 @@ export class DockerHandoff {
           options,
         );
         if (restore) {
-          await this.copy(
+          volume.alreadyTargetEntries = await this.copy(
             client,
             progress,
             remoteId,
             { projectId, image: volume.helperImage, mountType: 'volume', source: volume.name },
             vmImageId(record, volume.helperImage),
             options,
+            recordedDataRepresentation(
+              { volumes: [volume.name], bindPaths: [] },
+              record.dataGroups ?? [],
+            ),
           );
           (record.copiedData ??= { volumes: [], binds: [] }).volumes.push(volume.name);
         }
@@ -475,6 +506,50 @@ export class DockerHandoff {
           },
           options,
         );
+      for (const bind of record.emptyBinds ?? []) {
+        if (bind.prepared) continue;
+        if (bind.reset) {
+          if (bind.file === undefined) {
+            bind.file = await resetBindIsFile(bind.path, false);
+            await this.store.write(run.operation.id, record);
+          }
+          const vm = await this.host.dockerScan(remoteId, [bind.path], options, []);
+          for (const holder of vm.containers)
+            if (overlapsData(mountedData(holder.mounts), { volumes: [], bindPaths: [bind.path] })) {
+              if (!projectContainer(holder, record.projectRoot, projectId, vm.volumes))
+                throw new DockerHandoffError(`An unrelated VM container holds ${bind.path}.`);
+              await this.host.dockerStopContainer(remoteId, holder.id, projectId, {
+                ...options,
+                projectRoot: record.projectRoot,
+              });
+            }
+          await this.confirmResetExclusion(
+            projectId,
+            remoteId,
+            record.projectRoot,
+            bind.path,
+            signal,
+          );
+        }
+        await this.host.dockerPrepareBinds(
+          remoteId,
+          {
+            projectId,
+            paths: [
+              {
+                path: bind.path,
+                replace: bind.reset,
+                image: vmImageId(record, bind.image),
+                ...(bind.file ? { file: true as const } : {}),
+                ...(bind.owner ? { owner: bind.owner } : {}),
+              },
+            ],
+          },
+          options,
+        );
+        bind.prepared = true;
+        await this.store.write(run.operation.id, record);
+      }
       const binds = record.binds.filter((b) => !record.verified.binds.includes(b.path));
       // A bound single file moves as a file, so the VM never puts a folder in its place.
       const files = new Set<string>();
@@ -499,8 +574,7 @@ export class DockerHandoff {
           for (const holder of vm.containers)
             if (
               overlapsData(mountedData(holder.mounts), { volumes: [], bindPaths: [bind.path] }) &&
-              (holder.labels[DOCKER_PROJECT_LABEL] === projectId ||
-                projectCompose(holder.labels, record.projectRoot, projectId)) &&
+              projectContainer(holder, record.projectRoot, projectId, vm.volumes) &&
               holder.metadata?.running !== false
             )
               await this.host.dockerStopContainer(remoteId, holder.id, projectId, {
@@ -532,7 +606,7 @@ export class DockerHandoff {
       }
       for (const bind of binds) {
         progress.item(bind.path, 'bind', bind.sizeBytes);
-        await this.copy(
+        bind.alreadyTargetEntries = await this.copy(
           client,
           progress,
           remoteId,
@@ -544,6 +618,10 @@ export class DockerHandoff {
           },
           vmImageId(record, bind.helperImage),
           options,
+          recordedDataRepresentation(
+            { volumes: [], bindPaths: [bind.path] },
+            record.dataGroups ?? [],
+          ),
         );
         (record.copiedData ??= { volumes: [], binds: [] }).binds.push(bind.path);
         record.verified.binds.push(bind.path);
@@ -612,7 +690,7 @@ export class DockerHandoff {
             projectId,
             name: item.name,
             config: {
-              ...captured.config,
+              ...dockerTargetConfig(captured.config, item.ownership),
               Image: vmImageId(record, String(captured.config.Image)),
             },
           },
@@ -636,6 +714,15 @@ export class DockerHandoff {
         )
         .map((item) => ({
           name: item.name,
+          ...(item.ownership
+            ? {
+                ownership: ownershipRecord(
+                  item.ownership,
+                  item.targetUser ?? (settings[item.id]?.config.User as string | undefined),
+                ),
+                dataRepresentations: itemDataRepresentations(record, item.id),
+              }
+            : {}),
           imageId: item.imageIds[0] ?? item.id,
           ...vmPair(item.imageIds[0] ?? item.id),
           volumes: item.volumes.map((name) => ({
@@ -677,24 +764,43 @@ export class DockerHandoff {
               record.copiedData?.binds.some((copied) => within(copied, p)),
             ),
         )
-        .map(({ volumes, bindPaths }) => ({
-          volumes,
-          bindPaths,
+        .map((group) => ({
+          volumes: group.volumes,
+          bindPaths: group.bindPaths,
+          ...recordedOwners(group),
           lastSyncedAt: record.inventoryStampedAt!,
           lastSyncDirection: 'to-vm' as const,
         }));
       const preserved = new Map(
         (record.inventoryBefore?.groups ?? []).map((g) => [dataGroupIdentity(g), g]),
       );
-      for (const { volumes, bindPaths } of record.discardedHomeGroups ?? []) {
-        const key = dataGroupIdentity({ volumes, bindPaths });
+      for (const group of record.discardedHomeGroups ?? []) {
+        const key = dataGroupIdentity(group);
         preserved.set(key, {
           ...preserved.get(key),
-          volumes,
-          bindPaths,
+          volumes: group.volumes,
+          bindPaths: group.bindPaths,
           homeDiscardedAt: record.inventoryStampedAt,
+          ...recordedOwners(group),
         });
       }
+      const emptyGroups = (record.dataGroups ?? []).filter((group) =>
+        record.items.some(
+          (item) =>
+            group.itemIds.includes(item.id) &&
+            (item.resetData ||
+              (item.mode === 'without-data' &&
+                item.ownership &&
+                item.targetAction !== 'leave-as-is')),
+        ),
+      );
+      for (const group of emptyGroups)
+        preserved.set(dataGroupIdentity(group), {
+          volumes: group.volumes,
+          bindPaths: group.bindPaths,
+          vmDiscardedAt: record.inventoryStampedAt,
+          ...recordedOwners(group),
+        });
       this.inventory.set(projectId, remoteId, {
         groups: supersedeGroupRecords([...preserved.values()], stamped),
         importedAt: record.inventoryStampedAt,
@@ -708,10 +814,52 @@ export class DockerHandoff {
           result: {
             withoutData: record.items.filter((i) => i.mode === 'without-data').map((i) => i.name),
             dataOnly: record.items.filter((i) => i.mode === 'data-only').map((i) => i.name),
+            alreadyTargetEntries: [
+              ...record.volumes.filter((volume) =>
+                record.copiedData?.volumes.includes(volume.name),
+              ),
+              ...record.binds.filter((bind) => record.copiedData?.binds.includes(bind.path)),
+            ].reduce((sum, resource) => sum + (resource.alreadyTargetEntries ?? 0), 0),
           },
         },
       });
     });
+  }
+
+  /** Read actual peer state again on every unprepared reset, including retries after a restart. */
+  private async confirmResetExclusion(
+    projectId: string,
+    remoteId: string,
+    root: string,
+    path: string,
+    signal: AbortSignal,
+  ): Promise<void> {
+    const code = 'DOCKER_RESET_EXCLUSIONS_UNCONFIRMED';
+    let installed: SyncFolderIgnores[];
+    try {
+      const folder = codeFolderId(projectId);
+      installed = await Promise.all([
+        this.files.installedIgnores(folder),
+        this.host.syncFolderIgnores(remoteId, folder),
+      ]);
+    } catch {
+      signal.throwIfAborted();
+      throw new DockerHandoffError(
+        `The file-sync exclusions for ${path} could not be read on both peers. Retry before resetting the VM data.`,
+        code,
+      );
+    }
+    signal.throwIfAborted();
+    if (
+      !strictlyWithin(root, path) ||
+      !installed.every((peer) =>
+        ignoreListExcludesSubtree(peer.ignore, projectAnchoredPath(root, path).slice(1)),
+      )
+    )
+      throw new DockerHandoffError(
+        `The file-sync exclusions do not cover all of ${path} on both peers. Reinstall the exclusions before resetting the VM data.`,
+        code,
+      );
   }
 
   /** Disconnect: stops the project's DevChain containers on the VM before the final sync. */
@@ -928,7 +1076,8 @@ export class DockerHandoff {
     request: DockerArchiveRequest,
     vmImage: string,
     options: DockerHostOptions,
-  ): Promise<void> {
+    representation?: DockerDataRepresentation,
+  ): Promise<number> {
     const layout = dockerArchiveLayout(request.mountType, request.source);
     const helper = await this.journal.create(
       client,
@@ -939,19 +1088,59 @@ export class DockerHandoff {
     try {
       const archive = await readDockerArchive(client, helper.id, options.signal, layout.readPath);
       const hash = createHash('sha256');
-      const body = progress.count(archive, (chunk) => hash.update(chunk));
-      const { sha256 } = await this.host.dockerWriteArchive(
-        remoteId,
-        { ...request, image: vmImage },
-        body,
-        options,
+      const owners =
+        representation?.kind === 'mapped'
+          ? new DockerArchiveOwnerTransform({ from: representation.home, to: representation.vm })
+          : null;
+      const body = new PassThrough();
+      const sent = pipeline(
+        [
+          archive,
+          ...(owners ? [owners] : []),
+          progress.counter((chunk) => hash.update(chunk)),
+          body,
+        ],
+        { signal: options.signal },
       );
-      if (sha256 !== hash.digest('hex'))
-        throw new DockerHandoffError('The copied data did not match on the VM; retry the copy.');
+      try {
+        const [{ sha256 }] = await Promise.all([
+          this.host.dockerWriteArchive(remoteId, { ...request, image: vmImage }, body, options),
+          sent,
+        ]);
+        if (sha256 !== hash.digest('hex'))
+          throw new DockerHandoffError('The copied data did not match on the VM; retry the copy.');
+        return owners?.result?.alreadyTargetEntries ?? 0;
+      } finally {
+        body.destroy();
+        await sent.catch(() => undefined);
+      }
     } finally {
       await this.journal.cleanup(client, helper);
     }
   }
+}
+
+/** The ownership and representation an inventory group record keeps for a transferred group. */
+function recordedOwners({
+  ownership,
+  representation,
+}: Pick<DockerHandoffDataGroup, 'ownership' | 'representation'>) {
+  return {
+    ...(ownership ? { ownership: ownershipRecord(ownership) } : {}),
+    ...(representation ? { representation } : {}),
+  };
+}
+
+function itemDataRepresentations(record: DockerHandoffRecord, id: string) {
+  const item = record.items.find((entry) => entry.id === id)!;
+  return (record.dataGroups ?? [])
+    .filter((group) => group.itemIds.includes(id))
+    .map(({ volumes, bindPaths, representation }) => ({
+      volumes: volumes.filter((volume) => item.volumes.includes(volume)),
+      bindPaths: bindPaths.filter((path) => item.binds.some((parent) => within(parent, path))),
+      ...(representation ? { representation } : {}),
+    }))
+    .filter((group) => group.volumes.length || group.bindPaths.length);
 }
 
 /** Which home containers stop, what moves, and with which helper image; nothing from the client. */
@@ -961,6 +1150,9 @@ export function buildRecord(
   apiVersion: string,
   projectRoot: string,
   networks: DockerPlanNetwork[] = [],
+  plannedGroups?: DockerHandoffRecord['dataGroups'],
+  fallbackOwner?: DockerUserIds,
+  inventory?: DockerImportInventory | null,
 ): DockerHandoffRecord {
   const moving = selected.filter(movesToVm);
   const copiedImages = selected
@@ -1014,9 +1206,20 @@ export function buildRecord(
   }
   const items: DockerHandoffItem[] = selected.map((item) => {
     const mounts = copied.get(item)!;
+    const { retainedOwnership } = item;
+    const ownership = retainedOwnership
+      ? { class: retainedOwnership.class, home: retainedOwnership.home, vm: retainedOwnership.vm }
+      : item.ownership;
     return {
       id: item.id,
       name: item.name,
+      ...(ownership ? { ownership } : {}),
+      targetUser:
+        item.targetAction === 'leave-as-is'
+          ? (item.vmUser ?? item.runtimeUser)
+          : dockerTargetUser(item),
+      ...(item.retainedOwnership ? { retainedOwnership: item.retainedOwnership } : {}),
+      ...(item.dataAction === 'start-empty' ? { resetData: true } : {}),
       kind: item.kind,
       mode: item.selectedMode!,
       temporary: item.temporary,
@@ -1033,15 +1236,45 @@ export function buildRecord(
           ...emptyVolumes(item),
         ]),
       ],
-      binds: mounts.filter((m) => !isVolumeMount(m.kind)).map((m) => m.source),
+      binds: [
+        ...new Set([
+          ...mounts.filter((m) => !isVolumeMount(m.kind)).map((m) => m.source),
+          ...emptyBindMounts(item).map((mount) => mount.source),
+        ]),
+      ],
       sizeBytes: mounts.some((m) => m.size.unknown)
         ? null
         : mounts.reduce((sum, m) => sum + m.size.bytes, 0),
     };
   });
-  const dataGroups = groupDockerData(all, projectRoot).filter((g) =>
-    g.itemIds.some((id) => selected.some((i) => i.id === id)),
-  );
+  const dataGroups = (plannedGroups ?? groupDockerData(all, projectRoot))
+    .filter((g) => g.itemIds.some((id) => selected.some((i) => i.id === id)))
+    .flatMap((group) =>
+      splitDataRepresentations(
+        group,
+        selected.some((item) => group.itemIds.includes(item.id) && item.dataAction === 'keep-vm')
+          ? (inventory?.groups ?? [])
+          : undefined,
+      ),
+    );
+  // Start-empty is a group decision, including data held only by deselected
+  // siblings. The selected controller supplies the helper and records all resets.
+  for (const group of dataGroups) {
+    const resetting = selected.filter(
+      (item) => group.itemIds.includes(item.id) && item.dataAction === 'start-empty',
+    );
+    const controller =
+      resetting.find((item) => item.ownership?.class === 'follows-user') ?? resetting[0];
+    if (!controller) continue;
+    const entry = items.find((item) => item.id === controller.id)!;
+    for (const name of group.volumes) {
+      if (!entry.volumes.includes(name)) entry.volumes.push(name);
+      if (!volumes.some((volume) => volume.name === name))
+        volumes.push({ name, helperImage: helperImage(controller), sizeBytes: 0 });
+    }
+    for (const path of group.bindPaths.filter((path) => strictlyWithin(projectRoot, path)))
+      if (!entry.binds.includes(path)) entry.binds.push(path);
+  }
   const keptGroups = dataGroups.filter((g) =>
     selected.some((i) => g.itemIds.includes(i.id) && i.dataAction === 'keep-vm'),
   );
@@ -1052,12 +1285,26 @@ export function buildRecord(
     discardedHomeGroups: keptGroups.filter((g) =>
       selected.some((i) => g.itemIds.includes(i.id) && i.dataChoice === 'keep-vm'),
     ),
+    emptyBinds: emptyBindRecords(moving, items, projectRoot, helperImage, fallbackOwner),
     ensureVolumes: [...new Set(keptItems.flatMap((i) => i.missingData?.volumes ?? []))],
     ensureBinds: [...new Set(keptItems.flatMap((i) => i.missingData?.bindPaths ?? []))],
     keptInventory: keptItems.map((i) => {
       const mounts = potentialDataMounts(i, projectRoot);
+      const ownership = i.retainedOwnership ?? ownershipRecord(i.ownership, dockerTargetUser(i));
       return {
         name: i.name,
+        ...(ownership ? { ownership } : {}),
+        ...(i.ownership
+          ? {
+              dataRepresentations: dataGroups
+                .filter((group) => group.itemIds.includes(i.id))
+                .map(({ volumes, bindPaths, representation }) => ({
+                  volumes,
+                  bindPaths,
+                  ...(representation ? { representation } : {}),
+                })),
+            }
+          : {}),
         imageId: i.images[0]?.id ?? i.id,
         volumes: mounts
           .filter((m) => isVolumeMount(m.kind))
@@ -1089,18 +1336,67 @@ export function buildRecord(
     bytesTotal: totalBytes(images, volumes, binds),
   };
 }
+/** Whether the item's data resources are created empty on the VM instead of copied. */
+function startsEmpty(item: DockerPlanItem): boolean {
+  return (
+    (item.selectedMode === 'without-data' || item.dataAction === 'start-empty') &&
+    item.dataAction !== 'keep-vm'
+  );
+}
 /** Local volumes of a "copy without its data" item: created empty on the VM. */
 function emptyVolumes(item: DockerPlanItem): string[] {
-  if (item.selectedMode !== 'without-data' || item.dataAction === 'keep-vm') return [];
+  if (!startsEmpty(item)) return [];
   return item.mounts
     .filter((m) => isVolumeMount(m.kind) && m.driver === 'local')
     .map((m) => m.source);
+}
+function emptyBindMounts(item: DockerPlanItem): DockerPlanMount[] {
+  if (!startsEmpty(item)) return [];
+  return item.mounts.filter((mount) => mount.kind === 'project-bind');
+}
+/** The owner a created or reset bind folder receives: the runtime user's ids, else the VM user's. */
+function emptyBindOwner(item: DockerPlanItem, fallbackOwner?: DockerUserIds) {
+  const user = dockerTargetUser(item);
+  const vm = item.ownership?.vm ?? fallbackOwner;
+  const uid = dockerNumericUid(user);
+  const gid = user?.split(':')[1];
+  if (uid === null || (gid !== undefined && !/^\d+$/.test(gid))) return vm;
+  return { uid, gid: gid === undefined ? (vm?.gid ?? uid) : Number(gid) };
+}
+/** Bind folders the VM gets empty: "without data" folders and explicit resets, one record per path. */
+function emptyBindRecords(
+  moving: DockerPlanItem[],
+  items: DockerHandoffItem[],
+  projectRoot: string,
+  helperImage: (item: DockerPlanItem) => string,
+  fallbackOwner?: DockerUserIds,
+): DockerHandoffEmptyBind[] {
+  const binds = new Map<string, DockerHandoffEmptyBind>();
+  // Follows-user items come last, so their record wins a path that several items share.
+  const ordered = [...moving].sort(
+    (a, b) =>
+      Number(a.ownership?.class === 'follows-user') - Number(b.ownership?.class === 'follows-user'),
+  );
+  for (const item of ordered) {
+    const reset = item.dataAction === 'start-empty';
+    const paths = reset
+      ? items
+          .find((entry) => entry.id === item.id)!
+          .binds.filter((path) => strictlyWithin(projectRoot, path))
+      : emptyBindMounts(item).map((mount) => mount.source);
+    const owner = emptyBindOwner(item, fallbackOwner);
+    for (const path of paths)
+      binds.set(path, { path, image: helperImage(item), reset, ...(owner ? { owner } : {}) });
+  }
+  return [...binds.values()];
 }
 function totalBytes(...lists: Array<Array<{ sizeBytes: number }>>): number {
   return lists.reduce((sum, list) => sum + list.reduce((s, entry) => s + entry.sizeBytes, 0), 0);
 }
 function restoresData(record: DockerHandoffRecord, volume: string): boolean {
-  return record.items.some((i) => i.mode !== 'without-data' && i.volumes.includes(volume));
+  return record.items.some(
+    (i) => i.mode !== 'without-data' && !i.resetData && i.volumes.includes(volume),
+  );
 }
 
 interface HomeContainer {
@@ -1281,6 +1577,19 @@ function isFile(path: string): Promise<boolean> {
   );
 }
 
+async function resetBindIsFile(path: string, allowMissing: boolean): Promise<boolean> {
+  try {
+    const info = await stat(path);
+    if (info.isFile() || info.isDirectory()) return info.isFile();
+  } catch (error) {
+    if (allowMissing && (error as NodeJS.ErrnoException).code === 'ENOENT') return false;
+  }
+  throw new DockerHandoffError(
+    'The home bind layout could not be determined safely. Create a fresh Connect plan before resetting its data.',
+    'DOCKER_BIND_LAYOUT_UNAVAILABLE',
+  );
+}
+
 /** Every VM-side request names an image by its VM ID; the home ID when none is known. */
 function vmImageId(record: DockerHandoffRecord, homeId: string): string {
   return record.images.find((image) => image.id === homeId)?.vmId ?? homeId;
@@ -1337,15 +1646,18 @@ class TransferProgress {
     this.add(0);
   }
   count(source: Readable, observe?: (chunk: Buffer) => void): Readable {
-    const counter = new Transform({
+    const counter = this.counter(observe);
+    pipeline(source, counter).catch(() => undefined);
+    return counter;
+  }
+  counter(observe?: (chunk: Buffer) => void): Transform {
+    return new Transform({
       transform: (chunk: Buffer, _encoding, callback) => {
         observe?.(chunk);
         this.add(chunk.length);
         callback(null, chunk);
       },
     });
-    pipeline(source, counter).catch(() => undefined);
-    return counter;
   }
   async finish(): Promise<void> {
     this.details.item = null;

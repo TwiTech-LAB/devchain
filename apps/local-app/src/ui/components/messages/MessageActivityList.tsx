@@ -79,7 +79,7 @@ async function fetchMessages(
   if (!res.ok) {
     throw new Error('Failed to fetch messages');
   }
-  return res.json();
+  return res.json() as Promise<MessagesResponse>;
 }
 
 function truncate(text: string, maxLength: number): string {

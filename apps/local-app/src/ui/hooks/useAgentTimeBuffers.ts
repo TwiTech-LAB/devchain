@@ -102,11 +102,10 @@ export function useAgentTimeBuffers(projectId: string | null): {
   // TanStack keeps the last successful payload in query.data; gating on the
   // error state keeps that retention inside the cache only.
   const exposed = admitted && !query.isError ? query.data : undefined;
-  const items = exposed?.items ?? [];
   const minutesRef = useRef<Record<string, number>>({});
   const minutesByAgentId = useMemo(() => {
     const next: Record<string, number> = {};
-    for (const item of items) {
+    for (const item of exposed?.items ?? []) {
       if (item.minutes >= MIN_VISIBLE_AGENT_TIME_BUFFER_MINUTES) {
         next[item.agentId] = item.minutes;
       }
@@ -116,7 +115,7 @@ export function useAgentTimeBuffers(projectId: string | null): {
     }
     minutesRef.current = next;
     return next;
-  }, [items]);
+  }, [exposed]);
 
   return {
     admitted,

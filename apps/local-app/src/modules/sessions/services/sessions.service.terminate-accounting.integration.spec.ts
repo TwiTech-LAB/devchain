@@ -1,3 +1,4 @@
+import { SessionRowStore } from '../../storage/sessions/session-row.store';
 import { createTestDatabase } from '../../../common/test/test-database.helper';
 // Backend integration: real in-memory SQLite plus the real EpicTimeStore is
 // the cheapest layer that proves the atomic stop/reset boundary — one queued
@@ -68,6 +69,7 @@ describe('session termination unlogged-time reset', () => {
       { releaseProviderArtifacts: jest.fn().mockResolvedValue(undefined) } as never,
       store,
       { listRemoteOwnedProjectIds: () => [] } as never,
+      new SessionRowStore(db),
     );
   });
 

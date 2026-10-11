@@ -1,5 +1,10 @@
 // Pure unit tests are sufficient for the metadata decision table and transitive grouping.
-import { checkDockerDataGroup, groupDockerData, type DockerDataHolder } from './docker-data-groups';
+import {
+  checkDockerDataGroup,
+  groupDockerData,
+  presentOnVm,
+  type DockerDataHolder,
+} from './docker-data-groups';
 import type { DockerDataGroup, DockerPlanItem } from './docker-plan.dto';
 import type { DockerDataGroupRecord } from '../operations/docker-import-inventory.store';
 import type { DockerScanResult } from '../host/host-docker.dto';
@@ -30,6 +35,26 @@ const vm = (change = false): DockerScanResult => ({
       metadata: { ...metadata, startedAt: change ? recent : old },
     },
   ],
+});
+
+// This seam proves the metadata state check uses attribution rather than requiring an import label.
+it.each([undefined, 'other'])('checks a Compose volume with DevChain owner %s', (owner) => {
+  const target = vm();
+  target.volumes[0].labels = {
+    'com.docker.compose.project': 'app',
+    ...(owner !== undefined ? { 'dev.devchain.project': owner } : {}),
+  };
+  target.containers[0].labels = {
+    'com.docker.compose.project': 'app',
+    'com.docker.compose.project.working_dir': '/home/project',
+  };
+  expect(presentOnVm(group, target, 'p', '/home/project')).toEqual({
+    volumes: owner === undefined ? ['data'] : [],
+    bindPaths: [],
+  });
+  expect(checkDockerDataGroup(group, [record], home(), target, 'p', '/home/project').state).toBe(
+    owner === undefined ? 'in-sync' : 'vm-newer',
+  );
 });
 
 it.each([
@@ -118,12 +143,18 @@ it('groups read-only shares transitively while excluding the project-root bind',
     { id: 'c', mounts: [mount('/home/project/state/nested', 'project-bind')] },
     { id: 'code', mounts: [mount('/home/project', 'project-code')] },
   ] as DockerPlanItem[];
-  expect(groupDockerData(items, '/home/project')).toEqual([
+  expect(
+    groupDockerData(items, '/home/project', [
+      { volumes: ['data', 'recorded-volume'], bindPaths: ['/home/project/recorded'] },
+      { volumes: ['unrelated'], bindPaths: [] },
+    ]),
+  ).toEqual([
     {
       itemIds: ['a', 'b', 'c'],
-      volumes: ['data'],
-      bindPaths: ['/home/project/state', '/home/project/state/nested'],
+      volumes: ['data', 'recorded-volume'],
+      bindPaths: ['/home/project/recorded', '/home/project/state', '/home/project/state/nested'],
     },
+    { itemIds: [], volumes: ['unrelated'], bindPaths: [] },
   ]);
 });
 
@@ -146,4 +177,52 @@ it('acknowledges only the explicitly discarded subgroup after membership splits'
       'p',
     ).state,
   ).toBe('home-newer');
+});
+
+it('joins data transitively through retained consumers and ignores disconnected resources', () => {
+  const mount = (source: string) => ({
+    kind: 'named-volume' as const,
+    source,
+    destination: '/data',
+    readOnly: false,
+    size: { bytes: 1, unknown: false },
+  });
+  const items = [
+    { id: 'a', temporary: false, mounts: [mount('a')] },
+    { id: 'b', temporary: false, mounts: [mount('b')] },
+  ];
+  expect(
+    groupDockerData(
+      items,
+      '/project',
+      [],
+      [
+        { volumes: ['bridge', 'b'], bindPaths: [] },
+        { volumes: ['a', 'bridge'], bindPaths: [] },
+        { volumes: ['unrelated'], bindPaths: [] },
+      ],
+    ),
+  ).toEqual([{ itemIds: ['a', 'b'], volumes: ['a', 'b', 'bridge'], bindPaths: [] }]);
+});
+
+it('uses broader holder binds to join data without adding the holder root to copied folders', () => {
+  const mount = (source: string) => ({
+    kind: 'project-bind' as const,
+    source,
+    destination: '/data',
+    readOnly: false,
+    size: { bytes: 1, unknown: false },
+  });
+  const groups = groupDockerData(
+    [
+      { id: 'a', temporary: false, mounts: [mount('/project/a')] },
+      { id: 'b', temporary: false, mounts: [mount('/project/b')] },
+    ],
+    '/project',
+    [],
+    [{ volumes: [], bindPaths: ['/project'] }],
+  );
+  expect(groups).toEqual([
+    { itemIds: ['a', 'b'], volumes: [], bindPaths: ['/project/a', '/project/b'] },
+  ]);
 });

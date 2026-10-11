@@ -1,5 +1,5 @@
+import { OnCatalogEvent } from '../../events/catalog/on-catalog-event';
 import { Injectable } from '@nestjs/common';
-import { OnEvent } from '@nestjs/event-emitter';
 import { createLogger } from '../../../common/logging/logger';
 import { getEventMetadata } from '../../events/services/events.service';
 import { CloudSessionManagerService } from './cloud-session-manager.service';
@@ -28,32 +28,32 @@ export class CloudEgressBridgeService {
     private readonly recipientResolver: NotificationRecipientResolverService,
   ) {}
 
-  @OnEvent('epic.created', { async: true })
+  @OnCatalogEvent('epic.created', { async: true })
   async onEpicCreated(payload: EpicCreatedEventPayload): Promise<void> {
     await this.forward({ name: 'epic.created', payload });
   }
 
-  @OnEvent('epic.updated', { async: true })
+  @OnCatalogEvent('epic.updated', { async: true })
   async onEpicUpdated(payload: EpicUpdatedEventPayload): Promise<void> {
     await this.forward({ name: 'epic.updated', payload });
   }
 
-  @OnEvent('epic.deleted', { async: true })
+  @OnCatalogEvent('epic.deleted', { async: true })
   async onEpicDeleted(payload: EpicDeletedEventPayload): Promise<void> {
     await this.forward({ name: 'epic.deleted', payload });
   }
 
-  @OnEvent('epic.comment.created', { async: true })
+  @OnCatalogEvent('epic.comment.created', { async: true })
   async onEpicCommentCreated(payload: EpicCommentCreatedEventPayload): Promise<void> {
     await this.forward({ name: 'epic.comment.created', payload });
   }
 
-  @OnEvent('session.crashed', { async: true })
+  @OnCatalogEvent('session.crashed', { async: true })
   async onSessionCrashed(payload: SessionCrashedEventPayload): Promise<void> {
     await this.forward({ name: 'session.crashed', payload });
   }
 
-  @OnEvent('session.stopped', { async: true })
+  @OnCatalogEvent('session.stopped', { async: true })
   async onSessionStopped(payload: SessionStoppedEventPayload): Promise<void> {
     await this.forward({ name: 'session.stopped', payload });
   }

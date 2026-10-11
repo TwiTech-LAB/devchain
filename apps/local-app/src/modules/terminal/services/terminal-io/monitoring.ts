@@ -1,6 +1,41 @@
 import type { ProcessExecutor } from '../process-executor/process-executor.port';
 import type { SessionTarget, HealthResult, WaitForOutputOptions } from './types';
 import { captureHistory } from './capture';
+import { readForegroundState } from './foreground';
+
+export async function readCliState(
+  executor: ProcessExecutor,
+  target: SessionTarget,
+  options: { checkSuspended: boolean },
+): Promise<'program' | 'shell' | 'unknown'> {
+  const foreground = await readForegroundState(executor, target);
+  if (!foreground) return 'unknown';
+  if (!foreground.shellInFront) return 'program';
+  // A caller that has not seen the program yet ignores shell readings, so skip the process scan.
+  if (!options.checkSuspended) return 'shell';
+
+  try {
+    // Read the process table once: Ctrl+Z returns the shell to the foreground without exiting the CLI.
+    const result = await executor.run({
+      argv: ['ps', '-e', '-o', 'ppid=,stat='],
+      mode: 'pipe',
+      timeout: 2000,
+      outputLimits: { maxBytes: 1024 * 1024 },
+    });
+    const stdout = result.stdout.trim();
+    if (!result.success || result.timedOut || result.truncated || !stdout) return 'unknown';
+    for (const line of stdout.split('\n')) {
+      const match = /^\s*(\d+)\s+([A-Za-z+<]+)\s*$/.exec(line);
+      if (!match) return 'unknown';
+      const parentPid = Number(match[1]);
+      if (!Number.isSafeInteger(parentPid)) return 'unknown';
+      if (parentPid === foreground.panePid && match[2].startsWith('T')) return 'unknown';
+    }
+    return 'shell';
+  } catch {
+    return 'unknown';
+  }
+}
 
 export async function healthCheck(
   executor: ProcessExecutor,

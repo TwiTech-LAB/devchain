@@ -251,22 +251,47 @@ Update VM to a build containing helper refresh:
 sudo npm install -g /opt/devchain-host/current/lib/node_modules/devchain-cli/dist/host-install/devchain-host-bootstrap.tgz
 ```
 
+## Privileged VM file sync
+
+After installing CLIs, `devchain-host-update --clis <version>` refreshes a separate
+copy of `/usr/bin/syncthing` at `/opt/devchain-host/bin/syncthing`.
+`libcap2-bin` is a required package in `apps/host-image/versions.env`, supplying
+`setcap` and `getcap` (`bin/devchain-host-update.js`, `lib/system.js`, `lib/syncthing.js`).
+
+The account comes from `/etc/devchain-host/claim.json`. During a fresh claim the
+record is not written yet, so only when it is absent does the installer use the
+claimed user's `NOPASSWD:ALL` line in `/etc/sudoers.d/devchain-host`. The source
+must be a regular, root-owned file with no group or other write bit. The account
+must exist with a valid non-system uid; its primary group comes from `id -gn`
+(`lib/syncthing.js` — `claimedAccount`; `lib/claim.js` — `performClaim`).
+
+The installer creates an exclusive temporary sibling, sets `root:<primary group>`
+with mode `0750`, applies `cap_chown,cap_fowner,cap_dac_override+ep`, verifies all
+three with `getcap`, then atomically renames the staged binary into place. It
+refreshes by replacement so an executing copy does not cause `ETXTBSY`.
+Any failure attempts to remove both the staged and installed copies and writes
+one sanitized stderr warning; the CLI update continues with ordinary Syncthing
+fallback possible. A manual apt upgrade does not refresh this separate copy:
+use Update VM. This step runs only on the VM (`lib/syncthing.js`;
+`apps/local-app/src/modules/file-sync/syncthing-launcher.ts`).
+
 ## Root helpers (sudo, used by DevChain on a claimed VM)
 
-The claimed user gets `NOPASSWD:ALL`, plus explicit lines for the three helpers (`lib/render.js` — `renderSudoers`).
-DevChain calls them with `sudo -n` (`apps/local-app/src/modules/remotes/host`, `apps/local-app/src/modules/file-sync/sync-chown.service.ts`).
+The claimed user gets `NOPASSWD:ALL`, plus explicit lines for the two helpers (`lib/render.js` — `renderSudoers`).
+DevChain calls them with `sudo -n` (`apps/local-app/src/modules/remotes/host`).
 
-| Helper                                                              | DevChain route                  | Does                                                                                                                                                                                                                                                             |
-| ------------------------------------------------------------------- | ------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `devchain-host-update <v>`                                          | `POST /api/host/update` → 202   | starts `devchain-host-update --run <v>` as the transient unit `devchain-host-update` and returns                                                                                                                                                                 |
-| `devchain-host-update --run <v>`                                    | —                               | install DevChain and its CLIs, activate, record, restart `devchain-host`, remove other versions                                                                                                                                                                  |
-| `devchain-host-update --clis <v>`                                   | —                               | installs missing required packages strictly and agent tools with skips, then its CLIs; re-writes `devchain-host.service` when a claim record exists; prints `{cliVersions,skippedTools}`; diagnostics go to stderr (required-package failure: `PACKAGES_FAILED`) |
-| `devchain-host-update --docker`                                     | `POST /api/host/docker` → 202   | starts `devchain-host-update --docker --run <jobId>` as the transient unit `devchain-host-docker` and returns `{jobId}`                                                                                                                                          |
-| `devchain-host-update --docker --run <jobId>`                       | —                               | install Docker Engine and Compose, add the user to the `docker` group, restart `devchain-host`, record `docker.json`                                                                                                                                             |
-| `devchain-host-project-root <path>`                                 | `POST /api/host/projects/roots` | creates the path (missing parents root `0755`), and the leaf is owned by the user                                                                                                                                                                                |
-| `devchain-host-project-chown <root> <--file\|--dir\|--tree> <path>` | `POST /api/host/sync/chown`     | changes a file, directory, or eligible tree to the claimed user's uid and gid (`bin/devchain-host-project-chown.js`, `lib/project-chown.js`)                                                                                                                     |
+| Helper                                        | DevChain route                  | Does                                                                                                                                                                                                                                                                                           |
+| --------------------------------------------- | ------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `devchain-host-update <v>`                    | `POST /api/host/update` → 202   | starts `devchain-host-update --run <v>` as the transient unit `devchain-host-update` and returns                                                                                                                                                                                               |
+| `devchain-host-update --run <v>`              | —                               | install DevChain and its CLIs, activate, record, restart `devchain-host`, remove other versions                                                                                                                                                                                                |
+| `devchain-host-update --clis <v>`             | —                               | installs missing required packages strictly and agent tools with skips, then its CLIs and privileged Syncthing copy; re-writes `devchain-host.service` when a claim record exists; prints `{cliVersions,skippedTools}`; diagnostics go to stderr (required-package failure: `PACKAGES_FAILED`) |
+| `devchain-host-update --docker`               | `POST /api/host/docker` → 202   | starts `devchain-host-update --docker --run <jobId>` as the transient unit `devchain-host-docker` and returns `{jobId}`                                                                                                                                                                        |
+| `devchain-host-update --docker --run <jobId>` | —                               | install Docker Engine and Compose, add the user to the `docker` group, restart `devchain-host`, record `docker.json`                                                                                                                                                                           |
+| `devchain-host-project-root <path>`           | `POST /api/host/projects/roots` | creates the path (missing parents root `0755`), and the leaf is owned by the user                                                                                                                                                                                                              |
 
-The ownership route validates the checkout and Git facts before calling the helper. Automatic repair uses `--file` for tracked regular code files and `--dir` for qualifying parent directories without recursion. Explicit **Give to** can use `--tree` for untracked, non-ignored output; it refuses tracked descendants. The helper skips symbolic links, different devices, `.git` and nested repositories. A missing helper is reported as unsupported with update/copy guidance (`apps/local-app/src/modules/file-sync/host-sync.controller.ts`, `sync-chown.service.ts`, `lib/project-chown.js`).
+Already-claimed VMs retain a sudoers line for the removed ownership helper because
+claim writes sudoers only once. That leftover line is harmless; updates do not
+rewrite or clean it up (`lib/claim.js` — `writeSudoers`/`performClaim`).
 
 The update runs in its own unit because restarting `devchain-host.service`
 kills everything in its cgroup, including the `sudo` DevChain started.

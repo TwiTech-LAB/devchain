@@ -1,3 +1,4 @@
+import type { PromptsController } from '@/modules/prompts/controllers/prompts.controller';
 import { useState, useMemo } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
@@ -75,7 +76,7 @@ async function createPrompt(
     body: JSON.stringify(data),
   });
   if (!res.ok) throw new Error('Failed to create prompt');
-  return res.json();
+  return res.json() as Promise<Awaited<ReturnType<PromptsController['createPrompt']>>>;
 }
 
 async function updatePrompt(fetchFn: FetchFn, id: string, data: Partial<Prompt>) {
@@ -85,7 +86,7 @@ async function updatePrompt(fetchFn: FetchFn, id: string, data: Partial<Prompt>)
     body: JSON.stringify(data),
   });
   if (!res.ok) throw new Error('Failed to update prompt');
-  return res.json();
+  return res.json() as Promise<Awaited<ReturnType<PromptsController['updatePrompt']>>>;
 }
 
 async function deletePrompt(fetchFn: FetchFn, id: string) {

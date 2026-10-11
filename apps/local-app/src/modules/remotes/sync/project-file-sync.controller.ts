@@ -13,7 +13,6 @@ import {
 import { FileSyncSuggestionsService } from './file-sync-suggestions.service';
 import { FileSyncPatternPreviewService } from './file-sync-pattern-preview.service';
 import { PatternPreviewRequestSchema, type ProjectPatternPreview } from './remote-file-sync.dto';
-import { GiveOwnershipRequestSchema, type SyncChownResult } from '../../file-sync/sync-chown.dto';
 
 @ApiTags('file-sync')
 @Controller('api/projects/:id/file-sync')
@@ -55,19 +54,7 @@ export class ProjectFileSyncController {
       this.failures.failed(projectId),
       this.files.forceSyncOffer(projectId),
     ]);
-    return { ...failures, forceSync, ownershipNotes: this.files.ownershipNotes(projectId) };
-  }
-
-  @Post('give-ownership')
-  @HttpCode(200)
-  giveOwnership(
-    @Param('id', ParseUUIDPipe) projectId: string,
-    @Body() body: unknown,
-  ): Promise<SyncChownResult> {
-    const { paths } = GiveOwnershipRequestSchema.parse(body);
-    return this.live.runExclusive(projectId, (active) =>
-      this.files.giveOwnership(projectId, paths, active),
-    );
+    return { ...failures, forceSync };
   }
 
   @Post('suggestions')

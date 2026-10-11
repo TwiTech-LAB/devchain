@@ -48,10 +48,10 @@ describe('InstanceLabelService', () => {
     db.close();
   });
 
-  it('treats a whitespace-only stored value as no label', () => {
+  it('treats a whitespace-only stored value as no label', async () => {
     const { service, settings, db } = createService();
 
-    settings.updateSettings({ cloud: { instanceLabel: '   ' } });
+    await settings.updateSettings({ cloud: { instanceLabel: '   ' } });
     expect(service.getLabel()).toBeNull();
 
     db.close();

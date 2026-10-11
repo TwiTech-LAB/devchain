@@ -1,4 +1,4 @@
-import { fetchJsonOrThrow, fetchOrThrow, type FetchFn } from '@/ui/lib/sessions';
+import { fetchJsonOrThrow, fetchOrThrow, type FetchFn } from '@/ui/lib/http-json';
 import type { ListResult } from '@/modules/storage/interfaces/storage.interface';
 
 export type { ListResult };

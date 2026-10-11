@@ -1,3 +1,4 @@
+import { SessionRowStore } from '../../storage/sessions/session-row.store';
 import { appendFile, mkdtemp, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -283,6 +284,7 @@ describe('Claude turn evidence', () => {
         { emit: jest.fn() } as never,
         { getSetting: jest.fn() } as never,
         { get: jest.fn() } as never,
+        new SessionRowStore(db as never),
         new PendingAskUserQuestionService() as never,
       );
     });

@@ -695,6 +695,61 @@ describe('RemoteOperationRunner', () => {
     expect(row.details.cancelError).toEqual({ message: 'host unreachable', code: null });
   });
 
+  it('refuses a retry and a takeover while a failed operation rolls back, and joins a second cancel', async () => {
+    const gate = deferred();
+    const attach = definition([step('one', async () => Promise.reject(new Error('host down')))], {
+      rollback: jest.fn(() => gate.promise),
+    });
+    const runner = runnerFor(attach);
+    const failed = await startAndSettle(runner);
+
+    const cancelling = runner.cancel(failed.id);
+    await new Promise((resolve) => setImmediate(resolve));
+
+    await expect(runner.retry(failed.id)).rejects.toMatchObject({
+      details: { code: 'REMOTE_OPERATION_NOT_FAILED' },
+    });
+    await expect(runner.supersede(failed, {})).rejects.toMatchObject({
+      details: { code: 'REMOTE_OPERATION_IN_PROGRESS' },
+    });
+    const second = runner.cancel(failed.id);
+    gate.resolve();
+
+    expect((await cancelling).state).toBe('cancelled');
+    expect((await second).state).toBe('cancelled');
+    expect(attach.rollback).toHaveBeenCalledTimes(1);
+    expect(attach.steps[0].run).toHaveBeenCalledTimes(1);
+  });
+
+  it('stops a retried run when the cancel arrives while the retry is being saved', async () => {
+    let fail = true;
+    const one = step('one', async () => {
+      if (fail) throw new Error('host down');
+    });
+    const attach = definition([one]);
+    const runner = runnerFor(attach);
+    const failed = await startAndSettle(runner);
+    fail = false;
+    const gate = deferred();
+    const write = storage.updateRemoteOperation.bind(storage);
+    jest.spyOn(storage, 'updateRemoteOperation').mockImplementationOnce(async (id, data) => {
+      await gate.promise;
+      return write(id, data);
+    });
+
+    const retrying = runner.retry(failed.id);
+    await new Promise((resolve) => setImmediate(resolve));
+    const cancelling = runner.cancel(failed.id);
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(attach.rollback).not.toHaveBeenCalled();
+    gate.resolve();
+
+    expect((await retrying).state).toBe('running');
+    expect((await cancelling).state).toBe('cancelled');
+    expect(one.run).toHaveBeenCalledTimes(1);
+    expect(attach.rollback).toHaveBeenCalledTimes(1);
+  });
+
   it('refuses retry of an operation that has not failed and cancel of a finished one', async () => {
     const runner = runnerFor(definition([step('one')]));
     const done = await startAndSettle(runner);

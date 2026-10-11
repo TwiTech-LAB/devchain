@@ -30,7 +30,7 @@ async function fetchMessageDetail(messageId: string, fetchFn: FetchFn): Promise<
   if (!res.ok) {
     throw new Error('Failed to fetch message details');
   }
-  const data = await res.json();
+  const data = (await res.json()) as { message: MessageLogEntry };
   return data.message;
 }
 
@@ -109,8 +109,9 @@ export function MessageDetailDrawer({ message, onClose }: MessageDetailDrawerPro
   const [error, setError] = useState<string | null>(null);
   const apiFetch = useFetchFactory();
 
+  const messageId = message?.id;
   useEffect(() => {
-    if (!message) {
+    if (!messageId) {
       setFullMessage(null);
       setError(null);
       return;
@@ -119,14 +120,14 @@ export function MessageDetailDrawer({ message, onClose }: MessageDetailDrawerPro
     setIsLoading(true);
     setError(null);
 
-    fetchMessageDetail(message.id, apiFetch)
+    fetchMessageDetail(messageId, apiFetch)
       .then(setFullMessage)
       .catch((err) => {
         console.error('Failed to fetch message details:', err);
         setError('Failed to load message content');
       })
       .finally(() => setIsLoading(false));
-  }, [message?.id]);
+  }, [messageId, apiFetch]);
 
   return (
     <Drawer open={!!message} onOpenChange={(open) => !open && onClose()}>

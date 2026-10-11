@@ -12,6 +12,7 @@ import {
 } from '@/ui/components/ui/dialog';
 import { Input } from '@/ui/components/ui/input';
 import { Label } from '@/ui/components/ui/label';
+import { Slider } from '@/ui/components/ui/slider';
 import { Switch } from '@/ui/components/ui/switch';
 import { useHomeIdentity } from '@/ui/hooks/useHomeIdentity';
 import { useProviderAuth } from '@/ui/hooks/useProviderAuth';
@@ -68,11 +69,14 @@ function presetText(key: PresetKey): { label: string; detail: string } {
   return { label: PRESETS[key].label, detail: sizeText(PRESETS[key]) };
 }
 
-function NumberField({
+/** A typed value with a slider. The slider stops at `max`; the typed value can go above it. */
+function ResourceField({
   id,
   label,
   value,
   min,
+  max,
+  step,
   onChange,
   disabled,
 }: {
@@ -80,21 +84,38 @@ function NumberField({
   label: string;
   value: string;
   min: number;
+  max: number;
+  step: number;
   onChange: (value: string) => void;
   disabled: boolean;
 }) {
+  const typed = Number(value);
+  const position =
+    value.trim() !== '' && Number.isFinite(typed) ? Math.min(Math.max(typed, min), max) : min;
   return (
     <div className="space-y-1.5">
       <Label htmlFor={id}>{label}</Label>
-      <Input
-        id={id}
-        type="number"
-        min={min}
-        step={1}
-        value={value}
-        onChange={(event) => onChange(event.target.value)}
-        disabled={disabled}
-      />
+      <div className="flex items-center gap-3">
+        <Slider
+          aria-label={label}
+          min={min}
+          max={max}
+          step={step}
+          value={[position]}
+          onValueChange={([next]) => onChange(String(next))}
+          disabled={disabled}
+        />
+        <Input
+          id={id}
+          type="number"
+          min={min}
+          step={1}
+          value={value}
+          onChange={(event) => onChange(event.target.value)}
+          disabled={disabled}
+          className="w-28 shrink-0"
+        />
+      </div>
     </div>
   );
 }
@@ -233,28 +254,34 @@ export function AddVmDialog({
             </div>
             {preset === 'custom' && (
               <div className="space-y-2">
-                <div className="grid gap-3 sm:grid-cols-3">
-                  <NumberField
+                <div className="space-y-3">
+                  <ResourceField
                     id="add-vm-cores"
                     label="Cores"
                     value={cores}
                     min={1}
+                    max={32}
+                    step={1}
                     onChange={setCores}
                     disabled={pending}
                   />
-                  <NumberField
+                  <ResourceField
                     id="add-vm-memory"
                     label="Memory (MiB)"
                     value={memory}
                     min={MIN_VM_MEMORY_MIB}
+                    max={65536}
+                    step={1024}
                     onChange={setMemory}
                     disabled={pending}
                   />
-                  <NumberField
+                  <ResourceField
                     id="add-vm-disk"
                     label="Disk (GiB)"
                     value={disk}
                     min={1}
+                    max={512}
+                    step={1}
                     onChange={setDisk}
                     disabled={pending}
                   />

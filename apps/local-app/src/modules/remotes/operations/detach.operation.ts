@@ -2,7 +2,7 @@ import { TranscriptHandoff } from './transcript-handoff';
 import { GitOwnerStore } from '../git-owner.store';
 import { DockerHandoff } from '../docker/docker-handoff';
 import { DockerCopyBack } from '../docker/docker-copy-back';
-import type { DockerCopyBackRequest } from '../docker/docker-copy-back.dto';
+import type { DockerCopyBackRequest, FILE_SYNC_SKIP_REASON } from '../docker/docker-copy-back.dto';
 import { Inject, Injectable } from '@nestjs/common';
 import { ConflictError } from '../../../common/errors/error-types';
 import type { RemoteOperation } from '../../storage/models/domain.models';
@@ -30,6 +30,7 @@ export interface DetachDetails {
   force?: boolean;
   /** "Copy Docker data back to this PC" with the user's choices; absent when off. */
   dockerCopyBack?: DockerCopyBackRequest;
+  dockerCopyBackSkipped?: Array<{ path: string; reason: typeof FILE_SYNC_SKIP_REASON }>;
   /** Binding cursor when the detach began; restored by a cancel. */
   hostCursor?: string | null;
   /** This operation moved the binding to `detaching`; a cancel moves it back. */
@@ -61,11 +62,14 @@ export interface DetachDetails {
 const asked = (details: Record<string, unknown>) =>
   (details as DetachDetails).dockerCopyBack !== undefined;
 
+/** The Docker copy steps; they exist only when the Disconnect asked for the copy. */
+const DOCKER_COPY_STEPS: readonly string[] = ['docker_exclude_copy_home', 'docker_copy_home'];
+
 const HOST_STEPS = new Set([
   'freeze_host',
   'stop_host_sessions',
   'docker_stop_host',
-  'docker_copy_home',
+  ...DOCKER_COPY_STEPS,
   'wait_time_batches',
   'final_pull',
   'transcripts_pull',
@@ -109,6 +113,14 @@ export class DetachOperation implements RemoteOperationDefinition {
         id: 'docker_stop_host',
         label: 'Stop Docker containers on the VM',
         run: (c) => this.docker.stopHost(c),
+      },
+      {
+        id: 'docker_exclude_copy_home',
+        label: 'Exclude Docker folders from file sync',
+        skip: (details) => !asked(details),
+        run: async (c) => {
+          if (asked(c.details)) await this.dockerCopyBack.prepareHomeCopy(c);
+        },
       },
       {
         // Opt-in whoever composes it: without the request the step skips, and a
@@ -170,9 +182,9 @@ export class DetachOperation implements RemoteOperationDefinition {
     );
   }
 
-  /** The Docker copy step exists only when the Disconnect asked for it; composers use this list. */
+  /** The Docker copy steps exist only when the Disconnect asked for them; composers use this list. */
   stepsFor(details: Record<string, unknown>): readonly RemoteOperationStepDefinition[] {
-    return this.steps.filter((step) => asked(details) || step.id !== 'docker_copy_home');
+    return this.steps.filter((step) => asked(details) || !DOCKER_COPY_STEPS.includes(step.id));
   }
 
   async interrupt(operationId: string): Promise<void> {

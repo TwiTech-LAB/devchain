@@ -14,6 +14,7 @@ import {
   RECEIVE_ONLY_SAMPLE_MAX,
   FolderSyncStatusSchema,
   SyncFolderConfigurationSchema,
+  SyncFolderIgnoresSchema,
   type FolderSyncStatus,
   type FolderType,
   type RemoteNeed,
@@ -40,6 +41,12 @@ import { captureFileSyncConflictBaseline, scanFileSyncConflicts } from './file-s
  */
 export const FOLDER_WATCHER_DELAY_S = 1;
 const RESCAN_INTERVAL_S = 3600;
+/**
+ * Syncthing's watcher stops watching a directory that is deleted and created again, and a
+ * folder restart does not watch it again while the code folder watches the parent. Git
+ * changes there are found only by the periodic full scan, so Git folders scan often.
+ */
+const GIT_RESCAN_INTERVAL_S = 10;
 const COMPLETION_POLL_MS = 500;
 /** How many failed files a folder status names; `errors` counts all of them. */
 const FILE_ERROR_SAMPLE = 3;
@@ -348,9 +355,10 @@ export class FileSyncService {
       type: request.type,
       devices: [{ deviceID: request.peerDeviceId }],
       paused: true,
+      copyOwnershipFromParent: this.syncthing.getState().privileged,
       fsWatcherEnabled: true,
       fsWatcherDelayS: FOLDER_WATCHER_DELAY_S,
-      rescanIntervalS: RESCAN_INTERVAL_S,
+      rescanIntervalS: request.kind === 'git' ? GIT_RESCAN_INTERVAL_S : RESCAN_INTERVAL_S,
       ...(backupPath
         ? {
             maxConflicts: -1,
@@ -411,6 +419,12 @@ export class FileSyncService {
   async folderConfiguration(folderId: string) {
     return SyncFolderConfigurationSchema.parse(
       await this.client().request('GET', `/rest/config/folders/${enc(folderId)}`),
+    );
+  }
+
+  async installedIgnores(folderId: string) {
+    return SyncFolderIgnoresSchema.parse(
+      await this.client().request('GET', `/rest/db/ignores?folder=${enc(folderId)}`),
     );
   }
 

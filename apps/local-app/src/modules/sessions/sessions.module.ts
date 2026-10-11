@@ -1,4 +1,5 @@
-import { Module, forwardRef } from '@nestjs/common';
+import { SessionRowsModule } from '../storage/sessions/session-rows.module';
+import { Module } from '@nestjs/common';
 import { SessionsService } from './services/sessions.service';
 import { SessionCoordinatorService } from './services/session-coordinator.service';
 import { SessionsMessagePoolService } from './services/sessions-message-pool.service';
@@ -30,16 +31,17 @@ import { SessionTerminalRuntimeModule } from '../session-terminal-runtime/sessio
 
 @Module({
   imports: [
+    SessionRowsModule,
     StorageModule,
     SessionsReadModule,
     RealtimeBroadcastModule,
     TerminalModule,
-    forwardRef(() => CoreNormalModule),
+    CoreNormalModule,
     EventsCoreModule,
-    forwardRef(() => SettingsModule),
+    SettingsModule,
     HooksModule,
     ProviderAdaptersModule,
-    forwardRef(() => ProvidersModule),
+    ProvidersModule,
     RuntimeContextCaptureModule,
     SessionTerminalRuntimeModule,
     EpicTimeStoreModule,

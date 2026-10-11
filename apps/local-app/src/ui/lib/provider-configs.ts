@@ -1,7 +1,7 @@
 import { queryOptions, type Query } from '@tanstack/react-query';
 import type { ProfileProviderConfig } from '@/modules/storage/models/domain.models';
 import type { FetchFn } from './api-transport';
-import { fetchJsonOrThrow } from './sessions';
+import { fetchJsonOrThrow } from './http-json';
 
 export type { ProfileProviderConfig };
 

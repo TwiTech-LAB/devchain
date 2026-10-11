@@ -135,7 +135,7 @@ export function usePairedDevices(backend: BackendId = HOME_BACKEND): UsePairedDe
       if (!res.ok) throw new Error(`unpair:${res.status}`);
       await reload();
     },
-    [reload],
+    [backend, reload],
   );
 
   const updateLocalAlias = useCallback(

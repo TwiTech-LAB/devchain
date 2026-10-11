@@ -11,6 +11,8 @@ const {
   NPM_INSTALL_TIMEOUT_MS,
 } = require("./refresh-helper");
 
+const SUDOERS_NAME = "devchain-host";
+
 function claimFile(sys) {
   return path.join(sys.paths.etcDir, "claim.json");
 }
@@ -199,7 +201,7 @@ async function accountIdentity(account, claim, requestedUid, holder, sys) {
 }
 
 async function writeSudoers(userName, sys) {
-  const file = path.join(sys.paths.sudoersDir, "devchain-host");
+  const file = path.join(sys.paths.sudoersDir, SUDOERS_NAME);
   const tmp = `${file}.new`;
   fs.writeFileSync(tmp, renderSudoers(userName, sys.paths.binDir), {
     mode: 0o440,
@@ -465,4 +467,5 @@ module.exports = {
   removeOtherVersions,
   writeFileAtomic,
   claimFile,
+  SUDOERS_NAME,
 };

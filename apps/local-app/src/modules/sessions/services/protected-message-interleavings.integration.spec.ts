@@ -81,6 +81,8 @@ class DeterministicPaneExecutor extends ProcessExecutor {
 
   async run(options: ProcessExecutorOptions): Promise<ExecutorResult> {
     const command = options.argv[1];
+    if (command === 'display-message') return { ...SUCCESS, stdout: '1234' };
+    if (options.argv[0] === 'ps') return { ...SUCCESS, stdout: '2345' };
     if (command === 'load-buffer') {
       const input = options.input ?? '';
       const hold = this.heldLoad;

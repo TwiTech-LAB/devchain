@@ -110,7 +110,7 @@ describe('SyncthingManager', () => {
     const { moduleRef, manager } = await createHarness(openDb(), join(root, 'st-home'));
     await moduleRef.init();
     await waitFor(() => manager.getState().running);
-    expect(launcher.folders).toEqual([{ id: 'code:p1' }]);
+    expect(launcher.folders).toEqual([{ id: 'code:p1', copyOwnershipFromParent: false }]);
     expect(readFileSync(join(folder, 'session.jsonl'), 'utf8')).toBe('kept');
     expect(launcher.last.requests.filter((r) => r.method === 'DELETE').map((r) => r.path)).toEqual([
       '/rest/config/folders/tx%3Aclaude%3Ap1',
@@ -132,6 +132,7 @@ describe('SyncthingManager', () => {
       available: true,
       version: 'v2.1.5',
       running: true,
+      privileged: false,
       deviceId: expect.stringMatching(/^[0-9A-F]{16}$/),
       apiPort: run.apiPort,
       error: null,
@@ -211,6 +212,7 @@ describe('SyncthingManager', () => {
       available: false,
       version: null,
       running: false,
+      privileged: false,
       deviceId: null,
       apiPort: null,
       error: expect.stringContaining('https://syncthing.net/downloads/'),

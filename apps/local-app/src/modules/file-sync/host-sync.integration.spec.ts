@@ -140,6 +140,14 @@ describe('host sync routes', () => {
           ],
         },
       });
+      await expect(
+        client.syncInspect('r1', {
+          path: folder,
+          scan: true,
+          paths: [],
+          skipIgnores: ['/.git', 'logs'],
+        }),
+      ).resolves.toMatchObject({ candidates: [], entries: [] });
     } finally {
       rmSync(folder, { recursive: true, force: true });
     }
@@ -176,6 +184,8 @@ describe('host sync routes', () => {
         }
         if (url.startsWith('/rest/db/localchanged'))
           return json({ files: [{ name: 'edited.txt' }] });
+        if (req.method === 'GET' && url.startsWith('/rest/db/ignores'))
+          return json({ ignore: ['!/data/keep', '/data'], expanded: [] });
         if (url === '/rest/config/folders') return json([{ id: 'code:p1' }]);
         if (url.startsWith('/rest/config/folders/'))
           return json({ type: 'receiveonly', paused: false, devices: [{ deviceID: HOME_ID }] });
@@ -282,6 +292,20 @@ describe('host sync routes', () => {
   });
 
   const calls = () => recorded.map((r) => `${r.method} ${r.url}`);
+
+  it('reads installed VM ignores, validates the folder ID, and preserves missing-folder errors', async () => {
+    await expect(client.syncFolderIgnores('r1', 'code:p1')).resolves.toEqual({
+      ignore: ['!/data/keep', '/data'],
+    });
+    expect(calls()).toEqual(['GET /rest/db/ignores?folder=code%3Ap1']);
+    expect(
+      (await app.inject({ method: 'GET', url: '/api/host/sync/folders/invalid/ignores' }))
+        .statusCode,
+    ).toBe(400);
+    await expect(client.syncFolderIgnores('r1', 'code:gone')).rejects.toMatchObject({
+      status: 404,
+    });
+  });
 
   // HTTP plus the real service proves path ownership, request validation and REST configuration.
   it.each(['code', 'git'] as const)(
@@ -679,6 +703,7 @@ describe('host sync routes', () => {
 
   it('reports folder status with the host view of a device', async () => {
     await expect(client.syncStatus('r1', 'code:p1', HOME_ID)).resolves.toEqual({
+      sequence: 7,
       folderId: 'code:p1',
       state: 'idle',
       localFiles: 4,

@@ -263,7 +263,7 @@ export const PagedSessionMessageList = memo(function PagedSessionMessageList({
   const chunkCount = index?.totals.chunkCount ?? 0;
   // The index intentionally contains every chunk ID: these small routing entries let the
   // virtualizer seek anywhere without another index protocol. Only chunk bodies are windowed.
-  const chunkIds = index?.chunkIds ?? [];
+  const chunkIds = useMemo(() => index?.chunkIds ?? [], [index]);
 
   // 2. Virtualizer
   const getItemKey = useCallback((i: number) => chunkIds[i] ?? `placeholder-${i}`, [chunkIds]);
@@ -338,6 +338,7 @@ export const PagedSessionMessageList = memo(function PagedSessionMessageList({
     }
     chunksMapRef.current = map;
     return map;
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- deltaSeq invalidates chunksMapRef after websocket deltas mutate it.
   }, [batchQueries, deltaSeq, exposedCanonicalGeneration, exposedRecoverySnapshot]);
 
   useEffect(() => {

@@ -39,7 +39,7 @@ it('marks single files, and reports EACCES and other stat errors as unknown whil
       code: path === '/missing' ? 'ENOENT' : path === '/denied' ? 'EACCES' : 'EIO',
     });
   });
-  const result = await new HostDockerService({} as DockerArchiveJournal).scan([
+  const result = await new HostDockerService({} as DockerArchiveJournal, {} as never).scan([
     '/outside/link',
     '/outside/file',
     '/denied',
@@ -77,7 +77,7 @@ eth0 000010AC 01001FAC 0001 0 0 0 0000F0FF 0 0 0`);
     connectedInfo: { Architecture: 'amd64' },
     json,
   } as unknown as DockerEngineClient);
-  const result = await new HostDockerService({} as DockerArchiveJournal).scan(
+  const result = await new HostDockerService({} as DockerArchiveJournal, {} as never).scan(
     [],
     undefined,
     undefined,
@@ -92,7 +92,7 @@ eth0 000010AC 01001FAC 0001 0 0 0 0000F0FF 0 0 0`);
 });
 
 // Unit layer checks the engine request boundary without running an HTTP server.
-it('inspects only data holders and performs no archive or content reads', async () => {
+it('returns container users and holder metadata without archive or content reads', async () => {
   const json = jest.fn(async (_method: string, path: string) => {
     if (path === '/volumes') return { Volumes: [] };
     if (path === '/containers/json?all=true')
@@ -113,8 +113,9 @@ it('inspects only data holders and performs no archive or content reads', async 
       return {
         Created: '2026-09-01T00:00:00Z',
         State: { StartedAt: '2026-09-02T00:00:00Z', Running: false },
-        Config: { Env: ['PRIVATE'] },
+        Config: { User: '1001:1000', Env: ['PRIVATE'] },
       };
+    if (path === '/containers/unrelated/json') return { Config: { User: 'node' } };
     if (path === '/containers/bind-holder/json') throw new Error('unanswering engine');
     throw new Error(`Unexpected data access: ${path}`);
   });
@@ -126,17 +127,16 @@ it('inspects only data holders and performs no archive or content reads', async 
   } as unknown as DockerEngineClient);
   jest.mocked(fs.stat).mockResolvedValue({} as never);
   const archives = { create: jest.fn() };
-  const result = await new HostDockerService(archives as unknown as DockerArchiveJournal).scan(
-    ['/home/state'],
-    undefined,
-    undefined,
-    ['data'],
-  );
+  const result = await new HostDockerService(
+    archives as unknown as DockerArchiveJournal,
+    {} as never,
+  ).scan(['/home/state'], undefined, undefined, ['data']);
   expect(json.mock.calls.map((c) => c[1])).toEqual([
     '/containers/json?all=true',
     '/volumes',
     '/containers/volume-holder/json',
     '/containers/bind-holder/json',
+    '/containers/unrelated/json',
   ]);
   expect(result.containers[0].metadata).toEqual({
     created: '2026-09-01T00:00:00Z',
@@ -144,6 +144,10 @@ it('inspects only data holders and performs no archive or content reads', async 
     running: false,
   });
   expect(result.containers[1].metadata).toEqual({});
+  expect(result.containers[0].user).toBe('1001:1000');
+  expect(result.containers[1].user).toBeUndefined();
+  expect(result.containers[2].user).toBe('node');
+  expect(result.containers[2].metadata).toBeUndefined();
   expect(JSON.stringify(result)).not.toContain('PRIVATE');
   expect(stream).not.toHaveBeenCalled();
   expect(archives.create).not.toHaveBeenCalled();

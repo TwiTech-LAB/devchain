@@ -1,5 +1,5 @@
+import { OnCatalogEvent } from '../../events/catalog/on-catalog-event';
 import { Inject, Injectable, Logger } from '@nestjs/common';
-import { OnEvent } from '@nestjs/event-emitter';
 import { AgentMessageDeliveryService } from '../../agent-message-delivery/agent-message-delivery.service';
 import { getEventMetadata } from '../../events/services/events.service';
 import { EventLogService } from '../../events/services/event-log.service';
@@ -75,7 +75,7 @@ export class EpicAssignmentNotifierSubscriber {
       Pick<StorageService, 'getEpic'>,
   ) {}
 
-  @OnEvent('epic.created', { async: true })
+  @OnCatalogEvent('epic.created', { async: true })
   async handleEpicCreated(payload: EpicCreatedEventPayload): Promise<void> {
     // Only process if agent is assigned on creation
     if (!payload.agentId) {
@@ -166,7 +166,7 @@ export class EpicAssignmentNotifierSubscriber {
     }
   }
 
-  @OnEvent('epic.updated', { async: true })
+  @OnCatalogEvent('epic.updated', { async: true })
   async handleEpicUpdated(payload: EpicUpdatedEventPayload): Promise<void> {
     // Only process if agent assignment changed
     if (!payload.changes.agentId) {

@@ -210,10 +210,10 @@ export function ConnectOwnerProblems({
     <>
       {show && (
         <section
-          aria-label="Files that cannot sync"
+          aria-label="Files owned by another user"
           className="space-y-3 rounded-md border bg-card p-4 text-sm"
         >
-          <h3 className="font-medium">Files that cannot sync</h3>
+          <h3 className="font-medium">Files owned by another user</h3>
           {scan.pending && <BusyStatus>Scanning for suggested exclusions…</BusyStatus>}
           {scan.failed && <p role="status">DevChain could not scan this PC.</p>}
           {scan.result?.vm === 'unavailable' && (
@@ -236,7 +236,7 @@ export function ConnectOwnerProblems({
                     <p key={side}>
                       {owners.join(', ')} {owners.length === 1 ? 'owns' : 'own'} files in{' '}
                       {affected.length} {affected.length === 1 ? 'group' : 'groups'} on{' '}
-                      {sideName(side)}. File sync cannot change them.
+                      {sideName(side)}. Exclude runtime output that Git ignores.
                     </p>
                   )
                 );

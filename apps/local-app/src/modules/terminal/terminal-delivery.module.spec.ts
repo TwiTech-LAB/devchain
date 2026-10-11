@@ -55,6 +55,7 @@ describe('Terminal delivery wrappers', () => {
     expect(terminalIO.deliverImmediate).toHaveBeenCalledWith({ name: 'guest-tmux' }, 'hello', {
       submitKeys: ['Enter'],
       confirm: false,
+      requireForegroundProgram: false,
     });
   });
 

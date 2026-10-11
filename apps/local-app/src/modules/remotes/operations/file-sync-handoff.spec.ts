@@ -947,6 +947,7 @@ describe('FileSyncHandoff', () => {
     await handoff.initial(run, 'p1');
     managed.set('p1', ['/state/db']);
     await handoff.flipToHost(run, 'p1');
+    home.setIgnores('p1', [...home.getIgnores('p1'), '(?d)/vm-output']);
     calls.length = 0;
 
     await handoff.final(run, 'p1');

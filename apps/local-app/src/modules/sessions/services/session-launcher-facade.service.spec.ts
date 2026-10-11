@@ -1,6 +1,9 @@
 import { Module } from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
-import { ActiveSessionInfo, SessionLaunchError } from '../dtos/active-session-info.dto';
+import {
+  ActiveSessionInfo,
+  SessionLaunchError,
+} from '../../session-terminal-runtime/dtos/active-session-info.dto';
 import { SessionsModule } from '../sessions.module';
 import { TerminalIOService } from '../../terminal/services/terminal-io/terminal-io.service';
 import { ActiveSessionLookup } from './active-session-lookup.service';

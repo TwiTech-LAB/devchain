@@ -44,6 +44,7 @@ export interface WaitForOutputOptions {
 
 export interface DeliveryOptions {
   readonly agentId: string;
+  readonly requireForegroundProgram?: boolean;
   readonly bracketed?: boolean;
   readonly submitKeys?: readonly string[];
   readonly preKeys?: readonly string[];

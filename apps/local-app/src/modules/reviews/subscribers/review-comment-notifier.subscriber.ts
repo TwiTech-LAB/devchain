@@ -1,5 +1,5 @@
+import { OnCatalogEvent } from '../../events/catalog/on-catalog-event';
 import { Inject, Injectable, Logger } from '@nestjs/common';
-import { OnEvent } from '@nestjs/event-emitter';
 import { getEventMetadata } from '../../events/services/events.service';
 import { EventLogService } from '../../events/services/event-log.service';
 import { AgentMessageDeliveryService } from '../../agent-message-delivery/agent-message-delivery.service';
@@ -47,7 +47,7 @@ export class ReviewCommentNotifierSubscriber {
     @Inject(STORAGE_SERVICE) private readonly storage: AgentStorage,
   ) {}
 
-  @OnEvent('review.comment.created', { async: true })
+  @OnCatalogEvent('review.comment.created', { async: true })
   async handleReviewCommentCreated(payload: ReviewCommentCreatedEventPayload): Promise<void> {
     // Only process if there are target agents
     if (!payload.targetAgentIds || payload.targetAgentIds.length === 0) {

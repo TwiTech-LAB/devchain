@@ -7,7 +7,7 @@ import {
   CLAUDE_SETTINGS_BASELINE,
 } from '../../../common/config/provider-baseline';
 import { createLogger } from '../../../common/logging/logger';
-import { ensureClaudeConfigKeys, writeConfigAtomically } from '../../sessions/utils/claude-config';
+import { ensureClaudeConfigKeys, writeConfigAtomically } from '../../providers/utils/claude-config';
 import { HostHelperService } from './host-helper.service';
 
 const logger = createLogger('ProviderBaselineService');

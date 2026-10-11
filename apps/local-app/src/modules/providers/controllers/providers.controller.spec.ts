@@ -15,14 +15,11 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { NotFoundError, ProjectRemoteError } from '../../../common/errors/error-types';
-import {
-  disableClaudeAutoCompact,
-  enableClaudeAutoCompact,
-} from '../../sessions/utils/claude-config';
+import { disableClaudeAutoCompact, enableClaudeAutoCompact } from '../utils/claude-config';
 import { ProcessExecutor } from '../../terminal/services/process-executor/process-executor.port';
 import { FakeProcessExecutor } from '../../terminal/services/process-executor/fake-process-executor';
 
-jest.mock('../../sessions/utils/claude-config', () => ({
+jest.mock('../utils/claude-config', () => ({
   disableClaudeAutoCompact: jest.fn(),
   enableClaudeAutoCompact: jest.fn(),
 }));

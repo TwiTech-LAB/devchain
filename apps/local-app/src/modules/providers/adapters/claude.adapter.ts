@@ -35,7 +35,7 @@ import {
   requireString,
 } from './plugin-catalog.utils';
 
-import { stripFlag } from '../../sessions/utils/profile-options';
+import { stripFlag } from '../utils/profile-options';
 
 interface ClaudeSettingsLocal {
   permissions?: {
@@ -215,7 +215,7 @@ export class ClaudeAdapter
   }
 
   async evaluateAutoCompactConfig(): Promise<{ enabled: boolean; reason?: string }> {
-    const { checkAutoCompactConfig } = await import('../../sessions/utils/claude-config');
+    const { checkAutoCompactConfig } = await import('../utils/claude-config');
     const { autoCompactEnabled, configState } = await checkAutoCompactConfig();
     if (configState === 'malformed') {
       return { enabled: true };
@@ -264,7 +264,7 @@ export class ClaudeAdapter
    */
   async provisionProjectPath(projectPath: string): Promise<ProvisioningResult> {
     try {
-      const { ensureClaudeProjectTrusted } = await import('../../sessions/utils/claude-config');
+      const { ensureClaudeProjectTrusted } = await import('../utils/claude-config');
       const result = await ensureClaudeProjectTrusted(projectPath);
       if (result.success) {
         return { success: true, warnings: [] };

@@ -5,7 +5,11 @@ import { Input } from '../ui/input';
 import { useQrAuth } from '../../hooks/useQrAuth';
 import { QrDisplayPanel } from './QrDisplayPanel';
 import { HOME_BACKEND, apiFetch, type BackendId } from '@/ui/lib/api-transport';
-import { completeCloudSignIn, openCloudOAuthPopup } from '@/ui/lib/cloud-target';
+import {
+  completeCloudSignIn,
+  createCloudSignInCallbackUrl,
+  openCloudOAuthPopup,
+} from '@/ui/lib/cloud-target';
 
 type AuthMode = 'idle' | 'sending' | 'sent' | 'error' | 'qr';
 
@@ -47,7 +51,7 @@ export function CloudAuthForm({
       setMagicLinkError('');
 
       try {
-        const redirectUri = window.location.origin + '/auth/cloud/callback';
+        const redirectUri = createCloudSignInCallbackUrl();
         const response = await apiFetch(
           `${identityServiceUrl}/auth/magic-link/request`,
           {
@@ -173,10 +177,11 @@ function QrAuthInline({
   onCancel: () => void;
 }) {
   const qr = useQrAuth(identityServiceUrl, 'claim', backend);
+  const { start } = qr;
 
   useEffect(() => {
-    qr.start();
-  }, []);
+    start();
+  }, [start]);
 
   useEffect(() => {
     if (qr.status === 'success' && qr.tokens) {

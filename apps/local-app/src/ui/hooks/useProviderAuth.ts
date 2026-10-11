@@ -160,12 +160,13 @@ export function useProviderAuthGeneration(generationId: string | null) {
     client,
   );
 
+  const storedGenerationId = query.data?.id;
+  const generationState = query.data?.state;
   useEffect(() => {
-    const generation = query.data;
     if (
       generationId === null ||
-      generation?.id !== generationId ||
-      generation.state !== 'stored' ||
+      storedGenerationId !== generationId ||
+      generationState !== 'stored' ||
       invalidatedStoredGenerationIds.current.has(generationId)
     ) {
       return;
@@ -173,7 +174,7 @@ export function useProviderAuthGeneration(generationId: string | null) {
 
     invalidatedStoredGenerationIds.current.add(generationId);
     void client.invalidateQueries({ queryKey: providerAuthKeys.all });
-  }, [client, generationId, query.data?.id, query.data?.state]);
+  }, [client, generationId, storedGenerationId, generationState]);
 
   return { generation: query.data ?? null };
 }

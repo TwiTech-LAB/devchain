@@ -8,7 +8,7 @@
 
 import * as fs from 'node:fs/promises';
 import type { UnifiedSession, UnifiedMetrics, UnifiedMessage } from '../dtos/unified-session.types';
-import type { TranscriptTurnState } from '../../terminal/services/session-turn-signals';
+import type { TranscriptTurnState } from '../../events/signals/session-turn-signals';
 
 /**
  * A resolved reference to the source of a session's transcript data.

@@ -92,7 +92,6 @@ export class FileSyncFailuresService {
       } else this.addFacts(result[side], read.value);
     }
     const [home, vm] = inspections;
-    if (vm.status === 'fulfilled') result.vmUser = vm.value.vmUser ?? vm.value.projectOwner;
     if (home.status === 'fulfilled') {
       const input: BuildExclusionSuggestionsInput = {
         ownerSide: 'vm',

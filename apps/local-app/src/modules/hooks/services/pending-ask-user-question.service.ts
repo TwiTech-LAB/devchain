@@ -1,5 +1,6 @@
+import type { EventPayload } from '../../events/catalog';
+import { OnCatalogEvent } from '../../events/catalog/on-catalog-event';
 import { Injectable } from '@nestjs/common';
-import { OnEvent } from '@nestjs/event-emitter';
 import { createLogger } from '../../../common/logging/logger';
 import type { NormalizedAskUserQuestion } from '../../events/catalog/claude.hooks.ask_user_question.pending';
 
@@ -112,8 +113,8 @@ export class PendingAskUserQuestionService {
     return this.entries.size;
   }
 
-  @OnEvent('session.stopped', { async: true })
-  onSessionStopped(payload: { sessionId: string }): void {
+  @OnCatalogEvent('session.stopped', { async: true })
+  onSessionStopped(payload: EventPayload<'session.stopped'>): void {
     const cleared = this.clearBySession(payload.sessionId);
     if (cleared > 0) {
       logger.info(
@@ -123,8 +124,8 @@ export class PendingAskUserQuestionService {
     }
   }
 
-  @OnEvent('session.crashed', { async: true })
-  onSessionCrashed(payload: { sessionId: string }): void {
+  @OnCatalogEvent('session.crashed', { async: true })
+  onSessionCrashed(payload: EventPayload<'session.crashed'>): void {
     const cleared = this.clearBySession(payload.sessionId);
     if (cleared > 0) {
       logger.info(

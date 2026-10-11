@@ -1,4 +1,4 @@
-import { COMPOSE_PROJECT_LABEL, DOCKER_PROJECT_LABEL } from '../host/host-docker.dto';
+import { COMPOSE_PROJECT_LABEL } from '../host/host-docker.dto';
 import { within } from './docker-plan-files';
 
 export const DEFAULT_COMPOSE_FILES = [
@@ -31,12 +31,8 @@ export function composeRootLinks(labels: Readonly<Record<string, string>>, root:
   );
 }
 
-export function projectCompose(
-  labels: Readonly<Record<string, string>>,
-  root: string,
-  projectId: string,
-): boolean {
-  const owner = labels[DOCKER_PROJECT_LABEL];
-  if ((owner !== undefined && owner !== projectId) || !labels[COMPOSE_PROJECT_LABEL]) return false;
+/** A Compose container linked to the project root; the caller has already vetoed a foreign owner. */
+export function projectCompose(labels: Readonly<Record<string, string>>, root: string): boolean {
+  if (!labels[COMPOSE_PROJECT_LABEL]) return false;
   return composeRootLinks(labels, root).length > 0;
 }

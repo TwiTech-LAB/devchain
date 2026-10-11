@@ -72,10 +72,11 @@ function QrAuthDialogBody({
   onClose: () => void;
 }) {
   const qr = useQrAuth(identityServiceUrl, 'provision', backend);
+  const { start } = qr;
 
   useEffect(() => {
-    qr.start();
-  }, []);
+    start();
+  }, [start]);
 
   useEffect(() => {
     if (qr.status === 'success') {

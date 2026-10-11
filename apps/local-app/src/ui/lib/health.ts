@@ -2,7 +2,7 @@ import { queryOptions } from '@tanstack/react-query';
 import { isLessThan } from '@devchain/shared';
 import type { HealthResponse } from '@/modules/core/controllers/health.controller';
 import { HOME_BACKEND, apiFetch } from './api-transport';
-import { fetchJsonOrThrow } from './sessions';
+import { fetchJsonOrThrow } from './http-json';
 
 export type { HealthResponse };
 

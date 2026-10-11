@@ -31,7 +31,7 @@ interface TemplateListResponse {
 async function fetchRegistryStatus(): Promise<RegistryStatusResponse> {
   const res = await apiFetch('/api/registry/status', undefined, { backend: HOME_BACKEND });
   if (!res.ok) throw new Error('Failed to check registry status');
-  return res.json();
+  return res.json() as Promise<RegistryStatusResponse>;
 }
 
 async function fetchRegistryTemplates(params: {
@@ -45,7 +45,7 @@ async function fetchRegistryTemplates(params: {
   const url = `/api/registry/templates${searchParams.toString() ? `?${searchParams}` : ''}`;
   const res = await apiFetch(url, undefined, { backend: HOME_BACKEND });
   if (!res.ok) throw new Error('Failed to fetch templates');
-  return res.json();
+  return res.json() as Promise<TemplateListResponse>;
 }
 
 // Debounce hook

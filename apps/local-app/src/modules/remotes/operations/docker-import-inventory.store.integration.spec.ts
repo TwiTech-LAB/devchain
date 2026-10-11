@@ -98,6 +98,29 @@ describe('DockerImportInventoryStore', () => {
     expect(reopened.get('p1', 'r1')).toEqual(inventory());
   });
 
+  // SQLite serialization and strict inventory parsing must retain the actual resource snapshot.
+  it.each(['exact', 'mapped', undefined] as const)(
+    'round-trips an optional %s data representation through restart',
+    (kind) => {
+      const { db } = openDatabase();
+      const representation = kind && {
+        kind,
+        home: { uid: 1000, gid: 1000 },
+        vm: { uid: 1001, gid: 1002 },
+      };
+      const group = {
+        volumes: ['web-data'],
+        bindPaths: ['/home/project/state/db'],
+        ...(representation ? { representation } : {}),
+      };
+      const entry = inventory();
+      entry.items[0].dataRepresentations = [group];
+      entry.groups = [{ ...group, lastSyncedAt: IMPORTED_AT, lastSyncDirection: 'to-vm' }];
+      new DockerImportInventoryStore(db).set('p1', 'r1', entry);
+      expect(new DockerImportInventoryStore(db).get('p1', 'r1')).toEqual(entry);
+    },
+  );
+
   it('refuses Env and other container settings loudly', () => {
     const store = openStore();
     const withEnv = {
@@ -168,5 +191,27 @@ it('stores an explicit discard without fabricating a verified copy baseline', ()
   expect(store.get('p1', 'r1')?.groups).toEqual(entry.groups);
   expect(() =>
     store.set('p1', 'r1', inventory({ groups: [{ volumes: ['data'], bindPaths: [] }] })),
+  ).toThrow();
+});
+
+it('persists minimal item and group ownership across reopening and rejects config in the record', () => {
+  const { db } = openDatabase();
+  const store = new DockerImportInventoryStore(db);
+  const ownership = {
+    class: 'follows-user' as const,
+    home: { uid: 1000, gid: 1000 },
+    vm: { uid: 1001, gid: 1002 },
+    targetUser: '1001:1002',
+  };
+  const value = inventory();
+  value.items[0].ownership = ownership;
+  value.groups = [{ volumes: ['web-data'], bindPaths: [], vmDiscardedAt: IMPORTED_AT, ownership }];
+  store.set('p', 'r', value);
+  expect(new DockerImportInventoryStore(db).get('p', 'r')).toEqual(value);
+  expect(() =>
+    store.set('p', 'r', {
+      ...value,
+      items: [{ ...value.items[0], ownership: { ...ownership, Env: ['PRIVATE=secret'] } }],
+    }),
   ).toThrow();
 });

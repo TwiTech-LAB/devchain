@@ -31,6 +31,7 @@ describe('Create Project from Template (E2E)', () => {
       JSON.stringify(
         {
           version: 1,
+          _manifest: { name: 'Rollback Template' },
           prompts: [],
           profiles: [],
           agents: [
@@ -53,6 +54,7 @@ describe('Create Project from Template (E2E)', () => {
       JSON.stringify(
         {
           version: 1,
+          _manifest: { name: 'Success Template' },
           prompts: [{ title: 'Welcome', content: 'Hello', tags: [] }],
           profiles: [
             {
@@ -166,6 +168,7 @@ describe('Create Project from Template (E2E)', () => {
       JSON.stringify(
         {
           version: 1,
+          _manifest: { name: 'Missing Provider Template' },
           prompts: [],
           profiles: [
             {
@@ -254,12 +257,9 @@ describe('Create Project from Template (E2E)', () => {
       },
     });
 
-    // Expect 4xx/5xx error due to profile mapping failure
-    // The error can be 400 (validation) or 500 (internal error during transaction)
-    expect(createRes.statusCode).toBeGreaterThanOrEqual(400);
+    expect(createRes.statusCode).toBe(400);
     const errorBody = JSON.parse(createRes.payload);
-    // The error should mention profile mapping or be a validation error
-    expect(errorBody.message || errorBody.statusCode).toBeDefined();
+    expect(errorBody.message).toContain('Profile mapping missing for agent Rollback Agent');
 
     // Get project count after failed attempt
     const afterRes = await app.inject({ method: 'GET', url: '/api/projects' });
@@ -371,9 +371,7 @@ describe('Create Project from Template (E2E)', () => {
     expect(profileScopeWatcher.scope).toBe('profile');
     expect(profileScopeWatcher.scopeFilterName).toBe('Default Profile'); // Resolved correctly
 
-    const allScopeWatcher = exportData.watchers.find(
-      (w: any) => w.eventName === 'test-event-all',
-    );
+    const allScopeWatcher = exportData.watchers.find((w: any) => w.eventName === 'test-event-all');
     expect(allScopeWatcher).toBeDefined();
     expect(allScopeWatcher.scope).toBe('all');
     expect(allScopeWatcher.scopeFilterName).toBeNull(); // scope: all has no filter
@@ -429,8 +427,6 @@ describe('Create Project from Template (E2E)', () => {
 
     expect(res.statusCode).toBe(400);
     const body = JSON.parse(res.payload);
-    expect(body.message).toContain('missing providers');
-    const missingProviders = body.missingProviders ?? body.details?.missingProviders ?? [];
-    expect(missingProviders).toContain('missing-provider');
+    expect(body.message).toContain('No providers are installed');
   });
 });

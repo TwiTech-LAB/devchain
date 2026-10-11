@@ -23,7 +23,7 @@ export function useLinkedTaskOwnership(
     queryFn: async ({ signal }): Promise<LinkedTaskEpicOwnership> => {
       const response = await apiFetch(`/api/epics/${encodeURIComponent(epicId)}`, { signal });
       if (!response.ok) throw new Error('The DevChain task could not be loaded.');
-      return response.json();
+      return response.json() as Promise<LinkedTaskEpicOwnership>;
     },
     enabled: enabled && epicId !== '',
     retry: false,
@@ -36,7 +36,7 @@ export function useLinkedTaskOwnership(
         signal,
       });
       if (!response.ok) throw new Error('The owning DevChain project could not be loaded.');
-      return response.json();
+      return response.json() as Promise<LinkedTaskProjectOwnership>;
     },
     enabled: enabled && Boolean(projectId),
     retry: false,

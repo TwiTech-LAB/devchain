@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react';
+import { useMemo, useState, useCallback } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { useToast } from '@/ui/hooks/use-toast';
 import {
@@ -119,11 +119,18 @@ export function useChatSessionControls({
   const [terminateAllConfirm, setTerminateAllConfirm] = useState(false);
 
   // Derived state
-  const offlineAgents = presenceReady ? agents.filter((a) => !agentPresence[a.id]?.online) : [];
+  const offlineAgents = useMemo(
+    () => (presenceReady ? agents.filter((a) => !agentPresence[a.id]?.online) : []),
+    [presenceReady, agents, agentPresence],
+  );
 
-  const agentsWithSessions = presenceReady
-    ? agents.filter((a) => agentPresence[a.id]?.online && agentPresence[a.id]?.sessionId)
-    : [];
+  const agentsWithSessions = useMemo(
+    () =>
+      presenceReady
+        ? agents.filter((a) => agentPresence[a.id]?.online && agentPresence[a.id]?.sessionId)
+        : [],
+    [presenceReady, agents, agentPresence],
+  );
 
   const primeRunningSessionCache = useCallback(
     async (agentId: string, session: ActiveSession) => {
@@ -324,14 +331,15 @@ export function useChatSessionControls({
       }
     },
     [
-      agentPresence,
       projectId,
-      queryClient,
-      selectedAgentId,
-      onInlineTerminalAttach,
+      agentPresence,
+      setPendingAction,
       toast,
       primeRunningSessionCache,
-      setPendingAction,
+      queryClient,
+      selectedAgentId,
+      apiFetch,
+      onInlineTerminalAttach,
       clearPending,
     ],
   );
@@ -370,12 +378,13 @@ export function useChatSessionControls({
     },
     [
       projectId,
+      apiFetch,
+      toast,
+      primeRunningSessionCache,
       queryClient,
       selectedAgentId,
       onInlineTerminalAttach,
       onTerminalMenuClose,
-      toast,
-      primeRunningSessionCache,
     ],
   );
 
@@ -492,7 +501,7 @@ export function useChatSessionControls({
         });
       }
     }
-  }, [presenceReady, agentsWithSessions, agentPresence, queryClient, projectId, toast]);
+  }, [presenceReady, agentsWithSessions, agentPresence, apiFetch, queryClient, projectId, toast]);
 
   // MCP configured handler
   const handleMcpConfigured = useCallback(async () => {

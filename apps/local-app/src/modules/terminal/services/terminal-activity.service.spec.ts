@@ -1,3 +1,4 @@
+import { SessionRowStore } from '../../storage/sessions/session-row.store';
 import { Test, TestingModule } from '@nestjs/testing';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import Database from 'better-sqlite3';
@@ -11,7 +12,10 @@ import { SettingsService } from '../../settings/services/settings.service';
 import { PendingAskUserQuestionService } from '../../hooks/services/pending-ask-user-question.service';
 import { TerminalSessionRegistry } from './terminal-session/terminal-session-registry';
 import { TerminalFrameStream } from './terminal-session/terminal-frame-stream';
-import type { SessionTranscriptTurnSignal, SessionTurnHookSignal } from './session-turn-signals';
+import type {
+  SessionTranscriptTurnSignal,
+  SessionTurnHookSignal,
+} from '../../events/signals/session-turn-signals';
 
 // Module-unit with a real in-memory `sessions` table: the state machine's contract is the rows it
 // writes and the transitions it emits, which statement-level mocks would assume away.
@@ -42,6 +46,7 @@ describe('TerminalActivityService', () => {
   async function createService(): Promise<TerminalActivityService> {
     const module: TestingModule = await Test.createTestingModule({
       providers: [
+        SessionRowStore,
         TerminalActivityService,
         { provide: DB_CONNECTION, useValue: db },
         { provide: EventEmitter2, useValue: mockEventEmitter },

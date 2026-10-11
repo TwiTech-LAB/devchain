@@ -6,7 +6,7 @@ import { join } from 'path';
 import { validateClaudeLaunchSettingsJson } from '@devchain/shared';
 import { ConflictError, IOError, ValidationError } from '../../common/errors/error-types';
 import { createLogger } from '../../common/logging/logger';
-import { hasFlagOccurrence } from '../sessions/utils/profile-options';
+import { hasFlagOccurrence } from '../providers/utils/profile-options';
 import type {
   PreparedArtifacts,
   PrepareProviderLaunchArtifactsInput,

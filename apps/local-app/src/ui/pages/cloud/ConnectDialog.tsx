@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useMemo, useCallback, useEffect, useState } from 'react';
 import type { ConnectChoicesDto } from '@/modules/remotes/connect-choices.dto';
 import type { DockerSelection } from '@/modules/remotes/docker/docker-plan.dto';
 import type { RemoteListItemDto } from '@/modules/remotes/dtos/remote.dto';
@@ -183,7 +183,7 @@ export function ConnectDialog({
 
   const ignores = useProjectIgnores(projectId);
   const saveIgnores = useSaveProjectIgnores();
-  const loaded = ignores.data ?? [];
+  const loaded = useMemo(() => ignores.data ?? [], [ignores.data]);
   const mergeSuggestions = useCallback(
     (patterns: string[], selected: boolean) => {
       setDraft((previous) => {
@@ -392,7 +392,6 @@ export function ConnectDialog({
               remoteId={remoteId}
               initialIncludeDocker={savedChoices?.includeDocker}
               presence={presence}
-              managedVm={remotes.find((remote) => remote.id === remoteId)?.kind === 'proxmox'}
               disabled={busy}
               onStateChange={setDocker}
             />

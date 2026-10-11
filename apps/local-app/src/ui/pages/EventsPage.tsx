@@ -103,7 +103,7 @@ async function fetchEvents(fetchFn: FetchFn, params: FetchEventsParams): Promise
   if (!res.ok) {
     throw new Error('Failed to fetch events');
   }
-  return res.json();
+  return res.json() as Promise<EventsListResult>;
 }
 
 function computeTimeRange(range: typeof DEFAULT_FILTERS.timeRange): { from?: string; to?: string } {
@@ -241,7 +241,7 @@ export function EventsPage() {
       }),
   });
 
-  const events: EventLog[] = data?.items ?? [];
+  const events: EventLog[] = useMemo(() => data?.items ?? [], [data]);
   const total = data?.total ?? 0;
   const startIndex = total === 0 ? 0 : pagination.offset + 1;
   const endIndex = pagination.offset + events.length;

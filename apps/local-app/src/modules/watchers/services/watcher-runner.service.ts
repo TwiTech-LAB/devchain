@@ -1,4 +1,4 @@
-import { Injectable, OnModuleInit, OnModuleDestroy, Inject, forwardRef } from '@nestjs/common';
+import { Injectable, OnModuleInit, OnModuleDestroy, Inject } from '@nestjs/common';
 import { createLogger } from '../../../common/logging/logger';
 import {
   STORAGE_SERVICE,
@@ -50,9 +50,9 @@ export class WatcherRunnerService implements OnModuleInit, OnModuleDestroy {
   constructor(
     @Inject(STORAGE_SERVICE)
     private readonly storage: AgentStorage & ProfileProviderConfigStorage & WatcherStorage,
-    @Inject(forwardRef(() => SessionsService)) private readonly sessionsService: SessionsService,
-    @Inject(forwardRef(() => TerminalIOService)) private readonly terminalIO: TerminalIOService,
-    @Inject(forwardRef(() => EventsService)) private readonly eventsService: EventsService,
+    private readonly sessionsService: SessionsService,
+    private readonly terminalIO: TerminalIOService,
+    private readonly eventsService: EventsService,
   ) {}
 
   async onModuleInit(): Promise<void> {

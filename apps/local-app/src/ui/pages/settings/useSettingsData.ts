@@ -14,7 +14,7 @@ async function updateSettingsRequest(
     body: JSON.stringify(data),
   });
   if (!res.ok) throw new Error('Failed to update settings');
-  return res.json();
+  return res.json() as Promise<SettingsDto>;
 }
 
 // ────────────────────────────────────────────

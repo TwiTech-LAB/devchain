@@ -489,7 +489,10 @@ export function useXterm(
       xtermRef.current = null;
       fitAddonRef.current = null;
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- Theme changes update the live terminal in the separate theme effect; they must not recreate xterm.
   }, [
+    xtermRef,
+    fitAddonRef,
     sessionId,
     terminalRef,
     onReady,

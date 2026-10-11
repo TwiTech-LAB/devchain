@@ -1,4 +1,4 @@
-import type { ActiveSessionInfo } from '../../sessions/dtos/active-session-info.dto';
+import type { ActiveSessionInfo } from '../../session-terminal-runtime/dtos/active-session-info.dto';
 import type { DeliveryOptions, SessionTarget } from './terminal-io/types';
 
 export type TerminalSessionRef = SessionTarget;

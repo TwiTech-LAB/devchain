@@ -34,7 +34,7 @@ export function useDevicesQuery(backend: BackendId = HOME_BACKEND): DevicesQuery
       const res = await apiFetch('/api/cloud/devices', undefined, { backend });
       if (res.status === 404 || res.status === 501) return null;
       if (!res.ok) throw new Error(`devices:${res.status}`);
-      return res.json();
+      return res.json() as Promise<{ devices: Device[] } | null>;
     },
     enabled: !!cloudStatus.connected,
     retry: false,

@@ -1,7 +1,36 @@
-import { compileIgnorePattern, firstMatch, ignorePatternProblem } from './ignore-pattern-matcher';
+import {
+  compileIgnorePattern,
+  firstMatch,
+  ignorePatternProblem,
+  ignoreListExcludesSubtree,
+} from './ignore-pattern-matcher';
 
 // Pure unit tests are the cheapest layer for the shared UI/backend matching contract.
 describe('Syncthing ignore patterns', () => {
+  it.each([
+    [['(?d)/data'], 'data', true],
+    [['/data'], 'data/nested', true],
+    [['!/data/keep', '/data'], 'data', false],
+    [['/data', '!/data/keep'], 'data', false],
+    [['/data', '!/data\\'], 'data', false],
+    [['!keep', '/data'], 'data', false],
+    [['!/data/k*', '/data'], 'data', false],
+    [['!/d*/keep', '/data'], 'data', false],
+    [['!/(?i)DATA/keep', '/data'], 'data', true],
+    [['(?i)!/DATA/keep', '/data'], 'data', false],
+    [['!/database/keep', '/data'], 'data', true],
+    [['!/other/**', '/data'], 'data', true],
+    [['/data', '#include extra'], 'data', false],
+    [['/data', '['], 'data', false],
+    [['// comment', '/data'], 'data', true],
+    [['/data/**'], 'data', false],
+    [['!/', '/data'], 'data', false],
+    [[String.raw`!/data\*/keep`, '/data'], 'data', true],
+    [[String.raw`!/data\*/keep`, String.raw`/data\*`], 'data*', false],
+    [[], 'data', false],
+  ])('proves whole-subtree exclusion for %s at %s: %s', (lines, path, expected) => {
+    expect(ignoreListExcludesSubtree(lines, path)).toBe(expected);
+  });
   // Cases adapted from v2.1.5 lib/ignore/ignore_test.go: TestExcludes,
   // TestFlagOrder, TestDeletables, TestIssue3674, TestGobwasGlobIssue18 and TestRoot.
   it.each([

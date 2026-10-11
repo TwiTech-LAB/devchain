@@ -24,7 +24,7 @@ export function useSmartSuppression() {
         backend: HOME_BACKEND,
       });
       if (!res.ok) throw new Error(`smart-suppression:${res.status}`);
-      return res.json();
+      return res.json() as Promise<SmartSuppressionData>;
     },
     staleTime: 30_000,
   });

@@ -1,4 +1,4 @@
-import { useEffect } from 'react';
+import { useMemo, useEffect } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import {
   providerEffortQueries,
@@ -45,7 +45,7 @@ export function useProviderEfforts(options: UseProviderEffortsOptions): UseProvi
 
   const supportsEffort = catalog?.supportsEffort ?? false;
   const requiresModelForEffort = catalog?.requiresModelForEffort ?? false;
-  const efforts = catalog?.efforts ?? [];
+  const efforts = useMemo(() => catalog?.efforts ?? [], [catalog]);
 
   // Clear a stale effort-override once the catalog no longer lists it. Only
   // active when effort is supported; a non-capable provider never carries a

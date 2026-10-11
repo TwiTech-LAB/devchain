@@ -39,7 +39,10 @@ import type { GuestDeliveryService } from '../terminal/services/guest-delivery.s
 import { HumanPromptStateService } from '../terminal/services/human-prompt-state.service';
 import { TerminalIOService } from '../terminal/services/terminal-io/terminal-io.service';
 import { FOLLOW_NOTE } from '../../common/follow-note';
-import { FakeProcessExecutor } from '../terminal/services/process-executor/fake-process-executor';
+import {
+  CliForegroundExecutor,
+  type FakeProcessExecutor,
+} from '../terminal/services/process-executor/fake-process-executor';
 import { createMockSession } from '../../../test/factories/session';
 
 const AGENT_ID = 'agent-1';
@@ -47,7 +50,7 @@ const PROJECT_ID = 'project-1';
 const TMUX = 'tmux-1';
 
 function buildChain(followNoteEnabled = true) {
-  const executor = new FakeProcessExecutor();
+  const executor = new CliForegroundExecutor();
   const humanPromptState = new HumanPromptStateService();
   const terminalIO = new TerminalIOService(
     executor,

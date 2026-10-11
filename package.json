@@ -1,6 +1,6 @@
 {
   "name": "devchain-cli",
-  "version": "0.24.2",
+  "version": "0.25.0",
   "description": "AI driven development platform",
   "homepage": "https://devchain.cc/",
   "repository": {
@@ -8,6 +8,16 @@
     "url": "https://github.com/twitech-lab/devchain.git"
   },
   "changelog": {
+    "0.25.0": [
+      "https://devchain.cc/releases/0.25.0/",
+      "",
+      "Mobile app 1.11.0: out of beta and live on the App Store and Google Play",
+      "Security: stronger protection for phone pairing, cloud sign-in and browser requests",
+      "Remote VMs: Docker moves work on more VMs, files of any owner sync, and custom VM sizes use sliders",
+      "Terminal: messages no longer reach the shell after an agent's CLI exits",
+      "Projects: a reminder when a project uses an older template, and custom prompts can be previewed and deleted from chat",
+      "Stability: a recovery screen instead of a blank page when something fails"
+    ],
     "0.24.2": [
       "Remote VMs: smoother and more reliable Connect, Disconnect and file sync, with better Docker support and a new Projects tab",
       "Host image 1.4.0: more tools for agents, and the VM user gets the same user ids as this PC, which moving Docker containers needs",

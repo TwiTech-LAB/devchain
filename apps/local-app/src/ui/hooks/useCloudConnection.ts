@@ -20,7 +20,7 @@ export function useCloudConnection(backend: BackendId = HOME_BACKEND) {
     queryFn: async () => {
       const response = await apiFetch('/api/auth/cloud/status', undefined, { backend });
       if (!response.ok) throw new Error('Failed to fetch cloud status');
-      return response.json();
+      return response.json() as Promise<CloudConnectionStatus>;
     },
     refetchOnWindowFocus: true,
     staleTime: 30_000,

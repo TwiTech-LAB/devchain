@@ -1,3 +1,4 @@
+import { Header, Pax } from 'tar';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { createHash } from 'node:crypto';
 import { once } from 'node:events';
@@ -68,6 +69,8 @@ export class FakeDockerEngine {
   /** Data by volume name or bind path. */
   readonly data = new Map<string, Buffer>();
   readonly calls: string[] = [];
+  readonly directoryOwners = new Map<string, { uid: number; gid: number }>();
+  readonly fileOwners = new Map<string, { uid: number; gid: number }>();
   /** Returns true when it answered the request itself. */
   intercept?: (method: string, path: string, res: ServerResponse) => boolean;
   /** Exit code of the bind clear helper (`find /target -mindepth 1 -delete`). */
@@ -344,6 +347,7 @@ export class FakeDockerEngine {
         list.map((c) => ({
           Id: c.Id,
           ImageID: c.Image,
+          Image: typeof c.Config.Image === 'string' ? c.Config.Image : c.Image,
           Names: [c.Name],
           Labels: c.Config.Labels ?? {},
           State: c.State.Running ? 'running' : 'created',
@@ -392,7 +396,15 @@ export class FakeDockerEngine {
         Id: id,
         Name: `/${name}`,
         Image: String(input.Image),
-        Config: { Labels: (input.Labels as Labels) ?? {} },
+        Config: {
+          Labels: (input.Labels as Labels) ?? {},
+          User:
+            input.User ??
+            (this.findImage(requestedImage)?.[1].metadata?.Config as { User?: string } | undefined)
+              ?.User ??
+            '',
+          ...(input.Env ? { Env: input.Env } : {}),
+        },
         HostConfig: host,
         Mounts: mounts,
         State: { Running: false },
@@ -454,6 +466,29 @@ export class FakeDockerEngine {
           return void res.end(Buffer.concat([Buffer.from(`${FILE_ENTRY}${name}\n`), file]));
         }
         const archive = await body();
+        if (at === '/data' && archive.length >= 1536 && [48, 53, 120].includes(archive[156])) {
+          let entry = new Header(archive);
+          if (entry.type === 'ExtendedHeader' && entry.size != null) {
+            const pax = Pax.parse(archive.subarray(512, 512 + entry.size).toString('utf8'));
+            entry = new Header(archive, 512 + Math.ceil(entry.size / 512) * 512, pax);
+          }
+          if (
+            entry.cksumValid &&
+            (entry.type === 'Directory' || (entry.type === 'File' && entry.size === 0)) &&
+            entry.path &&
+            entry.uid != null &&
+            entry.gid != null
+          ) {
+            const target = join(mount.Source, entry.path);
+            const owners = entry.type === 'File' ? this.fileOwners : this.directoryOwners;
+            owners.set(target, {
+              uid: entry.uid,
+              gid: entry.gid,
+            });
+            if (entry.type === 'File') this.data.set(target, Buffer.alloc(0));
+            return empty(200);
+          }
+        }
         const header = archive.subarray(0, Math.max(archive.indexOf('\n'), 0)).toString();
         const name = header.startsWith(FILE_ENTRY) ? header.slice(FILE_ENTRY.length) : null;
         if (at === '/' && name === null) {

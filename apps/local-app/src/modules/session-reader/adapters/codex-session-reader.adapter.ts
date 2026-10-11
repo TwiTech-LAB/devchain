@@ -12,7 +12,7 @@ import type {
 } from './session-reader-adapter.interface';
 import { EXACT_SUMMARY_FIELDS } from './session-reader-adapter.interface';
 import type { UnifiedMetrics, UnifiedSession } from '../dtos/unified-session.types';
-import type { TranscriptTurnState } from '../../terminal/services/session-turn-signals';
+import type { TranscriptTurnState } from '../../events/signals/session-turn-signals';
 import { parseCodexJsonl, type TokenSnapshot } from '../parsers/codex-jsonl.parser';
 import { PRICING_SERVICE, type PricingServiceInterface } from '../services/pricing.interface';
 import { isSyncthingMarker } from '../../../common/constants/syncthing-markers';

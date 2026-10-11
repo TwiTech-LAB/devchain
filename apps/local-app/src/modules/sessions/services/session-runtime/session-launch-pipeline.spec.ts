@@ -55,6 +55,7 @@ import { mkdtemp, mkdir, rm, stat, writeFile } from 'fs/promises';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { ClaudeLaunchSettingsMaterializerService } from '../../../runtime-context-capture/claude-launch-settings-materializer.service';
+import { ShellForegroundError } from '../../../terminal/services/terminal-io/delivery';
 
 const mockIsProjectProvisioningCapable = isProjectProvisioningCapable as unknown as jest.Mock;
 
@@ -719,6 +720,40 @@ describe('SessionLaunchPipeline', () => {
       }
       return { run: jest.fn().mockReturnValue({ changes: 1 }), get: jest.fn(), all: jest.fn() };
     };
+
+    // The full pipeline is the cheapest layer that can detect rollback and session-status regressions.
+    it.each([undefined, 'stdin'] as const)(
+      'keeps the session and pane when the %s prompt is refused',
+      async (seedMode) => {
+        const { pipeline, mocks } = createLaunchPipelineHarness();
+        (mocks.adapter as { initialPromptSeedMode?: 'stdin' }).initialPromptSeedMode = seedMode;
+        mocks.storage.getInitialSessionPrompt.mockResolvedValue({ content: 'Hello agent' });
+        const run = jest.fn();
+        mocks.sqliteMock.prepare.mockImplementation((sql: string) => ({
+          ...noRunningSelect(sql),
+          run,
+        }));
+        const refusal = new ShellForegroundError('agent-pane');
+        mocks.terminalIO.deliver.mockRejectedValue(refusal);
+        mocks.terminalIO.deliverImmediate.mockRejectedValue(refusal);
+
+        const result = await runWithTimers<SessionDetailDto>(() => pipeline.launch(launchDto));
+
+        expect(result.status).toBe('running');
+        expect(mocks.terminalIO.destroyExpectedSession).not.toHaveBeenCalled();
+        expect(mocks.terminalSessionRegistry.dispose).not.toHaveBeenCalled();
+        expect(mocks.preparedProviderRuntime.rollback).not.toHaveBeenCalled();
+        expect(run.mock.calls.some((args) => args.includes('failed'))).toBe(false);
+        expect(mocks.eventsService.publish).toHaveBeenCalledWith(
+          'session.started',
+          expect.objectContaining({ sessionId: result.id }),
+        );
+        expect(mockLogger.warn).toHaveBeenCalledWith(
+          expect.objectContaining({ sessionId: result.id, error: refusal.message }),
+          'Initial prompt refused; keeping session running and terminal pane available',
+        );
+      },
+    );
 
     it('argv mode: renders prompt before planning, passes it as initialPrompt, and SKIPS paste', async () => {
       const { pipeline, mocks } = createLaunchPipelineHarness();

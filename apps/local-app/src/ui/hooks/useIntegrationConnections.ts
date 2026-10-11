@@ -131,7 +131,7 @@ export function useIntegrationConnections({
       if (!response.ok) {
         return throwIntegrationApiError(response);
       }
-      return response.json();
+      return response.json() as Promise<IntegrationConnectionList>;
     },
     staleTime: 30_000,
     enabled: admitted,

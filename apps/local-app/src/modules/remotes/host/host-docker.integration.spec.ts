@@ -1,3 +1,7 @@
+import { createTestDatabase } from '../../../common/test/test-database.helper';
+import { HostDockerVolumeAssociationsStore } from '../host/host-docker-volume-associations.store';
+import Database from 'better-sqlite3';
+import { drizzle } from 'drizzle-orm/better-sqlite3';
 import { DockerArchiveJournal } from '../../core/controllers/docker-archive-journal';
 // Local Fastify and a fake Unix engine exercise parser, ownership and streaming boundaries without Docker.
 import { Test } from '@nestjs/testing';
@@ -30,10 +34,13 @@ type Labels = Record<string, string>;
 type Container = {
   Id: string;
   Config: { Labels: Labels };
+  Image?: string;
+  ImageID?: string;
   State?: { Running: boolean };
-  Mounts: Array<{ Type: string; Name?: string; Destination?: string }>;
+  Mounts: Array<{ Type: string; Name?: string; Source?: string; Destination?: string }>;
 };
 let app: NestFastifyApplication;
+let associationsDatabase: ReturnType<typeof createTestDatabase>;
 let server: Server;
 let root: string;
 let homeFixture: string;
@@ -269,10 +276,15 @@ beforeEach(async () => {
   jest
     .spyOn(DockerEngineClient, 'connect')
     .mockImplementation(async () => new DockerEngineClient(join(root, 'docker.sock')));
+  associationsDatabase = createTestDatabase();
   const module = await Test.createTestingModule({
     controllers: [HostDockerController],
     providers: [
       HostDockerService,
+      {
+        provide: HostDockerVolumeAssociationsStore,
+        useValue: new HostDockerVolumeAssociationsStore(associationsDatabase.db),
+      },
       { provide: HOST_IPV4_ROUTES, useValue: async () => [] },
       HostDockerBodyParser,
       { provide: DockerArchiveJournal, useValue: new DockerArchiveJournal(root) },
@@ -301,6 +313,7 @@ afterEach(async () => {
   jest.useRealTimers();
   jest.restoreAllMocks();
   await app?.close();
+  associationsDatabase?.sqlite.close();
   server.closeAllConnections();
   await new Promise<void>((resolve) => server.close(() => resolve()));
   await rm(root, { recursive: true, force: true });
@@ -507,6 +520,127 @@ it.each([
   expect(containers.has('holder')).toBe(scenario !== 'valid');
 });
 
+// Host routes are the cheapest boundary proving evidence is persisted before holder deletion.
+it('leaves the holder intact when recording its volume association fails', async () => {
+  volumes.set('associated', { [COMPOSE]: 'app' });
+  containers.set('holder', {
+    Id: 'holder',
+    Config: { Labels: { [COMPOSE]: 'app', [`${COMPOSE}.working_dir`]: homeFixture } },
+    State: { Running: true },
+    Mounts: [{ Type: 'volume', Name: 'associated' }],
+  });
+  associationsDatabase.sqlite.exec(`CREATE TRIGGER fail_association BEFORE INSERT ON settings
+    WHEN NEW.key = 'host.dockerVolumeAssociations' BEGIN SELECT RAISE(ABORT, 'Recording unavailable'); END;`);
+  await expect(
+    client.dockerDelete('remote', 'containers', 'holder', PROJECT, { projectRoot: homeFixture }),
+  ).rejects.toMatchObject({ status: 502 });
+  expect(containers.get('holder')?.State?.Running).toBe(true);
+  expect(
+    calls.some((call) => /\/containers\/holder(?:\/stop)?$/.test(call) && !call.startsWith('GET')),
+  ).toBe(false);
+  expect(app.get(HostDockerVolumeAssociationsStore).matches(PROJECT, 'associated', 'app')).toBe(
+    false,
+  );
+});
+
+// The HTTP mutation boundary checks saved evidence against current labels, never the removed holder.
+it.each(['delete', 'write'] as const)(
+  'checks recorded volume association for %s',
+  async (action) => {
+    for (const scenario of [
+      'valid',
+      'foreign',
+      'unlabelled',
+      'changed-compose',
+      'unrecorded',
+      'other-project',
+      'missing',
+    ]) {
+      const name = `associated-${scenario}`;
+      const store = app.get(HostDockerVolumeAssociationsStore);
+      volumes.set(name, { [COMPOSE]: 'app' });
+      if (scenario !== 'unrecorded') {
+        const owner = scenario === 'other-project' ? OTHER : PROJECT;
+        containers.set('holder', {
+          Id: 'holder',
+          Config: { Labels: { [COMPOSE]: 'app', [OWNER]: owner } },
+          Mounts: [{ Type: 'volume', Name: name }],
+        });
+        await client.dockerDelete('remote', 'containers', 'holder', owner);
+        expect(store.matches(owner, name, 'app')).toBe(true);
+      }
+      if (scenario === 'foreign') volumes.get(name)![OWNER] = OTHER;
+      if (scenario === 'unlabelled') volumes.set(name, {});
+      if (scenario === 'changed-compose') volumes.set(name, { [COMPOSE]: 'other' });
+      if (scenario === 'missing') volumes.delete(name);
+      const mutation = () =>
+        action === 'delete'
+          ? client.dockerDelete('remote', 'volumes', name, PROJECT)
+          : client.dockerWriteArchive(
+              'remote',
+              { projectId: PROJECT, image: 'image', source: name, mountType: 'volume' },
+              Readable.from('rows'),
+            );
+      const before = calls.length;
+      if (scenario === 'valid') {
+        await mutation();
+        if (action === 'write') await client.dockerDelete('remote', 'volumes', name, PROJECT);
+        expect(volumes.has(name)).toBe(false);
+        expect(store.matches(PROJECT, name, 'app')).toBe(false);
+      } else if (scenario === 'missing') {
+        await expect(mutation()).rejects.toMatchObject({ status: 404 });
+        await expect(client.dockerDelete('remote', 'volumes', name, PROJECT)).rejects.toMatchObject(
+          { status: 404 },
+        );
+        expect(store.matches(PROJECT, name, 'app')).toBe(false);
+      } else {
+        await expect(mutation()).rejects.toMatchObject({ status: 403 });
+        expect(volumes.has(name)).toBe(true);
+        expect(
+          calls
+            .slice(before)
+            .some(
+              (call) =>
+                call.startsWith('DELETE') || call.startsWith('POST') || call.startsWith('PUT'),
+            ),
+        ).toBe(false);
+      }
+    }
+  },
+);
+
+// A reopened SQLite file is the smallest reliable layer proving the evidence outlives the host store.
+it('retains verified associations across a durable-store reopen and cleans them after deletion', async () => {
+  const name = 'durable-associated';
+  volumes.set(name, { [COMPOSE]: 'app' });
+  containers.set('holder', {
+    Id: 'holder',
+    Config: { Labels: { [COMPOSE]: 'app', [OWNER]: PROJECT } },
+    Mounts: [{ Type: 'volume', Name: name }],
+  });
+  await client.dockerDelete('remote', 'containers', 'holder', PROJECT);
+  const file = join(root, 'associations.sqlite');
+  await associationsDatabase.sqlite.backup(file);
+  let database = new Database(file);
+  let store = new HostDockerVolumeAssociationsStore(drizzle(database));
+  expect(store.matches(PROJECT, name, 'app')).toBe(true);
+  await store.record(PROJECT, [{ volume: name, composeProject: 'app' }]);
+  database.close();
+  database = new Database(file);
+  try {
+    store = new HostDockerVolumeAssociationsStore(drizzle(database));
+    const restarted = new HostDockerService(app.get(DockerArchiveJournal), store);
+    jest
+      .spyOn(app.get(HostDockerService), 'remove')
+      .mockImplementation((...args) => restarted.remove(...args));
+    await client.dockerDelete('remote', 'volumes', name, PROJECT);
+    expect(volumes.has(name)).toBe(false);
+    expect(store.matches(PROJECT, name, 'app')).toBe(false);
+  } finally {
+    database.close();
+  }
+});
+
 // Real routes plus the LAN client prove optional-root validation and VM mutation authorization.
 it.each(['remove', 'stop'] as const)(
   '%s authorizes only project-root Compose labels when imported volumes lack Compose labels',
@@ -584,6 +718,106 @@ it.each(['remove', 'stop'] as const)(
     );
   },
 );
+
+// The real route and LAN client are needed to prove live engine evidence, streamed bytes and refusals.
+it.each([
+  'root-compose',
+  'imported-compose',
+  'bind-compose',
+  'foreign-volume',
+  'foreign-container',
+  'unrelated',
+  'no-live-container',
+])('checks Compose archive-read association: %s', async (scenario) => {
+  if (scenario !== 'imported-compose') volumes.delete('imported');
+  volumes.set('created-on-vm', {
+    [COMPOSE]: 'app',
+    ...(scenario === 'foreign-volume' ? { [OWNER]: OTHER } : {}),
+  });
+  if (scenario !== 'no-live-container')
+    containers.set('vm-holder', {
+      Id: 'vm-holder',
+      Config: {
+        Labels: {
+          [COMPOSE]: 'app',
+          ...(scenario !== 'imported-compose' && scenario !== 'unrelated'
+            ? { [`${COMPOSE}.working_dir`]: homeFixture }
+            : {}),
+          ...(scenario === 'foreign-container' ? { [OWNER]: OTHER } : {}),
+        },
+      },
+      Mounts:
+        scenario === 'bind-compose' || scenario === 'foreign-container'
+          ? [{ Type: 'bind', Source: join(homeFixture, 'state') }]
+          : [],
+    });
+  if (scenario === 'bind-compose')
+    delete containers.get('vm-holder')!.Config.Labels[`${COMPOSE}.working_dir`];
+  const input = {
+    projectId: PROJECT,
+    projectRoot: homeFixture,
+    image: 'image',
+    mountType: 'volume' as const,
+    source: 'created-on-vm',
+  };
+  if (['root-compose', 'imported-compose', 'bind-compose'].includes(scenario)) {
+    const read = await client.dockerReadArchive('remote', input);
+    let downloaded = '';
+    for await (const chunk of read.archive) downloaded += chunk;
+    expect(downloaded).toBe('archive-data');
+    expect(read.sha256()).toBe(createHash('sha256').update(downloaded).digest('hex'));
+    expect(calls).toContain('GET /containers/json?all=true');
+    if (scenario === 'root-compose')
+      await expect(
+        client.dockerWriteArchive('remote', input, Readable.from('write')),
+      ).rejects.toMatchObject({ status: 403 });
+  } else {
+    await expect(client.dockerReadArchive('remote', input)).rejects.toMatchObject({ status: 403 });
+    expect(calls.some((call) => call.startsWith('POST '))).toBe(false);
+  }
+  expect(volumes.get('created-on-vm')).toEqual({
+    [COMPOSE]: 'app',
+    ...(scenario === 'foreign-volume' ? { [OWNER]: OTHER } : {}),
+  });
+});
+
+// Real stop requests prove plain docker-run binds do not bypass the VM's foreign-owner boundary.
+it.each(['inside', 'shared-prefix', 'other-owner', 'absent-root'])(
+  'checks plain bind holder stop association: %s',
+  async (scenario) => {
+    containers.set('plain-run', {
+      Id: 'plain-run',
+      Config: { Labels: scenario === 'other-owner' ? { [OWNER]: OTHER } : {} },
+      State: { Running: true },
+      Mounts: [
+        {
+          Type: 'bind',
+          Source: `${homeFixture}${scenario === 'shared-prefix' ? '-other' : ''}/state`,
+        },
+      ],
+    });
+    const request = client.dockerStopContainer('remote', 'plain-run', PROJECT, {
+      ...(scenario !== 'absent-root' ? { projectRoot: homeFixture } : {}),
+    });
+    if (scenario === 'inside') await request;
+    else await expect(request).rejects.toMatchObject({ status: 403 });
+    expect(containers.get('plain-run')!.State!.Running).toBe(scenario !== 'inside');
+    expect(calls.includes('POST /containers/plain-run/stop')).toBe(scenario === 'inside');
+  },
+);
+
+it('refuses an invalid archive project root before creating a helper', async () => {
+  await expect(
+    client.dockerReadArchive('remote', {
+      projectId: PROJECT,
+      projectRoot: '/tmp/outside-vm-home',
+      image: 'image',
+      mountType: 'volume',
+      source: 'imported',
+    }),
+  ).rejects.toMatchObject({ status: 400 });
+  expect(calls.some((call) => call.startsWith('POST '))).toBe(false);
+});
 
 it('hashes the whole upload when the engine answers an archive PUT before the body ends', async () => {
   earlyArchiveAnswer = true;
@@ -795,10 +1029,10 @@ it('clears only a non-empty replaced folder, needs its image, and fails cleanly 
   expect(containers.size).toBe(0);
 });
 
-it('prepares only the folder of a single file and moves the file through that folder', async () => {
+it('prepares single-file binds for replacement and moves files through their folders', async () => {
   const folder = join(homeFixture, 'project', 'dev-https');
   const file = join(folder, 'Caddy file');
-  // A folder an earlier version made of the file is left to the restore to replace.
+  // An empty directory at a file bind path can be replaced without a clear helper.
   await mkdir(file, { recursive: true });
   await client.dockerPrepareBinds('remote', {
     projectId: PROJECT,
@@ -1114,6 +1348,8 @@ it('exposes bounded destination capacity through the LAN client', async () => {
 it('projects scan metadata and checks outside-home existence with a pinned API', async () => {
   containers.set('scanned', {
     Id: 'scanned',
+    ImageID: 'sha256:scanned',
+    Image: 'registry.example/app:latest',
     Config: { Labels: { [COMPOSE]: 'app' } },
     Mounts: [{ Type: 'volume', Name: 'data', Destination: '/data' }],
   });
@@ -1128,13 +1364,22 @@ it('projects scan metadata and checks outside-home existence with a pinned API',
   expect(result.containers).toEqual([
     {
       id: 'scanned',
+      image: 'sha256:scanned',
+      imageReference: 'registry.example/app:latest',
       name: 'scanned',
       labels: { [COMPOSE]: 'app' },
       mounts: [{ type: 'volume', name: 'data', destination: '/data' }],
     },
   ]);
   for (const container of result.containers) {
-    expect(Object.keys(container).sort()).toEqual(['id', 'labels', 'mounts', 'name']);
+    expect(Object.keys(container).sort()).toEqual([
+      'id',
+      'image',
+      'imageReference',
+      'labels',
+      'mounts',
+      'name',
+    ]);
     expect(container.name).not.toMatch(/^\//);
   }
   for (const volume of result.volumes)

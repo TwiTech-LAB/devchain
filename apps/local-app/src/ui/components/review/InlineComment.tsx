@@ -474,7 +474,7 @@ export function NewCommentForm({
     enabled: !!projectId,
   });
 
-  const agents = agentsData?.items ?? [];
+  const agents = useMemo(() => agentsData?.items ?? [], [agentsData]);
 
   // @ mention autocomplete
   const {

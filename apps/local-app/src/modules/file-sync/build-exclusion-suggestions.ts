@@ -109,7 +109,7 @@ function buildPerPathSuggestions(input: BuildExclusionSuggestionsInput): Exclusi
           }),
     ),
   ].sort();
-  // Requested ownership repairs remain visible alongside an enclosing exclusion.
+  // Owner commands remain visible alongside an enclosing exclusion.
   const topmost = [
     ...new Set([
       ...paths.filter((path) => !paths.some((parent) => parent !== path && within(path, parent))),

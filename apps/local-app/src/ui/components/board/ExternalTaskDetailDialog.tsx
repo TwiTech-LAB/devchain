@@ -150,10 +150,11 @@ export function ExternalTaskDetailDialog({
   }, [onImportFocusTargetReady]);
   const [status, setStatus] = useState('');
 
+  const { reset: resetTaskMutation } = controller.mutation;
   useEffect(() => {
     setStatus('');
-    controller.mutation.reset();
-  }, [taskId]);
+    resetTaskMutation();
+  }, [taskId, resetTaskMutation]);
 
   useEffect(() => {
     setStatus('');

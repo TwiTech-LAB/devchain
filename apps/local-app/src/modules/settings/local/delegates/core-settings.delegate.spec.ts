@@ -1,6 +1,7 @@
 import Database from 'better-sqlite3';
 import { EventEmitter2 } from 'eventemitter2';
 import { CoreSettingsDelegate } from './core-settings.delegate';
+import { TransactionRunner } from '../../../storage/db/transaction-runner';
 import {
   DEFAULT_TERMINAL_SCROLLBACK,
   MIN_TERMINAL_SCROLLBACK,
@@ -366,6 +367,27 @@ describe('CoreSettingsDelegate', () => {
 
       const settings = delegate.getSettings();
       expect(settings.dbPath).toBeUndefined();
+    });
+
+    it('keeps a save made while another owner holds an async transaction that rolls back', async () => {
+      let started!: () => void;
+      const outerStarted = new Promise<void>((resolve) => (started = resolve));
+      let release!: () => void;
+      const outerReleased = new Promise<void>((resolve) => (release = resolve));
+      const outer = new TransactionRunner(db).runImmediateAsync(async () => {
+        upsert(db, 'terminal.inputMode', 'tty');
+        started();
+        await outerReleased;
+        throw new Error('outer rollback');
+      });
+      await outerStarted;
+
+      const save = delegate.updateSettings({ dbPath: '/kept/path' });
+      release();
+
+      await expect(outer).rejects.toThrow('outer rollback');
+      await save;
+      expect(delegate.getSettings().dbPath).toBe('/kept/path');
     });
   });
 

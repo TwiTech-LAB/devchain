@@ -1,3 +1,4 @@
+import { fetchJsonWithMessageOrThrow } from './http-json';
 import type { FetchFn } from '@/ui/lib/api-transport';
 
 export type ProviderPluginPolicySource = 'project' | 'default';
@@ -35,33 +36,6 @@ interface ProviderPluginPolicyResponse {
   items: ProviderPluginPolicy[];
 }
 
-async function readApiErrorMessage(response: Response, fallback: string): Promise<string> {
-  const payload = await response.json().catch(() => null);
-  if (
-    payload &&
-    typeof payload === 'object' &&
-    'message' in payload &&
-    typeof payload.message === 'string' &&
-    payload.message.trim().length > 0
-  ) {
-    return payload.message;
-  }
-  return fallback;
-}
-
-async function fetchJsonOrThrow<T>(
-  fetchFn: FetchFn,
-  url: string,
-  options: RequestInit,
-  fallbackError: string,
-): Promise<T> {
-  const response = await fetchFn(url, options);
-  if (!response.ok) {
-    throw new Error(await readApiErrorMessage(response, fallbackError));
-  }
-  return response.json() as Promise<T>;
-}
-
 function normalizeCatalogResponse(payload: unknown): ProviderPluginCatalogResponse {
   const items = Array.isArray(payload)
     ? payload
@@ -85,7 +59,7 @@ export async function fetchProviderPlugins(
   fetchFn: FetchFn,
   options: { signal?: AbortSignal } = {},
 ): Promise<ProviderPlugin[]> {
-  const payload = await fetchJsonOrThrow<unknown>(
+  const payload = await fetchJsonWithMessageOrThrow<unknown>(
     fetchFn,
     '/api/provider-plugins',
     { signal: options.signal },
@@ -95,7 +69,7 @@ export async function fetchProviderPlugins(
 }
 
 export async function refreshProviderPlugins(fetchFn: FetchFn): Promise<ProviderPlugin[]> {
-  const payload = await fetchJsonOrThrow<unknown>(
+  const payload = await fetchJsonWithMessageOrThrow<unknown>(
     fetchFn,
     '/api/provider-plugins/refresh',
     { method: 'POST' },
@@ -109,7 +83,7 @@ export async function installProviderPlugin(
   providerId: string,
   pluginId: string,
 ): Promise<void> {
-  await fetchJsonOrThrow<unknown>(
+  await fetchJsonWithMessageOrThrow<unknown>(
     fetchFn,
     '/api/provider-plugins/install',
     {
@@ -127,7 +101,7 @@ export async function fetchProviderPluginPolicies(
   options: { signal?: AbortSignal } = {},
 ): Promise<ProviderPluginPolicy[]> {
   const params = new URLSearchParams({ projectId });
-  const payload = await fetchJsonOrThrow<ProviderPluginPolicyResponse>(
+  const payload = await fetchJsonWithMessageOrThrow<ProviderPluginPolicyResponse>(
     fetchFn,
     `/api/provider-plugins/policy?${params.toString()}`,
     { signal: options.signal },
@@ -142,7 +116,7 @@ export async function setProviderPluginDefault(
   pluginId: string,
   enabled: boolean,
 ): Promise<ProviderPluginPolicy> {
-  return fetchJsonOrThrow<ProviderPluginPolicy>(
+  return fetchJsonWithMessageOrThrow<ProviderPluginPolicy>(
     fetchFn,
     '/api/provider-plugins/policy/default',
     {
@@ -160,7 +134,7 @@ export async function resetProviderPluginDefault(
   pluginId: string,
 ): Promise<void> {
   const params = new URLSearchParams({ providerId, pluginId });
-  await fetchJsonOrThrow<unknown>(
+  await fetchJsonWithMessageOrThrow<unknown>(
     fetchFn,
     `/api/provider-plugins/policy/default?${params.toString()}`,
     { method: 'DELETE' },
@@ -175,7 +149,7 @@ export async function setProjectProviderPluginPolicy(
   pluginId: string,
   enabled: boolean,
 ): Promise<ProviderPluginPolicy> {
-  return fetchJsonOrThrow<ProviderPluginPolicy>(
+  return fetchJsonWithMessageOrThrow<ProviderPluginPolicy>(
     fetchFn,
     '/api/provider-plugins/policy/project',
     {
@@ -194,7 +168,7 @@ export async function resetProjectProviderPluginPolicy(
   pluginId: string,
 ): Promise<void> {
   const params = new URLSearchParams({ projectId, providerId, pluginId });
-  await fetchJsonOrThrow<unknown>(
+  await fetchJsonWithMessageOrThrow<unknown>(
     fetchFn,
     `/api/provider-plugins/policy/project?${params.toString()}`,
     { method: 'DELETE' },

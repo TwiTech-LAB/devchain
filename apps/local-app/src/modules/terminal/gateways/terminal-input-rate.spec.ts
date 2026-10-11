@@ -301,7 +301,11 @@ describe('TerminalGateway input-rate telemetry', () => {
     internals.inputRateTracker.set('client-b:session-live', {});
     internals.clientSessions.set('client-b', {});
 
-    gateway.handleSessionStopped({ sessionId: 'session-ended' });
+    gateway.handleSessionStopped({
+      sessionId: 'session-ended',
+      source: 'web-api',
+      reason: 'user-requested',
+    });
     expect([...internals.inputRateTracker.keys()]).toEqual(['client-b:session-live']);
 
     gateway.onModuleDestroy();

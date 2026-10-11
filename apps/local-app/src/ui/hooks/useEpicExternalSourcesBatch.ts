@@ -36,7 +36,7 @@ export function useEpicExternalSourcesBatch(
         signal,
       });
       if (!response.ok) throw new Error('External task sources could not be loaded.');
-      return response.json();
+      return response.json() as Promise<{ items: EpicExternalSourceBatchItem[] }>;
     },
     enabled: enabled && sortedIds.length > 0,
   });

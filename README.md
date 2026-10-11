@@ -92,7 +92,16 @@ The Local App serves the web UI and keeps all state in a local SQLite database. 
 
 ## Mobile app
 
-Follow and steer your agent teams from your phone. Get it on the [App Store](https://apps.apple.com/app/devchain/id6778791584) for iPhone or on [Google Play](https://play.google.com/store/apps/details?id=com.twitech.devchain.mobile) for Android.
+<p align="center">
+  <img src=".github/assets/mobile-app-phones.png" alt="The DevChain mobile app: the Board, Agents and chat, and Notifications screens" width="100%">
+</p>
+
+<p align="center">
+  <a href="https://apps.apple.com/app/devchain/id6778791584"><img src=".github/assets/badge-app-store.png" alt="Download on the App Store" height="72"></a>
+  <a href="https://play.google.com/store/apps/details?id=com.twitech.devchain.mobile"><img src=".github/assets/badge-google-play.png" alt="Get it on Google Play" height="72"></a>
+</p>
+
+Follow and steer your agent teams from your phone, on iPhone and Android.
 
 Chat with agents, answer their questions as they ask, reassign epics, comment on the board, watch a live terminal, and get a push notification when a session stops or needs you. Review and merge stay on the web. Everything between your PC and your phone is end-to-end encrypted.
 

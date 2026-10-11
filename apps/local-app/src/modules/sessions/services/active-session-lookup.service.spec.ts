@@ -1,3 +1,4 @@
+import { SessionRowStore } from '../../storage/sessions/session-row.store';
 import { Test, TestingModule } from '@nestjs/testing';
 import { ActiveSessionLookup } from './active-session-lookup.service';
 import { DB_CONNECTION } from '../../storage/db/db.provider';
@@ -39,7 +40,7 @@ describe('ActiveSessionLookup', () => {
     };
 
     const module: TestingModule = await Test.createTestingModule({
-      providers: [ActiveSessionLookup, { provide: DB_CONNECTION, useValue: db }],
+      providers: [SessionRowStore, ActiveSessionLookup, { provide: DB_CONNECTION, useValue: db }],
     }).compile();
 
     service = module.get(ActiveSessionLookup);

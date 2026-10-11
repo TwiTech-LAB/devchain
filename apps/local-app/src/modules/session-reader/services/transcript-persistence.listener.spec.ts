@@ -1,3 +1,4 @@
+import { SessionRowStore } from '../../storage/sessions/session-row.store';
 import { Logger } from '@nestjs/common';
 import { BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
 import * as fsPromises from 'node:fs/promises';
@@ -54,75 +55,26 @@ async function advanceAllDiscoveryRetries(): Promise<void> {
 // ---------------------------------------------------------------------------
 
 function createMockDb() {
-  const mockGetTranscriptPath = jest.fn();
-  const mockGetPersistRow = jest.fn();
   const mockGetStartedAt = jest.fn();
   const mockAllAssignedTranscriptPaths = jest.fn().mockReturnValue([]);
-  // DB-backed exclusivity probe (excludeAssignedDbCandidates): rows already
-  // owning a (transcriptPath, providerSessionId) pair. Distinct from the
-  // file-backed exclusion query above — matched by the `IS NOT NULL` clause.
   const mockAllAssignedDbCandidates = jest.fn().mockReturnValue([]);
-  // DB-backed uniqueness guard (persistDiscoveredPath): a conflicting session
-  // id when the same (providerSessionId, transcriptPath) is already bound.
-  const mockGetDbUniquenessConflict = jest.fn().mockReturnValue(undefined);
-  const mockRun = jest.fn().mockReturnValue({ changes: 1 });
-  const mockBeginRun = jest.fn().mockReturnValue({ changes: 0 });
-  const mockCommitRun = jest.fn().mockReturnValue({ changes: 0 });
-  const mockRollbackRun = jest.fn().mockReturnValue({ changes: 0 });
   const mockPrepare = jest.fn((sql: string) => {
-    if (sql === 'BEGIN') {
-      return { run: mockBeginRun };
-    }
-    if (sql === 'COMMIT') {
-      return { run: mockCommitRun };
-    }
-    if (sql === 'ROLLBACK') {
-      return { run: mockRollbackRun };
-    }
-    if (sql.includes('SELECT transcript_path, provider_session_id, provider_name_at_launch')) {
-      return { get: mockGetPersistRow };
-    }
-    if (sql.includes('SELECT id, transcript_path FROM sessions')) {
+    if (sql.includes('SELECT id, transcript_path FROM sessions'))
       return { all: mockAllAssignedTranscriptPaths };
-    }
-    // DB-backed exclusivity probe — must precede the generic two-column gate
-    // query (both start with `SELECT transcript_path, provider_session_id`).
-    if (sql.includes('provider_session_id IS NOT NULL')) {
+    if (sql.includes('provider_session_id IS NOT NULL'))
       return { all: mockAllAssignedDbCandidates };
-    }
-    if (sql.includes('SELECT transcript_path, provider_session_id')) {
-      return { get: mockGetTranscriptPath };
-    }
-    if (sql.includes('SELECT started_at')) {
-      return { get: mockGetStartedAt };
-    }
-    if (sql.includes('UPDATE sessions')) {
-      return { run: mockRun };
-    }
-    // DB-backed uniqueness guard on (providerSessionId, transcriptPath).
-    if (sql.includes('SELECT id FROM sessions') && sql.includes('provider_session_id = ?')) {
-      return { get: mockGetDbUniquenessConflict };
-    }
-    return { get: jest.fn(), run: jest.fn() };
+    if (sql.includes('SELECT started_at')) return { get: mockGetStartedAt };
+    throw new Error('Unexpected listener SQL: ' + sql);
   });
-
   const mockDb = {
     session: { client: { prepare: mockPrepare } },
   } as unknown as BetterSQLite3Database;
-
   return {
     mockDb,
     mockPrepare,
-    mockRun,
-    mockBeginRun,
-    mockCommitRun,
-    mockRollbackRun,
-    mockGetTranscriptPath,
-    mockGetPersistRow,
     mockGetStartedAt,
     mockAllAssignedTranscriptPaths,
     mockAllAssignedDbCandidates,
-    mockGetDbUniquenessConflict,
   };
 }
 
@@ -269,14 +221,19 @@ describe('TranscriptPersistenceListener', () => {
   let listener: TranscriptPersistenceListener;
   let mockValidator: jest.Mocked<Pick<TranscriptPathValidator, 'validateShape'>>;
   let mockEvents: jest.Mocked<Pick<EventsService, 'publish'>>;
-  let mockRun: jest.Mock;
-  let mockGetTranscriptPath: jest.Mock;
-  let mockGetPersistRow: jest.Mock;
   let mockGetStartedAt: jest.Mock;
   let mockAllAssignedTranscriptPaths: jest.Mock;
   let mockAllAssignedDbCandidates: jest.Mock;
-  let mockGetDbUniquenessConflict: jest.Mock;
   let mockPrepare: jest.Mock;
+  let mockStore: jest.Mocked<
+    Pick<
+      SessionRowStore,
+      | 'getTranscriptMetadata'
+      | 'bindTranscriptFromHook'
+      | 'bindDiscoveredTranscript'
+      | 'backfillTranscriptProviderSessionId'
+    >
+  >;
   let mockStorage: ReturnType<typeof createMockStorage>;
   let mockAdapterFactory: ReturnType<typeof createMockAdapterFactory>;
 
@@ -304,15 +261,21 @@ describe('TranscriptPersistenceListener', () => {
     jest.resetAllMocks();
     mockReadFileHead.mockResolvedValue('');
 
+    mockStore = {
+      getTranscriptMetadata: jest
+        .fn()
+        .mockReturnValue({ transcript_path: null, provider_session_id: null }),
+      bindTranscriptFromHook: jest.fn().mockReturnValue(1),
+      bindDiscoveredTranscript: jest.fn().mockResolvedValue({ kind: 'bound' }),
+      backfillTranscriptProviderSessionId: jest
+        .fn()
+        .mockResolvedValue({ kind: 'backfilledId', sessionId: sessionStartedPayload.sessionId }),
+    };
     const db = createMockDb();
     mockPrepare = db.mockPrepare;
-    mockRun = db.mockRun;
-    mockGetTranscriptPath = db.mockGetTranscriptPath;
-    mockGetPersistRow = db.mockGetPersistRow;
     mockGetStartedAt = db.mockGetStartedAt;
     mockAllAssignedTranscriptPaths = db.mockAllAssignedTranscriptPaths;
     mockAllAssignedDbCandidates = db.mockAllAssignedDbCandidates;
-    mockGetDbUniquenessConflict = db.mockGetDbUniquenessConflict;
     mockRealpath.mockImplementation(async (filePath) => filePath.toString());
 
     mockValidator = {
@@ -323,14 +286,9 @@ describe('TranscriptPersistenceListener', () => {
       publish: jest.fn().mockResolvedValue('event-id'),
     };
 
-    mockGetTranscriptPath.mockReturnValue({
+    mockStore.getTranscriptMetadata.mockReturnValue({
       transcript_path: null,
       provider_session_id: null,
-    });
-    mockGetPersistRow.mockReturnValue({
-      transcript_path: null,
-      provider_session_id: null,
-      provider_name_at_launch: 'claude',
     });
 
     mockStorage = createMockStorage();
@@ -390,6 +348,7 @@ describe('TranscriptPersistenceListener', () => {
       mockAdapterFactory as unknown as SessionReaderAdapterFactory,
       mockStorage as unknown as StorageService,
       mockProviderAdapterFactory as unknown as never,
+      mockStore as unknown as SessionRowStore,
     );
   });
 
@@ -409,13 +368,13 @@ describe('TranscriptPersistenceListener', () => {
         hookPayload.transcriptPath,
         'claude',
       );
-      expect(mockPrepare).toHaveBeenCalledWith(expect.stringContaining('UPDATE sessions'));
-      expect(mockRun).toHaveBeenCalledWith(
-        '/normalized/path/session.jsonl',
-        'claude-sess-123',
-        expect.any(String), // updated_at
-        '33333333-3333-3333-3333-333333333333',
-      );
+
+      expect(mockStore.bindTranscriptFromHook).toHaveBeenCalledWith({
+        transcriptPath: '/normalized/path/session.jsonl',
+        providerSessionId: 'claude-sess-123',
+        updatedAt: expect.any(String),
+        sessionId: '33333333-3333-3333-3333-333333333333',
+      });
       expect(mockEvents.publish).toHaveBeenCalledWith('session.transcript.discovered', {
         sessionId: '33333333-3333-3333-3333-333333333333',
         agentId: '22222222-2222-2222-2222-222222222222',
@@ -449,12 +408,12 @@ describe('TranscriptPersistenceListener', () => {
     });
 
     it('should handle session not found gracefully (0 changes)', async () => {
-      mockRun.mockReturnValue({ changes: 0 });
+      mockStore.bindTranscriptFromHook.mockReturnValue(0);
 
       await listener.handleHookSessionStarted(hookPayload);
 
-      expect(mockPrepare).toHaveBeenCalled();
-      expect(mockRun).toHaveBeenCalled();
+      expect(mockStore.bindTranscriptFromHook).toHaveBeenCalled();
+      expect(mockStore.bindTranscriptFromHook).toHaveBeenCalled();
       expect(mockEvents.publish).not.toHaveBeenCalled();
     });
 
@@ -463,13 +422,13 @@ describe('TranscriptPersistenceListener', () => {
 
       await listener.handleHookSessionStarted(payload);
 
-      expect(mockPrepare).toHaveBeenCalled();
-      expect(mockRun).toHaveBeenCalled();
+      expect(mockStore.bindTranscriptFromHook).toHaveBeenCalled();
+      expect(mockStore.bindTranscriptFromHook).toHaveBeenCalled();
       expect(mockEvents.publish).not.toHaveBeenCalled();
     });
 
     it('should not propagate errors from DB update', async () => {
-      mockRun.mockImplementation(() => {
+      mockStore.bindTranscriptFromHook.mockImplementation(() => {
         throw new Error('SQLITE_BUSY');
       });
 
@@ -537,12 +496,12 @@ describe('TranscriptPersistenceListener', () => {
       },
     ])('never rebinds Copilot for $name', async ({ boundId, known, transcriptPath, warning }) => {
       const warnSpy = jest.spyOn(Logger.prototype, 'warn').mockImplementation();
-      mockGetTranscriptPath.mockReturnValue(
+      mockStore.getTranscriptMetadata.mockReturnValue(
         known ? { transcript_path: COPILOT_TRANSCRIPT, provider_session_id: boundId } : undefined,
       );
       try {
         await listener.handleHookSessionStarted({ ...copilotSessionStart, transcriptPath });
-        expect(mockRun).not.toHaveBeenCalled();
+        expect(mockStore.bindTranscriptFromHook).not.toHaveBeenCalled();
         expect(mockValidator.validateShape).not.toHaveBeenCalled();
         expect(mockEvents.publish).not.toHaveBeenCalled();
         if (warning) {
@@ -589,12 +548,12 @@ describe('TranscriptPersistenceListener', () => {
       await listener.handleHookSessionStarted(acmePayload);
 
       expect(mockValidator.validateShape).toHaveBeenCalledWith(acmePayload.transcriptPath, 'acme');
-      expect(mockRun).toHaveBeenCalledWith(
-        '/normalized/path/session.jsonl',
-        'acme-sess-1',
-        expect.any(String),
-        '33333333-3333-3333-3333-333333333333',
-      );
+      expect(mockStore.bindTranscriptFromHook).toHaveBeenCalledWith({
+        transcriptPath: '/normalized/path/session.jsonl',
+        providerSessionId: 'acme-sess-1',
+        updatedAt: expect.any(String),
+        sessionId: '33333333-3333-3333-3333-333333333333',
+      });
       expect(mockEvents.publish).toHaveBeenCalledWith(
         'session.transcript.discovered',
         expect.objectContaining({
@@ -629,60 +588,21 @@ describe('TranscriptPersistenceListener', () => {
       );
     }
 
-    it('returns persisted when Case A writes transcript path and provider id', async () => {
-      mockGetPersistRow.mockReturnValue({
-        transcript_path: null,
-        provider_session_id: null,
-        provider_name_at_launch: 'codex',
+    it.each([
+      { name: 'bind with provider id', providerSessionId: 'codex-session-1', kind: 'persisted' },
+      { name: 'path-only bind', providerSessionId: undefined, kind: 'persistedPathOnly' },
+    ])('publishes discovered metadata for $name', async ({ providerSessionId, kind }) => {
+      expect(await persistDiscoveredPath({ providerSessionId })).toEqual({
+        kind,
+        sessionId: sessionStartedPayload.sessionId,
       });
-
-      const outcome = await persistDiscoveredPath({ providerSessionId: 'codex-session-1' });
-
-      expect(outcome).toEqual({ kind: 'persisted', sessionId: sessionStartedPayload.sessionId });
-      expect(mockRun).toHaveBeenCalledWith(
-        '/normalized/path/session.jsonl',
-        'codex-session-1',
-        expect.any(String),
-        sessionStartedPayload.sessionId,
-      );
       expect(mockEvents.publish).toHaveBeenCalledWith('session.transcript.discovered', {
         sessionId: sessionStartedPayload.sessionId,
         agentId: sessionStartedPayload.agentId,
         projectId: 'project-1',
         transcriptPath: '/normalized/path/session.jsonl',
         providerName: 'codex',
-        // Regression: the discovered event MUST carry providerSessionId on the
-        // persisted-both success path, or DB-backed watchers skip startup
-        // (transcript-watcher.service.ts: DB sources require providerSessionId).
-        providerSessionId: 'codex-session-1',
-      });
-    });
-
-    it('returns persistedPathOnly when Case A writes a Codex path before the id is available', async () => {
-      mockGetPersistRow.mockReturnValue({
-        transcript_path: null,
-        provider_session_id: null,
-        provider_name_at_launch: 'codex',
-      });
-
-      const outcome = await persistDiscoveredPath({});
-
-      expect(outcome).toEqual({
-        kind: 'persistedPathOnly',
-        sessionId: sessionStartedPayload.sessionId,
-      });
-      expect(mockRun).toHaveBeenCalledWith(
-        '/normalized/path/session.jsonl',
-        null,
-        expect.any(String),
-        sessionStartedPayload.sessionId,
-      );
-      expect(mockEvents.publish).toHaveBeenCalledWith('session.transcript.discovered', {
-        sessionId: sessionStartedPayload.sessionId,
-        agentId: sessionStartedPayload.agentId,
-        projectId: 'project-1',
-        transcriptPath: '/normalized/path/session.jsonl',
-        providerName: 'codex',
+        providerSessionId,
       });
       expect(mockEvents.publish).not.toHaveBeenCalledWith(
         'session.providerSessionId.discovered',
@@ -690,24 +610,12 @@ describe('TranscriptPersistenceListener', () => {
       );
     });
 
-    it('returns backfilledId and emits providerSessionId.discovered for Case B id repair', async () => {
-      mockGetPersistRow.mockReturnValue({
-        transcript_path: '/normalized/path/session.jsonl',
-        provider_session_id: null,
-        provider_name_at_launch: 'codex',
-      });
-
-      const outcome = await persistDiscoveredPath({ providerSessionId: 'codex-session-1' });
-
-      expect(outcome).toEqual({
+    it('publishes the provider-id repair after an existing-path bind outcome', async () => {
+      mockStore.bindDiscoveredTranscript.mockResolvedValue({ kind: 'needsBackfill' });
+      expect(await persistDiscoveredPath({ providerSessionId: 'codex-session-1' })).toEqual({
         kind: 'backfilledId',
         sessionId: sessionStartedPayload.sessionId,
       });
-      expect(mockRun).toHaveBeenCalledWith(
-        'codex-session-1',
-        expect.any(String),
-        sessionStartedPayload.sessionId,
-      );
       expect(mockEvents.publish).toHaveBeenCalledWith('session.providerSessionId.discovered', {
         sessionId: sessionStartedPayload.sessionId,
         providerSessionId: 'codex-session-1',
@@ -715,98 +623,50 @@ describe('TranscriptPersistenceListener', () => {
       });
     });
 
-    it('supports silent Case B id repair without emitting providerSessionId.discovered', async () => {
-      mockGetPersistRow.mockReturnValue({
-        transcript_path: '/normalized/path/session.jsonl',
-        provider_session_id: null,
-        provider_name_at_launch: 'codex',
-      });
-
-      const outcome = await listener.backfillProviderSessionIdForTranscriptPath({
-        sessionId: sessionStartedPayload.sessionId,
-        providerName: 'codex',
-        transcriptPath: '/normalized/path/session.jsonl',
-        providerSessionId: 'codex-session-1',
-        emitEvent: false,
-      });
-
-      expect(outcome).toEqual({
-        kind: 'backfilledId',
-        sessionId: sessionStartedPayload.sessionId,
-      });
-      expect(mockRun).toHaveBeenCalledWith(
-        'codex-session-1',
-        expect.any(String),
-        sessionStartedPayload.sessionId,
-      );
+    it('supports silent repair without publishing the provider-id event', async () => {
+      expect(
+        await listener.backfillProviderSessionIdForTranscriptPath({
+          sessionId: sessionStartedPayload.sessionId,
+          providerName: 'codex',
+          transcriptPath: '/normalized/path/session.jsonl',
+          providerSessionId: 'codex-session-1',
+          emitEvent: false,
+        }),
+      ).toEqual({ kind: 'backfilledId', sessionId: sessionStartedPayload.sessionId });
       expect(mockEvents.publish).not.toHaveBeenCalled();
     });
 
     it.each([
-      {
-        name: 'returns alreadyComplete when the matching row already has both fields',
-        row: {
-          transcript_path: '/normalized/path/session.jsonl',
-          provider_session_id: 'codex-session-1',
-          provider_name_at_launch: 'codex',
-        },
-        args: { providerSessionId: 'codex-session-1' },
-        provider: 'codex',
-        expected: {
-          kind: 'alreadyComplete',
+      { provider: 'codex', expected: 'persistedPathOnly' },
+      { provider: 'claude', expected: 'skipped' },
+    ])(
+      'keeps the listener provider policy when $provider has no id',
+      async ({ provider, expected }) => {
+        mockStore.backfillTranscriptProviderSessionId.mockResolvedValue({ kind: 'noIdAvailable' });
+        const outcome = await listener.backfillProviderSessionIdForTranscriptPath({
           sessionId: sessionStartedPayload.sessionId,
-        },
+          providerName: provider,
+          transcriptPath: '/normalized/path/session.jsonl',
+          providerSessionId: null,
+        });
+        expect(outcome).toEqual(
+          expected === 'skipped'
+            ? {
+                kind: expected,
+                sessionId: sessionStartedPayload.sessionId,
+                reason: 'noIdAvailable',
+              }
+            : { kind: expected, sessionId: sessionStartedPayload.sessionId },
+        );
+        expect(mockEvents.publish).not.toHaveBeenCalled();
       },
-      {
-        name: 'returns pathMismatch when the existing path differs after normalization',
-        row: {
-          transcript_path: '/different/path/session.jsonl',
-          provider_session_id: null,
-          provider_name_at_launch: 'codex',
-        },
-        args: { providerSessionId: 'codex-session-1' },
-        provider: 'codex',
-        expected: {
-          kind: 'pathMismatch',
-          sessionId: sessionStartedPayload.sessionId,
-          existing: '/different/path/session.jsonl',
-          incoming: '/normalized/path/session.jsonl',
-        },
-      },
-      {
-        name: 'returns skipped providerMismatch instead of cross-provider id backfill',
-        row: {
-          transcript_path: '/normalized/path/session.jsonl',
-          provider_session_id: null,
-          provider_name_at_launch: 'claude',
-        },
-        args: { providerSessionId: 'codex-session-1' },
-        provider: 'codex',
-        expected: {
-          kind: 'skipped',
-          sessionId: sessionStartedPayload.sessionId,
-          reason: 'providerMismatch',
-        },
-      },
-      {
-        name: 'documents Claude Case B as skipped because Claude ids come from hook payloads',
-        row: {
-          transcript_path: '/normalized/path/session.jsonl',
-          provider_session_id: null,
-          provider_name_at_launch: 'claude',
-        },
-        args: {},
-        provider: 'claude',
-        expected: {
-          kind: 'skipped',
-          sessionId: sessionStartedPayload.sessionId,
-          reason: 'noIdAvailable',
-        },
-      },
-    ])('$name', async ({ row, args, provider, expected }) => {
-      mockGetPersistRow.mockReturnValue(row);
-      expect(await persistDiscoveredPath(args, provider)).toEqual(expected);
-      expect(mockRun).not.toHaveBeenCalled();
+    );
+
+    it('does not publish success after a rejected persistence operation', async () => {
+      mockStore.bindDiscoveredTranscript.mockRejectedValue(new Error('transaction failed'));
+      await expect(persistDiscoveredPath({ providerSessionId: 'codex-session-1' })).rejects.toThrow(
+        'transaction failed',
+      );
       expect(mockEvents.publish).not.toHaveBeenCalled();
     });
   });
@@ -822,7 +682,7 @@ describe('TranscriptPersistenceListener', () => {
       mockAdapter = createMockAdapter();
       mockAdapterFactory.getAdapter.mockReturnValue(mockAdapter as unknown as SessionReaderAdapter);
       // By default: session has no transcript_path yet
-      mockGetTranscriptPath.mockReturnValue({
+      mockStore.getTranscriptMetadata.mockReturnValue({
         transcript_path: null,
         provider_session_id: null,
       });
@@ -855,14 +715,12 @@ describe('TranscriptPersistenceListener', () => {
         'claude',
       );
 
-      expect(mockPrepare).toHaveBeenCalledWith('BEGIN');
-      expect(mockPrepare).toHaveBeenCalledWith(expect.stringContaining('provider_name_at_launch'));
-      expect(mockRun).toHaveBeenCalledWith(
-        '/normalized/path/session.jsonl',
-        null,
-        expect.any(String),
-        sessionStartedPayload.sessionId,
-      );
+      expect(mockStore.bindDiscoveredTranscript).toHaveBeenCalledWith({
+        transcriptPath: '/normalized/path/session.jsonl',
+        providerSessionId: null,
+        updatedAt: expect.any(String),
+        sessionId: sessionStartedPayload.sessionId,
+      });
 
       // Should emit discovery event
       expect(mockEvents.publish).toHaveBeenCalledWith('session.transcript.discovered', {
@@ -1028,11 +886,7 @@ describe('TranscriptPersistenceListener', () => {
           binPath: null,
         }),
       );
-      mockGetPersistRow.mockReturnValue({
-        transcript_path: null,
-        provider_session_id: null,
-        provider_name_at_launch: 'codex',
-      });
+
       mockGetStartedAt.mockReturnValue({ started_at: '2026-02-25T10:00:05.000Z' });
       const codexFile = makeFileInfo({
         filePath: '/home/user/.codex/sessions/2026/02/25/rollout-metadata.jsonl',
@@ -1051,12 +905,12 @@ describe('TranscriptPersistenceListener', () => {
       await promise;
 
       expect(mockValidator.validateShape).toHaveBeenCalledWith(codexFile.filePath, 'codex');
-      expect(mockRun).toHaveBeenCalledWith(
-        '/normalized/path/session.jsonl',
-        'codex-session-from-meta',
-        expect.any(String),
-        sessionStartedPayload.sessionId,
-      );
+      expect(mockStore.bindDiscoveredTranscript).toHaveBeenCalledWith({
+        transcriptPath: '/normalized/path/session.jsonl',
+        providerSessionId: 'codex-session-from-meta',
+        updatedAt: expect.any(String),
+        sessionId: sessionStartedPayload.sessionId,
+      });
       expect(mockReadFileHead).toHaveBeenCalledTimes(1);
     });
 
@@ -1458,7 +1312,7 @@ describe('TranscriptPersistenceListener', () => {
       });
       mockAdapter.discoverSessionFile.mockResolvedValue([codexFile]);
       mockReadFileHead.mockResolvedValue(`{"timestamp":"2026-02-25T10:00:30.000Z"}`);
-      mockGetTranscriptPath
+      mockStore.getTranscriptMetadata
         .mockReturnValueOnce({ transcript_path: null, provider_session_id: null })
         .mockReturnValueOnce({ transcript_path: null, provider_session_id: null })
         .mockReturnValueOnce({ transcript_path: null, provider_session_id: null });
@@ -1535,10 +1389,10 @@ describe('TranscriptPersistenceListener', () => {
           ? `{"timestamp":"2026-02-25T09:59:30.000Z"}`
           : `{"timestamp":"2026-02-25T10:00:30.000Z"}`,
       );
-      mockGetTranscriptPath
-        .mockReturnValueOnce({ transcript_path: null })
-        .mockReturnValueOnce({ transcript_path: null })
-        .mockReturnValueOnce({ transcript_path: null });
+      mockStore.getTranscriptMetadata
+        .mockReturnValueOnce({ transcript_path: null, provider_session_id: null })
+        .mockReturnValueOnce({ transcript_path: null, provider_session_id: null })
+        .mockReturnValueOnce({ transcript_path: null, provider_session_id: null });
       mockGetStartedAt.mockReturnValue({ started_at: '2026-02-25T10:00:00.000Z' });
 
       const promise = listener.handleSessionStarted(sessionStartedPayload);
@@ -1579,7 +1433,10 @@ describe('TranscriptPersistenceListener', () => {
       );
       mockAdapter.discoverSessionFile.mockResolvedValue(files);
       mockReadFileHead.mockResolvedValue(head);
-      mockGetTranscriptPath.mockReturnValue({ transcript_path: null });
+      mockStore.getTranscriptMetadata.mockReturnValue({
+        transcript_path: null,
+        provider_session_id: null,
+      });
       mockGetStartedAt.mockReturnValue({ started_at: '2026-02-25T10:00:00.000Z' });
       const promise = listener.handleSessionStarted(sessionStartedPayload);
       await jest.advanceTimersByTimeAsync(0);
@@ -1706,28 +1563,15 @@ describe('TranscriptPersistenceListener', () => {
         .mockResolvedValueOnce([firstFile])
         .mockResolvedValueOnce([secondFile]);
       mockReadFileHead.mockResolvedValue(`session=${sessionStartedPayload.sessionId}`);
-      mockGetTranscriptPath
+      mockStore.getTranscriptMetadata
         .mockReturnValueOnce({ transcript_path: null, provider_session_id: null })
         .mockReturnValueOnce({
           transcript_path: '/normalized/path/session.jsonl',
           provider_session_id: null,
         });
-      mockGetPersistRow
-        .mockReturnValueOnce({
-          transcript_path: null,
-          provider_session_id: null,
-          provider_name_at_launch: 'codex',
-        })
-        .mockReturnValueOnce({
-          transcript_path: '/normalized/path/session.jsonl',
-          provider_session_id: null,
-          provider_name_at_launch: 'codex',
-        })
-        .mockReturnValueOnce({
-          transcript_path: '/normalized/path/session.jsonl',
-          provider_session_id: null,
-          provider_name_at_launch: 'codex',
-        });
+      mockStore.bindDiscoveredTranscript
+        .mockResolvedValueOnce({ kind: 'bound' })
+        .mockResolvedValueOnce({ kind: 'needsBackfill' });
 
       const promise = listener.handleSessionStarted(sessionStartedPayload);
       await jest.advanceTimersByTimeAsync(0);
@@ -1770,7 +1614,7 @@ describe('TranscriptPersistenceListener', () => {
       });
       mockAdapter.discoverSessionFile.mockResolvedValue([file]);
       mockReadFileHead.mockResolvedValue(`session=${sessionStartedPayload.sessionId}`);
-      mockGetTranscriptPath
+      mockStore.getTranscriptMetadata
         .mockReturnValueOnce({ transcript_path: null, provider_session_id: null })
         .mockReturnValueOnce({
           transcript_path: '/normalized/path/session.jsonl',
@@ -1780,17 +1624,10 @@ describe('TranscriptPersistenceListener', () => {
           transcript_path: '/normalized/path/session.jsonl',
           provider_session_id: null,
         });
-      mockGetPersistRow
-        .mockReturnValue({
-          transcript_path: '/normalized/path/session.jsonl',
-          provider_session_id: null,
-          provider_name_at_launch: 'codex',
-        })
-        .mockReturnValueOnce({
-          transcript_path: null,
-          provider_session_id: null,
-          provider_name_at_launch: 'codex',
-        });
+      mockStore.bindDiscoveredTranscript
+        .mockResolvedValue({ kind: 'needsBackfill' })
+        .mockResolvedValueOnce({ kind: 'bound' });
+      mockStore.backfillTranscriptProviderSessionId.mockResolvedValue({ kind: 'noIdAvailable' });
 
       try {
         const promise = listener.handleSessionStarted(sessionStartedPayload);
@@ -1875,7 +1712,7 @@ describe('TranscriptPersistenceListener', () => {
 
     it('should skip if transcript already discovered via hooks (deduplication)', async () => {
       // Hooks already set complete transcript metadata.
-      mockGetTranscriptPath.mockReturnValue({
+      mockStore.getTranscriptMetadata.mockReturnValue({
         transcript_path: '/already/set.jsonl',
         provider_session_id: 'claude-session-1',
       });
@@ -1893,7 +1730,7 @@ describe('TranscriptPersistenceListener', () => {
 
       // First attempt: no transcript_path, no file found
       // Before second attempt: hooks have set complete metadata
-      mockGetTranscriptPath
+      mockStore.getTranscriptMetadata
         .mockReturnValueOnce({ transcript_path: null, provider_session_id: null })
         .mockReturnValueOnce({
           transcript_path: '/hook/set.jsonl',
@@ -1950,17 +1787,18 @@ describe('TranscriptPersistenceListener', () => {
 
     it('should not overwrite an existing different transcript path', async () => {
       mockAdapter.discoverSessionFile.mockResolvedValue([makeFileInfo()]);
-      mockGetPersistRow.mockReturnValue({
-        transcript_path: '/hook/set.jsonl',
-        provider_session_id: null,
-        provider_name_at_launch: 'claude',
+      mockStore.bindDiscoveredTranscript.mockResolvedValue({ kind: 'needsBackfill' });
+      mockStore.backfillTranscriptProviderSessionId.mockResolvedValue({
+        kind: 'pathMismatch',
+        sessionId: sessionStartedPayload.sessionId,
+        existing: '/hook/set.jsonl',
+        incoming: '/normalized/path/session.jsonl',
       });
 
       const promise = listener.handleSessionStarted(sessionStartedPayload);
       await jest.advanceTimersByTimeAsync(0);
       await promise;
 
-      expect(mockRun).not.toHaveBeenCalled();
       expect(mockEvents.publish).not.toHaveBeenCalled();
     });
 
@@ -2019,15 +1857,11 @@ describe('TranscriptPersistenceListener', () => {
           }),
         );
         // Fresh session row (no transcript bound yet) + a launch timestamp.
-        mockGetTranscriptPath.mockReturnValue({
+        mockStore.getTranscriptMetadata.mockReturnValue({
           transcript_path: null,
           provider_session_id: null,
         });
-        mockGetPersistRow.mockReturnValue({
-          transcript_path: null,
-          provider_session_id: null,
-          provider_name_at_launch: providerName,
-        });
+
         mockGetStartedAt.mockReturnValue({ started_at: '2026-02-25T10:00:00.000Z' });
       });
 
@@ -2047,12 +1881,12 @@ describe('TranscriptPersistenceListener', () => {
         expect(dbAdapter.discoverSessionFile).toHaveBeenCalledTimes(1);
 
         expect(mockValidator.validateShape).toHaveBeenCalledWith(candA.filePath, providerName);
-        expect(mockRun).toHaveBeenCalledWith(
-          '/normalized/path/session.jsonl',
-          candA.providerSessionId,
-          expect.any(String),
-          sessionStartedPayload.sessionId,
-        );
+        expect(mockStore.bindDiscoveredTranscript).toHaveBeenCalledWith({
+          transcriptPath: '/normalized/path/session.jsonl',
+          providerSessionId: candA.providerSessionId,
+          updatedAt: expect.any(String),
+          sessionId: sessionStartedPayload.sessionId,
+        });
         expect(mockEvents.publish).toHaveBeenCalledWith(
           'session.transcript.discovered',
           expect.objectContaining({
@@ -2076,7 +1910,7 @@ describe('TranscriptPersistenceListener', () => {
           await promise;
 
           expect(dbAdapter.discoverSessionFile).toHaveBeenCalledTimes(7);
-          expect(mockRun).not.toHaveBeenCalled();
+
           expect(mockEvents.publish).not.toHaveBeenCalled();
 
           const ambiguousCalls = warnSpy.mock.calls.filter(
@@ -2107,7 +1941,7 @@ describe('TranscriptPersistenceListener', () => {
           await promise;
 
           expect(dbAdapter.discoverSessionFile).toHaveBeenCalledTimes(7);
-          expect(mockRun).not.toHaveBeenCalled();
+
           expect(mockEvents.publish).not.toHaveBeenCalled();
 
           const finalCalls = warnSpy.mock.calls.filter(
@@ -2132,12 +1966,12 @@ describe('TranscriptPersistenceListener', () => {
         await promise;
 
         // Only the unassigned candB is persisted.
-        expect(mockRun).toHaveBeenCalledWith(
-          '/normalized/path/session.jsonl',
-          candB.providerSessionId,
-          expect.any(String),
-          sessionStartedPayload.sessionId,
-        );
+        expect(mockStore.bindDiscoveredTranscript).toHaveBeenCalledWith({
+          transcriptPath: '/normalized/path/session.jsonl',
+          providerSessionId: candB.providerSessionId,
+          updatedAt: expect.any(String),
+          sessionId: sessionStartedPayload.sessionId,
+        });
         expect(mockEvents.publish).toHaveBeenCalledWith(
           'session.transcript.discovered',
           expect.objectContaining({ providerSessionId: candB.providerSessionId }),
@@ -2147,7 +1981,10 @@ describe('TranscriptPersistenceListener', () => {
 
       it('skips persist when the (providerSessionId, path) uniqueness guard fires', async () => {
         dbAdapter.discoverSessionFile.mockResolvedValue([candA]);
-        mockGetDbUniquenessConflict.mockReturnValue({ id: 'other-session-id' });
+        mockStore.bindDiscoveredTranscript.mockResolvedValue({
+          kind: 'providerSessionIdTaken',
+          conflictingSessionId: 'other-session-id',
+        });
         const warnSpy = jest.spyOn(Logger.prototype, 'warn').mockImplementation();
 
         try {
@@ -2156,7 +1993,7 @@ describe('TranscriptPersistenceListener', () => {
           await promise;
 
           // The path-writing UPDATE never runs; discovery stops on the skipped outcome.
-          expect(mockRun).not.toHaveBeenCalled();
+
           expect(mockEvents.publish).not.toHaveBeenCalled();
 
           const conflictCalls = warnSpy.mock.calls.filter(
@@ -2171,7 +2008,7 @@ describe('TranscriptPersistenceListener', () => {
 
       it('exits early via the discovery gate when transcript metadata is already complete', async () => {
         dbAdapter.discoverSessionFile.mockResolvedValue([candA]);
-        mockGetTranscriptPath.mockReturnValue({
+        mockStore.getTranscriptMetadata.mockReturnValue({
           transcript_path: '/already/bound.db',
           provider_session_id: 'ses_already_bound',
         });
@@ -2181,7 +2018,7 @@ describe('TranscriptPersistenceListener', () => {
         await promise;
 
         expect(dbAdapter.discoverSessionFile).not.toHaveBeenCalled();
-        expect(mockRun).not.toHaveBeenCalled();
+
         expect(mockEvents.publish).not.toHaveBeenCalled();
       });
     });
@@ -2245,7 +2082,10 @@ describe('TranscriptPersistenceListener', () => {
     }
 
     beforeEach(() => {
-      mockGetTranscriptPath.mockReturnValue({ transcript_path: null, provider_session_id: null });
+      mockStore.getTranscriptMetadata.mockReturnValue({
+        transcript_path: null,
+        provider_session_id: null,
+      });
       mockGetStartedAt.mockReturnValue({ started_at: '2026-02-25T10:00:00.000Z' });
     });
 
@@ -2257,11 +2097,7 @@ describe('TranscriptPersistenceListener', () => {
           binPath: null,
         }),
       );
-      mockGetPersistRow.mockReturnValue({
-        transcript_path: null,
-        provider_session_id: null,
-        provider_name_at_launch: 'fakeprov',
-      });
+
       const fake = createFakeMetadataAdapter();
       mockAdapterFactory.getAdapter.mockReturnValue(fake as unknown as SessionReaderAdapter);
       fake.discoverSessionFile.mockResolvedValue([
@@ -2306,11 +2142,7 @@ describe('TranscriptPersistenceListener', () => {
           binPath: null,
         }),
       );
-      mockGetPersistRow.mockReturnValue({
-        transcript_path: null,
-        provider_session_id: null,
-        provider_name_at_launch: 'fakeprov',
-      });
+
       const logSpy = jest.spyOn(Logger.prototype, 'log').mockImplementation();
       const fake = createFakeMetadataAdapter();
       mockAdapterFactory.getAdapter.mockReturnValue(fake as unknown as SessionReaderAdapter);
@@ -2356,11 +2188,7 @@ describe('TranscriptPersistenceListener', () => {
           binPath: null,
         }),
       );
-      mockGetPersistRow.mockReturnValue({
-        transcript_path: null,
-        provider_session_id: null,
-        provider_name_at_launch: 'nometh',
-      });
+
       const fake = createNoMethodAdapter();
       mockAdapterFactory.getAdapter.mockReturnValue(fake as unknown as SessionReaderAdapter);
       fake.discoverSessionFile.mockResolvedValue([
@@ -2391,11 +2219,7 @@ describe('TranscriptPersistenceListener', () => {
           binPath: null,
         }),
       );
-      mockGetPersistRow.mockReturnValue({
-        transcript_path: null,
-        provider_session_id: null,
-        provider_name_at_launch: 'nometh',
-      });
+
       const warnSpy = jest.spyOn(Logger.prototype, 'warn').mockImplementation();
       const fake = createNoMethodAdapter();
       mockAdapterFactory.getAdapter.mockReturnValue(fake as unknown as SessionReaderAdapter);

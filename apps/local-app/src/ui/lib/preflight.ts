@@ -48,5 +48,5 @@ export async function fetchPreflightChecks(
   if (!res.ok) {
     throw new Error('Failed to fetch preflight checks');
   }
-  return res.json();
+  return res.json() as Promise<PreflightResult>;
 }

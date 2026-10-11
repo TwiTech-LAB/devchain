@@ -1,5 +1,6 @@
+import type { EventPayload } from '../../../events/catalog';
+import { OnCatalogEvent } from '../../../events/catalog/on-catalog-event';
 import { Injectable } from '@nestjs/common';
-import { OnEvent } from '@nestjs/event-emitter';
 import { AppError } from '../../../../common/errors/error-types';
 import { TerminalSessionRegistry } from '../terminal-session/terminal-session-registry';
 import { TerminalIOService } from '../terminal-io/terminal-io.service';
@@ -69,13 +70,13 @@ export class TerminalKeyInputFacade {
     private readonly humanPromptInput: HumanPromptInputService,
   ) {}
 
-  @OnEvent('session.stopped')
-  handleSessionStopped(payload: { sessionId: string }): void {
+  @OnCatalogEvent('session.stopped')
+  handleSessionStopped(payload: EventPayload<'session.stopped'>): void {
     lastAcceptedAtBySession.delete(payload.sessionId);
   }
 
-  @OnEvent('session.crashed')
-  handleSessionCrashed(payload: { sessionId: string }): void {
+  @OnCatalogEvent('session.crashed')
+  handleSessionCrashed(payload: EventPayload<'session.crashed'>): void {
     lastAcceptedAtBySession.delete(payload.sessionId);
   }
 

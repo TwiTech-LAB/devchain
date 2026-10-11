@@ -4,12 +4,17 @@ import type {
 } from '../errors/external-provider.errors';
 import { mapSafeVendorFailure } from '../errors/external-provider.errors';
 import {
+  EXTERNAL_SUBTASK_SOURCE_ID_PATTERN,
+  MAX_EXTERNAL_SUBTASK_DESCRIPTION_LENGTH,
+  MAX_EXTERNAL_SUBTASK_TITLE_LENGTH,
   MAX_COMMENT_LENGTH,
   MAX_REMOTE_TASK_ID_LENGTH,
   MAX_STATUS_LENGTH,
   MAX_TASK_COMMENT_AUTHOR_LENGTH,
   MAX_TIME_ENTRY_DURATION_MS,
   MAX_TIME_ENTRY_NOTE_LENGTH,
+  type ExternalSubtaskOwnershipProof,
+  type ExternalSubtaskSnapshot,
   type ExternalTaskCommentAuthor,
   type ExternalTaskCommentInput,
   type ExternalTaskStatusInput,
@@ -27,7 +32,10 @@ export const VENDOR_DISCOVERY_CONCURRENCY = 4;
 export type CachedWorkAreaMetadata = Omit<ExternalWorkArea, 'assignedTaskCount' | 'refresh'>;
 
 export type VendorErrorFactory = (
-  reason: Extract<ExternalProviderFailureReason, 'invalid_response' | 'request_rejected'>,
+  reason: Extract<
+    ExternalProviderFailureReason,
+    'invalid_response' | 'request_rejected' | 'ownership_mismatch' | 'parent_mismatch'
+  >,
 ) => ExternalProviderError;
 
 export function isRecord(value: unknown): value is Record<string, unknown> {
@@ -66,6 +74,10 @@ export interface VendorCommentAuthorSpec {
 }
 
 export interface VendorPayloadValidators {
+  subtaskTitle(value: unknown): string;
+  subtaskDescription(value: unknown): string | null;
+  isSubtaskOwnershipToken(value: string): boolean;
+  subtaskOwnershipToken(value: unknown): string;
   requiredString(value: unknown): string;
   requiredIdentifier(value: unknown): string;
   requiredTaskId(value: unknown): string;
@@ -73,10 +85,43 @@ export interface VendorPayloadValidators {
   commentInput(input: ExternalTaskCommentInput): void;
   commentAuthor(value: unknown, spec: VendorCommentAuthorSpec): ExternalTaskCommentAuthor;
   timeEntryInput(input: ExternalTaskTimeEntryInput): number;
+  subtaskProof(current: ExternalSubtaskSnapshot, proof: ExternalSubtaskOwnershipProof): void;
 }
 
 export function createVendorValidators(createError: VendorErrorFactory): VendorPayloadValidators {
   const validators: VendorPayloadValidators = {
+    subtaskTitle(value: unknown): string {
+      if (
+        typeof value !== 'string' ||
+        !value.trim() ||
+        value.length > MAX_EXTERNAL_SUBTASK_TITLE_LENGTH
+      ) {
+        throw createError('request_rejected');
+      }
+      return value.trim();
+    },
+
+    subtaskDescription(value: unknown): string | null {
+      if (value === null || value === '') {
+        return null;
+      }
+      if (typeof value !== 'string' || value.length > MAX_EXTERNAL_SUBTASK_DESCRIPTION_LENGTH) {
+        throw createError('request_rejected');
+      }
+      return value;
+    },
+
+    isSubtaskOwnershipToken(value: string): boolean {
+      return EXTERNAL_SUBTASK_SOURCE_ID_PATTERN.test(value);
+    },
+
+    subtaskOwnershipToken(value: unknown): string {
+      if (typeof value !== 'string' || !validators.isSubtaskOwnershipToken(value)) {
+        throw createError('request_rejected');
+      }
+      return value;
+    },
+
     requiredString(value: unknown): string {
       if (typeof value !== 'string' || !value.trim()) {
         throw createError('invalid_response');
@@ -160,6 +205,16 @@ export function createVendorValidators(createError: VendorErrorFactory): VendorP
         throw createError('request_rejected');
       }
       return startedAt;
+    },
+    subtaskProof(current: ExternalSubtaskSnapshot, proof: ExternalSubtaskOwnershipProof): void {
+      const ownershipToken = validators.subtaskOwnershipToken(proof.ownershipToken);
+      const expectedParent = validators.requiredTaskId(proof.expectedParentRemoteTaskId);
+      if (current.ownershipToken !== ownershipToken) {
+        throw createError('ownership_mismatch');
+      }
+      if (current.parentRemoteTaskId !== expectedParent) {
+        throw createError('parent_mismatch');
+      }
     },
   };
   return validators;

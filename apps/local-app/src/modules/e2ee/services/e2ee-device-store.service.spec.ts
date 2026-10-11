@@ -8,7 +8,7 @@ import {
   readRevokedDeviceKids,
   REVOKED_DEVICE_KIDS_KEY,
   MAX_REVOKED_DEVICE_KIDS,
-} from './device-revocation-history';
+} from '../../storage/local/helpers/device-revocation-history';
 import { PAIRED_DEVICE_WORKSPACE_ACCESS_REVOKED_EVENT } from '../events/paired-device-workspace-access.events';
 
 // Test layer: module-unit with REAL :memory: SQLite. The directory is JSON-serialized

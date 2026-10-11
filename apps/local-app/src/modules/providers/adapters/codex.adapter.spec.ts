@@ -1,7 +1,7 @@
 import { CodexAdapter } from './codex.adapter';
-import { ensureCodexProjectTrusted } from '../../sessions/utils/codex-config';
+import { ensureCodexProjectTrusted } from '../utils/codex-config';
 
-jest.mock('../../sessions/utils/codex-config', () => ({
+jest.mock('../utils/codex-config', () => ({
   ensureCodexProjectTrusted: jest.fn(),
 }));
 

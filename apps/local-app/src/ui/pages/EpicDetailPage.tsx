@@ -1,3 +1,6 @@
+import type { SessionsController } from '@/modules/sessions/controllers/sessions.controller';
+import type { EpicsController } from '@/modules/epics/controllers/epics.controller';
+import type { EpicCommentsController } from '@/modules/epics/controllers/epic-comments.controller';
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
@@ -9,7 +12,7 @@ import { useSelectedProject } from '@/ui/hooks/useProjectSelection';
 import { useFetchFactory } from '@/ui/hooks/useFetchFactory';
 import { useIntegrationAvailability } from '@/ui/hooks/useIntegrationAvailability';
 import { useEpicExternalSources } from '@/ui/hooks/useEpicExternalSources';
-import { resolveSkillSlugs, type SkillSummary } from '@/ui/lib/skills';
+import { resolveSkillSlugs } from '@/ui/lib/skills';
 import {
   boardReturnUrlFromState,
   externalLinkedTaskState,
@@ -128,13 +131,13 @@ type DeleteEpicDialogState = { type: 'sub-epic'; subEpicId: string } | { type: '
 async function fetchEpic(id: string, fetchFn: FetchFn): Promise<Epic> {
   const res = await fetchFn(`/api/epics/${id}`);
   if (!res.ok) throw new Error('Failed to fetch epic');
-  return res.json();
+  return res.json() as Promise<Epic>;
 }
 
 async function fetchSubEpics(parentId: string, fetchFn: FetchFn): Promise<{ items: Epic[] }> {
   const res = await fetchFn(`/api/epics?parentId=${parentId}`);
   if (!res.ok) throw new Error('Failed to fetch sub-epics');
-  return res.json();
+  return res.json() as Promise<{ items: Epic[] }>;
 }
 
 async function fetchEpicComments(
@@ -143,7 +146,7 @@ async function fetchEpicComments(
 ): Promise<{ items: EpicComment[] }> {
   const res = await fetchFn(`/api/epics/${epicId}/comments`);
   if (!res.ok) throw new Error('Failed to fetch comments');
-  return res.json();
+  return res.json() as Promise<{ items: EpicComment[] }>;
 }
 
 async function fetchActiveSessionsForProject(
@@ -156,7 +159,7 @@ async function fetchActiveSessionsForProject(
   }
   const res = await fetchFn(`/api/sessions${params.size ? `?${params.toString()}` : ''}`);
   if (!res.ok) throw new Error('Failed to fetch sessions');
-  return res.json();
+  return res.json() as Promise<Session[]>;
 }
 
 async function checkPreflight(
@@ -267,7 +270,7 @@ async function launchSession(epicId: string, agentId: string, projectId: string,
     const error = await res.json();
     throw new Error(error.message || 'Failed to launch session');
   }
-  return res.json();
+  return res.json() as Promise<Awaited<ReturnType<SessionsController['launchSession']>>>;
 }
 
 async function terminateSession(sessionId: string, fetchFn: FetchFn) {
@@ -275,7 +278,7 @@ async function terminateSession(sessionId: string, fetchFn: FetchFn) {
     method: 'DELETE',
   });
   if (!res.ok) throw new Error('Failed to terminate session');
-  return res.json();
+  return res.json() as Promise<Awaited<ReturnType<SessionsController['terminateSession']>>>;
 }
 
 async function updateEpicRequest(id: string, data: Partial<Epic>, fetchFn: FetchFn) {
@@ -288,7 +291,7 @@ async function updateEpicRequest(id: string, data: Partial<Epic>, fetchFn: Fetch
     const error = await res.json().catch(() => ({ message: 'Failed to update epic' }));
     throw new Error(error.message || 'Failed to update epic');
   }
-  return res.json();
+  return res.json() as Promise<Awaited<ReturnType<EpicsController['updateEpic']>>>;
 }
 
 async function createEpicComment(
@@ -305,7 +308,7 @@ async function createEpicComment(
     const error = await res.json().catch(() => ({ message: 'Failed to create comment' }));
     throw new Error(error.message || 'Failed to create comment');
   }
-  return res.json();
+  return res.json() as Promise<Awaited<ReturnType<EpicCommentsController['createEpicComment']>>>;
 }
 
 async function deleteEpicComment(commentId: string, fetchFn: FetchFn) {
@@ -336,7 +339,7 @@ async function createSubEpic(
     const error = await res.json().catch(() => ({ message: 'Failed to create sub-epic' }));
     throw new Error(error.message || 'Failed to create sub-epic');
   }
-  return res.json();
+  return res.json() as Promise<Awaited<ReturnType<EpicsController['createEpic']>>>;
 }
 
 async function deleteEpic(epicId: string, fetchFn: FetchFn) {
@@ -489,7 +492,7 @@ export function EpicDetailPage() {
     queryFn: () => fetchSubEpics(epic!.id, apiFetch),
     enabled: !!epic?.id,
   });
-  const subEpicsRaw = subEpicsData?.items || [];
+  const subEpicsRaw = useMemo(() => subEpicsData?.items || [], [subEpicsData]);
 
   const requiredSkillSlugs = useMemo(() => {
     const input = epic?.skillsRequired ?? [];
@@ -520,15 +523,13 @@ export function EpicDetailPage() {
     queryFn: () => resolveSkillSlugs(apiFetch, skillResolveKeySlugs),
     enabled: skillResolveKeySlugs.length > 0,
   });
-  const resolvedSkills: Record<string, SkillSummary> = resolvedSkillsData ?? {};
-
   const requiredSkills = useMemo(
     () =>
       requiredSkillSlugs.map((slug) => ({
         slug,
-        skill: resolvedSkills[slug] ?? null,
+        skill: resolvedSkillsData?.[slug] ?? null,
       })),
-    [requiredSkillSlugs, resolvedSkills],
+    [requiredSkillSlugs, resolvedSkillsData],
   );
 
   const { data: commentsData, isLoading: commentsLoading } = useQuery({
@@ -544,12 +545,13 @@ export function EpicDetailPage() {
         selectedProject?.id === epic.projectId ? selectedProject.rootPath : undefined;
       checkPreflight(epic.projectId, rootPath, apiFetch).then(setPreflightResult);
     }
-  }, [epic?.projectId, selectedProject?.id, selectedProject?.rootPath]);
+  }, [apiFetch, epic?.projectId, selectedProject?.id, selectedProject?.rootPath]);
 
   useEffect(() => {
     if (epic) {
       setSelectedAgentId(epic.agentId ?? '');
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- Sync persisted assignee changes only; the unsaved launch selector is disabled by EPIC_LAUNCH_ENABLED.
   }, [epic?.agentId]);
 
   useEffect(() => {
@@ -557,6 +559,7 @@ export function EpicDetailPage() {
       setTitleDraft(epic.title);
       setDescriptionDraft(epic.description ?? '');
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- Refresh drafts only when persisted content changes; unrelated refetches must not erase edits.
   }, [epic?.title, epic?.description]);
 
   useEffect(() => {
@@ -773,8 +776,7 @@ export function EpicDetailPage() {
     },
   });
 
-  const agents = agentsData?.items || [];
-  const statuses = statusesData?.items || [];
+  const agents = useMemo(() => agentsData?.items || [], [agentsData]);
 
   // Map subEpics to include agentId and agentName for display and assignment
   const subEpics = useMemo(
@@ -793,8 +795,8 @@ export function EpicDetailPage() {
   );
 
   const sortedStatuses = useMemo(
-    () => [...statuses].sort((a, b) => a.position - b.position),
-    [statuses],
+    () => [...(statusesData?.items || [])].sort((a, b) => a.position - b.position),
+    [statusesData],
   );
   const currentStatus = epic
     ? (sortedStatuses.find((status) => status.id === epic.statusId) ?? null)

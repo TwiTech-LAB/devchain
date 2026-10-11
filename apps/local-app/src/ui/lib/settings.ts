@@ -1,7 +1,7 @@
 import { queryOptions } from '@tanstack/react-query';
 import type { SettingsDto } from '@/modules/settings/dtos/settings.dto';
 import type { FetchFn } from './api-transport';
-import { fetchJsonOrThrow } from './sessions';
+import { fetchJsonOrThrow } from './http-json';
 
 export type { SettingsDto };
 

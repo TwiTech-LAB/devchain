@@ -6,6 +6,7 @@ import {
   type BuildExclusionSuggestionsInput,
 } from '../../file-sync/build-exclusion-suggestions';
 import { FileSyncManagedExclusionsStore } from '../../file-sync/file-sync-managed-exclusions.store';
+import { codeIgnores } from '../../file-sync/file-sync.dto';
 import { FileSyncService } from '../../file-sync/file-sync.service';
 import { SyncPathInspector } from '../../file-sync/sync-path-inspector';
 import type {
@@ -61,14 +62,63 @@ export class FileSyncSuggestionsService {
       userIgnores: this.files.getIgnores(projectId),
       managedExclusions: this.managed.get(projectId),
     };
-    await attachPatternChecks(input, {
+    await this.attachChecks(input, rootPath, remoteId);
+    const result = buildExclusionSuggestions(input);
+    return { ownerSide: 'home', home, vm, ...result };
+  }
+
+  async vmSuggestions(
+    projectId: string,
+    remoteId: string,
+    paths: string[] = [],
+  ): Promise<ProjectExclusionSuggestions> {
+    const { rootPath } = await this.storage.getProject(projectId);
+    const userIgnores = this.files.getIgnores(projectId);
+    const managedExclusions = this.managed.get(projectId);
+    const scanned = await this.host.syncInspect(remoteId, {
+      path: rootPath,
+      scan: true,
+      paths,
+      skipIgnores: codeIgnores(managedExclusions, userIgnores),
+    });
+    const vm = {
+      ...scanned,
+      candidates: [...new Set([...scanned.candidates, ...scanned.requestedPaths])],
+    };
+    const home = await this.inspector.inspect(rootPath, false, vm.candidates);
+    if (home.gitState === 'error' || vm.gitState === 'error' || home.hiddenPaths?.length)
+      throw new Error('File sync ownership inspection could not check both Git indexes');
+    const input: BuildExclusionSuggestionsInput = {
+      ownerSide: 'vm',
+      home,
+      vm,
+      userIgnores,
+      managedExclusions,
+    };
+    await this.attachChecks(input, rootPath, remoteId);
+    if (
+      input.patternChecks &&
+      Object.values(input.patternChecks).some(
+        (check) =>
+          check === 'unavailable' || (check.state !== 'checked' && check.state !== 'no-root'),
+      )
+    )
+      throw new Error('File sync ownership exclusion checks were unavailable');
+    return { ownerSide: 'vm', home, vm, ...buildExclusionSuggestions(input) };
+  }
+
+  /** Checks the proposed patterns on both sides; an unavailable VM has no answer. */
+  private attachChecks(
+    input: BuildExclusionSuggestionsInput,
+    rootPath: string,
+    remoteId: string,
+  ): Promise<void> {
+    return attachPatternChecks(input, {
       home: (patterns) => this.inspector.inspect(rootPath, false, [], patterns),
       vm: (patterns) =>
-        vm === 'unavailable'
+        input.vm === 'unavailable'
           ? Promise.resolve(null)
           : this.host.syncInspect(remoteId, { path: rootPath, scan: false, paths: [], patterns }),
     });
-    const result = buildExclusionSuggestions(input);
-    return { ownerSide: 'home', home, vm, ...result };
   }
 }

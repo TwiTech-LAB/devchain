@@ -39,7 +39,7 @@ async function postConfiguredReplace<T>(url: string, body: Record<string, unknow
       error.message || error.error || `Request failed with status ${response.status}`,
     );
   }
-  return response.json();
+  return response.json() as Promise<T>;
 }
 
 export class ProjectsHttpApi implements ProjectsPageApi {
@@ -70,13 +70,13 @@ export class ProjectsHttpApi implements ProjectsPageApi {
   async listWorkspaces(): Promise<ProjectWorkspace[]> {
     const response = await apiFetch('/api/workspaces', undefined, { backend: HOME_BACKEND });
     if (!response.ok) throw new Error('Failed to fetch workspaces');
-    return response.json();
+    return response.json() as Promise<ProjectWorkspace[]>;
   }
 
   async listPairedDevices(): Promise<WorkspaceTransitionDevice[]> {
     const response = await apiFetch('/api/e2ee/devices', undefined, { backend: HOME_BACKEND });
     if (!response.ok) throw new Error('Failed to fetch paired devices');
-    return response.json();
+    return response.json() as Promise<WorkspaceTransitionDevice[]>;
   }
 
   async createWorkspace(name: string): Promise<ProjectWorkspace> {
@@ -120,7 +120,7 @@ export class ProjectsHttpApi implements ProjectsPageApi {
       const error = await response.json().catch(() => ({}));
       throw new Error(error.message || error.error || 'Workspace request failed');
     }
-    return response.json();
+    return response.json() as Promise<T>;
   }
 
   async statPath(path: string): Promise<PathStatResult> {
@@ -179,7 +179,7 @@ export class ProjectsHttpApi implements ProjectsPageApi {
         .catch(() => ({ message: 'Failed to create project from template' }));
       throw new Error(error.message || 'Failed to create project from template');
     }
-    return response.json();
+    return response.json() as Promise<CreateFromTemplateResponse>;
   }
 
   async updateProject(
@@ -199,7 +199,7 @@ export class ProjectsHttpApi implements ProjectsPageApi {
       const error = await response.json().catch(() => ({ message: 'Failed to update project' }));
       throw new Error(error.message || 'Failed to update project');
     }
-    return response.json();
+    return response.json() as Promise<UpdateProjectResponse>;
   }
 
   async deleteProject(projectId: string): Promise<void> {
@@ -230,7 +230,7 @@ export class ProjectsHttpApi implements ProjectsPageApi {
         .catch(() => ({ message: 'Failed to load template preview' }));
       throw new Error(error.message || 'Failed to load template preview');
     }
-    return response.json();
+    return response.json() as Promise<SetupPreviewResponse>;
   }
 
   async loadUpgradePreview(

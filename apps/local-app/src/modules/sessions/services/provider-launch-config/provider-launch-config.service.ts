@@ -15,8 +15,8 @@ import {
   ProfileOptionsError,
   injectModelOverride,
   extractModelFromArgs,
-} from '../../utils/profile-options';
-import { buildSessionCommand, EnvBuilderError } from '../../utils/env-builder';
+} from '../../../providers/utils/profile-options';
+import { buildSessionCommand, EnvBuilderError } from '../../../providers/utils/env-builder';
 import {
   CONTEXT_WINDOW_ENV_KEY,
   parseContextWindowEnv,

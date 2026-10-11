@@ -17,7 +17,11 @@ describe('Epics API hierarchy and comments', () => {
   let projectId: string;
   let statusId: string;
 
-  const seedAgents = (projectId: string, agentProfileId: string) => {
+  const seedAgents = (
+    projectId: string,
+    agentProfileId: string,
+    profileProviderConfigId: string,
+  ) => {
     const dbPath = getTestDbPath();
     if (!dbPath) {
       throw new Error('Test database not initialized');
@@ -28,10 +32,10 @@ describe('Epics API hierarchy and comments', () => {
 
     sqlite
       .prepare(
-        `INSERT INTO agents (id, project_id, profile_id, name, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?)`
+        `INSERT INTO agents (id, project_id, profile_id, provider_config_id, name, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
       )
-      .run('agent-1', projectId, agentProfileId, 'Helper Bot', now, now);
+      .run('agent-1', projectId, agentProfileId, profileProviderConfigId, 'Helper Bot', now, now);
 
     sqlite.close();
   };
@@ -59,7 +63,7 @@ describe('Epics API hierarchy and comments', () => {
     const fixtures = seedTestData();
     projectId = fixtures.projectId;
     statusId = fixtures.statusId;
-    seedAgents(projectId, fixtures.agentProfileId);
+    seedAgents(projectId, fixtures.agentProfileId, fixtures.profileProviderConfigId);
   });
 
   it('supports creating hierarchy, counting sub-epics, and managing comments', async () => {

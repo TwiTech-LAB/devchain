@@ -5,7 +5,7 @@ import type {
   PresetAgentConfig,
 } from '@/modules/projects/helpers/project-presets.helpers';
 import type { FetchFn } from './api-transport';
-import { fetchJsonOrThrow } from './sessions';
+import { fetchJsonOrThrow } from './http-json';
 
 export type { ProjectPresetsResponse, ProjectPreset as Preset, PresetAgentConfig };
 

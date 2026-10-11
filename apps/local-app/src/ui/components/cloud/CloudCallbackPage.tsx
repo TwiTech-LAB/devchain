@@ -1,7 +1,8 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { HOME_BACKEND } from '@/ui/lib/api-transport';
 import {
   completeCloudSignIn,
+  consumeCloudSignInNonce,
   fetchRemoteName,
   readPersistedCloudTarget,
 } from '@/ui/lib/cloud-target';
@@ -23,27 +24,46 @@ function parseFragment(hash: string): Record<string, string> {
 export function CloudCallbackPage() {
   const [state, setState] = useState<CallbackState>('processing');
   const [error, setError] = useState<string>('');
+  const processed = useRef(false);
 
   useEffect(() => {
+    // StrictMode replays mount effects; the one-time nonce must be consumed only once.
+    if (processed.current) return;
+    processed.current = true;
+
     const fragment = window.location.hash;
-    if (!fragment) {
+    const nonce = new URLSearchParams(window.location.search).get('nonce');
+    window.history.replaceState(null, '', window.location.pathname);
+
+    const fail = (message: string) => {
       setState('error');
-      setError('No authentication data received.');
+      setError(message);
+    };
+
+    if (!consumeCloudSignInNonce(nonce)) {
+      fail('Start sign-in again from DevChain');
       return;
     }
 
-    const params = parseFragment(fragment);
+    if (!fragment) {
+      fail('No authentication data received.');
+      return;
+    }
+
+    let params: Record<string, string>;
+    try {
+      params = parseFragment(fragment);
+    } catch {
+      fail('Invalid authentication data.');
+      return;
+    }
     const accessToken = params.access_token;
     const refreshToken = params.refresh_token;
 
     if (!accessToken || !refreshToken) {
-      setState('error');
-      setError('Missing authentication tokens.');
+      fail('Missing authentication tokens.');
       return;
     }
-
-    // Clear the fragment from the URL to prevent token leakage in history
-    window.history.replaceState(null, '', window.location.pathname);
 
     // The popup shares localStorage with the Cloud page, so the target the user
     // selected there decides which backend receives these tokens.
@@ -74,8 +94,7 @@ export function CloudCallbackPage() {
           setTimeout(() => window.close(), 1500);
         }
       } catch (err) {
-        setState('error');
-        setError(err instanceof Error ? err.message : String(err));
+        fail(err instanceof Error ? err.message : String(err));
       }
     })();
   }, []);

@@ -1,7 +1,11 @@
 import { processIdsEnv } from '../../../../common/process-ids-env';
 import { TerminalIOService } from './terminal-io.service';
-import { FakeProcessExecutor } from '../process-executor/fake-process-executor';
-import { TypeCommandFailedError } from './delivery';
+import {
+  CliForegroundExecutor,
+  FakeProcessExecutor,
+} from '../process-executor/fake-process-executor';
+import { ShellForegroundError, TypeCommandFailedError } from './delivery';
+import type { CannedResponse } from '../process-executor/fake-process-executor';
 import type { EventsService } from '../../../events/services/events.service';
 import type { SettingsService } from '../../../settings/services/settings.service';
 import { HumanPromptStateService } from '../human-prompt-state.service';
@@ -20,6 +24,98 @@ describe('TerminalIOService', () => {
   });
 
   // ── Lifecycle ───────────────────────────────────────────────────────────
+
+  // Executor-backed service tests observe both the foreground reads and absence of pane writes.
+  describe('foreground program guard', () => {
+    const target = { name: 'agent-pane' };
+    const options = {
+      agentId: 'agent-1',
+      confirm: false,
+      postPasteDelayMs: 0,
+      preKeys: ['Escape'],
+    };
+    const methods = ['deliver', 'deliverImmediate', 'deliverGuarded'] as const;
+    const deliver = (
+      method: (typeof methods)[number],
+      text = 'automated text',
+      deliveryOptions: typeof options & { requireForegroundProgram?: boolean } = options,
+    ) =>
+      method === 'deliverGuarded'
+        ? svc.deliverGuarded(target, text, deliveryOptions, undefined)
+        : svc[method](target, text, deliveryOptions);
+
+    it.each(methods)('refuses %s before any keys when the shell is in front', async (method) => {
+      fake.enqueueResponse(
+        { type: 'success', stdout: '1234\n' },
+        { type: 'success', stdout: ' 1234\n' },
+      );
+      await expect(deliver(method)).rejects.toBeInstanceOf(ShellForegroundError);
+      expect(fake.calls.map((call) => call.argv)).toEqual([
+        ['tmux', 'display-message', '-p', '-t', '=agent-pane:', '#{pane_pid}'],
+        ['ps', '-o', 'tpgid=', '-p', '1234'],
+      ]);
+    });
+
+    it.each([
+      ['CLI', '2345'],
+      ['CLI under a wrapper without exec', '3456'],
+    ])('allows a %s with its own foreground group', async (_program, foregroundGroup) => {
+      const cli = new CliForegroundExecutor();
+      cli.foregroundGroup = foregroundGroup;
+      const cliSvc = new TerminalIOService(
+        cli,
+        { publish: jest.fn() } as unknown as EventsService,
+        new HumanPromptStateService(),
+        { getFollowNoteEnabled: () => true } as unknown as SettingsService,
+      );
+      await expect(cliSvc.deliver(target, 'automated text', options)).resolves.toMatchObject({
+        confirmed: true,
+      });
+      expect(cli.calls.some((call) => call.argv[1] === 'paste-buffer')).toBe(true);
+      expect(cli.calls.at(-1)?.argv).toEqual(['tmux', 'send-keys', '-t', '=agent-pane:', 'Enter']);
+    });
+
+    it.each([0, 1])('fails closed for an invalid read at probe %s', async (probe) => {
+      const invalidReads: CannedResponse[] = [
+        { type: 'failure', stderr: 'read failed' },
+        { type: 'timeout' },
+        { type: 'success', stdout: '' },
+        { type: 'success', stdout: ' \n' },
+        { type: 'success', stdout: 'not-a-number' },
+        { type: 'success', stdout: '1234junk' },
+        { type: 'success', stdout: '-1' },
+        { type: 'success', stdout: '0' },
+        { type: 'success', stdout: '9007199254740992' },
+      ];
+      for (const invalidRead of invalidReads) {
+        fake.reset();
+        if (probe === 1) fake.enqueueResponse({ type: 'success', stdout: '1234' });
+        fake.enqueueResponse(invalidRead);
+        await expect(deliver('deliverImmediate')).rejects.toBeInstanceOf(ShellForegroundError);
+        expect(fake.calls).toHaveLength(probe + 1);
+      }
+    });
+
+    it('converts an executor rejection into a typed refusal', async () => {
+      jest.spyOn(fake, 'run').mockRejectedValueOnce(new Error('process spawn failed'));
+      await expect(deliver('deliverImmediate')).rejects.toBeInstanceOf(ShellForegroundError);
+      expect(fake.calls).toHaveLength(0);
+    });
+
+    it.each(methods)(
+      'allows human input to opt out for %s without foreground reads',
+      async (method) => {
+        const humanOptions = { ...options, requireForegroundProgram: false };
+        await expect(deliver(method, 'human text', humanOptions)).resolves.toMatchObject({
+          confirmed: true,
+        });
+        expect(fake.calls.some((call) => call.argv[1] === 'paste-buffer')).toBe(true);
+        expect(
+          fake.calls.some((call) => call.argv[1] === 'display-message' || call.argv[0] === 'ps'),
+        ).toBe(false);
+      },
+    );
+  });
 
   describe('createSession', () => {
     // The executor boundary is the cheapest layer that verifies both tmux and child env.

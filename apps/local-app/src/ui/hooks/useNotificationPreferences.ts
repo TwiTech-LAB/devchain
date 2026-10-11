@@ -293,7 +293,7 @@ export function useNotificationPreferences() {
     queryFn: async () => {
       const res = await apiFetch('/api/cloud/preferences', undefined, { backend: HOME_BACKEND });
       if (!res.ok) throw new Error(`preferences:${res.status}`);
-      return res.json();
+      return res.json() as Promise<PreferencesData>;
     },
     staleTime: 30_000,
   });

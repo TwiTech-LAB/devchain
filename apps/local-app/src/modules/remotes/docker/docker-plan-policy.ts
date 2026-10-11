@@ -7,9 +7,12 @@ import {
 } from '../host/host-docker.dto';
 import type { DockerImportInventory } from '../operations/docker-import-inventory.store';
 import { connectChoiceKey, type ConnectDockerChoice } from '../connect-choices.dto';
+import { overlapsData } from './docker-data-groups';
+import { dataRepresentationMatches } from './docker-data-representation';
+import { dockerTargetUser } from './docker-ownership';
 import { copiedDataMounts, copiedMounts } from './docker-plan-fit';
 import { projectAnchoredPath, within } from './docker-plan-files';
-import { projectCompose } from './docker-project-compose';
+import { foreignProjectOwner, projectContainer, projectVolume } from './docker-project-resources';
 import {
   COPYABLE_MOUNT_KINDS,
   isVolumeMount,
@@ -105,7 +108,7 @@ export function applyDockerPolicy(
         code: 'architecture-mismatch',
         message: 'Image architecture differs from the VM.',
       });
-    const existing = target.containers.find((c) => c.name.replace(/^\//, '') === item.name);
+    const existing = vmContainerNamed(target, item.name);
     const action = existing
       ? counterpartAction(existing, target, projectId, projectRoot, item)
       : 'create';
@@ -124,6 +127,7 @@ export function applyDockerPolicy(
       if (!containerBlocked && !dataBlocked) item.choices.push('container-and-data');
       if (!containerBlocked) item.choices.push('without-data');
       if (
+        (item.ownership?.class === 'follows-user' && !containerBlocked && !dataBlocked) ||
         (item.privileged && !dataBlocked) ||
         (item.blockers.length > 0 &&
           item.blockers.every((b) => CONTAINER_ONLY_BLOCKER_CODES.includes(b.code)))
@@ -174,7 +178,7 @@ export function applyDockerPolicy(
       if (!isVolumeMount(mount.kind)) continue;
       const volume = target.volumes.find((v) => v.name === mount.source);
       if (!volume) continue;
-      if (volume.labels[DOCKER_PROJECT_LABEL] !== projectId)
+      if (!projectVolume(volume.labels, target.containers, projectRoot, projectId, target.volumes))
         item.blockers.push({
           code: 'volume-conflict',
           message: `VM volume ${mount.source} is not owned by this project; it cannot be replaced.`,
@@ -182,13 +186,7 @@ export function applyDockerPolicy(
       for (const holder of target.containers.filter((c) =>
         c.mounts.some((m) => m.type === 'volume' && m.name === mount.source),
       )) {
-        const managed =
-          holder.labels[DOCKER_PROJECT_LABEL] === projectId ||
-          projectCompose(holder.labels, projectRoot, projectId) ||
-          (holder.labels[DOCKER_PROJECT_LABEL] === undefined &&
-            Boolean(holder.labels[COMPOSE_PROJECT_LABEL]) &&
-            holder.labels[COMPOSE_PROJECT_LABEL] === volume.labels[COMPOSE_PROJECT_LABEL] &&
-            volume.labels[DOCKER_PROJECT_LABEL] === projectId);
+        const managed = projectContainer(holder, projectRoot, projectId, target.volumes);
         if (!managed)
           item.blockers.push({
             code: 'unrelated-holder',
@@ -215,8 +213,7 @@ function counterpartAction(
   projectRoot: string,
   home: DockerPlanItem,
 ): 'replace' | 'leave-as-is' | 'conflict' {
-  const owner = existing.labels[DOCKER_PROJECT_LABEL];
-  if (owner !== undefined && owner !== projectId) return 'conflict';
+  if (foreignProjectOwner(existing.labels, projectId)) return 'conflict';
   const composeProject = existing.labels[COMPOSE_PROJECT_LABEL];
   const importedVolumes = target.volumes.filter(
     (v) =>
@@ -229,7 +226,8 @@ function counterpartAction(
       (m) => m.type === 'volume' && importedVolumes.some((v) => v.name === m.name),
     );
   if (existing.labels[DOCKER_PROJECT_LABEL] === projectId || holdsImported) return 'replace';
-  if (projectCompose(existing.labels, projectRoot, projectId))
+  // Imported stateless Compose containers retain their separate leave-as-is disposition below.
+  if (projectContainer(existing, projectRoot, projectId))
     return home.mounts.some((mount) => COPYABLE_MOUNT_KINDS.includes(mount.kind))
       ? 'replace'
       : 'leave-as-is';
@@ -400,6 +398,9 @@ export function dockerReconnect(
       'Fresh home data replaces the VM copies DevChain created. VM changes not copied back are lost; Cancel cannot recover a VM copy already replaced.',
   };
 }
+function vmContainerNamed(target: DockerScanResult, name: string) {
+  return target.containers.find((container) => container.name.replace(/^\//, '') === name);
+}
 function normalizeArchitecture(value: string): string {
   return ({ x86_64: 'amd64', aarch64: 'arm64' } as Record<string, string>)[value] ?? value;
 }
@@ -410,6 +411,9 @@ export function applyDockerDataPolicy(
   groups: DockerDataGroupCheck[],
   request: DockerPlanRequest,
   target: DockerScanResult,
+  inventory: DockerImportInventory | null = null,
+  projectRoot?: string,
+  projectId?: string,
 ): void {
   const selections = new Map<string, DockerSelectionItem>(
     (request.items ?? []).map((i) => [i.id, i]),
@@ -440,6 +444,114 @@ export function applyDockerDataPolicy(
       ),
     };
     const partial = missing.volumes.length > 0 || missing.bindPaths.length > 0;
+    const follows = group.ownership?.class === 'follows-user';
+    const matchingRecords = (inventory?.groups ?? []).filter((record) =>
+      overlapsData(group, record),
+    );
+    const compatibleRecord = dataRepresentationMatches(group, matchingRecords);
+    const incompatible =
+      group.ownership !== undefined &&
+      group.state !== 'no-record' &&
+      members.some((member) => {
+        const existing = vmContainerNamed(target, member.name);
+        const desired = dockerTargetUser(member);
+        return existing && desired !== undefined && existing.user !== desired && !compatibleRecord;
+      });
+    if (follows || incompatible) {
+      const holdsData = group.state !== 'no-record';
+      const available: DockerDataChoice[] = holdsData
+        ? ['keep-vm', 'replace-home', 'start-empty']
+        : ['replace-home', 'start-empty'];
+      if (
+        choice === 'start-empty' &&
+        (target.volumes.some(
+          (volume) =>
+            group.volumes.includes(volume.name) &&
+            (volume.driver !== 'local' ||
+              (projectId !== undefined &&
+                !projectVolume(
+                  volume.labels,
+                  target.containers,
+                  projectRoot,
+                  projectId,
+                  target.volumes,
+                ))),
+        ) ||
+          (projectRoot !== undefined &&
+            group.bindPaths.some((path) => path === projectRoot || !within(projectRoot, path))))
+      )
+        throw new ValidationError(
+          'Start with empty data requires project-owned local volumes and in-project data folders.',
+        );
+      if (choice && !available.includes(choice))
+        throw new ValidationError('Unavailable Docker data choice for this ownership group.');
+      const anyWithoutData = selected.some((member) => member.selectedMode === 'without-data');
+      let defaultAction: DockerDataChoice = 'replace-home';
+      if (holdsData) defaultAction = 'keep-vm';
+      else if (anyWithoutData) defaultAction = 'start-empty';
+      const action = choice ?? defaultAction;
+      if (action === 'replace-home' && anyWithoutData)
+        throw new ValidationError(
+          'Docker items sharing data cannot mix replacement and without-data choices',
+        );
+      for (const member of members) {
+        member.dataGroup = group.itemIds;
+        member.dataState = group.state;
+        member.dataChoices = available;
+        member.dataChoice = choice ?? (holdsData ? 'keep-vm' : undefined);
+        member.dataAction = action;
+        member.dataChoiceRequired = false;
+        member.missingData = missing;
+        const existing = vmContainerNamed(target, member.name);
+        if (!existing) {
+          if (
+            holdsData &&
+            !compatibleRecord &&
+            member.ownership?.class === 'follows-user' &&
+            member.dataAction === 'keep-vm' &&
+            member.selectedMode !== 'data-only'
+          )
+            member.blockers.push({
+              code: 'ownership-data-incompatible',
+              message:
+                'The VM data has no matching ownership representation. Replace with home data or start with empty data before creating this container with VM user ids.',
+            });
+          continue;
+        }
+        if (member.targetAction === 'conflict' || member.selectedMode === 'data-only') continue;
+        member.vmUser = existing.user;
+        if (member.dataAction !== 'keep-vm') {
+          member.targetAction = 'replace';
+          continue;
+        }
+        const desired = dockerTargetUser(member);
+        if (incompatible && existing.user !== desired) {
+          member.targetAction = 'leave-as-is';
+          member.retainedOwnership =
+            inventory?.items.find((item) => item.name === member.name)?.ownership ??
+            (member.ownership
+              ? {
+                  class: 'exact',
+                  home: member.ownership.home,
+                  vm: member.ownership.vm,
+                  targetUser: existing.user,
+                }
+              : undefined);
+          member.notes.push(
+            `runs as ${existing.user || '0'} until its data is reset or copied again`,
+          );
+        } else if (existing.user !== desired) {
+          // The recorded representation agrees: only the container needs recreation.
+          member.targetAction = 'replace';
+        } else {
+          member.targetAction = 'leave-as-is';
+        }
+      }
+      continue;
+    }
+    if (choice === 'start-empty')
+      throw new ValidationError('Start with empty data is unavailable for this group.');
+    for (const member of members) member.dataChoices = ['keep-vm', 'replace-home'];
     const requiresChoice =
       group.state === 'both-changed' ||
       group.state === 'unknown' ||

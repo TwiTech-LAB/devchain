@@ -211,6 +211,7 @@ export function useExternalTaskController(
     getNextPageParam: (lastPage, _allPages, _lastPageParam, allPageParams) =>
       nextCommentPageParam(lastPage, allPageParams),
   });
+  const { fetchNextPage } = commentsQuery;
 
   const loadEarlier = useCallback(async (): Promise<void> => {
     if (!identityAccepted || commentsQuery.isFetchingNextPage) return;
@@ -238,7 +239,7 @@ export function useExternalTaskController(
       // same failed cursor. Stop on failure with the query error state left
       // intact so the Retry UI can render from it.
       try {
-        await commentsQuery.fetchNextPage({ throwOnError: true });
+        await fetchNextPage({ throwOnError: true });
       } catch {
         setCommentsMessage(null);
         return;
@@ -250,13 +251,7 @@ export function useExternalTaskController(
       }
     }
     setCommentsMessage(COMMENTS_CHANGED_WHILE_LOADING_MESSAGE);
-  }, [
-    identityAccepted,
-    commentsQuery.isFetchingNextPage,
-    commentsQuery.fetchNextPage,
-    commentsKey,
-    queryClient,
-  ]);
+  }, [identityAccepted, commentsQuery.isFetchingNextPage, fetchNextPage, commentsKey, queryClient]);
 
   const mutation = useMutation<ExternalTaskActionResult, Error, ExternalTaskMutationVariables>({
     mutationFn: async (variables): Promise<ExternalTaskActionResult> => {
@@ -361,10 +356,11 @@ export function useExternalTaskController(
     [captureMutation, mutation],
   );
 
+  const { reset: resetQueryMutation } = mutation;
   const resetMutation = useCallback(() => {
     currentOperationIdRef.current = null;
-    mutation.reset();
-  }, [mutation]);
+    resetQueryMutation();
+  }, [resetQueryMutation]);
 
   const mutationPresentationCurrent =
     mutation.variables === undefined || isCurrentOperation(mutation.variables);

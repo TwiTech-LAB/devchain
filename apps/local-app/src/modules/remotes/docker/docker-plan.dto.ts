@@ -10,7 +10,7 @@ export const DockerSelectionModeSchema = z.enum([
   'without-data',
   'data-only',
 ]);
-export const DockerDataChoiceSchema = z.enum(['keep-vm', 'replace-home']);
+export const DockerDataChoiceSchema = z.enum(['keep-vm', 'replace-home', 'start-empty']);
 export type DockerDataChoice = z.infer<typeof DockerDataChoiceSchema>;
 export const DockerSelectionItemSchema = z
   .object({
@@ -18,6 +18,7 @@ export const DockerSelectionItemSchema = z
     mode: DockerSelectionModeSchema,
     dataChoice: DockerDataChoiceSchema.optional(),
     acceptPrivileged: z.literal(true).optional(),
+    moveWithoutUserFix: z.literal(true).optional(),
   })
   .strict();
 /** Only item identities and choices; the server re-scans and builds what moves itself. */
@@ -79,7 +80,73 @@ export interface DockerNetworkRange {
   name: string;
   subnets: string[];
 }
+export interface DockerUserIds {
+  uid: number;
+  gid: number;
+}
+export interface DockerOwnershipContext {
+  home: DockerUserIds;
+  vm: DockerUserIds;
+}
+export interface DockerComposeUserSource {
+  directory: string;
+  files: string[];
+  service: string;
+}
+export interface DockerUserFixProposal {
+  id: string;
+  service: string;
+  container: string | null;
+  file: string | null;
+  line: number | null;
+  oldUser: string | null;
+  newUser: string;
+  canApply: boolean;
+  reason?: string;
+  hint: string;
+}
+export const DockerUserFixApplySchema = z
+  .object({
+    remoteId: z.string().uuid(),
+    proposalId: z.string().uuid(),
+    confirmed: z.literal(true),
+  })
+  .strict();
+export const DockerUserFixVerifySchema = z.object({ remoteId: z.string().uuid() }).strict();
+export interface DockerUserFixApplyResult {
+  applied: true;
+}
+/** Shared by planning, transfer records and data groups; absent means exact ownership. */
+export interface DockerOwnershipDecision extends DockerOwnershipContext {
+  class: 'exact' | 'follows-user' | 'needs-user-fix' | 'image-user-hint';
+  target?: { user: string; groupAdd: string[] };
+  compose?: DockerComposeUserSource;
+  fixProposal?: DockerUserFixProposal;
+  refusalReasons?: DockerPlanIssue[];
+}
+export interface DockerServiceOwnership {
+  service: string;
+  ownership: DockerOwnershipDecision;
+}
+/** Secret-free identity of the container/data representation actually retained on the VM. */
+export interface DockerOwnershipRecord extends DockerOwnershipContext {
+  class: DockerOwnershipDecision['class'];
+  targetUser?: string;
+}
+/** The owners actually stored on the VM, independent of container classification. */
+export interface DockerDataRepresentation extends DockerOwnershipContext {
+  kind: 'exact' | 'mapped';
+}
+export interface DockerDataRepresentationGroup extends DockerDataMembers {
+  representation?: DockerDataRepresentation;
+}
 export interface DockerPlanItem {
+  runtimeUser?: string;
+  vmUser?: string;
+  retainedOwnership?: DockerOwnershipRecord;
+  dataChoices?: DockerDataChoice[];
+  ownership?: DockerOwnershipDecision;
+  serviceOwnership?: DockerServiceOwnership[];
   buildsFromProject?: boolean;
   privileged?: boolean;
   networks?: DockerNetworkRange[];
@@ -177,7 +244,7 @@ export interface DockerTransferDetails {
   item: { name: string; phase: 'image' | 'volume' | 'bind' | 'network' | 'container' } | null;
   /** Previously imported VM copies this Connect replaces; a cancel does not restore them. */
   replaced: string[];
-  result?: { withoutData: string[]; dataOnly: string[] };
+  result?: { withoutData: string[]; dataOnly: string[]; alreadyTargetEntries?: number };
 }
 
 export const DOCKER_WRITABLE_LAYER_NOTE =
@@ -191,6 +258,10 @@ export interface DockerDataMembers {
   bindPaths: string[];
 }
 export interface DockerDataGroup extends DockerDataMembers {
+  ownership?: DockerOwnershipDecision;
+  ownershipConsumers?: Array<
+    DockerDataMembers & { name: string; itemId?: string; ownership: DockerOwnershipDecision }
+  >;
   itemIds: string[];
 }
 export type DockerDataState =

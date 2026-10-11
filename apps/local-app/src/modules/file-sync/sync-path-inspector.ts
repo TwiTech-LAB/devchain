@@ -6,7 +6,11 @@ import { projectRepository } from './project-repository';
 import { ValidationError } from '../../common/errors/error-types';
 import { SYNCTHING_GIT_EXCLUDES } from '../../common/constants/syncthing-markers';
 import { ProcessExecutor } from '../terminal/services/process-executor/process-executor.port';
-import { compileIgnorePattern, type CompiledIgnorePattern } from './ignore-pattern-matcher';
+import {
+  compileIgnorePattern,
+  firstCompiledMatch,
+  type CompiledIgnorePattern,
+} from './ignore-pattern-matcher';
 import { translateGitIgnoreRule } from './translate-git-ignore-rule';
 import {
   SYNC_PATTERN_KEPT_SAMPLE_MAX,
@@ -65,10 +69,29 @@ export class SyncPathInspector {
     scan: boolean,
     paths: readonly string[] = [],
     patterns?: readonly string[],
+    skipIgnores?: readonly string[],
   ): Promise<SyncPathInspection> {
     if (!isAbsolute(root))
       throw new ValidationError('The inspection root must be an absolute path.');
-    const request = SyncInspectRequestSchema.parse({ path: root, scan, paths, patterns });
+    const request = SyncInspectRequestSchema.parse({
+      path: root,
+      scan,
+      paths,
+      patterns,
+      skipIgnores,
+    });
+    const effective = request.skipIgnores ?? [];
+    const ignoreRules = effective.map(compileIgnorePattern);
+    const pruned = (name: string): boolean => {
+      if (!scan) return false;
+      const match = firstCompiledMatch(ignoreRules, name);
+      // A keep rule can match descendants even when the folder itself is excluded.
+      return (
+        match.kind === 'matched' &&
+        match.ignored &&
+        !ignoreRules.slice(0, match.index).some((rule) => rule.kind === 'pattern' && !rule.ignored)
+      );
+    };
     root = resolve(request.path);
     const stat = async (path: string): Promise<Stats | null> =>
       this.files.lstat(path).catch((error: NodeJS.ErrnoException) => {
@@ -120,7 +143,7 @@ export class SyncPathInspector {
             });
           for (const child of children) {
             const childName = name ? `${name}/${child}` : child;
-            if (skipped(childName)) continue;
+            if (skipped(childName) || pruned(childName)) continue;
             const nested = await tree(childName);
             if (nested.stat?.isSymbolicLink()) continue;
             item.children.push(childName);
@@ -209,7 +232,8 @@ export class SyncPathInspector {
             .filter(Boolean)
             .map((name) => name.replace(/\/$/, ''));
           for (const name of ignored) {
-            if (!SyncRelativePathSchema.safeParse(name).success || skipped(name)) continue;
+            if (!SyncRelativePathSchema.safeParse(name).success || skipped(name) || pruned(name))
+              continue;
             try {
               await checkLinks(name);
             } catch (error) {

@@ -21,7 +21,7 @@
     "lint": "eslint \"{src,test}/**/*.{ts,tsx}\" --max-warnings=0",
     "lint:fix": "eslint \"{src,test}/**/*.{ts,tsx}\" --fix",
     "typecheck:test": "cross-env NODE_OPTIONS=--max-old-space-size=4096 tsc --noEmit --incremental false -p tsconfig.eslint.json",
-    "test": "node scripts/test-queue.mjs --selectProjects backend-unit backend-integration ui cli-helpers --maxWorkers=75% --workerIdleMemoryLimit=2GB",
+    "test": "node scripts/test-queue.mjs --selectProjects backend-unit backend-integration ui cli-helpers e2e --maxWorkers=75% --workerIdleMemoryLimit=2GB",
     "test:watch": "cross-env NODE_ENV=test jest --watch --maxWorkers=75%",
     "test:cov": "node scripts/test-queue.mjs --coverage --selectProjects backend-unit backend-integration ui cli-helpers --maxWorkers=75% --workerIdleMemoryLimit=512MB",
     "test:cov:full": "node scripts/test-queue.mjs --coverage --runInBand",
@@ -160,6 +160,7 @@
     "eslint": "^9.39.5",
     "eslint-config-prettier": "^10.1.8",
     "eslint-plugin-prettier": "^5.5.6",
+    "eslint-plugin-react-hooks": "^7.1.1",
     "globals": "^17.8.0",
     "identity-obj-proxy": "3.0.0",
     "jest": "30.4.1",
@@ -298,6 +299,7 @@
         "testEnvironment": "node",
         "transform": {}
       },
+      "<rootDir>/../test/jest-e2e.json",
       {
         "displayName": "external-integration",
         "rootDir": "src",

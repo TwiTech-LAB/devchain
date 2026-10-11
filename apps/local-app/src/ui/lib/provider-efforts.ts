@@ -2,7 +2,7 @@ import { queryOptions } from '@tanstack/react-query';
 import type { ProviderEffortsResponse } from '@/modules/providers/controllers/provider-efforts.controller';
 import type { ProviderEffort } from '@/modules/storage/models/domain.models';
 import type { FetchFn } from './api-transport';
-import { fetchJsonOrThrow } from './sessions';
+import { fetchJsonOrThrow } from './http-json';
 
 export type { ProviderEffort, ProviderEffortsResponse };
 export type ProviderEffortOption = Pick<ProviderEffort, 'id' | 'name'>;

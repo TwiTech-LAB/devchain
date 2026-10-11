@@ -18,7 +18,7 @@ export function useEpicExternalSources(
         },
       );
       if (!response.ok) throw new Error('External task source could not be loaded.');
-      return response.json();
+      return response.json() as Promise<{ items: ExternalTaskSourceSummary[] }>;
     },
     enabled: enabled && Boolean(epicId),
   });

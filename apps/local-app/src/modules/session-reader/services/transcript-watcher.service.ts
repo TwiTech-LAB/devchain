@@ -1,5 +1,6 @@
+import { OnCatalogEvent } from '../../events/catalog/on-catalog-event';
 import { Injectable, Logger, OnModuleDestroy, Optional } from '@nestjs/common';
-import { EventEmitter2, OnEvent } from '@nestjs/event-emitter';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import * as fs from 'node:fs';
 import * as fsPromises from 'node:fs/promises';
 import {
@@ -41,7 +42,7 @@ import type { SessionCrashedEventPayload } from '../../events/catalog/session.cr
 import {
   SESSION_TRANSCRIPT_TURN_SIGNAL,
   type SessionTranscriptTurnSignal,
-} from '../../terminal/services/session-turn-signals';
+} from '../../events/signals/session-turn-signals';
 
 /** Debounce window for coalescing rapid JSONL appends */
 const DEBOUNCE_MS = 100;
@@ -201,7 +202,7 @@ export class TranscriptWatcherService implements OnModuleDestroy {
   // Event listeners
   // ---------------------------------------------------------------------------
 
-  @OnEvent('session.transcript.discovered', { async: true })
+  @OnCatalogEvent('session.transcript.discovered', { async: true })
   async handleTranscriptDiscovered(
     payload: SessionTranscriptDiscoveredEventPayload,
   ): Promise<void> {
@@ -220,12 +221,12 @@ export class TranscriptWatcherService implements OnModuleDestroy {
     }
   }
 
-  @OnEvent('session.stopped', { async: true })
+  @OnCatalogEvent('session.stopped', { async: true })
   async handleSessionStopped(payload: SessionStoppedEventPayload): Promise<void> {
     await this.stopWatching(payload.sessionId, 'session.stopped');
   }
 
-  @OnEvent('session.crashed', { async: true })
+  @OnCatalogEvent('session.crashed', { async: true })
   async handleSessionCrashed(payload: SessionCrashedEventPayload): Promise<void> {
     await this.stopWatching(payload.sessionId, 'session.crashed');
   }

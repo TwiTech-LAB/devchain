@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { IgnorePatternsSchema } from './file-sync.dto';
+import { FolderIgnoresSchema, IgnorePatternsSchema } from './file-sync.dto';
 
 const absolute = (path: string) => /^(?:\/|[A-Za-z]:[\\/])/.test(path);
 
@@ -27,6 +27,7 @@ export const SyncInspectRequestSchema = z
     scan: z.boolean(),
     paths: z.array(SyncRelativePathSchema),
     patterns: IgnorePatternsSchema.optional(),
+    skipIgnores: FolderIgnoresSchema.optional(),
   })
   .strict();
 export type SyncInspectRequest = z.infer<typeof SyncInspectRequestSchema>;
@@ -93,7 +94,6 @@ export const SyncPathInspectionSchema = z.object({
   exists: z.boolean(),
   repository: z.boolean(),
   projectOwner: SyncPathOwnerSchema.nullable(),
-  vmUser: SyncPathOwnerSchema.optional(),
   gitState: z.enum(['repo', 'no-repo', 'error']),
   gitError: z.string().optional(),
   candidates: z.array(SyncRelativePathSchema),
@@ -144,15 +144,6 @@ export function isSelectableExclusion(group: ExclusionSuggestion): boolean {
     !group.gitUnchecked &&
     !group.chown &&
     !group.patternError
-  );
-}
-export function isGiveOwnershipEligible(group: ExclusionSuggestion): boolean {
-  return (
-    !group.gitUnchecked &&
-    !!group.vm &&
-    (group.vm.foreignOwner || group.vm.foreignOwners.length > 0) &&
-    group.vm.tracked === false &&
-    group.vm.ignored === false
   );
 }
 export interface ProjectExclusionSuggestions extends ExclusionSuggestions {

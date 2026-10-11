@@ -1,3 +1,4 @@
+import { SessionRowStore } from '../storage/sessions/session-row.store';
 import { Inject, Injectable } from '@nestjs/common';
 import type { BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
 import { createLogger } from '../../common/logging/logger';
@@ -38,6 +39,7 @@ export class SessionTerminalRuntimeService {
     private readonly runtimeContextCapture: RuntimeContextCaptureService,
     claudeLaunchSettings: ClaudeLaunchSettingsMaterializerService,
     codexPluginProfiles: CodexPluginProfileMaterializerService,
+    private readonly sessionRows: SessionRowStore,
   ) {
     this.sqlite = getRawSqliteClient(db);
     this.artifactOwners = [
@@ -108,13 +110,7 @@ export class SessionTerminalRuntimeService {
     void this.releaseProviderArtifacts(sessionId);
 
     const now = new Date().toISOString();
-    this.sqlite
-      .prepare(
-        `UPDATE sessions
-         SET status = 'failed', ended_at = ?, updated_at = ?
-         WHERE id = ? AND status = 'running'`,
-      )
-      .run(now, now, sessionId);
+    this.sessionRows.retireConfirmedLoss(sessionId, now);
   }
 
   releaseProviderArtifacts(sessionId: string): Promise<void> {

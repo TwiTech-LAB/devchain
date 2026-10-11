@@ -44,7 +44,7 @@ async function restoreBackup(projectId: string, backupId: string): Promise<{ suc
     const error = await res.json().catch(() => ({ message: 'Restore failed' }));
     throw new Error(error.message || 'Restore failed');
   }
-  return res.json();
+  return res.json() as Promise<{ success: boolean }>;
 }
 
 export function UpgradeDialog({

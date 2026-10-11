@@ -706,9 +706,7 @@ export function useTerminalMessageHandlers(
     },
     [
       sessionId,
-      terminalRef,
       xtermRef,
-      fitAddonRef,
       lastSequenceRef,
       isAuthorityRef,
       isSubscribedRef,
@@ -724,7 +722,6 @@ export function useTerminalMessageHandlers(
       handleSeedChunk,
       handleSeedEmpty,
       flushPendingWrites,
-      setIgnoreWindow,
       onSessionEnded,
       scrollbackLines,
       socket,

@@ -1,5 +1,4 @@
 import { useState } from 'react';
-import { dockerCopyBackMismatchMessage } from '@/modules/remotes/vm-user-identity';
 import { useQuery } from '@tanstack/react-query';
 import type {
   DockerCopyBackChoice,
@@ -32,6 +31,7 @@ import { cn } from '@/ui/lib/utils';
 import { useProjectFileSyncFailures } from './file-sync-failures';
 import { StartError } from './StartError';
 import { FileSyncLossItems } from './file-sync-display';
+import { DockerDataOwners } from './DockerDataOwners';
 
 /** The Connect dialog's names for the same states. */
 const STATE_LABELS: Record<DockerDataState, string> = {
@@ -58,9 +58,18 @@ function groupNames(group: DockerSyncGroup): string[] {
   return group.itemNames.length ? group.itemNames : [...group.volumes, ...group.bindPaths];
 }
 
+function syncedByFileSync(group: DockerSyncGroup): boolean {
+  return Boolean(group.syncedByFileSync?.length);
+}
+
+/** A group the copy can take: file sync does not own it and no ownership rule holds it on the VM. */
+function copyEligible(group: DockerSyncGroup): boolean {
+  return !group.skipReason && !syncedByFileSync(group);
+}
+
 /** Changed on the VM, or the user must choose: shown in yellow, and first. */
 function marked(group: DockerSyncGroup): boolean {
-  return group.needsChoice || VM_CHANGED_STATES.has(group.state);
+  return copyEligible(group) && (group.needsChoice || VM_CHANGED_STATES.has(group.state));
 }
 
 /** "4 of 5 data groups copy home; 1 needs your choice". */
@@ -68,13 +77,72 @@ function copySummary(
   groups: DockerSyncGroup[],
   choices: Record<string, DockerCopyBackChoice>,
 ): string {
-  const copied = groups.filter(
-    (group) =>
-      group.state === 'vm-newer' || (group.needsChoice && choices[group.key] === 'copy-home'),
+  const eligible = groups.filter(copyEligible);
+  const copied = eligible.filter((group) =>
+    group.needsChoice ? choices[group.key] === 'copy-home' : group.state === 'vm-newer',
   ).length;
-  const open = groups.filter((group) => group.needsChoice && !choices[group.key]).length;
-  const summary = `${copied} of ${groups.length} data ${groups.length === 1 ? 'group' : 'groups'} ${copied === 1 ? 'copies' : 'copy'} home`;
+  const open = eligible.filter((group) => group.needsChoice && !choices[group.key]).length;
+  const summary = `${copied} of ${eligible.length} data ${eligible.length === 1 ? 'group' : 'groups'} ${copied === 1 ? 'copies' : 'copy'} home`;
   return open ? `${summary}; ${open} ${open === 1 ? 'needs' : 'need'} your choice` : summary;
+}
+
+/**
+ * What Disconnect does with one group's data: file sync owns it, it stays on the VM, the user
+ * chooses, or the copy follows from the group's state.
+ */
+function DataAction({
+  group,
+  choices,
+  pending,
+  onChoose,
+}: {
+  group: DockerSyncGroup;
+  choices: Record<string, DockerCopyBackChoice>;
+  pending: boolean;
+  onChoose?: (key: string, choice: DockerCopyBackChoice) => void;
+}) {
+  const fileSyncedPaths = group.syncedByFileSync?.map((path) => (
+    <span key={path} className="block break-all">
+      {path}: synced by file sync
+    </span>
+  ));
+  if (group.skipReason)
+    return (
+      <>
+        <span className="block">Stays on the VM</span>
+        <span className="block">{group.skipReason}</span>
+        {fileSyncedPaths}
+      </>
+    );
+  if (syncedByFileSync(group)) return fileSyncedPaths;
+  if (!onChoose) return <span className="block">Stays on the VM</span>;
+  if (!group.needsChoice) return <span className="block">{COPY_LABELS[group.state]}</span>;
+  return (
+    <>
+      {group.createdOnVm && (
+        <p className="text-muted-foreground">
+          This PC already has data here. It can be an incomplete copy from file sync. Copying
+          replaces it.
+        </p>
+      )}
+      <Select
+        value={choices[group.key] ?? ''}
+        disabled={pending}
+        onValueChange={(value) => onChoose(group.key, value as DockerCopyBackChoice)}
+      >
+        <SelectTrigger
+          aria-label={`Choice for ${groupNames(group).join(', ')}`}
+          className={cn('h-8 w-full', !choices[group.key] && 'border-status-warn')}
+        >
+          <SelectValue placeholder="Choose" />
+        </SelectTrigger>
+        <SelectContent>
+          <SelectItem value="copy-home">Copy the VM&apos;s data to this PC</SelectItem>
+          <SelectItem value="keep-home">Keep this PC&apos;s data</SelectItem>
+        </SelectContent>
+      </Select>
+    </>
+  );
 }
 
 /**
@@ -113,7 +181,6 @@ function DockerDataTable({
       <tbody>
         {rows.map((group) => {
           const yellow = marked(group);
-          const name = groupNames(group).join(', ');
           return (
             <tr
               key={group.key}
@@ -141,30 +208,16 @@ function DockerDataTable({
                       'w-fit rounded-full bg-status-warn/10 px-2 py-0.5 text-xs font-medium text-status-warn',
                   )}
                 >
-                  {STATE_LABELS[group.state]}
+                  {group.createdOnVm ? 'Created on the VM' : STATE_LABELS[group.state]}
                 </span>
-                {!onChoose ? (
-                  <span className="block">Stays on the VM</span>
-                ) : group.needsChoice ? (
-                  <Select
-                    value={choices[group.key] ?? ''}
-                    disabled={pending}
-                    onValueChange={(value) => onChoose(group.key, value as DockerCopyBackChoice)}
-                  >
-                    <SelectTrigger
-                      aria-label={`Choice for ${name}`}
-                      className={cn('h-8 w-full', !choices[group.key] && 'border-status-warn')}
-                    >
-                      <SelectValue placeholder="Choose" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="copy-home">Copy the VM&apos;s data to this PC</SelectItem>
-                      <SelectItem value="keep-home">Keep this PC&apos;s data</SelectItem>
-                    </SelectContent>
-                  </Select>
-                ) : (
-                  <span className="block">{COPY_LABELS[group.state]}</span>
-                )}
+                <DataAction group={group} choices={choices} pending={pending} onChoose={onChoose} />
+                {onChoose &&
+                  copyEligible(group) &&
+                  (group.needsChoice
+                    ? choices[group.key] !== 'keep-home'
+                    : group.state === 'vm-newer') && (
+                    <DockerDataOwners parts={group.dataRepresentations ?? []} direction="to-home" />
+                  )}
               </td>
             </tr>
           );
@@ -238,14 +291,20 @@ export function DisconnectProjectDialog({
   const checkFailed = !forced && (sync.isError || state === null);
   const homeDockerUsable =
     !forced &&
-    state?.imported === true &&
+    state != null &&
+    (state.imported || state.groups.length > 0) &&
     (state.availability.available ||
       (state.availability.side === 'remote' &&
         state.availability.reason?.code !== 'vm-user-mismatch'));
-  const vmChanged = state?.groups.filter((group) => VM_CHANGED_STATES.has(group.state)) ?? [];
-  const copyDocker = copyChoice ?? vmChanged.length > 0;
+  const eligible = state?.groups.filter(copyEligible) ?? [];
+  const vmChanged = eligible.filter(
+    (group) => VM_CHANGED_STATES.has(group.state) || (group.createdOnVm && group.needsChoice),
+  );
+  const fileSynced = state?.groups.filter(syncedByFileSync) ?? [];
+  const held = state?.groups.filter((group) => group.skipReason && !syncedByFileSync(group)) ?? [];
+  const copyDocker = eligible.length > 0 && (copyChoice ?? vmChanged.length > 0);
   const copying = homeDockerUsable && copyDocker;
-  const choiceGroups = state?.groups.filter((group) => group.needsChoice) ?? [];
+  const choiceGroups = eligible.filter((group) => group.needsChoice);
   const missingChoice = copying && choiceGroups.some((group) => !choices[group.key]);
   // What home's Syncthing last knew it still needed; the remote cannot be asked.
   const need = useQuery(
@@ -303,9 +362,8 @@ export function DisconnectProjectDialog({
         )}
         {!forced && state?.availability.reason?.code === 'vm-user-mismatch' && (
           <p role="note" aria-label="Docker copy-back unavailable" className="text-sm">
-            {state.availability.userMismatch
-              ? dockerCopyBackMismatchMessage(state.availability.userMismatch)
-              : state.availability.reason.message}
+            Docker cannot determine the user ids on this PC and the VM. Refresh the VM information
+            before copying Docker data back.
           </p>
         )}
         {homeDockerUsable && (
@@ -315,7 +373,7 @@ export function DisconnectProjectDialog({
                 <Checkbox
                   id="disconnect-copy-docker"
                   checked={copyDocker}
-                  disabled={pending}
+                  disabled={pending || eligible.length === 0}
                   onCheckedChange={(checked) => setCopyChoice(checked === true)}
                 />
                 <Label htmlFor="disconnect-copy-docker" className="font-normal">
@@ -329,12 +387,12 @@ export function DisconnectProjectDialog({
                 </p>
               )}
             </div>
-            {!copying && vmChanged.length > 0 && (
+            {!copying && (vmChanged.length > 0 || fileSynced.length > 0 || held.length > 0) && (
               <div className="space-y-2">
-                <p>Without the copy, these changes stay on the VM:</p>
+                {vmChanged.length > 0 && <p>Without the copy, these changes stay on the VM:</p>}
                 <DockerDataTable
                   label="Docker data that stays on the VM"
-                  groups={vmChanged}
+                  groups={[...vmChanged, ...fileSynced, ...held]}
                   choices={choices}
                   pending={pending}
                 />

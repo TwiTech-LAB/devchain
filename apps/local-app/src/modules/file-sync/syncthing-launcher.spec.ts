@@ -1,8 +1,14 @@
+import { Test } from '@nestjs/testing';
+import fs from 'fs/promises';
 import { join } from 'path';
+import { ProcessExecutor } from '../terminal/services/process-executor/process-executor.port';
 import { createProductionFileSyncPaths } from './file-sync-paths';
 import {
   SYNCTHING_INSTALL_GUIDANCE,
+  HOST_SYNCTHING_BINARY,
   findSyncthingBinary,
+  hasOwnershipCapabilities,
+  NodeSyncthingLauncher,
   parseSyncthingVersion,
   type BinaryLookupDeps,
 } from './syncthing-launcher';
@@ -43,7 +49,7 @@ describe('findSyncthingBinary', () => {
   it('uses only SYNCTHING_BIN when it is set', async () => {
     const lookup = await findSyncthingBinary(
       deps(
-        { '/opt/st/syncthing': V2, '/usr/bin/syncthing': V2 },
+        { '/opt/st/syncthing': V2, [HOST_SYNCTHING_BINARY]: V2, '/usr/bin/syncthing': V2 },
         { explicitPath: '/opt/st/syncthing' },
       ),
     );
@@ -57,6 +63,12 @@ describe('findSyncthingBinary', () => {
       version: null,
       error: `SYNCTHING_BIN points at /opt/none/syncthing, which is not an executable file. ${SYNCTHING_INSTALL_GUIDANCE}`,
     });
+  });
+
+  it('prefers the executable host copy over PATH without an explicit override', async () => {
+    await expect(
+      findSyncthingBinary(deps({ [HOST_SYNCTHING_BINARY]: V2, '/usr/bin/syncthing': V2 })),
+    ).resolves.toEqual({ found: true, path: HOST_SYNCTHING_BINARY, version: 'v2.1.5' });
   });
 
   it('searches PATH in order, then ~/.devchain/bin', async () => {
@@ -116,6 +128,47 @@ describe('findSyncthingBinary', () => {
     );
   });
 });
+
+describe('hasOwnershipCapabilities', () => {
+  it.each([
+    ['000000000000000b', true],
+    ['000000000000000f', true],
+    ['000001000000000B', true],
+    ['000000000000000a', false],
+    ['0000000000000009', false],
+    ['0000000000000003', false],
+    ['0000000000000000', false],
+    ['invalid', false],
+  ])('requires all three effective capabilities for %s', (effective, privileged) => {
+    expect(hasOwnershipCapabilities(`Name:\tsyncthing\nCapEff:\t${effective}\n`)).toBe(privileged);
+  });
+
+  it('does not use permitted capabilities or assume privilege without CapEff', () => {
+    expect(hasOwnershipCapabilities('CapPrm:\t000000000000000b\n')).toBe(false);
+  });
+});
+
+(process.platform === 'linux' ? describe : describe.skip)(
+  'NodeSyncthingLauncher capabilities',
+  () => {
+    it('reads the requested process and fails closed when its status cannot be read', async () => {
+      const moduleRef = await Test.createTestingModule({
+        providers: [NodeSyncthingLauncher, { provide: ProcessExecutor, useValue: {} }],
+      }).compile();
+      const read = jest.spyOn(fs, 'readFile').mockResolvedValue('CapEff:\t000000000000000b\n');
+      try {
+        const launcher = moduleRef.get(NodeSyncthingLauncher);
+        await expect(launcher.hasOwnershipCapabilities(123)).resolves.toBe(true);
+        expect(read).toHaveBeenCalledWith('/proc/123/status', 'utf8');
+        read.mockRejectedValue(new Error('process gone'));
+        await expect(launcher.hasOwnershipCapabilities(124)).resolves.toBe(false);
+      } finally {
+        read.mockRestore();
+        await moduleRef.close();
+      }
+    });
+  },
+);
 
 describe('createProductionFileSyncPaths', () => {
   const paths = createProductionFileSyncPaths('/home/dev');

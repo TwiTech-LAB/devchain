@@ -23,12 +23,14 @@ import { DockerArchiveJournal } from '../core/controllers/docker-archive-journal
 import { HostDockerRecoveryService } from './host/host-docker-recovery.service';
 import { HostDockerController } from './host/host-docker.controller';
 import { HostDockerService } from './host/host-docker.service';
+import { HostDockerVolumeAssociationsStore } from './host/host-docker-volume-associations.store';
 import { HostDockerBodyParser } from './host/host-docker-body.parser';
 import { DockerPlanController } from './docker/docker-plan.controller';
 import { DockerPlanService } from './docker/docker-plan.service';
 import { DockerPlanSourceService } from './docker/docker-plan-source.service';
 import { DockerHandoff } from './docker/docker-handoff';
 import { DockerCopyBack } from './docker/docker-copy-back';
+import { DockerCopyBackExclusions } from './docker/docker-copy-back-exclusions';
 import { DockerHandoffStore } from './docker/docker-handoff.store';
 import { TranscriptPathValidator } from '../session-reader/services/transcript-path-validator.service';
 import { TranscriptFilesService } from './transcripts/transcript-files.service';
@@ -160,6 +162,7 @@ import { HostSshKeysService } from './host/host-ssh-keys.service';
     HostTranscriptBodyParser,
     HostDockerBodyParser,
     HostDockerService,
+    HostDockerVolumeAssociationsStore,
     HostDockerRecoveryService,
     { provide: DockerArchiveJournal, useFactory: () => new DockerArchiveJournal() },
     TranscriptPathValidator,
@@ -181,6 +184,7 @@ import { HostSshKeysService } from './host/host-ssh-keys.service';
     { provide: DockerHandoffStore, useFactory: () => new DockerHandoffStore() },
     DockerHandoff,
     DockerCopyBack,
+    DockerCopyBackExclusions,
     AttachOperation,
     DetachOperation,
     ForceSyncOperation,

@@ -8,8 +8,9 @@ import {
   MessageBody,
   WsException,
 } from '@nestjs/websockets';
-import { Injectable, Inject, Optional, forwardRef, OnModuleInit } from '@nestjs/common';
-import { OnEvent } from '@nestjs/event-emitter';
+import { Injectable, Inject, Optional, OnModuleInit } from '@nestjs/common';
+import { OnCatalogEvent } from '../../events/catalog/on-catalog-event';
+import type { EventPayload } from '../../events/catalog';
 import { Server, Socket } from 'socket.io';
 import { createHash } from 'node:crypto';
 import { createLogger } from '../../../common/logging/logger';
@@ -194,7 +195,6 @@ export class TerminalGateway implements OnGatewayConnection, OnGatewayDisconnect
     private readonly settingsService: SettingsService,
     private readonly ptyService: PtyService,
     private readonly seedService: TerminalSeedService,
-    @Inject(forwardRef(() => TerminalIOService))
     private readonly terminalIO: TerminalIOService,
     private readonly humanPromptInput: HumanPromptInputService,
     private readonly registry: TerminalSessionRegistry,
@@ -1074,7 +1074,10 @@ export class TerminalGateway implements OnGatewayConnection, OnGatewayDisconnect
     } else {
       try {
         await this.humanPromptInput.run(session, { kind: 'submit-text' }, () =>
-          this.terminalIO.deliverImmediate(target, data, { bracketed: true }),
+          this.terminalIO.deliverImmediate(target, data, {
+            bracketed: true,
+            requireForegroundProgram: false,
+          }),
         );
       } catch (error) {
         logger.warn({ sessionId, error: String(error) }, 'deliverImmediate failed');
@@ -1180,6 +1183,7 @@ export class TerminalGateway implements OnGatewayConnection, OnGatewayDisconnect
         this.terminalIO.deliverImmediate(target, payload.data, {
           bracketed: true,
           submitKeys: [],
+          requireForegroundProgram: false,
         }),
       );
       return { ok: true, code: 'OK', requestId: payload.requestId };
@@ -1393,8 +1397,8 @@ export class TerminalGateway implements OnGatewayConnection, OnGatewayDisconnect
 
   // ── Session lifecycle events ────────────────────────────────────────
 
-  @OnEvent('session.crashed')
-  handleSessionCrashed(payload: { sessionId: string; sessionName: string }) {
+  @OnCatalogEvent('session.crashed')
+  handleSessionCrashed(payload: EventPayload<'session.crashed'>) {
     // Mirror handleDeadTmuxSession: without this the DB row stays 'running'
     // and the registry entry survives, blocking a later restore with
     // "TerminalSession already exists".
@@ -1416,13 +1420,8 @@ export class TerminalGateway implements OnGatewayConnection, OnGatewayDisconnect
       .emit('message', createEnvelope(`session/${payload.sessionId}`, 'state_change', ep));
   }
 
-  @OnEvent('session.started')
-  handleSessionStarted(payload: {
-    sessionId: string;
-    epicId: string | null;
-    agentId: string;
-    tmuxSessionName: string;
-  }) {
+  @OnCatalogEvent('session.started')
+  handleSessionStarted(payload: EventPayload<'session.started'>) {
     const ep: SessionStatePayload = {
       sessionId: payload.sessionId,
       status: 'started',
@@ -1431,14 +1430,8 @@ export class TerminalGateway implements OnGatewayConnection, OnGatewayDisconnect
     this.server.emit('message', createEnvelope('sessions', 'started', ep));
   }
 
-  @OnEvent('session.restored')
-  handleSessionRestored(payload: {
-    sessionId: string;
-    epicId: string | null;
-    agentId: string;
-    tmuxSessionName: string;
-    providerName: string;
-  }) {
+  @OnCatalogEvent('session.restored')
+  handleSessionRestored(payload: EventPayload<'session.restored'>) {
     // Defense-in-depth: the restore pipeline already cancels the replay clear SYNCHRONOUSLY at its
     // true start (before the first buffer-producing await), which is the boundary that actually keeps
     // the live sequence-domain. This event fires only at pipeline Phase 9, far too late to be that
@@ -1464,8 +1457,8 @@ export class TerminalGateway implements OnGatewayConnection, OnGatewayDisconnect
     this.server.emit('message', createEnvelope('sessions', 'started', ep));
   }
 
-  @OnEvent('session.stopped')
-  handleSessionStopped(payload: { sessionId: string }) {
+  @OnCatalogEvent('session.stopped')
+  handleSessionStopped(payload: EventPayload<'session.stopped'>) {
     this.cleanupSessionLifecycle(payload.sessionId, {
       replayRetentionMs: STOPPED_REPLAY_RETENTION_MS,
       disposeTerminalState: false,

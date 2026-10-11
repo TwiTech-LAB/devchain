@@ -237,9 +237,10 @@ export class InMemoryRemoteVmApi implements RemoteVmApi {
     saveProjectIgnores: [],
     readFileSyncSuggestions: [],
     previewFileSyncPattern: [],
-    giveFileOwnership: [],
     readFileSyncStatus: [],
     readDockerPlan: [],
+    applyDockerUserFix: [],
+    verifyDockerUserFix: [],
     readDockerPresence: [],
     readDockerSyncState: [],
     readConnectChoices: [],
@@ -580,15 +581,14 @@ export class InMemoryRemoteVmApi implements RemoteVmApi {
       home: { state: 'no-repo', tracked: null, kept: null },
       vm: { state: 'unavailable', tracked: null, kept: null },
     }),
-    giveFileOwnership: async (_projectId, paths) => ({
-      user: null,
-      items: paths.map((path) => ({ path, state: 'unsupported' as const, paths: [] })),
-    }),
     readFileSyncStatus: async () => this.fileSyncStatus,
     readDockerPlan: async () => {
       if (!this.dockerPlanData) throw new Error('The server returned an invalid Docker plan.');
       return this.dockerPlanData as DockerPlan;
     },
+    applyDockerUserFix: async () => undefined,
+    verifyDockerUserFix: (projectId, remoteId, signal) =>
+      this.defaults.readDockerPlan(projectId, { remoteId }, signal),
     readDockerPresence: async () => ({ state: 'unknown' }),
     readDockerSyncState: async () => null,
     readConnectChoices: async () => ({ remoteId: undefined, includeDocker: false, git: 'present' }),
@@ -648,9 +648,10 @@ export class InMemoryRemoteVmApi implements RemoteVmApi {
   readonly saveProjectIgnores = this.method('saveProjectIgnores');
   readonly readFileSyncSuggestions = this.method('readFileSyncSuggestions');
   readonly previewFileSyncPattern = this.method('previewFileSyncPattern');
-  readonly giveFileOwnership = this.method('giveFileOwnership');
   readonly readFileSyncStatus = this.method('readFileSyncStatus');
   readonly readDockerPlan = this.method('readDockerPlan');
+  readonly applyDockerUserFix = this.method('applyDockerUserFix');
+  readonly verifyDockerUserFix = this.method('verifyDockerUserFix');
   readonly readDockerPresence = this.method('readDockerPresence');
   readonly readDockerSyncState = this.method('readDockerSyncState');
   readonly readConnectChoices = this.method('readConnectChoices');

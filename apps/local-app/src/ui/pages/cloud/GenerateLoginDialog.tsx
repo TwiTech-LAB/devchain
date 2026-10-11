@@ -98,6 +98,7 @@ export function GenerateLoginDialog({
         if (id && !closedRef.current) setRunningId(id);
       },
     );
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- Start one login with the mount-time provider and label; rerenders must not start another.
   }, []);
 
   useEffect(() => {
@@ -111,6 +112,7 @@ export function GenerateLoginDialog({
         cancelOwn();
       }, 0);
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- Cleanup belongs to the mounted login; cancelOwn is recreated every render.
   }, []);
 
   useEffect(() => {
@@ -121,7 +123,7 @@ export function GenerateLoginDialog({
     ) {
       ownedIdRef.current = null;
     }
-  }, [generation?.id, generation?.state]);
+  }, [generation]);
 
   /** Escape, an outside click and Hide: they end only a login this dialog started. */
   const dismiss = () => {
@@ -147,6 +149,7 @@ export function GenerateLoginDialog({
       const timer = window.setTimeout(() => onCloseRef.current(), 400);
       return () => window.clearTimeout(timer);
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- Close once when storage completes; refetches must not cancel the auto-close timer.
   }, [stored]);
 
   return (

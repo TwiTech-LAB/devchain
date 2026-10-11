@@ -392,7 +392,7 @@ function SessionNameChip({
       queryClient.setQueryData(cacheKey, previous);
       toast({ variant: 'destructive', description: 'Failed to rename session.' });
     }
-  }, [editValue, projectId, sessionId, sessionName, queryClient, toast]);
+  }, [projectId, editValue, sessionName, queryClient, sessionId, apiFetch, toast]);
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent) => {

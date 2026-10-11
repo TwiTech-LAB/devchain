@@ -20,6 +20,8 @@ export class GuestDeliveryService {
       await this.terminalIO.deliverImmediate(sessionRef, message, {
         submitKeys: options?.submitKeys ?? ['Enter'],
         confirm: false,
+        // External guest panes need not start with DevChain's shell.
+        requireForegroundProgram: false,
       });
       return { delivered: true };
     } catch (error) {

@@ -1,4 +1,4 @@
-import { Injectable, Inject, OnModuleInit, forwardRef } from '@nestjs/common';
+import { Injectable, Inject, OnModuleInit } from '@nestjs/common';
 import { createLogger } from '../../../common/logging/logger';
 import { ValidationError, ConflictError } from '../../../common/errors/error-types';
 import {
@@ -21,8 +21,8 @@ export class GuestsService implements OnModuleInit {
 
   constructor(
     @Inject(STORAGE_SERVICE) private readonly storage: AgentStorage & GuestStorage & ProjectStorage,
-    @Inject(forwardRef(() => TerminalIOService)) private readonly terminalIO: TerminalIOService,
-    @Inject(forwardRef(() => EventsService)) private readonly eventsService: EventsService,
+    private readonly terminalIO: TerminalIOService,
+    private readonly eventsService: EventsService,
   ) {
     logger.info('GuestsService initialized');
   }

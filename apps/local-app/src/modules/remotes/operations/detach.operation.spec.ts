@@ -17,6 +17,7 @@ function setup(owner: GitOwner = 'vm') {
     partialGroups: jest.fn().mockResolvedValue([]),
     finish: jest.fn().mockResolvedValue(undefined),
     copyHome: jest.fn(),
+    prepareHomeCopy: jest.fn(),
   };
   const unused = {} as never;
   const detach = new DetachOperation(
@@ -121,19 +122,41 @@ describe('DetachOperation Docker copy home', () => {
     const { detach } = setup();
     expect(ids(detach.stepsFor({ force: false }))).not.toContain('docker_copy_home');
     expect(ids(detach.stepsFor({ force: false }))).toEqual(
-      ids(detach.steps).filter((id) => id !== 'docker_copy_home'),
+      ids(detach.steps).filter(
+        (id) => !['docker_exclude_copy_home', 'docker_copy_home'].includes(id),
+      ),
     );
     const withCopy = ids(detach.stepsFor({ force: false, dockerCopyBack: { choices: {} } }));
-    expect(withCopy.indexOf('docker_copy_home')).toBe(withCopy.indexOf('docker_stop_host') + 1);
+    expect(withCopy.indexOf('docker_exclude_copy_home')).toBe(
+      withCopy.indexOf('docker_stop_host') + 1,
+    );
+    expect(withCopy.indexOf('docker_copy_home')).toBe(
+      withCopy.indexOf('docker_exclude_copy_home') + 1,
+    );
     expect(withCopy.indexOf('docker_copy_home')).toBeLessThan(withCopy.indexOf('final_pull'));
   });
 
-  it('skips the copy step on a forced disconnect and without the opt-in', () => {
-    const { detach } = setup();
-    const step = detach.steps.find((s) => s.id === 'docker_copy_home')!;
-    expect(step.skip?.({ force: true, dockerCopyBack: { choices: {} } })).toBe(true);
-    expect(step.skip?.({ force: false, dockerCopyBack: { choices: {} } })).toBe(false);
-    expect(step.skip?.({ force: false })).toBe(true);
+  it.each(['docker_exclude_copy_home', 'docker_copy_home'])(
+    'skips %s on forced Disconnect or when Docker copy is off',
+    (id) => {
+      const { detach } = setup();
+      const step = detach.steps.find((s) => s.id === id)!;
+      expect(step.skip?.({ force: true, dockerCopyBack: { choices: {} } })).toBe(true);
+      expect(step.skip?.({ force: false, dockerCopyBack: { choices: {} } })).toBe(false);
+      expect(step.skip?.({ force: false })).toBe(true);
+    },
+  );
+
+  it('prepares only when a stored step still has a Docker-copy request', async () => {
+    const { detach, copyBack } = setup();
+    const step = detach.steps.find((s) => s.id === 'docker_exclude_copy_home')!;
+    const details: Record<string, unknown> = {};
+    const run = { operation: operation([], details), details, progress: jest.fn() };
+    await step.run(run);
+    expect(copyBack.prepareHomeCopy).not.toHaveBeenCalled();
+    details.dockerCopyBack = { choices: {} };
+    await step.run(run);
+    expect(copyBack.prepareHomeCopy).toHaveBeenCalledWith(run);
   });
 
   it('does nothing when a stored copy step runs without the opt-in', async () => {

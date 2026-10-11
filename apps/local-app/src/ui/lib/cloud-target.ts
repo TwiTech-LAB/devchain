@@ -7,6 +7,49 @@ import { HOME_BACKEND, apiFetch, type BackendId } from './api-transport';
  */
 export const CLOUD_TARGET_STORAGE_KEY = 'devchain.cloud.target';
 export const CLOUD_TARGET_CHANGED_EVENT = 'devchain:cloud-target:changed';
+export const CLOUD_SIGN_IN_NONCE_STORAGE_KEY = 'devchain.cloud.sign-in-nonce';
+const SIGN_IN_NONCE_TTL_MS = 20 * 60 * 1000;
+
+export function createCloudSignInCallbackUrl(): string {
+  const bytes = window.crypto.getRandomValues(new Uint8Array(16));
+  const nonce = Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('');
+  window.localStorage.setItem(
+    CLOUD_SIGN_IN_NONCE_STORAGE_KEY,
+    JSON.stringify({ nonce, createdAt: Date.now() }),
+  );
+  const callback = new URL('/auth/cloud/callback', window.location.origin);
+  callback.searchParams.set('nonce', nonce);
+  return callback.toString();
+}
+
+/** Starts a GitHub sign-in: stores a fresh nonce and returns the identity service URL. */
+export function createCloudGitHubSignInUrl(identityServiceUrl: string): string {
+  const redirectUri = createCloudSignInCallbackUrl();
+  return `${identityServiceUrl}/auth/github?response_mode=fragment_full&redirect_uri=${encodeURIComponent(redirectUri)}`;
+}
+
+/**
+ * True when the callback's nonce matches the one this browser stored and is
+ * younger than the sign-in lifetime. A match or an expired record is removed.
+ */
+export function consumeCloudSignInNonce(nonce: string | null): boolean {
+  try {
+    const raw = window.localStorage.getItem(CLOUD_SIGN_IN_NONCE_STORAGE_KEY);
+    const stored = raw
+      ? (JSON.parse(raw) as { nonce?: unknown; createdAt?: unknown } | null)
+      : null;
+    const matches = Boolean(nonce) && stored?.nonce === nonce;
+    const age = typeof stored?.createdAt === 'number' ? Date.now() - stored.createdAt : NaN;
+    // A mismatched callback must not cancel a legitimate sign-in still in progress.
+    if (matches || age >= SIGN_IN_NONCE_TTL_MS) {
+      window.localStorage.removeItem(CLOUD_SIGN_IN_NONCE_STORAGE_KEY);
+    }
+    return matches && age >= 0 && age < SIGN_IN_NONCE_TTL_MS;
+  } catch {
+    // Unreadable storage or a failed nonce deletion must refuse the token hand-off.
+    return false;
+  }
+}
 
 export interface PersistedCloudTarget {
   backend: BackendId;
@@ -53,8 +96,7 @@ export function openCloudOAuthPopup(
   target: PersistedCloudTarget,
 ): void {
   persistCloudTarget(target);
-  const redirectUri = window.location.origin + '/auth/cloud/callback';
-  const url = `${identityServiceUrl}/auth/github?response_mode=fragment_full&redirect_uri=${encodeURIComponent(redirectUri)}`;
+  const url = createCloudGitHubSignInUrl(identityServiceUrl);
   window.open(url, 'devchain-cloud-auth', 'width=600,height=700');
 }
 

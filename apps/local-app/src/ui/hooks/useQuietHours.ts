@@ -21,7 +21,7 @@ export function useQuietHours() {
         backend: HOME_BACKEND,
       });
       if (!res.ok) throw new Error(`quiet-hours:${res.status}`);
-      return res.json();
+      return res.json() as Promise<QuietHoursData>;
     },
     staleTime: 30_000,
   });

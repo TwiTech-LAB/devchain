@@ -309,7 +309,7 @@ function ChatSidebarInner({ data, sessionController, adminActions }: ChatSidebar
     enabled: shouldFetchTeams,
     refetchOnWindowFocus: true,
   });
-  const teams = teamsResponse?.items ?? [];
+  const teams = useMemo(() => teamsResponse?.items ?? [], [teamsResponse]);
 
   useEffect(() => {
     setCollapsedTeamGroups((previous) => {

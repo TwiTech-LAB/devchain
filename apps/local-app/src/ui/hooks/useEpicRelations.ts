@@ -157,7 +157,7 @@ async function requestSetEpicRelation(
   if (!res.ok) {
     throw await parseRequestError(res, 'The relation could not be saved.');
   }
-  return res.json();
+  return res.json() as Promise<EpicRelation>;
 }
 
 async function requestDeleteEpicRelation(

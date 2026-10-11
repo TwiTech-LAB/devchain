@@ -1,5 +1,5 @@
+import { OnCatalogEvent } from '../../events/catalog/on-catalog-event';
 import { Injectable, Logger } from '@nestjs/common';
-import { OnEvent } from '@nestjs/event-emitter';
 import { AgentMessageDeliveryService } from '../../agent-message-delivery/agent-message-delivery.service';
 import { getEventMetadata } from '../../events/services/events.service';
 import { EventLogService } from '../../events/services/event-log.service';
@@ -19,7 +19,7 @@ export class TeamMembershipChangedNotifierSubscriber {
     private readonly teamsService: TeamsService,
   ) {}
 
-  @OnEvent('team.member.added', { async: true })
+  @OnCatalogEvent('team.member.added', { async: true })
   async handleMemberAdded(payload: TeamMemberAddedEventPayload): Promise<void> {
     if (!payload.teamLeadAgentId) return;
 
@@ -29,7 +29,7 @@ export class TeamMembershipChangedNotifierSubscriber {
     await this.notify(payload.teamLeadAgentId, message, 'team.member.added', payload);
   }
 
-  @OnEvent('team.member.removed', { async: true })
+  @OnCatalogEvent('team.member.removed', { async: true })
   async handleMemberRemoved(payload: TeamMemberRemovedEventPayload): Promise<void> {
     if (!payload.teamLeadAgentId) return;
 

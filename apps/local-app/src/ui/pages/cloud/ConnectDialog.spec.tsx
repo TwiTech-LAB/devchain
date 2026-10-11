@@ -5,6 +5,7 @@ import { QueryClient, QueryClientProvider, onlineManager } from '@tanstack/react
 import type {
   DockerPlan,
   DockerPlanItem,
+  DockerOwnershipDecision,
   DockerSelectionItem,
 } from '@/modules/remotes/docker/docker-plan.dto';
 import {
@@ -560,7 +561,7 @@ describe('ConnectDialog remembered choices', () => {
     );
   });
 
-  it('connects with file sync and keeps exclusions when a remembered Docker choice meets mismatched ids', async () => {
+  it('connects with file sync and keeps exclusions when Docker cannot determine the VM ids', async () => {
     connectChoices.p1 = { remoteId: 'r1', includeDocker: true };
     ignores = ['/state', '/private-output', ...DEFAULT_FILE_SYNC_IGNORES];
     route(async () =>
@@ -569,7 +570,7 @@ describe('ConnectDialog remembered choices', () => {
           availability: {
             available: false,
             side: 'remote',
-            reason: { code: 'vm-user-mismatch', message: 'The user ids differ.' },
+            reason: { code: 'vm-user-mismatch', message: 'The VM user ids are unknown.' },
             userMismatch: { homeUid: 1000, homeGid: 1000, vmUid: 1001, vmGid: 1000 },
           },
           items: [],
@@ -665,7 +666,15 @@ describe('ConnectDialog Docker section', () => {
 
     // The status line sits beside the heading, whose text stays untouched.
 
-    await act(async () => deferreds[1](plan()));
+    await act(async () =>
+      deferreds[1](
+        plan({
+          items: [
+            item({ choices: ['container-and-data', 'without-data'], selectedMode: 'without-data' }),
+          ],
+        }),
+      ),
+    );
 
     expect(screen.queryByText('Updating the plan…')).not.toBeInTheDocument();
     expect(next).toBeEnabled();
@@ -1866,7 +1875,7 @@ describe('ConnectDialog Files', () => {
     await next();
     const selected = await screen.findByRole('checkbox', { name: 'Exclude logs on the VM' });
     await waitFor(() => expect(selected).toBeChecked());
-    const section = screen.getByRole('region', { name: 'Files that cannot sync' });
+    const section = screen.getByRole('region', { name: 'Files owned by another user' });
     await userEvent.click(screen.getByRole('button', { name: 'Details for logs on the VM' }));
     await userEvent.click(screen.getByRole('button', { name: 'Details for cache on this PC' }));
     expect(section).toHaveTextContent('the VM · owned by root · owned by another user');
@@ -1928,7 +1937,7 @@ describe('ConnectDialog Files', () => {
       suggestions.groups = [suggestion({ ...overrides, patterns: [...overrides.patterns] })];
       const { onConnect } = renderFlow();
       await next();
-      const section = await screen.findByRole('region', { name: 'Files that cannot sync' });
+      const section = await screen.findByRole('region', { name: 'Files owned by another user' });
       if ('gitUnchecked' in overrides && overrides.gitUnchecked)
         await userEvent.click(screen.getByRole('button', { name: 'Details for logs on the VM' }));
       if ('chown' in overrides && overrides.chown)
@@ -2372,7 +2381,7 @@ describe('Connect file-sync exclusions and ownership', () => {
     },
   );
 
-  it('shows tracked-file ownership repair when files cannot be excluded', async () => {
+  it('shows a tracked-file owner command when files cannot be excluded', async () => {
     suggestions.groups = [
       homeGroup('code', {
         pattern: undefined,
@@ -2388,7 +2397,7 @@ describe('Connect file-sync exclusions and ownership', () => {
     );
     const command = screen.getByRole('button', { name: 'Copy command for code on this PC' });
     expect(command).toBeEnabled();
-    expect(screen.getByRole('region', { name: 'Files that cannot sync' })).toHaveTextContent(
+    expect(screen.getByRole('region', { name: 'Files owned by another user' })).toHaveTextContent(
       "sudo chown -R alice '/work/p1/code'",
     );
     expect(
@@ -2396,7 +2405,7 @@ describe('Connect file-sync exclusions and ownership', () => {
     ).not.toBeInTheDocument();
   });
 
-  it('lists only the owners that block sync', async () => {
+  it('lists only the foreign file owners', async () => {
     suggestions.groups = [
       homeGroup('code', {
         vm: {
@@ -2412,7 +2421,7 @@ describe('Connect file-sync exclusions and ownership', () => {
     await userEvent.click(
       await screen.findByRole('button', { name: 'Details for code on this PC' }),
     );
-    const section = screen.getByRole('region', { name: 'Files that cannot sync' });
+    const section = screen.getByRole('region', { name: 'Files owned by another user' });
     expect(section).toHaveTextContent('this PC · owned by root · owned by another user');
     expect(section).not.toHaveTextContent('the VM · owned by alice');
   });
@@ -2473,7 +2482,7 @@ describe('Connect file-sync exclusions and ownership', () => {
         );
       renderFlow();
       await next();
-      await screen.findByRole('region', { name: 'Files that cannot sync' });
+      await screen.findByRole('region', { name: 'Files owned by another user' });
       if (kind === 'keeps')
         await userEvent.click(
           await screen.findByRole('button', { name: 'Details for code on this PC' }),
@@ -2505,6 +2514,638 @@ describe('Connect file-sync exclusions and ownership', () => {
       expect(more).toHaveAttribute('aria-expanded', 'true');
       await userEvent.click(more);
       expect(last()).not.toBeInTheDocument();
+    },
+  );
+});
+
+describe('Compose user fix workflow', () => {
+  const literal: DockerOwnershipDecision = {
+    class: 'needs-user-fix',
+    home: { uid: 1000, gid: 1000 },
+    vm: { uid: 1001, gid: 1000 },
+    compose: { directory: '/project', files: ['compose.yaml'], service: 'web' },
+    fixProposal: {
+      id: 'proposal-1',
+      service: 'web',
+      container: 'web',
+      file: 'compose.yaml',
+      line: 4,
+      oldUser: '1000:1000',
+      newUser: '${DEV_UID:-1000}:${DEV_GID:-1000}',
+      canApply: true,
+      hint: 'The fallback keeps this PC working; the VM uses its own ids.',
+    },
+  };
+  const follows: DockerOwnershipDecision = {
+    ...literal,
+    class: 'follows-user',
+    fixProposal: undefined,
+    target: { user: '1001:1000', groupAdd: [] },
+  };
+  const fixCalls = (action: 'apply' | 'verify') =>
+    mockApiFetch.mock.calls.filter(([url]) => String(url).endsWith(`/user-fix/${action}`));
+  const moveWithoutFix = () => screen.getByRole('checkbox', { name: /Move without the fix:/ });
+  const answerFix = (
+    selections?: DockerSelectionItem[],
+    ownership = literal,
+    overrides: Partial<DockerPlanItem> = {},
+  ) => {
+    const selected = selections ?? [
+      {
+        id: 'web',
+        mode: 'container-and-data',
+      },
+    ];
+    const pick = selected.find((entry) => entry.id === 'web');
+    const unresolved = ownership.class === 'needs-user-fix' && pick && !pick.moveWithoutUserFix;
+    const blockers = [
+      ...(unresolved
+        ? [
+            {
+              code: 'user-fix-not-accepted',
+              message: 'Apply and Verify, acknowledge, or deselect.',
+            },
+          ]
+        : []),
+      ...(ownership.refusalReasons ?? []),
+    ];
+    return plan({
+      items: [
+        item({
+          ownership,
+          runtimeUser: '1000:1000',
+          dataState: 'no-record',
+          choices:
+            ownership.class === 'follows-user'
+              ? ['container-and-data', 'without-data', 'data-only']
+              : ['container-and-data', 'without-data'],
+          selectedMode: pick?.mode ?? null,
+          blockers,
+          ...overrides,
+        }),
+      ],
+      dataGroups: [
+        {
+          itemIds: ['web'],
+          volumes: ['app_db'],
+          bindPaths: [],
+          state: 'no-record',
+          ownership,
+        },
+      ],
+      canConnect: blockers.length === 0,
+    });
+  };
+  const choicesIn = (init?: RequestInit) =>
+    (JSON.parse(String(init?.body)) as { items?: DockerSelectionItem[] }).items;
+  const MODE_OPTIONS = {
+    'container-and-data': 'Container and data',
+    'without-data': 'Start with empty data',
+    'data-only': 'Copy its data only',
+  } as const;
+  const DATA_CHOICE_OPTIONS = {
+    'keep-vm': 'Keep VM copy',
+    'replace-home': "Replace with this PC's data",
+    'start-empty': 'Start with empty data',
+  } as const;
+
+  // The dialog is the cheapest layer for fresh server choices, owner notices and the attach body.
+  it.each(['container-and-data', 'without-data', 'data-only'] as const)(
+    'offers normal follows-user modes after Verify and submits %s',
+    async (mode) => {
+      let fixed = false;
+      route(async (url, init) => {
+        if (url.endsWith('/verify')) fixed = true;
+        return response(
+          answerFix(
+            url.endsWith('/verify') ? undefined : choicesIn(init),
+            fixed ? follows : literal,
+          ),
+        );
+      });
+      const onConnect = jest.fn();
+      await renderDialog(onConnect);
+      await userEvent.click(await screen.findByRole('button', { name: 'Verify' }));
+      await waitFor(() => expect(screen.getByRole('button', { name: 'Next' })).toBeEnabled());
+      expect(row('web')).toHaveTextContent(
+        'Data owners change to your VM user (1001:1000): app_db',
+      );
+      expect(
+        screen.queryByRole('checkbox', { name: /Move without the fix:/ }),
+      ).not.toBeInTheDocument();
+      await userEvent.click(screen.getByRole('combobox', { name: 'Mode for web' }));
+      expect(screen.getByRole('option', { name: 'Container and data' })).toBeInTheDocument();
+      expect(screen.getByRole('option', { name: 'Start with empty data' })).toBeInTheDocument();
+      expect(screen.getByRole('option', { name: 'Copy its data only' })).toBeInTheDocument();
+      await userEvent.click(screen.getByRole('option', { name: MODE_OPTIONS[mode] }));
+      await waitFor(() => expect(screen.getByRole('button', { name: 'Next' })).toBeEnabled());
+      if (mode === 'without-data') expect(row('web')).not.toHaveTextContent('Data owners change');
+      else
+        expect(row('web')).toHaveTextContent(
+          'Data owners change to your VM user (1001:1000): app_db',
+        );
+      if (mode === 'data-only')
+        expect(row('web')).toHaveTextContent('Data only; no container is created');
+      await connect();
+      expect(onConnect).toHaveBeenCalledWith('r1', { items: [{ id: 'web', mode }] });
+    },
+  );
+
+  it('labels only mapped resources in a mixed Compose aggregate and keeps exact data-only copying available', async () => {
+    route(async (_url, init) =>
+      response({
+        ...answerFix(choicesIn(init), follows, {
+          kind: 'compose-project',
+          serviceOwnership: [
+            { service: 'web', ownership: follows },
+            { service: 'db', ownership: { ...follows, class: 'exact' } },
+          ],
+        }),
+        dataGroups: [
+          {
+            itemIds: ['web'],
+            volumes: ['app_db', 'image_owned'],
+            bindPaths: ['/project/state', '/project/cache'],
+            state: 'no-record',
+            ownership: follows,
+            ownershipConsumers: [
+              {
+                itemId: 'web',
+                name: 'web',
+                volumes: ['app_db'],
+                bindPaths: ['/project/state'],
+                ownership: follows,
+              },
+              {
+                itemId: 'web',
+                name: 'db',
+                volumes: ['image_owned'],
+                bindPaths: ['/project/cache'],
+                ownership: { ...follows, class: 'exact' },
+              },
+            ],
+          },
+        ],
+      }),
+    );
+    const onConnect = jest.fn();
+    await renderDialog(onConnect);
+    const notice = await screen.findByText(/Data owners change to your VM user/);
+    expect(notice).toHaveTextContent('app_db, /project/state');
+    expect(notice).not.toHaveTextContent('image_owned');
+    expect(notice).not.toHaveTextContent('/project/cache');
+    await userEvent.click(screen.getByRole('combobox', { name: 'Mode for web' }));
+    await userEvent.click(screen.getByRole('option', { name: 'Copy its data only' }));
+    await connect();
+    expect(onConnect).toHaveBeenCalledWith('r1', { items: [{ id: 'web', mode: 'data-only' }] });
+  });
+
+  it.each(['container-and-data', 'without-data'] as const)(
+    'requires an explicit user-fix choice for %s and submits its temporary acknowledgment',
+    async (mode) => {
+      route(async (_url, init) => response(answerFix(choicesIn(init))));
+      const onConnect = jest.fn();
+      await renderDialog(onConnect);
+      await screen.findByRole('checkbox', { name: /Move without the fix:/ });
+      if (mode === 'without-data') {
+        await userEvent.click(screen.getByRole('combobox', { name: 'Mode for web' }));
+        await userEvent.click(await screen.findByRole('option', { name: 'Start with empty data' }));
+      }
+      expect(moveWithoutFix()).toHaveClass('ring-status-warn');
+      expect(moveWithoutFix()).toHaveAttribute('aria-invalid', 'true');
+      expect(row('web')).toHaveTextContent('compose.yaml:4');
+      expect(row('web')).toHaveTextContent('1000:1000 → ${DEV_UID:-1000}:${DEV_GID:-1000}');
+      expect(screen.getByRole('button', { name: 'Next' })).toBeDisabled();
+      await userEvent.click(moveWithoutFix());
+      await waitFor(() => expect(screen.getByRole('button', { name: 'Next' })).toBeEnabled());
+      expect(moveWithoutFix()).not.toHaveClass('ring-status-warn');
+      await connect();
+      expect(onConnect).toHaveBeenCalledWith('r1', {
+        items: [{ id: 'web', mode, moveWithoutUserFix: true }],
+      });
+    },
+  );
+
+  it('allows deselection and requires acknowledgment again after opting back into Docker', async () => {
+    route(async (_url, init) => response(answerFix(choicesIn(init))));
+    await renderDialog();
+    await userEvent.click(await screen.findByRole('checkbox', { name: 'web' }));
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Next' })).toBeEnabled());
+    expect(lastPlanItems()).toEqual([]);
+    await userEvent.click(screen.getByRole('checkbox', { name: 'web' }));
+    await userEvent.click(moveWithoutFix());
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Next' })).toBeEnabled());
+    await includeDocker();
+    await includeDocker();
+    expect(
+      await screen.findByRole('checkbox', { name: /Move without the fix:/ }),
+    ).not.toBeChecked();
+    expect(screen.getByRole('button', { name: 'Next' })).toBeDisabled();
+  });
+
+  it('confirms the exact diff before Apply, verifies it, and replaces an unavailable mode while clearing acknowledgment', async () => {
+    let fixed = false;
+    let finishVerify!: (response: Response) => void;
+    route(async (url, init) => {
+      if (url.endsWith('/apply')) {
+        fixed = true;
+        return response({ applied: true });
+      }
+      if (url.endsWith('/verify'))
+        return new Promise<Response>((resolve) => {
+          finishVerify = resolve;
+        });
+      return response(answerFix(choicesIn(init), fixed ? follows : literal));
+    });
+    const onConnect = jest.fn();
+    await renderDialog(onConnect);
+    await userEvent.click(await screen.findByRole('checkbox', { name: /Move without the fix:/ }));
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Next' })).toBeEnabled());
+    await userEvent.click(screen.getByRole('button', { name: 'Apply' }));
+    const confirmation = screen.getByRole('dialog', { name: 'Apply Compose user fix?' });
+    expect(confirmation).toHaveTextContent('web (web): compose.yaml:4');
+    expect(confirmation).toHaveTextContent(
+      '- user: 1000:1000 + user: ${DEV_UID:-1000}:${DEV_GID:-1000}',
+    );
+    expect(fixCalls('apply')).toHaveLength(0);
+    await userEvent.click(within(confirmation).getByRole('button', { name: 'Cancel' }));
+    expect(fixCalls('apply')).toHaveLength(0);
+    await userEvent.click(screen.getByRole('button', { name: 'Apply' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Apply fix' }));
+    await waitFor(() => expect(fixCalls('verify')).toHaveLength(1));
+    expect(JSON.parse(String(fixCalls('apply')[0][1]?.body))).toEqual({
+      remoteId: 'r1',
+      proposalId: 'proposal-1',
+      confirmed: true,
+    });
+    expect(screen.getByRole('button', { name: 'Next' })).toBeDisabled();
+    await act(async () =>
+      finishVerify(
+        response(
+          answerFix(undefined, follows, {
+            choices: ['without-data'],
+            selectedMode: 'without-data',
+            dataAction: 'start-empty',
+          }),
+        ),
+      ),
+    );
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Next' })).toBeEnabled());
+    expect(lastPlanItems()).toEqual([{ id: 'web', mode: 'without-data' }]);
+    expect(
+      screen.queryByRole('checkbox', { name: /Move without the fix:/ }),
+    ).not.toBeInTheDocument();
+    expect(row('web')).toHaveTextContent('Runs as your user on the VM (1001:1000)');
+    expect(row('web')).not.toHaveTextContent('Data owners change');
+    await connect();
+    expect(onConnect).toHaveBeenCalledWith('r1', { items: [{ id: 'web', mode: 'without-data' }] });
+  });
+
+  it('manual Verify preserves deselection and valid picks while dropping a stale replace-home choice', async () => {
+    let fixed = false;
+    const heldItem = (selection?: DockerSelectionItem[]) => {
+      const result = answerFix(selection, fixed ? follows : literal, {
+        choices: ['container-and-data'],
+        dataState: 'vm-newer',
+        dataChoices: fixed ? ['keep-vm', 'start-empty'] : ['keep-vm', 'replace-home'],
+        dataAction: selection?.[0]?.dataChoice ?? 'keep-vm',
+      });
+      result.items.push(
+        item({
+          id: 'db',
+          name: 'db',
+          defaultSelected: true,
+          selectedMode:
+            selection && !selection.some((entry) => entry.id === 'db')
+              ? null
+              : 'container-and-data',
+        }),
+      );
+      return result;
+    };
+    route(async (url, init) => {
+      if (url.endsWith('/verify')) {
+        fixed = true;
+        return response(heldItem());
+      }
+      return response(heldItem(choicesIn(init)));
+    });
+    const onConnect = jest.fn();
+    await renderDialog(onConnect);
+    await userEvent.click(await screen.findByRole('checkbox', { name: 'db' }));
+    await userEvent.click(screen.getByRole('combobox', { name: 'Data choice for web' }));
+    await userEvent.click(
+      await screen.findByRole('option', { name: "Replace with this PC's data" }),
+    );
+    await userEvent.click(screen.getByRole('button', { name: "I'll do it myself" }));
+    expect(row('web')).toHaveTextContent('save it, then Verify');
+    await userEvent.click(screen.getByRole('button', { name: 'Verify' }));
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Next' })).toBeEnabled());
+    expect(JSON.parse(String(fixCalls('verify')[0][1]?.body))).toEqual({ remoteId: 'r1' });
+    expect(lastPlanItems()).toEqual([{ id: 'web', mode: 'container-and-data' }]);
+    expect(screen.getByRole('checkbox', { name: 'db' })).not.toBeChecked();
+    expect(screen.getByRole('combobox', { name: 'Data choice for web' })).toHaveTextContent(
+      'Keep VM copy',
+    );
+    await userEvent.click(screen.getByRole('combobox', { name: 'Data choice for web' }));
+    expect(
+      screen.queryByRole('option', { name: "Replace with this PC's data" }),
+    ).not.toBeInTheDocument();
+    await userEvent.click(await screen.findByRole('option', { name: 'Start with empty data' }));
+    await connect();
+    expect(onConnect).toHaveBeenCalledWith('r1', {
+      items: [{ id: 'web', mode: 'container-and-data', dataChoice: 'start-empty' }],
+    });
+  });
+
+  it('shows a nonblocking image-user hint and derives the VM target after a manual edit', async () => {
+    let fixed = false;
+    const imageHint: DockerOwnershipDecision = {
+      ...literal,
+      class: 'image-user-hint',
+      fixProposal: {
+        ...literal.fixProposal!,
+        canApply: false,
+        oldUser: null,
+        reason: 'The image USER is named; add a service user override.',
+      },
+    };
+    route(async (url, init) => {
+      if (url.endsWith('/verify')) fixed = true;
+      return response(
+        answerFix(
+          url.endsWith('/verify') ? undefined : choicesIn(init),
+          fixed ? follows : imageHint,
+        ),
+      );
+    });
+    await renderDialog();
+    await screen.findByRole('button', { name: 'Verify' });
+    expect(row('web')).toHaveTextContent('user: ${DEV_UID:-1000}:${DEV_GID:-1000}');
+    expect(screen.queryByRole('button', { name: 'Apply' })).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole('checkbox', { name: /Move without the fix:/ }),
+    ).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Next' })).toBeEnabled();
+    await userEvent.click(screen.getByRole('button', { name: 'Verify' }));
+    await waitFor(() =>
+      expect(row('web')).toHaveTextContent('Runs as your user on the VM (1001:1000)'),
+    );
+    expect(lastPlanItems()).toEqual([{ id: 'web', mode: 'container-and-data' }]);
+  });
+
+  it('shows separate Compose service fixes and confirms the selected service proposal', async () => {
+    const workerFix = {
+      ...literal,
+      compose: { ...literal.compose!, service: 'worker' },
+      fixProposal: {
+        ...literal.fixProposal!,
+        id: 'worker-proposal',
+        service: 'worker',
+        container: null,
+        line: 12,
+        canApply: false,
+        reason: 'A manual edit is required.',
+      },
+    };
+    route(async () =>
+      response(
+        answerFix(undefined, literal, {
+          kind: 'compose-project',
+          serviceOwnership: [
+            { service: 'web', ownership: literal },
+            { service: 'worker', ownership: workerFix },
+          ],
+        }),
+      ),
+    );
+    await renderDialog();
+    const web = await screen.findByLabelText('User fix for web (web)');
+    const worker = screen.getByLabelText('User fix for worker');
+    expect(worker).toHaveTextContent('compose.yaml:12');
+    expect(within(worker).queryByRole('button', { name: 'Apply' })).not.toBeInTheDocument();
+    expect(within(worker).getByRole('button', { name: 'Verify' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Next' })).toBeDisabled();
+    await userEvent.click(within(web).getByRole('button', { name: 'Apply' }));
+    expect(screen.getByRole('dialog', { name: 'Apply Compose user fix?' })).toHaveTextContent(
+      'web (web): compose.yaml:4',
+    );
+  });
+
+  it.each([
+    { home: { uid: 1000, gid: 1000 }, vm: { uid: 1001, gid: 1000 }, target: '1001' },
+    { home: { uid: 1000, gid: 1000 }, vm: { uid: 1000, gid: 1001 }, target: '1000:1001' },
+  ])(
+    'uses the server target $target for uid-only or gid-only ownership changes',
+    async ({ home, vm, target }) => {
+      route(async () =>
+        response(
+          answerFix(undefined, { ...follows, home, vm, target: { user: target, groupAdd: [] } }),
+        ),
+      );
+      const onConnect = jest.fn();
+      await renderDialog(onConnect);
+      await screen.findByText('Docker containers');
+      expect(row('web')).toHaveTextContent(`Runs as your user on the VM (${target})`);
+      expect(row('web')).toHaveTextContent(
+        `Data owners change to your VM user (${vm.uid}:${vm.gid}): app_db`,
+      );
+      await connect();
+      expect(onConnect).toHaveBeenCalledWith('r1', {
+        items: [{ id: 'web', mode: 'container-and-data' }],
+      });
+    },
+  );
+
+  it('keeps shared ownership conflicts blocked after acknowledgment and exposes fixes for absent consumers', async () => {
+    const refusal = {
+      code: 'ownership-conflict',
+      message: 'Retained VM holder unrelated keeps exact user 1000; owner mapping is unsafe.',
+    };
+    const conflict = { ...literal, refusalReasons: [refusal] };
+    route(async (_url, init) =>
+      response({
+        ...answerFix(choicesIn(init), conflict),
+        dataGroups: [
+          {
+            volumes: ['shared'],
+            bindPaths: [],
+            itemIds: ['web'],
+            state: 'no-record',
+            ownership: { ...follows, refusalReasons: [refusal] },
+            ownershipConsumers: [
+              {
+                name: 'absent-service',
+                ownership: {
+                  ...literal,
+                  fixProposal: {
+                    ...literal.fixProposal!,
+                    id: 'absent-proposal',
+                    service: 'absent-service',
+                    container: null,
+                    file: 'compose.yaml',
+                    line: 12,
+                  },
+                },
+              },
+            ],
+          },
+        ],
+      }),
+    );
+    await renderDialog();
+    await userEvent.click(await screen.findByRole('checkbox', { name: /Move without the fix:/ }));
+    await waitFor(() =>
+      expect(lastPlanItems()).toEqual([
+        { id: 'web', mode: 'container-and-data', moveWithoutUserFix: true },
+      ]),
+    );
+    expect(screen.getByRole('button', { name: 'Next' })).toBeDisabled();
+    expect(screen.getByRole('note', { name: 'Shared Docker ownership' })).toHaveTextContent(
+      refusal.message,
+    );
+    expect(row('web')).not.toHaveTextContent('Data owners change');
+    const absent = screen.getByLabelText('User fix for absent-service');
+    expect(absent).toHaveTextContent('compose.yaml:12');
+    await userEvent.click(within(absent).getByRole('button', { name: 'Apply' }));
+    expect(screen.getByRole('dialog', { name: 'Apply Compose user fix?' })).toHaveTextContent(
+      'absent-service: compose.yaml:12',
+    );
+  });
+
+  it('keeps stale Apply failures visible and refreshes proposals before retry', async () => {
+    let fresh = false;
+    route(async (url, init) => {
+      if (url.endsWith('/apply'))
+        return response({ message: 'The proposal is unavailable. Read a fresh plan.' }, 409);
+      if (url.endsWith('/verify')) fresh = true;
+      return response(
+        answerFix(
+          url.endsWith('/verify') ? undefined : choicesIn(init),
+          fresh
+            ? { ...literal, fixProposal: { ...literal.fixProposal!, id: 'proposal-2' } }
+            : literal,
+        ),
+      );
+    });
+    await renderDialog();
+    await userEvent.click(await screen.findByRole('button', { name: 'Apply' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Apply fix' }));
+    expect(await screen.findByRole('alert', { name: 'Docker user fix' })).toHaveTextContent(
+      'The proposal is unavailable. Read a fresh plan.',
+    );
+    expect(screen.getByRole('button', { name: 'Next' })).toBeDisabled();
+    await userEvent.click(screen.getByRole('button', { name: 'Refresh Docker plan' }));
+    await waitFor(() =>
+      expect(screen.queryByRole('alert', { name: 'Docker user fix' })).not.toBeInTheDocument(),
+    );
+    await userEvent.click(screen.getByRole('button', { name: 'Apply' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Apply fix' }));
+    await waitFor(() => expect(fixCalls('apply')).toHaveLength(2));
+    expect(JSON.parse(String(fixCalls('apply')[1][1]?.body)).proposalId).toBe('proposal-2');
+  });
+
+  it('allows exact container and data choices when the known VM ids differ', async () => {
+    route(async () =>
+      response(
+        plan({
+          availability: {
+            available: true,
+            side: null,
+            reason: null,
+            userMismatch: {
+              homeUid: 1000,
+              homeGid: 1000,
+              vmUid: 1001,
+              vmGid: 1000,
+              uidConflict: { requestedUid: 1000, holder: 'ubuntu' },
+            },
+          },
+          items: [item({ ownership: { class: 'exact', home: literal.home, vm: literal.vm } })],
+          dataGroups: [
+            {
+              itemIds: ['web'],
+              volumes: ['home_owned'],
+              bindPaths: [],
+              state: 'no-record',
+              ownership: { class: 'exact', home: literal.home, vm: literal.vm },
+            },
+          ],
+        }),
+      ),
+    );
+    const onConnect = jest.fn();
+    await renderDialog(onConnect);
+    await screen.findByText('Docker containers');
+    expect(screen.queryByRole('note', { name: 'Docker availability' })).not.toBeInTheDocument();
+    expect(row('web')).not.toHaveTextContent('Data owners change');
+    await connect();
+    expect(onConnect).toHaveBeenCalledWith('r1', {
+      items: [{ id: 'web', mode: 'container-and-data' }],
+    });
+  });
+
+  it.each(['keep-vm', 'replace-home', 'start-empty'] as const)(
+    'shows the actual retained user and the reason for %s without relabeling kept data',
+    async (dataChoice) => {
+      const retainedReason = 'runs as 1000:1000 until its data is reset or copied again';
+      route(async (_url, init) => {
+        const picked = choicesIn(init)?.[0]?.dataChoice;
+        const rewritten = picked === 'start-empty' || picked === 'replace-home';
+        return response(
+          answerFix(choicesIn(init), follows, {
+            choices: ['container-and-data'],
+            dataState: 'vm-newer',
+            dataChoices: ['keep-vm', 'replace-home', 'start-empty'],
+            dataGroup: ['web'],
+            dataAction: picked ?? 'keep-vm',
+            targetAction: rewritten ? 'replace' : 'leave-as-is',
+            vmUser: '1000:1000',
+            retainedOwnership: rewritten
+              ? undefined
+              : { class: 'exact', home: follows.home, vm: follows.vm, targetUser: '1000:1000' },
+            notes: rewritten ? [] : [retainedReason],
+          }),
+        );
+      });
+      const onConnect = jest.fn();
+      await renderDialog(onConnect);
+      const note = await screen.findByRole('note', { name: 'Retained user for web' });
+      expect(note).toHaveTextContent('The retained VM container runs as 1000:1000');
+      expect(note).toHaveTextContent('recorded ownership is exact');
+      expect(note).toHaveTextContent(retainedReason);
+      expect(row('web')).toHaveTextContent(
+        'Keeps the VM data with its recorded owners; no data owners change.',
+      );
+      expect(row('web')).not.toHaveTextContent('Data owners change');
+      expect(row('web')).not.toHaveTextContent('Runs as your user on the VM');
+      await userEvent.click(screen.getByRole('combobox', { name: 'Data choice for web' }));
+      await userEvent.click(
+        await screen.findByRole('option', { name: DATA_CHOICE_OPTIONS[dataChoice] }),
+      );
+      await waitFor(() => expect(screen.getByRole('button', { name: 'Next' })).toBeEnabled());
+      if (dataChoice === 'replace-home') {
+        expect(row('web')).toHaveTextContent(
+          'Data owners change to your VM user (1001:1000): app_db',
+        );
+        expect(row('web')).toHaveTextContent(
+          "Replaces the VM data in this group with this PC's data.",
+        );
+      } else {
+        expect(row('web')).not.toHaveTextContent('Data owners change');
+        if (dataChoice === 'start-empty')
+          expect(row('web')).toHaveTextContent('Starts with empty data for this group');
+      }
+      await connect();
+      expect(onConnect).toHaveBeenCalledWith('r1', {
+        items: [
+          {
+            id: 'web',
+            mode: 'container-and-data',
+            ...(dataChoice !== 'keep-vm' && { dataChoice }),
+          },
+        ],
+      });
     },
   );
 });

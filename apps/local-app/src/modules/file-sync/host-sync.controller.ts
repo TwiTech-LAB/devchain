@@ -19,7 +19,6 @@ import { SyncthingRestError } from './syncthing-rest.client';
 import { resolve } from 'node:path';
 import { assertVmHomePath } from '../../common/filesystem/vm-home-path';
 import { SyncPathInspector } from './sync-path-inspector';
-import { SyncChownService } from './sync-chown.service';
 import { hostRoutes } from '../remotes/contract/host-routes';
 import type { HostHandlerResponse } from '../remotes/contract/host-routes';
 
@@ -35,32 +34,21 @@ export class HostSyncController {
   constructor(
     private readonly fileSync: FileSyncService,
     private readonly inspector: SyncPathInspector,
-    private readonly owners: SyncChownService,
   ) {}
-
-  @Post('chown')
-  @HttpCode(200)
-  chown(@Body() body: unknown): Promise<HostHandlerResponse<typeof hostRoutes.syncChown, 200>> {
-    return this.owners.repair(hostRoutes.syncChown.body.parse(body));
-  }
 
   @Post('inspect')
   @HttpCode(200)
   async inspect(
     @Body() body: unknown,
   ): Promise<HostHandlerResponse<typeof hostRoutes.syncInspect, 200>> {
-    const { path, scan, paths, patterns } = hostRoutes.syncInspect.body.parse(body);
+    const { path, scan, paths, patterns, skipIgnores } = hostRoutes.syncInspect.body.parse(body);
     await assertVmHomePath(resolve(path), {
       code: 'FILE_SYNC_INSPECT_OUTSIDE_HOME',
       message: 'Inspection paths must be under the VM home',
       linkMessage: 'Inspection paths must not be links',
       rejectAncestorLinks: true,
     });
-    const [inspection, user] = await Promise.all([
-      this.inspector.inspect(path, scan, paths, patterns),
-      this.owners.user(),
-    ]);
-    return user ? { ...inspection, vmUser: user } : inspection;
+    return this.inspector.inspect(path, scan, paths, patterns, skipIgnores);
   }
 
   @Get('device')
@@ -164,6 +152,15 @@ export class HostSyncController {
     @Param('id') id: string,
   ): Promise<HostHandlerResponse<typeof hostRoutes.syncFolderConfiguration, 200>> {
     return this.fileSync.folderConfiguration(FolderIdSchema.parse(id)).catch(folderNotFound);
+  }
+
+  @Get('folders/:id/ignores')
+  @ApiOperation({ summary: 'Read the installed Syncthing ignore list' })
+  @ApiOkResponse({ description: 'The ignore lines installed on the VM' })
+  installedIgnores(
+    @Param('id') id: string,
+  ): Promise<HostHandlerResponse<typeof hostRoutes.syncFolderIgnores, 200>> {
+    return this.fileSync.installedIgnores(FolderIdSchema.parse(id)).catch(folderNotFound);
   }
 
   @Get('status')

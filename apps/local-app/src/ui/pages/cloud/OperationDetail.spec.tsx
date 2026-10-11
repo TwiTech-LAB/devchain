@@ -269,7 +269,7 @@ describe('OperationDetail git guard notes', () => {
 // Component layer proves a successful claim warning is visible in Activity.
 it('shows the reported Docker uid warning for a finished claim', () => {
   const warning =
-    'uid 1000 is used by ubuntu on the VM; the VM user got 1001:1000. Automatic Docker moves are off for this VM.';
+    'uid 1000 is used by ubuntu on the VM; the VM user got 1001:1000. Docker moves still work; Connect shows any container that needs a user fix.';
   renderDetail(
     operation({ kind: 'claim', state: 'done', steps: [], details: { dockerUserWarning: warning } }),
   );
@@ -589,14 +589,66 @@ describe('OperationDetail Docker progress and result', () => {
     expect(within(note).getByText('gpu: data only, no container was created.')).toBeInTheDocument();
   });
 
-  it('shows no Docker result when every container was copied with its data', () => {
-    renderDetail(
-      dockerOperation('done', {
-        docker: { result: { withoutData: [], dataOnly: [] } },
-      }),
-    );
-    expect(screen.queryByRole('note', { name: 'Docker copy result' })).not.toBeInTheDocument();
-  });
+  it.each([undefined, 0])(
+    'shows no Docker result when every container was copied with its data and the target-owner count is %s',
+    (alreadyTargetEntries) => {
+      renderDetail(
+        dockerOperation('done', {
+          docker: { result: { withoutData: [], dataOnly: [], alreadyTargetEntries } },
+        }),
+      );
+      expect(screen.queryByRole('note', { name: 'Docker copy result' })).not.toBeInTheDocument();
+    },
+  );
+
+  // Rendering the result DTO is the cheapest layer for count/state visibility; transfer acceptance is tested by the backend.
+  it.each([
+    { kind: 'attach' as const, state: 'done' as const, count: 3, visible: true },
+    { kind: 'detach' as const, state: 'done' as const, count: 1, visible: true },
+    { kind: 'detach' as const, state: 'done' as const, count: 0, visible: false },
+    { kind: 'detach' as const, state: 'done' as const, count: undefined, visible: false },
+    { kind: 'attach' as const, state: 'failed' as const, count: 3, visible: false },
+    { kind: 'detach' as const, state: 'running' as const, count: 1, visible: false },
+  ])(
+    'shows the accepted target-owner count for $kind/$state only when nonzero ($count)',
+    ({ kind, state, count, visible }) => {
+      renderDetail(
+        operation({
+          kind,
+          state,
+          details:
+            kind === 'attach'
+              ? {
+                  docker: {
+                    result: { withoutData: [], dataOnly: [], alreadyTargetEntries: count },
+                  },
+                }
+              : {
+                  dockerCopyBackResult: {
+                    copied: ['db'],
+                    kept: [],
+                    skipped: [],
+                    alreadyTargetEntries: count,
+                  },
+                },
+        }),
+      );
+      const notice = screen.queryByText(/already had the target user or group id/);
+      if (visible) {
+        expect(notice).toHaveTextContent(
+          `${count} ${count === 1 ? 'entry' : 'entries'} already had the target user or group id`,
+        );
+        expect(notice).toHaveTextContent(
+          "Those ids are treated as your user's ids on both machines.",
+        );
+        expect(
+          screen.getByRole('note', {
+            name: kind === 'attach' ? 'Docker copy result' : 'Docker copy home result',
+          }),
+        ).toContainElement(notice);
+      } else expect(notice).not.toBeInTheDocument();
+    },
+  );
 
   it('shows the copy-home result and an incomplete copy home', () => {
     renderDetail(

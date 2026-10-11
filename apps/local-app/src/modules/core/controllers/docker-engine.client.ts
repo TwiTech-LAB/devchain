@@ -437,6 +437,57 @@ export class DockerEngineClient {
   diskUsage(signal?: AbortSignal): Promise<DockerDiskUsage> {
     return this.json('GET', '/system/df?type=image&type=volume', undefined, { signal });
   }
+
+  async pullImage(reference: string, signal?: AbortSignal): Promise<void> {
+    const response = await this.stream(
+      'POST',
+      `/images/create?fromImage=${encodeURIComponent(reference)}`,
+      { signal },
+    );
+    await readDockerImageProgress(response, 'pull');
+  }
+}
+
+/**
+ * Reads an image pull or load response, one JSON message per line, and fails on
+ * the first engine error. `onMessage` sees each message that reports no error.
+ */
+export async function readDockerImageProgress(
+  response: Readable,
+  action: 'pull' | 'load',
+  onMessage?: (message: { stream?: unknown }) => void,
+): Promise<void> {
+  let line = '';
+  const consume = (value: string) => {
+    if (!value.trim()) return;
+    let message: { error?: unknown; errorDetail?: unknown; stream?: unknown };
+    try {
+      message = JSON.parse(value);
+    } catch {
+      throw new DockerEngineError('invalid-response', `Invalid Docker image ${action} response`);
+    }
+    if (message.error || message.errorDetail)
+      throw new DockerEngineError('engine-error', `Docker image ${action} failed`);
+    onMessage?.(message);
+  };
+  try {
+    for await (const chunk of response) {
+      line += chunk.toString('utf8');
+      let newline: number;
+      while ((newline = line.indexOf('\n')) >= 0) {
+        consume(line.slice(0, newline));
+        line = line.slice(newline + 1);
+      }
+      if (line.length > 1024 * 1024)
+        throw new DockerEngineError(
+          'invalid-response',
+          `Docker image ${action} response exceeds limit`,
+        );
+    }
+    consume(line);
+  } finally {
+    response.destroy();
+  }
 }
 
 /** A missing resource is `undefined`; every other failure is thrown. */

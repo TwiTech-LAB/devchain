@@ -80,7 +80,8 @@ export function TerminalSessionWindowContent({
     if (cachedSessionName != null && cachedSessionName !== windowName) {
       setWindowName(cachedSessionName);
     }
-  }, [cachedSessionName]); // eslint-disable-line
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- Only cache changes should sync the name; local renames must not be overwritten.
+  }, [cachedSessionName]);
 
   const { data: epic } = useQuery({
     queryKey: ['terminal-window', 'epic', session.epicId],
@@ -226,7 +227,15 @@ export function TerminalSessionWindowContent({
         });
       });
     },
-    [queryClient, selectedProjectId, session.id, windowName, terminalSessionsQueryKey, toast],
+    [
+      windowName,
+      terminalSessionsQueryKey,
+      queryClient,
+      session.id,
+      selectedProjectId,
+      apiFetch,
+      toast,
+    ],
   );
 
   const handleRenameKeyDown = useCallback(
@@ -439,7 +448,7 @@ export function TerminalSessionWindowContent({
     });
     closingRef.current = true;
     onRequestClose();
-  }, [onRequestClose, session.id, toast]);
+  }, [onRequestClose, displayName, toast]);
 
   return (
     <>

@@ -163,6 +163,7 @@ export const ChatTerminal = forwardRef<ChatTerminalHandle, ChatTerminalProps>(fu
         suppressCtrlCWithSelectionRef.current = DEFAULT_TERMINAL_SUPPRESS_CTRL_C_WITH_SELECTION;
         setInputMode('form'); // Default on error
       });
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- Read settings once per terminal mount; refetching can recreate xterm through scrollback changes.
   }, []);
 
   // Create refs that will be shared between hooks

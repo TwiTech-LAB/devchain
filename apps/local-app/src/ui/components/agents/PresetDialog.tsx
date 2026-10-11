@@ -114,7 +114,7 @@ async function createPreset(projectId: string, preset: Preset): Promise<CreatePr
     const error = await res.json().catch(() => ({ message: 'Failed to create preset' }));
     throw new Error(error.message || 'Failed to create preset');
   }
-  return res.json();
+  return res.json() as Promise<CreatePresetResponse>;
 }
 
 async function updatePreset(
@@ -139,7 +139,7 @@ async function updatePreset(
     const error = await res.json().catch(() => ({ message: 'Failed to update preset' }));
     throw new Error(error.message || 'Failed to update preset');
   }
-  return res.json();
+  return res.json() as Promise<UpdatePresetResponse>;
 }
 
 export function PresetDialog({

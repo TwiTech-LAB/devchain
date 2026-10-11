@@ -8,7 +8,6 @@ process.env.SKIP_PREFLIGHT = '1';
 describe('Profiles API — prompt assignment E2E', () => {
   let app: NestFastifyApplication;
   let projectId: string;
-  let providerId: string;
 
   beforeAll(async () => {
     setupTestDb();
@@ -31,7 +30,6 @@ describe('Profiles API — prompt assignment E2E', () => {
     resetTestDb();
     const fixtures = seedTestData();
     projectId = fixtures.projectId;
-    providerId = fixtures.providerId;
   });
 
   async function createPrompt(title: string) {
@@ -45,15 +43,12 @@ describe('Profiles API — prompt assignment E2E', () => {
   }
 
   async function createProfile(name = 'Runner') {
-    // provider is seeded by seedTestData
     const res = await app.inject({
       method: 'POST',
       url: '/api/profiles',
       payload: {
         projectId,
         name,
-        providerId,
-        options: null,
       },
     });
     expect(res.statusCode).toBe(201);

@@ -104,7 +104,7 @@ export async function fetchWatchers(fetchFn: FetchFn, projectId: string): Promis
   if (!response.ok) {
     throw new Error('Failed to fetch watchers');
   }
-  return response.json();
+  return response.json() as Promise<Watcher[]>;
 }
 
 /**
@@ -115,7 +115,7 @@ export async function fetchWatcher(fetchFn: FetchFn, id: string): Promise<Watche
   if (!response.ok) {
     throw new Error('Failed to fetch watcher');
   }
-  return response.json();
+  return response.json() as Promise<Watcher>;
 }
 
 /**
@@ -131,7 +131,7 @@ export async function createWatcher(fetchFn: FetchFn, data: CreateWatcherData): 
     const error = await response.json().catch(() => ({ message: 'Failed to create watcher' }));
     throw new Error(error.message || 'Failed to create watcher');
   }
-  return response.json();
+  return response.json() as Promise<Watcher>;
 }
 
 /**
@@ -151,7 +151,7 @@ export async function updateWatcher(
     const error = await response.json().catch(() => ({ message: 'Failed to update watcher' }));
     throw new Error(error.message || 'Failed to update watcher');
   }
-  return response.json();
+  return response.json() as Promise<Watcher>;
 }
 
 /**
@@ -182,7 +182,7 @@ export async function toggleWatcher(
   if (!response.ok) {
     throw new Error('Failed to toggle watcher');
   }
-  return response.json();
+  return response.json() as Promise<Watcher>;
 }
 
 /**
@@ -195,5 +195,5 @@ export async function testWatcher(fetchFn: FetchFn, id: string): Promise<Watcher
   if (!response.ok) {
     throw new Error('Failed to test watcher');
   }
-  return response.json();
+  return response.json() as Promise<WatcherTestResult>;
 }

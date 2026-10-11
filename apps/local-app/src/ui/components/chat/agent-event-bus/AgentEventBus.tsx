@@ -241,6 +241,7 @@ export function useAgentEventBusAnchor(
   const layout = useContext(AgentEventBusLayoutContext);
   const anchorRef = useMemo(
     () => (descriptor ? (layout?.getAnchorRef(descriptor) ?? NOOP_ANCHOR_REF) : NOOP_ANCHOR_REF),
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- Anchor identity depends on these descriptor fields; callers recreate the descriptor each render.
     [descriptor?.agentId, descriptor?.key, descriptor?.teamId, layout],
   );
   useLayoutEffect(() => {

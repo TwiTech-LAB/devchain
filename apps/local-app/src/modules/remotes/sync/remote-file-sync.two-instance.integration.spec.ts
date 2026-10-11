@@ -1,5 +1,13 @@
 import { execFileSync } from 'child_process';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  utimesSync,
+  writeFileSync,
+} from 'fs';
 import { join } from 'path';
 import { seedRemoteProject } from '../../../common/test/remote-project.fixture';
 import {
@@ -18,6 +26,7 @@ import { RemoteBindingsService } from '../services/remote-bindings.service';
 import { FileSyncAutoFixStore } from '../../file-sync/file-sync-auto-fix.store';
 import { FileSyncFailuresService } from './file-sync-failures.service';
 import { GitOwnerStore } from '../git-owner.store';
+import { FileSyncSuggestionsService } from './file-sync-suggestions.service';
 import { RemoteFileSyncService } from './remote-file-sync.service';
 
 // Two booted apps and real Syncthing are needed to prove live ignore changes preserve pending edits.
@@ -120,6 +129,7 @@ real('connected file layout migration', () => {
       pair.home.app.get(FileSyncAutoFixStore),
       pair.home.app.get(FileSyncFailuresService),
       pair.home.app.get(GitOwnerStore),
+      pair.home.app.get(FileSyncSuggestionsService),
     );
   });
 
@@ -286,8 +296,20 @@ real('connected file layout migration', () => {
       expect(read(receiverRoot, hook)).toContain(
         owner === 'home' ? 'devchain git return' : 'devchain git take',
       );
-      if (owner === 'home')
+      if (owner === 'home') {
         expect(read(receiverRoot, hook)).toContain('Git for this project is on the PC');
+        // A revert re-creates .git directories, and Syncthing's watcher loses a re-created
+        // directory; the next commit's ref update must still reach the VM.
+        const heads = join(senderRoot, '.git/refs/heads');
+        const main = join(heads, 'main');
+        const ref = readFileSync(main);
+        const { atime, mtime } = statSync(main);
+        rmSync(heads, { recursive: true });
+        mkdirSync(heads);
+        writeFileSync(main, ref);
+        utimesSync(main, atime, mtime);
+        await new Promise((resolve) => setTimeout(resolve, 2500));
+      }
 
       writeFileSync(join(senderRoot, 'ownership.txt'), `${owner} owns Git\n`);
       git(senderRoot, 'add', 'ownership.txt');

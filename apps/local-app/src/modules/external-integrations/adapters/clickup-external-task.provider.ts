@@ -8,12 +8,9 @@ import {
   MAX_TASK_COMMENT_ID_LENGTH,
   MAX_TASK_DETAIL_SUBTASKS,
   MAX_TASK_DETAIL_TEXT_LENGTH,
-  MAX_EXTERNAL_SUBTASK_DESCRIPTION_LENGTH,
-  MAX_EXTERNAL_SUBTASK_TITLE_LENGTH,
   MAX_TIME_ENTRY_HISTORY_ENTRIES,
   MAX_TIME_ENTRY_NOTE_LENGTH,
   TIME_ENTRY_HISTORY_WINDOW_DAYS,
-  EXTERNAL_SUBTASK_SOURCE_ID_PATTERN,
   type ExternalDescriptionEditCapability,
   type ExternalMyWorkCapability,
   type ExternalMyWorkOptions,
@@ -202,9 +199,9 @@ export class ClickUpExternalTaskProvider implements ExternalTaskProvider {
   ): Promise<ExternalSubtaskSnapshot> {
     const token = this.requireToken(credentials);
     const parentTaskId = this.validate.requiredTaskId(input.parentRemoteTaskId);
-    const ownershipToken = this.requireSubtaskOwnershipToken(input.ownershipToken);
-    const title = this.requireSubtaskTitle(input.title);
-    const description = this.requireSubtaskDescription(input.description);
+    const ownershipToken = this.validate.subtaskOwnershipToken(input.ownershipToken);
+    const title = this.validate.subtaskTitle(input.title);
+    const description = this.validate.subtaskDescription(input.description);
     const parent = await this.readClickUpTaskExact(token, parentTaskId);
     if (parent === null) {
       throw new ClickUpProviderError('not_found');
@@ -298,12 +295,12 @@ export class ClickUpExternalTaskProvider implements ExternalTaskProvider {
     const current = await this.assertOwnedSubtask(credentials, context, input);
     const body: Record<string, unknown> = {};
     if (input.title !== undefined) {
-      body.name = this.requireSubtaskTitle(input.title);
+      body.name = this.validate.subtaskTitle(input.title);
     }
     if (input.description !== undefined) {
       body.markdown_content = this.managedMarkdown(
-        this.requireSubtaskDescription(input.description),
-        this.requireSubtaskOwnershipToken(input.ownershipToken),
+        this.validate.subtaskDescription(input.description),
+        this.validate.subtaskOwnershipToken(input.ownershipToken),
       );
     }
     if (Object.keys(body).length === 0) {
@@ -331,7 +328,7 @@ export class ClickUpExternalTaskProvider implements ExternalTaskProvider {
     if (current === null) {
       return { outcome: 'already_absent' };
     }
-    this.assertSubtaskProof(current, proof);
+    this.validate.subtaskProof(current, proof);
     try {
       await this.requestNoContent(
         this.requireToken(credentials),
@@ -355,7 +352,7 @@ export class ClickUpExternalTaskProvider implements ExternalTaskProvider {
   ): Promise<ExternalSubtaskChildrenResult> {
     const token = this.requireToken(credentials);
     const parentTaskId = this.validate.requiredTaskId(parentRemoteTaskId);
-    const normalizedToken = this.requireSubtaskOwnershipToken(ownershipToken);
+    const normalizedToken = this.validate.subtaskOwnershipToken(ownershipToken);
     const parent = await this.readClickUpTaskExact(token, parentTaskId);
     if (parent === null) {
       throw new ClickUpProviderError('not_found');
@@ -399,22 +396,8 @@ export class ClickUpExternalTaskProvider implements ExternalTaskProvider {
     if (current === null) {
       throw new ClickUpProviderError('not_found');
     }
-    this.assertSubtaskProof(current, proof);
+    this.validate.subtaskProof(current, proof);
     return current;
-  }
-
-  private assertSubtaskProof(
-    current: ExternalSubtaskSnapshot,
-    proof: ExternalSubtaskOwnershipProof,
-  ): void {
-    const ownershipToken = this.requireSubtaskOwnershipToken(proof.ownershipToken);
-    const expectedParent = this.validate.requiredTaskId(proof.expectedParentRemoteTaskId);
-    if (current.ownershipToken !== ownershipToken) {
-      throw new ClickUpProviderError('ownership_mismatch');
-    }
-    if (current.parentRemoteTaskId !== expectedParent) {
-      throw new ClickUpProviderError('parent_mismatch');
-    }
   }
 
   private normalizeManagedSubtask(value: unknown): ExternalSubtaskSnapshot {
@@ -460,38 +443,6 @@ export class ClickUpExternalTaskProvider implements ExternalTaskProvider {
       return { description: value, ownershipToken: null };
     }
     return { description: match[1] || null, ownershipToken: match[2]! };
-  }
-
-  private requireSubtaskTitle(value: unknown): string {
-    if (
-      typeof value !== 'string' ||
-      !value.trim() ||
-      value.length > MAX_EXTERNAL_SUBTASK_TITLE_LENGTH
-    ) {
-      throw new ClickUpProviderError('request_rejected');
-    }
-    return value.trim();
-  }
-
-  private requireSubtaskDescription(value: unknown): string | null {
-    if (value === null || value === '') {
-      return null;
-    }
-    if (typeof value !== 'string' || value.length > MAX_EXTERNAL_SUBTASK_DESCRIPTION_LENGTH) {
-      throw new ClickUpProviderError('request_rejected');
-    }
-    return value;
-  }
-
-  private isSubtaskOwnershipToken(value: string): boolean {
-    return EXTERNAL_SUBTASK_SOURCE_ID_PATTERN.test(value);
-  }
-
-  private requireSubtaskOwnershipToken(value: unknown): string {
-    if (typeof value !== 'string' || !this.isSubtaskOwnershipToken(value)) {
-      throw new ClickUpProviderError('request_rejected');
-    }
-    return value;
   }
 
   private async getCurrentOwnerRemoteId(credentials: IntegrationCredentials): Promise<string> {

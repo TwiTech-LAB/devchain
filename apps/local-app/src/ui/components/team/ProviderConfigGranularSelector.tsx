@@ -21,7 +21,10 @@ export function ProviderConfigGranularSelector<
   selections,
   onChange,
 }: ProviderConfigGranularSelectorProps<TProfileKey, TConfigKey>) {
-  const configs = focusedProfileKey ? (configsByProfile[focusedProfileKey] ?? []) : [];
+  const configs = useMemo(
+    () => (focusedProfileKey ? (configsByProfile[focusedProfileKey] ?? []) : []),
+    [focusedProfileKey, configsByProfile],
+  );
 
   const providers = useMemo(() => {
     const map = new Map<string, ConfigItem<TConfigKey>[]>();

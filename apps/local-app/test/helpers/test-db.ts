@@ -84,6 +84,11 @@ export function resetTestDb(): void {
     sqlite.prepare('PRAGMA foreign_keys = OFF').run();
 
     for (const { name } of tables) {
+      // Migrations seed the default workspace, which project creation requires.
+      if (name === 'project_workspaces') {
+        sqlite.prepare('DELETE FROM project_workspaces WHERE is_default = 0').run();
+        continue;
+      }
       sqlite.prepare(`DELETE FROM ${name}`).run();
     }
 
@@ -102,6 +107,7 @@ export interface TestFixtures {
   statusId: string;
   agentProfileId: string;
   providerId: string;
+  profileProviderConfigId: string;
 }
 
 export function seedTestData(): TestFixtures {
@@ -156,9 +162,18 @@ export function seedTestData(): TestFixtures {
         `INSERT INTO profile_provider_configs (id, profile_id, provider_id, name, options, position, created_at, updated_at)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
       )
-      .run(profileProviderConfigId, agentProfileId, providerId, 'claude', '--model claude-3-5-sonnet', 0, now, now);
+      .run(
+        profileProviderConfigId,
+        agentProfileId,
+        providerId,
+        'claude',
+        '--model claude-3-5-sonnet',
+        0,
+        now,
+        now,
+      );
 
-    return { projectId, statusId, agentProfileId, providerId };
+    return { projectId, statusId, agentProfileId, providerId, profileProviderConfigId };
   } finally {
     sqlite.close();
   }

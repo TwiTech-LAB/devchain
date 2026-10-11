@@ -7,7 +7,6 @@ import { SyncthingRestError } from '../../file-sync/syncthing-rest.client';
 import { RemoteFileSyncService } from './remote-file-sync.service';
 import type { RemoteOperation } from '../../storage/models/domain.models';
 import type { ProjectFileSyncFailures } from './remote-file-sync.dto';
-import { SyncChownRequestSchema, type SyncChownResult } from '../../file-sync/sync-chown.dto';
 
 function deferred(): { promise: Promise<void>; resolve: () => void } {
   let resolve!: () => void;
@@ -51,9 +50,6 @@ function setup() {
     ),
     syncScan: jest.fn(async () => undefined),
     syncStatus: jest.fn((_: string, id: string, peer?: string) => hostFiles.status(id, peer)),
-    syncChown: jest
-      .fn<Promise<SyncChownResult>, [string, unknown]>()
-      .mockResolvedValue({ user: null, items: [] }),
   };
   const binding = { state: 'remote', remoteId: 'r' };
   const health: { online: boolean; versionMatches: boolean; apiKeyRejected?: boolean } = {
@@ -78,19 +74,27 @@ function setup() {
       .mockResolvedValue({ groups: [] }),
   };
   const owner = { value: 'vm' as GitOwner, generation: 0 };
-  const service = new RemoteFileSyncService(
-    files as never,
-    host as never,
-    bindings as never,
-    { getState: () => health } as never,
-    { get: () => ['/managed'] } as never,
-    git as never,
-    guard as never,
-    storage as never,
-    autoFix as never,
-    failures as never,
-    { get: () => owner.value, generation: () => owner.generation } as never,
-  );
+  const suggestions = {
+    vmSuggestions: jest
+      .fn<Promise<{ groups: ExclusionSuggestion[] }>, [string, string]>()
+      .mockResolvedValue({ groups: [] }),
+  };
+  const createService = () =>
+    new RemoteFileSyncService(
+      files as never,
+      host as never,
+      bindings as never,
+      { getState: () => health } as never,
+      { get: () => ['/managed'] } as never,
+      git as never,
+      guard as never,
+      storage as never,
+      autoFix as never,
+      failures as never,
+      { get: () => owner.value, generation: () => owner.generation } as never,
+      suggestions as never,
+    );
+  const service = createService();
   const tick = (active = () => true) => service.tick('p', 'r', active);
   return {
     service,
@@ -108,8 +112,190 @@ function setup() {
     failures,
     tick,
     owner,
+    suggestions,
+    createService,
   };
 }
+
+function exclusion(overrides: Partial<ExclusionSuggestion> = {}): ExclusionSuggestion {
+  return {
+    path: 'output',
+    side: 'vm',
+    owner: { uid: 0, name: 'root' },
+    home: null,
+    vm: null,
+    fileCount: 1,
+    reason: 'Written by root',
+    reasonKind: 'foreignOwner',
+    selected: true,
+    patternChecksPassed: true,
+    patterns: ['(?d)/output'],
+    ...overrides,
+  };
+}
+
+describe('VM ownership scans without failures', () => {
+  const start = Date.UTC(2026, 9, 10);
+  const at = (seconds: number) => jest.setSystemTime(start + seconds * 1000);
+  beforeEach(() => jest.useFakeTimers().setSystemTime(start));
+  afterEach(() => {
+    jest.useRealTimers();
+    jest.restoreAllMocks();
+  });
+  const ready = async (groups: ExclusionSuggestion[] = []) => {
+    const s = setup();
+    s.files.gitProjects.clear();
+    s.files.setIgnores('p', []);
+    await s.tick();
+    const status = await s.hostFiles.status('code:p');
+    let sequence = 0;
+    s.host.syncStatus.mockImplementation(async () => ({ ...status, sequence }));
+    s.suggestions.vmSuggestions.mockResolvedValue({ groups });
+    return {
+      ...s,
+      setSequence: (value: number) => {
+        sequence = value;
+      },
+    };
+  };
+
+  it('scans sequence zero on Connect, saves the same checked rules and records only VM exclusions', async () => {
+    const s = await ready([exclusion({ side: 'home' })]);
+    await s.tick();
+    expect(s.suggestions.vmSuggestions).toHaveBeenCalledWith('p', 'r');
+    expect(s.failures.failed).not.toHaveBeenCalled();
+    expect(s.files.getIgnores('p')).toEqual(['(?d)/output']);
+    expect(s.autoFix.record).toHaveBeenCalledTimes(1);
+    expect(s.autoFix.record).toHaveBeenCalledWith(
+      'p',
+      expect.objectContaining({
+        kind: 'exclude',
+        side: 'vm',
+        patterns: ['(?d)/output'],
+      }),
+    );
+    at(150);
+    await s.tick();
+    expect(s.suggestions.vmSuggestions).toHaveBeenCalledTimes(1);
+    s.service.forget('p');
+    at(180);
+    await s.tick();
+    await s.tick();
+    expect(s.suggestions.vmSuggestions).toHaveBeenCalledTimes(2);
+    expect(s.autoFix.record).toHaveBeenCalledTimes(1);
+    const restarted = s.createService();
+    await restarted.tick('p', 'r', () => true);
+    await restarted.tick('p', 'r', () => true);
+    expect(s.suggestions.vmSuggestions).toHaveBeenCalledTimes(3);
+    expect(s.autoFix.record).toHaveBeenCalledTimes(1);
+  });
+
+  it('retains a changed sequence until two minutes elapse and then stops on unchanged sequences', async () => {
+    const s = await ready();
+    await s.tick();
+    s.setSequence(1);
+    at(30);
+    await s.tick();
+    s.setSequence(2);
+    at(90);
+    await s.tick();
+    expect(s.suggestions.vmSuggestions).toHaveBeenCalledTimes(1);
+    at(120);
+    await s.tick();
+    expect(s.suggestions.vmSuggestions).toHaveBeenCalledTimes(2);
+    at(240);
+    await s.tick();
+    expect(s.suggestions.vmSuggestions).toHaveBeenCalledTimes(2);
+  });
+
+  it('retains a sequence change that arrives during inspection', async () => {
+    const s = await ready();
+    s.suggestions.vmSuggestions.mockImplementationOnce(async () => {
+      s.setSequence(1);
+      return { groups: [] };
+    });
+    await s.tick();
+    at(120);
+    await s.tick();
+    expect(s.suggestions.vmSuggestions).toHaveBeenCalledTimes(2);
+  });
+
+  it.each(['inspection', 'revision', 'hold', 'push'] as const)(
+    'retries a failed %s without requiring another VM edit',
+    async (failure) => {
+      const s = await ready([exclusion()]);
+      if (failure === 'inspection')
+        s.suggestions.vmSuggestions.mockRejectedValueOnce(new Error('offline'));
+      if (failure === 'revision')
+        s.suggestions.vmSuggestions.mockImplementationOnce(async () => {
+          s.files.setIgnores('p', ['/manual']);
+          return { groups: [exclusion()] };
+        });
+      if (failure === 'hold')
+        s.suggestions.vmSuggestions.mockImplementationOnce(async () => {
+          s.storage.listRemoteOperations.mockResolvedValue([
+            { kind: 'git_owner', state: 'running' } as RemoteOperation,
+          ]);
+          return { groups: [exclusion()] };
+        });
+      if (failure === 'push') s.host.syncFolderType.mockRejectedValueOnce(new Error('offline'));
+      await s.tick();
+      expect(s.suggestions.vmSuggestions).toHaveBeenCalledTimes(1);
+      expect(s.files.getIgnores('p')).toEqual(
+        failure === 'revision' ? ['/manual'] : failure === 'push' ? ['(?d)/output'] : [],
+      );
+      s.storage.listRemoteOperations.mockResolvedValue([]);
+      at(30);
+      await s.tick();
+      at(90);
+      await s.tick();
+      expect(s.suggestions.vmSuggestions).toHaveBeenCalledTimes(1);
+      at(120);
+      await s.tick();
+      expect(s.suggestions.vmSuggestions).toHaveBeenCalledTimes(2);
+      expect(s.files.getIgnores('p')).toContain('(?d)/output');
+      for (const files of [s.files, s.hostFiles])
+        expect(files.folders.get('code:p')!.ignores).toContain('(?d)/output');
+    },
+  );
+
+  it.each(['disabled', 'offline', 'binding', 'hold'] as const)(
+    'does not inspect behind the %s gate, and scans when it opens',
+    async (gate) => {
+      const s = await ready();
+      if (gate === 'disabled') s.autoSettings.enabled = false;
+      if (gate === 'offline') s.health.online = false;
+      if (gate === 'binding') s.binding.state = 'home';
+      if (gate === 'hold')
+        s.storage.listRemoteOperations.mockResolvedValue([
+          { kind: 'force_sync', state: 'running' } as RemoteOperation,
+        ]);
+      await s.tick();
+      expect(s.suggestions.vmSuggestions).not.toHaveBeenCalled();
+      s.autoSettings.enabled = true;
+      s.health.online = true;
+      s.binding.state = 'remote';
+      s.storage.listRemoteOperations.mockResolvedValue([]);
+      at(30);
+      await s.tick();
+      expect(s.suggestions.vmSuggestions).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it('does not save tracked, nonignored, unowned, unchecked or blocked candidates', async () => {
+    const s = await ready([
+      exclusion({ selected: false }),
+      exclusion({ reasonKind: 'untracked' }),
+      exclusion({ patternChecksPassed: false }),
+      exclusion({ blockedBy: '!/output' }),
+      exclusion({ gitUnchecked: true }),
+    ]);
+    await s.tick();
+    expect(s.files.getIgnores('p')).toEqual([]);
+    expect(s.autoFix.record).not.toHaveBeenCalled();
+    expect(s.failures.failed).not.toHaveBeenCalled();
+  });
+});
 
 it.each(['done', 'cancelled'] as const)(
   'resumes ordinary file upkeep after Force sync is %s',
@@ -123,178 +309,6 @@ it.each(['done', 'cancelled'] as const)(
     expect(s.host.syncFolderType).toHaveBeenCalled();
   },
 );
-
-describe('VM ownership repairs', () => {
-  const start = Date.UTC(2026, 9, 5);
-  const tracked = (path: string): ExclusionSuggestion => ({
-    path,
-    side: 'vm',
-    owner: { uid: 0, name: 'root' },
-    home: null,
-    vm: null,
-    fileCount: 1,
-    reason: 'Written by root',
-    reasonKind: 'foreignOwner',
-    selected: false,
-    patterns: [],
-    chown: { vm: `sudo chown root ${path}` },
-  });
-  const failed = (path: string, vmTracked = true) => ({
-    path,
-    error: 'chmod: operation not permitted',
-    owner: { uid: 0, name: 'root' },
-    git: {
-      state: 'repo' as const,
-      tracked: vmTracked,
-      ignored: false,
-      ignoreRule: null,
-      ignoredAncestor: null,
-      trackedDescendants: [],
-    },
-  });
-  beforeEach(() => jest.useFakeTimers().setSystemTime(start));
-  afterEach(() => {
-    jest.useRealTimers();
-    jest.restoreAllMocks();
-  });
-  const at = (seconds: number) => jest.setSystemTime(start + seconds * 1000);
-  const ready = async () => {
-    const s = setup();
-    s.files.gitProjects.clear();
-    await s.tick();
-    const status = await s.hostFiles.status('code:p');
-    let count = 1;
-    s.host.syncStatus.mockImplementation(async () => ({ ...status, errors: count }));
-    s.failures.failed.mockResolvedValue({
-      groups: [tracked('source.ts')],
-      vm: { entries: [failed('source.ts')] },
-    });
-    s.host.syncChown.mockImplementation(async () => ({
-      user: { uid: 1001, name: 'alice' },
-      items: [{ path: 'source.ts', state: 'repaired', paths: ['source.ts'] }],
-    }));
-    await s.tick();
-    return {
-      ...s,
-      setCount: (value: number) => {
-        count = value;
-      },
-    };
-  };
-  it('repairs only failed VM tracked files, limits each file for ten minutes, and notes a second repair within an hour', async () => {
-    const s = await ready();
-    at(120);
-    await s.tick();
-    expect(s.host.syncChown).toHaveBeenCalledWith('r', {
-      root: '/checkout',
-      items: [{ path: 'source.ts', mode: 'automatic' }],
-    });
-    expect(s.autoFix.record).toHaveBeenCalledWith(
-      'p',
-      expect.objectContaining({ kind: 'chown', side: 'vm', paths: ['source.ts'] }),
-    );
-    s.setCount(2);
-    at(150);
-    await s.tick();
-    expect(s.host.syncChown).toHaveBeenCalledTimes(1);
-    at(750);
-    await s.tick();
-    expect(s.host.syncChown).toHaveBeenCalledTimes(2);
-    expect(s.service.ownershipNotes('p')).toEqual([
-      'A container keeps writing as another user in source.ts.',
-    ]);
-    s.setCount(3);
-    at(780);
-    await s.tick();
-    expect(s.host.syncChown).toHaveBeenCalledTimes(2);
-    at(750 + 3600);
-    expect(s.service.ownershipNotes('p')).toEqual([]);
-  });
-  it('sends more than 200 failed files in one valid request and keeps the per-file retry gate', async () => {
-    const s = await ready();
-    const paths = Array.from({ length: 205 }, (_, index) => `source${index}.ts`);
-    s.failures.failed.mockResolvedValue({
-      groups: paths.map((path) => tracked(path)),
-      vm: { entries: paths.map((path) => failed(path)) },
-    });
-    s.host.syncChown.mockResolvedValue({
-      user: { uid: 1001, name: 'alice' },
-      items: paths.map((path) => ({ path, state: 'repaired', paths: [path] })),
-    });
-    at(120);
-    await s.tick();
-    expect(s.host.syncChown).toHaveBeenCalledTimes(1);
-    const request = s.host.syncChown.mock.calls[0][1];
-    expect(SyncChownRequestSchema.parse(request)).toEqual({
-      root: '/checkout',
-      items: paths.map((path) => ({ path, mode: 'automatic' })),
-    });
-    expect(s.autoFix.record).toHaveBeenCalledTimes(2);
-    expect(s.autoFix.record).toHaveBeenNthCalledWith(
-      1,
-      'p',
-      expect.objectContaining({ kind: 'chown', side: 'vm', paths: paths.slice(0, 200) }),
-    );
-    expect(s.autoFix.record).toHaveBeenNthCalledWith(
-      2,
-      'p',
-      expect.objectContaining({ kind: 'chown', side: 'vm', paths: paths.slice(200) }),
-    );
-    s.setCount(2);
-    at(150);
-    await s.tick();
-    expect(s.host.syncChown).toHaveBeenCalledTimes(1);
-  });
-  it('does not infer VM tracking from a copy command and never sends home-only failures', async () => {
-    const s = await ready();
-    s.failures.failed.mockResolvedValue({
-      groups: [tracked('source.ts')],
-      vm: { entries: [failed('source.ts', false)] },
-      home: { entries: [failed('home.ts')] },
-    });
-    at(120);
-    await s.tick();
-    expect(s.host.syncChown).not.toHaveBeenCalled();
-  });
-  it('attempts parent repair even when the failed tracked file already belongs to the VM user', async () => {
-    const s = await ready();
-    s.failures.failed.mockResolvedValue({
-      groups: [tracked('code/source.ts')],
-      vm: { entries: [{ ...failed('code/source.ts'), owner: { uid: 1001, name: 'alice' } }] },
-    });
-    s.host.syncChown.mockResolvedValue({
-      user: { uid: 1001, name: 'alice' },
-      items: [{ path: 'code/source.ts', state: 'repaired', paths: ['code'] }],
-    });
-    at(120);
-    await s.tick();
-    expect(s.host.syncChown).toHaveBeenCalledWith('r', {
-      root: '/checkout',
-      items: [{ path: 'code/source.ts', mode: 'automatic' }],
-    });
-    expect(s.autoFix.record).toHaveBeenCalledWith(
-      'p',
-      expect.objectContaining({ paths: ['code'] }),
-    );
-  });
-  it.each(['unsupported', 'refused'] as const)(
-    'preserves the copy command and failure warning when the host is %s',
-    async (state) => {
-      const s = await ready();
-      const groups = [tracked('source.ts')];
-      s.failures.failed.mockResolvedValue({ groups, vm: { entries: [failed('source.ts')] } });
-      s.host.syncChown.mockResolvedValue({
-        user: null,
-        items: [{ path: 'source.ts', state, paths: [], reason: 'Use the copy command.' }],
-      });
-      at(120);
-      await s.tick();
-      expect(groups[0].chown?.vm).toBe('sudo chown root source.ts');
-      expect(s.service.problem('p')).toBe('failed-files');
-      expect(s.autoFix.record).not.toHaveBeenCalled();
-    },
-  );
-});
 
 describe('automatic exclusions', () => {
   const start = Date.UTC(2026, 9, 5);

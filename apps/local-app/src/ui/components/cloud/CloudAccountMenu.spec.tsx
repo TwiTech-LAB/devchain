@@ -1,9 +1,10 @@
 import type { ReactNode } from 'react';
-import { fireEvent, render, screen, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import { ContextMenuItem } from '../ui/context-menu';
 import { CloudAccountMenu } from './CloudAccountMenu';
+import { CLOUD_SIGN_IN_NONCE_STORAGE_KEY } from '@/ui/lib/cloud-target';
 
 const mockDisconnect = jest.fn();
 
@@ -29,6 +30,29 @@ function openDropdown() {
 describe('CloudAccountMenu', () => {
   beforeEach(() => {
     mockDisconnect.mockClear();
+    window.localStorage.clear();
+  });
+
+  afterEach(() => {
+    jest.useRealTimers();
+    jest.restoreAllMocks();
+  });
+
+  // The component owns the delayed popup; fake timers verify its redirect without a browser.
+  it('starts an account switch with the pending sign-in nonce in the redirect', async () => {
+    const open = jest.spyOn(window, 'open').mockReturnValue(null);
+    renderMenu();
+    await openDropdown();
+    jest.useFakeTimers();
+    const user = userEvent.setup({ advanceTimers: jest.advanceTimersByTime });
+    await user.click(screen.getByRole('menuitem', { name: 'Switch account' }));
+    act(() => jest.advanceTimersByTime(100));
+
+    expect(mockDisconnect).toHaveBeenCalledTimes(1);
+    const popup = new URL(open.mock.calls[0][0] as string);
+    const callback = new URL(popup.searchParams.get('redirect_uri')!);
+    const stored = JSON.parse(window.localStorage.getItem(CLOUD_SIGN_IN_NONCE_STORAGE_KEY)!);
+    expect(callback.searchParams.get('nonce')).toBe(stored.nonce);
   });
 
   it('shows the account trigger, manage link and ordered switch/disconnect items', async () => {

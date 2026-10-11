@@ -1,11 +1,14 @@
 import { defineConfig } from 'eslint/config';
 import prettierRecommended from 'eslint-plugin-prettier/recommended';
+import reactHooks from 'eslint-plugin-react-hooks';
 import globals from 'globals';
 import tseslint from 'typescript-eslint';
 
 // UI files that still call fetch directly. The list only shrinks: migrate a file to
 // apiFetch and delete its line; never add one.
 const LEGACY_BARE_FETCH_FILES = [];
+
+const UI_TEST_FILES = ['src/ui/**/*.spec.{ts,tsx}', 'src/ui/**/*.test.{ts,tsx}'];
 
 const BARE_FETCH_MESSAGE =
   'Use apiFetch/useFetchFactory from src/ui/lib/api-transport.ts so the request reaches the right backend.';
@@ -44,12 +47,19 @@ export default defineConfig(
   },
   {
     files: ['src/ui/**/*.{ts,tsx}'],
-    ignores: [
-      'src/ui/lib/api-transport.ts',
-      'src/ui/**/*.spec.{ts,tsx}',
-      'src/ui/**/*.test.{ts,tsx}',
-      ...LEGACY_BARE_FETCH_FILES,
-    ],
+    plugins: { 'react-hooks': reactHooks },
+    rules: {
+      'react-hooks/rules-of-hooks': 'error',
+      'react-hooks/exhaustive-deps': 'warn',
+    },
+  },
+  {
+    files: UI_TEST_FILES,
+    rules: { 'react-hooks/exhaustive-deps': 'off' },
+  },
+  {
+    files: ['src/ui/**/*.{ts,tsx}'],
+    ignores: ['src/ui/lib/api-transport.ts', ...UI_TEST_FILES, ...LEGACY_BARE_FETCH_FILES],
     rules: {
       'no-restricted-globals': ['error', { name: 'fetch', message: BARE_FETCH_MESSAGE }],
       'no-restricted-properties': [
@@ -58,6 +68,13 @@ export default defineConfig(
         { object: 'globalThis', property: 'fetch', message: BARE_FETCH_MESSAGE },
         { object: 'self', property: 'fetch', message: BARE_FETCH_MESSAGE },
       ],
+    },
+  },
+  {
+    files: ['src/ui/**/*.{ts,tsx}'],
+    ignores: UI_TEST_FILES,
+    rules: {
+      '@typescript-eslint/no-unsafe-return': 'error',
     },
   },
 );

@@ -762,20 +762,6 @@ const cases = {
     fallback: 'Could not preview this pattern.',
     serverMessage: true,
   },
-  giveFileOwnership: {
-    invoke: (api) => api.giveFileOwnership('project /?#', ['build/out', 'tmp/cache']),
-    url: '/api/projects/project%20%2F%3F%23/file-sync/give-ownership',
-    init: () => post({ paths: ['build/out', 'tmp/cache'] }),
-    backend: HOME_BACKEND,
-    response: {
-      user: null,
-      items: [{ path: 'build/out', state: 'repaired', paths: ['build/out'] }],
-      extra: 'not in schema',
-    },
-    result: { user: null, items: [{ path: 'build/out', state: 'repaired', paths: ['build/out'] }] },
-    fallback: 'Could not change VM file owners.',
-    serverMessage: true,
-  },
   readFileSyncStatus: {
     invoke: (api, signal) => api.readFileSyncStatus('project /?#', signal),
     url: '/api/file-sync/projects/project%20%2F%3F%23/status',
@@ -823,6 +809,29 @@ const cases = {
     response: { canConnect: true, fit: 'fits', items: [], availability: { available: true } },
     result: { canConnect: true, fit: 'fits', items: [], availability: { available: true } },
     fallback: 'The Docker plan failed (503)',
+    serverMessage: true,
+  },
+  applyDockerUserFix: {
+    invoke: (api, signal) => api.applyDockerUserFix('project /?#', 'vm', 'proposal', signal),
+    url: '/api/projects/project%20%2F%3F%23/docker/user-fix/apply',
+    init: (signal) => ({
+      ...post({ remoteId: 'vm', proposalId: 'proposal', confirmed: true }),
+      signal,
+    }),
+    backend: HOME_BACKEND,
+    response: { applied: true },
+    result: undefined,
+    fallback: 'Could not apply the Compose user fix.',
+    serverMessage: true,
+  },
+  verifyDockerUserFix: {
+    invoke: (api, signal) => api.verifyDockerUserFix('project /?#', 'vm', signal),
+    url: '/api/projects/project%20%2F%3F%23/docker/user-fix/verify',
+    init: (signal) => ({ ...post({ remoteId: 'vm' }), signal }),
+    backend: HOME_BACKEND,
+    response: { canConnect: true, fit: 'fits', items: [], availability: { available: true } },
+    result: { canConnect: true, fit: 'fits', items: [], availability: { available: true } },
+    fallback: 'Could not verify the Compose user fix.',
     serverMessage: true,
   },
   readDockerPresence: {
@@ -1150,6 +1159,7 @@ describe('RemoteVmHttpApi', () => {
     ['readFileSyncSuggestions', {}, 'No suggestions'],
     ['previewFileSyncPattern', { home: {}, vm: null }, 'The server returned no pattern preview.'],
     ['readDockerPlan', null, 'The server returned an invalid Docker plan.'],
+    ['verifyDockerUserFix', null, 'The server returned an invalid Docker plan.'],
     [
       'readDockerPlan',
       { canConnect: true, fit: 'fits', items: [], availability: null },
@@ -1160,7 +1170,7 @@ describe('RemoteVmHttpApi', () => {
     await expect(cases[name].invoke(remoteVmHttpApi, signal)).rejects.toThrow(new Error(expected));
   });
 
-  it.each(['readFileSyncAutoFix', 'setFileSyncAutoFix', 'giveFileOwnership'] as const)(
+  it.each(['readFileSyncAutoFix', 'setFileSyncAutoFix'] as const)(
     '%s retains its schema-validation error type',
     async (name) => {
       transport.mockResolvedValue(response({}));
@@ -1223,6 +1233,8 @@ describe('RemoteVmHttpApi', () => {
     'readFileSyncSuggestions',
     'previewFileSyncPattern',
     'readDockerPlan',
+    'applyDockerUserFix',
+    'verifyDockerUserFix',
   ] as const)('%s propagates transport/abort errors unchanged', async (name) => {
     const error = new DOMException('aborted', 'AbortError');
     transport.mockRejectedValue(error);

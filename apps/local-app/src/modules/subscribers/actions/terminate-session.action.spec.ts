@@ -135,11 +135,14 @@ describe('TerminateSessionAction', () => {
     });
 
     it('should expose Agent Name before Profile Family Slug with family policy copy', () => {
-      expect(terminateSessionAction.inputs).toHaveLength(3);
+      expect(terminateSessionAction.inputs).toHaveLength(4);
       const agentNameInput = terminateSessionAction.inputs.find((i) => i.name === 'agentName');
       const familySlugInput = terminateSessionAction.inputs.find((i) => i.name === 'familySlug');
       const guardInput = terminateSessionAction.inputs.find(
         (i) => i.name === 'skipWhileEpicsInStatuses',
+      );
+      const busyGuardInput = terminateSessionAction.inputs.find(
+        (i) => i.name === 'skipWhileAgentsBusy',
       );
       expect(agentNameInput).toBeDefined();
       expect(agentNameInput?.type).toBe('string');
@@ -149,6 +152,7 @@ describe('TerminateSessionAction', () => {
         'agentName',
         'familySlug',
         'skipWhileEpicsInStatuses',
+        'skipWhileAgentsBusy',
       ]);
       expect(familySlugInput).toMatchObject({
         label: 'Profile Family Slug',
@@ -164,6 +168,12 @@ describe('TerminateSessionAction', () => {
         type: 'select',
         multiple: true,
         optionsSource: 'project_statuses',
+        allowedSources: ['custom'],
+        required: false,
+      });
+      expect(busyGuardInput).toMatchObject({
+        label: 'Skip while any target agent is busy',
+        type: 'boolean',
         allowedSources: ['custom'],
         required: false,
       });
@@ -244,6 +254,112 @@ describe('TerminateSessionAction', () => {
       expect(mockStorage.listStatuses).not.toHaveBeenCalled();
       expect(mockStorage.listProjectEpics).not.toHaveBeenCalled();
       expect(mockSessionsService.terminateSession).toHaveBeenCalledTimes(3);
+    });
+  });
+
+  // Unit layer: the guard is a pure decision over resolved session rows, and
+  // the observable contract is the action result plus the termination call.
+  describe('execute - busy guard', () => {
+    it('skips the whole family batch when one target is not idle', async () => {
+      mockEngineeringFamily();
+      mockSessionsService.listActiveSessions.mockResolvedValue([
+        makeSession({ id: 'session-a', agentId: 'agent-a', activityState: 'idle' }),
+        makeSession({ id: 'session-b', agentId: 'agent-b', activityState: 'busy' }),
+      ]);
+
+      const result = await terminateSessionAction.execute(mockContext, {
+        familySlug: 'engineering',
+        skipWhileAgentsBusy: 'true',
+      });
+
+      expect(result).toEqual({
+        success: true,
+        retryable: false,
+        message: 'Skipped: 1 target agent(s) not idle: "beta" [agent-b] session session-b (busy)',
+        data: {
+          skipped: true,
+          busy: [
+            { agentId: 'agent-b', name: 'beta', sessionId: 'session-b', activityState: 'busy' },
+          ],
+        },
+      });
+      expect(mockSessionsService.terminateSession).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      {
+        path: 'agentName',
+        inputs: { agentName: 'MyAgent', skipWhileAgentsBusy: 'true' },
+        session: makeSession({
+          id: 'named-session',
+          agentId: 'resolved-agent-id',
+          activityState: 'busy',
+        }),
+        message:
+          'Skipped: 1 target agent(s) not idle: "Test Agent" [resolved-agent-id] session named-session (busy)',
+      },
+      {
+        path: 'event',
+        inputs: { skipWhileAgentsBusy: 'true' },
+        session: makeSession({ id: 'session-123', activityState: null }),
+        message: 'Skipped: 1 target agent(s) not idle: [agent-456] session session-123 (unknown)',
+      },
+    ])(
+      'skips the $path target when its session is not idle',
+      async ({ inputs, session, message }) => {
+        mockSessionsService.getActiveSessionForAgent.mockReturnValue(session);
+        mockSessionsService.validateSessionInProject.mockResolvedValue(session);
+
+        const result = await terminateSessionAction.execute(mockContext, inputs);
+
+        expect(result).toMatchObject({ success: true, retryable: false, message });
+        expect(mockSessionsService.terminateSession).not.toHaveBeenCalled();
+      },
+    );
+
+    it('terminates every family target when all target sessions are idle', async () => {
+      mockEngineeringFamily();
+      mockSessionsService.listActiveSessions.mockResolvedValue([
+        makeSession({ id: 'session-a', agentId: 'agent-a', activityState: 'idle' }),
+        makeSession({ id: 'session-b', agentId: 'agent-b', activityState: 'idle' }),
+      ]);
+
+      const result = await terminateSessionAction.execute(mockContext, {
+        familySlug: 'engineering',
+        skipWhileAgentsBusy: 'true',
+      });
+
+      expect(result.success).toBe(true);
+      expect(mockSessionsService.terminateSession).toHaveBeenCalledTimes(2);
+    });
+
+    it('does not treat a stopped event session as busy', async () => {
+      mockSessionsService.validateSessionInProject.mockResolvedValue(
+        makeSession({ id: 'session-123', status: 'stopped', activityState: 'busy' }),
+      );
+
+      const result = await terminateSessionAction.execute(mockContext, {
+        skipWhileAgentsBusy: 'true',
+      });
+
+      expect(result.success).toBe(true);
+      expect(mockSessionsService.terminateSession).toHaveBeenCalledWith('session-123', {
+        source: 'subscriber',
+        reason: 'user-requested',
+      });
+    });
+
+    it('terminates a busy session when the input is unchecked', async () => {
+      mockSessionsService.validateSessionInProject.mockResolvedValue(
+        makeSession({ id: 'session-123', activityState: 'busy' }),
+      );
+
+      const result = await terminateSessionAction.execute(mockContext, {
+        skipWhileAgentsBusy: 'false',
+      });
+
+      expect(result.success).toBe(true);
+      expect(mockSessionsService.terminateSession).toHaveBeenCalledTimes(1);
     });
   });
 
@@ -359,25 +475,27 @@ describe('TerminateSessionAction', () => {
     });
   });
 
-  describe('execute - target resolution by familySlug', () => {
-    beforeEach(() => {
-      mockStorage.listAgentProfiles.mockResolvedValue({
-        items: [
-          { id: 'profile-upper', familySlug: ' Engineering ' },
-          { id: 'profile-lower', familySlug: 'engineering' },
-          { id: 'profile-other', familySlug: 'other' },
-        ],
-        total: 3,
-      });
-      mockStorage.listAgents.mockResolvedValue({
-        items: [
-          { id: 'agent-b', name: 'beta', profileId: 'profile-upper' },
-          { id: 'agent-a', name: 'Alpha', profileId: 'profile-lower', isProjectOwner: true },
-          { id: 'agent-x', name: 'Excluded', profileId: 'profile-other' },
-        ],
-        total: 3,
-      });
+  function mockEngineeringFamily(): void {
+    mockStorage.listAgentProfiles.mockResolvedValue({
+      items: [
+        { id: 'profile-upper', familySlug: ' Engineering ' },
+        { id: 'profile-lower', familySlug: 'engineering' },
+        { id: 'profile-other', familySlug: 'other' },
+      ],
+      total: 3,
     });
+    mockStorage.listAgents.mockResolvedValue({
+      items: [
+        { id: 'agent-b', name: 'beta', profileId: 'profile-upper' },
+        { id: 'agent-a', name: 'Alpha', profileId: 'profile-lower', isProjectOwner: true },
+        { id: 'agent-x', name: 'Excluded', profileId: 'profile-other' },
+      ],
+      total: 3,
+    });
+  }
+
+  describe('execute - target resolution by familySlug', () => {
+    beforeEach(mockEngineeringFamily);
 
     it('should use the shared project-scoped resolver and terminate deterministic targets', async () => {
       mockSessionsService.listActiveSessions.mockResolvedValue([

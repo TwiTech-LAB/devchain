@@ -22,6 +22,7 @@ import type { TerminalIOService } from '../../terminal/services/terminal-io/term
 import type { SessionsService } from './sessions.service';
 import type { PooledMessage } from './sessions-message-pool.service';
 import type { ProviderAdapterFactory } from '../../providers/adapters/provider-adapter.factory';
+import { ShellForegroundError } from '../../terminal/services/terminal-io/delivery';
 
 function makeMessage(overrides: Partial<PooledMessage> = {}): PooledMessage {
   return {
@@ -109,6 +110,20 @@ describe('DeliveryFailureNotifierService', () => {
     );
 
     expect(mockTerminalIO.deliverImmediate).not.toHaveBeenCalled();
+  });
+
+  it('stops after a refused failure notice without cascading', async () => {
+    mockTerminalIO.deliverImmediate.mockRejectedValue(new ShellForegroundError('tmux-sender-1'));
+    await notifier.notifySendersOfFailure(
+      [makeMessage({ senderAgentId: 'sender-1' })],
+      'recipient-1',
+      'The CLI is not running',
+    );
+    expect(mockTerminalIO.deliverImmediate).toHaveBeenCalledTimes(1);
+    expect(mockLogger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ error: expect.stringContaining('CLI is not running') }),
+      'Failed to notify sender of delivery failure (best-effort, ignored)',
+    );
   });
 
   it('deduplicates sender agent IDs', async () => {

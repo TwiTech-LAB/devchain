@@ -22,6 +22,11 @@ export const FolderIdSchema = z
   .max(200)
   .regex(/^((?:code|git):[^:\s]+|tx:[a-z0-9-]+:[^:\s]+)$/);
 
+/** A code or git folder: the kinds of folder DevChain syncs for a project. */
+export function isProjectFolderId(id: string): boolean {
+  return /^(?:code|git):/.test(id);
+}
+
 /** The cap of each ignore list: the user's own, and the patterns DevChain manages. */
 export const IGNORE_PATTERNS_MAX = 200;
 /** The longest ignore pattern the server accepts. */
@@ -133,6 +138,9 @@ export const SyncFolderConfigurationSchema = z.object({
 });
 export type SyncFolderConfiguration = z.infer<typeof SyncFolderConfigurationSchema>;
 
+export const SyncFolderIgnoresSchema = z.object({ ignore: z.array(z.string()) });
+export type SyncFolderIgnores = z.infer<typeof SyncFolderIgnoresSchema>;
+
 export const SyncFolderPatchSchema = z
   .object({
     type: FolderTypeSchema.optional(),
@@ -167,6 +175,7 @@ export const FolderSyncStatusSchema = z.object({
   error: z.string().optional(),
   errors: z.number().optional(),
   pullErrors: z.number().optional(),
+  sequence: z.number().int().nonnegative().optional(),
   /** Sampled by default; the allErrors option requests the complete list. */
   fileErrors: z.array(z.object({ path: z.string(), error: z.string() })).optional(),
   localFiles: z.number(),

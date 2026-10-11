@@ -6,7 +6,7 @@ import { mkdtemp, rm, mkdir, writeFile, symlink, readFile, chmod } from 'node:fs
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DockerEngineClient, DockerEngineError } from '../../core/controllers/docker-engine.client';
-import { DockerPlanSourceService } from './docker-plan-source.service';
+import { DOCKER_PLAN_REUSE_MS, DockerPlanSourceService } from './docker-plan-source.service';
 import { FakeProcessExecutor } from '../../terminal/services/process-executor/fake-process-executor';
 import { ProcessExecutor } from '../../terminal/services/process-executor/process-executor.port';
 import { measureDockerBind } from './docker-plan-files';
@@ -21,6 +21,8 @@ let source: DockerPlanSourceService;
 let containers: Array<Record<string, unknown>>;
 let requests: string[];
 let silent: boolean;
+let imageUser: string;
+const ownership = { home: { uid: 1000, gid: 1000 }, vm: { uid: 1001, gid: 1000 } };
 const container = (
   id: string,
   mounts: unknown[] = [],
@@ -41,6 +43,7 @@ beforeEach(async () => {
   containers = [];
   requests = [];
   silent = false;
+  imageUser = '';
   git = new FakeProcessExecutor();
   git.setDefaultResponse({ type: 'failure', exitCode: 128 });
   const module = await Test.createTestingModule({
@@ -93,7 +96,9 @@ beforeEach(async () => {
       );
     }
     if (path === '/images/image/json' || path === '/images/present/json')
-      return res.end(JSON.stringify({ Id: 'image', Architecture: 'amd64' }));
+      return res.end(
+        JSON.stringify({ Id: 'image', Architecture: 'amd64', Config: { User: imageUser } }),
+      );
     res.statusCode = 404;
     res.end('{}');
   });
@@ -649,3 +654,276 @@ describe('presence', () => {
     await rejection;
   });
 });
+
+it.each([
+  {
+    name: '${DEVCHAIN_UID}:${DEVCHAIN_GID}',
+    home: '1000:1000',
+    vm: '1001:1000',
+    code: true,
+    image: '',
+    expected: 'follows-user',
+  },
+  {
+    name: '${DEVCHAIN_UID:-1000}:${DEVCHAIN_GID:-1000}',
+    home: '1000:1000',
+    vm: '1001:1000',
+    code: true,
+    image: '',
+    expected: 'follows-user',
+  },
+  {
+    name: 'literal user with writable code',
+    home: '1000:1000',
+    vm: '1000:1000',
+    code: true,
+    image: '',
+    expected: 'needs-user-fix',
+  },
+  {
+    name: 'literal user with read-only code',
+    home: '1000:1000',
+    vm: '1000:1000',
+    code: true,
+    readOnly: true,
+    image: '',
+    expected: 'needs-user-fix',
+  },
+  {
+    name: 'literal user without code',
+    home: '1000:1000',
+    vm: '1000:1000',
+    code: false,
+    image: '',
+    expected: 'exact',
+  },
+  {
+    name: 'inherited named image user',
+    home: undefined,
+    vm: undefined,
+    code: true,
+    image: 'node',
+    expected: 'image-user-hint',
+  },
+  {
+    name: 'docker run numeric override',
+    home: '1000',
+    vm: undefined,
+    code: true,
+    image: '',
+    plain: true,
+    expected: 'follows-user',
+  },
+  {
+    name: 'inherited numeric image user',
+    home: '1000',
+    vm: undefined,
+    code: true,
+    image: '1000',
+    plain: true,
+    expected: 'exact',
+  },
+])('classifies ownership for $name', async (scenario) => {
+  const project = join(root, 'project');
+  imageUser = scenario.image;
+  const labels = scenario.plain
+    ? {}
+    : {
+        'com.docker.compose.project': 'app',
+        'com.docker.compose.project.working_dir': project,
+        'com.docker.compose.project.config_files': join(project, 'custom.yaml'),
+        'com.docker.compose.service': 'web',
+      };
+  containers = [
+    container(
+      'web',
+      scenario.code
+        ? [{ Type: 'bind', Source: project, Destination: '/code', RW: !scenario.readOnly }]
+        : [],
+      {},
+      {
+        User: scenario.home ?? scenario.image,
+        Labels: labels,
+      },
+    ),
+  ];
+  jest.mocked(source.compose).mockImplementation(async (_directory, options) =>
+    options?.files?.length
+      ? {
+          name: 'app',
+          services: {
+            web: {
+              image: 'present',
+              user: options.env?.DEVCHAIN_UID === '1001' ? scenario.vm : scenario.home,
+              group_add: [options.env?.DEVCHAIN_UID ?? '1000', '42'],
+              volumes: scenario.code
+                ? [{ type: 'bind', source: project, target: '/code', read_only: scenario.readOnly }]
+                : [],
+            },
+          },
+        }
+      : null,
+  );
+  const result = await source.scan(client, project, undefined, { ownership });
+  expect(result.items[0].ownership).toMatchObject({ ...ownership, class: scenario.expected });
+  if (scenario.expected === 'follows-user')
+    expect(result.items[0].ownership?.target).toEqual({
+      user: scenario.plain ? '1001' : '1001:1000',
+      groupAdd: scenario.plain ? [] : ['1001', '42'],
+    });
+  expect(JSON.stringify(result)).not.toContain('must-never-escape');
+});
+
+it('reuses both Compose ownership resolutions for two minutes and permits a fresh verification', async () => {
+  const project = join(root, 'project');
+  containers = [
+    container(
+      'web',
+      [],
+      {},
+      {
+        Labels: {
+          'com.docker.compose.project': 'app',
+          'com.docker.compose.project.working_dir': project,
+          'com.docker.compose.project.config_files': join(project, 'custom.yaml'),
+          'com.docker.compose.service': 'web',
+        },
+      },
+    ),
+  ];
+  let fixed = false;
+  const compose = jest.mocked(source.compose).mockImplementation(async (_directory, options) =>
+    options?.files?.length
+      ? {
+          name: 'app',
+          services: {
+            web: {
+              image: 'present',
+              user: fixed ? `${options.env?.DEVCHAIN_UID}:1000` : '1000:1000',
+            },
+          },
+        }
+      : null,
+  );
+  const first = await source.scan(client, project, undefined, { ownership });
+  expect(first.items[0].ownership?.class).toBe('exact');
+  const resolutions = () => compose.mock.calls.filter(([, options]) => options?.env);
+  expect(resolutions()).toHaveLength(2);
+  expect(resolutions().map(([, options]) => options?.env)).toEqual([
+    expect.objectContaining({
+      PATH: process.env.PATH,
+      HOME: process.env.HOME,
+      ...(process.env.DOCKER_HOST ? { DOCKER_HOST: process.env.DOCKER_HOST } : {}),
+      DEVCHAIN_UID: '1000',
+      DEVCHAIN_GID: '1000',
+    }),
+    expect.objectContaining({ DEVCHAIN_UID: '1001', DEVCHAIN_GID: '1000' }),
+  ]);
+  fixed = true;
+  expect(
+    (await source.scan(client, project, undefined, { ownership, reuse: true })).items[0].ownership
+      ?.class,
+  ).toBe('exact');
+  expect(resolutions()).toHaveLength(2);
+  expect(
+    (await source.scan(client, project, undefined, { ownership, reuse: false })).items[0].ownership
+      ?.class,
+  ).toBe('follows-user');
+  expect(resolutions()).toHaveLength(4);
+  jest.spyOn(Date, 'now').mockReturnValue(Date.now() + DOCKER_PLAN_REUSE_MS);
+  await source.scan(client, project, undefined, { ownership, reuse: true });
+  expect(resolutions()).toHaveLength(6);
+});
+
+it('classifies every down Compose service, including read-only code and inactive profiles', async () => {
+  const project = join(root, 'project');
+  jest.mocked(source.compose).mockImplementation(async (_directory, options) => ({
+    name: 'app',
+    services: {
+      web: { image: 'present', user: `${options?.env?.DEVCHAIN_UID ?? '1000'}:1000` },
+      worker: {
+        image: 'present',
+        user: '1000:1000',
+        profiles: ['tools'],
+        volumes: [{ type: 'bind', source: project, read_only: true }],
+      },
+    },
+  }));
+  const result = await source.scan(client, project, undefined, { ownership });
+  expect(result.items[0].serviceOwnership).toEqual([
+    {
+      service: 'web',
+      ownership: expect.objectContaining({
+        class: 'follows-user',
+        target: { user: '1001:1000', groupAdd: [] },
+      }),
+    },
+    { service: 'worker', ownership: expect.objectContaining({ class: 'needs-user-fix' }) },
+  ]);
+  expect(result.items[0].ownership?.class).toBe('needs-user-fix');
+});
+
+it.each([
+  { vm: { uid: 1001, gid: 1002 }, targetUser: '1001:1002' },
+  { vm: { uid: 1000, gid: 1002 }, targetUser: '1000:1002' },
+  { vm: { uid: 1001, gid: 1000 }, targetUser: '1001:1000' },
+])(
+  'preserves non-Compose supplemental groups while mapping User to $targetUser',
+  async ({ vm, targetUser }) => {
+    const project = join(root, 'project');
+    containers = [
+      container(
+        'plain',
+        [{ Type: 'bind', Source: project, Destination: '/code', RW: true }],
+        { GroupAdd: ['1000', '42'] },
+        { User: '1000:1000' },
+      ),
+    ];
+    const result = await source.scan(client, project, undefined, {
+      ownership: { home: ownership.home, vm },
+    });
+    expect(result.items[0].ownership).toMatchObject({
+      class: 'follows-user',
+      target: { user: targetUser, groupAdd: ['1000', '42'] },
+    });
+  },
+);
+
+it.each(
+  ['home', 'vm', 'both'].flatMap((side) => ['error', 'null'].map((failure) => ({ side, failure }))),
+)(
+  'blocks a down Compose aggregate and retains services after a $side resolution $failure',
+  async ({ side, failure }) => {
+    const project = join(root, 'project');
+    jest.mocked(source.compose).mockImplementation(async (_directory, options) => {
+      if (
+        options?.env &&
+        (side === 'both' || options.env.DEVCHAIN_UID === (side === 'home' ? '1000' : '1001'))
+      ) {
+        if (failure === 'error') throw new Error('PRIVATE_COMPOSE_OUTPUT');
+        return null;
+      }
+      return {
+        name: 'app',
+        services: {
+          web: { image: 'present', user: '1000:1000' },
+          sidecar: { image: 'present', user: '0' },
+        },
+      };
+    });
+    const result = await source.scan(client, project, undefined, { ownership });
+    expect(result.items[0].blockers).toEqual([
+      expect.objectContaining({ code: 'compose-ownership-unreadable' }),
+    ]);
+    expect(result.items[0].serviceOwnership?.map((entry) => entry.service)).toEqual([
+      'web',
+      'sidecar',
+    ]);
+    expect(
+      result.items[0].serviceOwnership?.every(
+        (entry) => entry.ownership.refusalReasons?.[0].code === 'compose-ownership-unreadable',
+      ),
+    ).toBe(true);
+    expect(JSON.stringify(result)).not.toContain('PRIVATE_COMPOSE_OUTPUT');
+  },
+);

@@ -118,6 +118,7 @@ describe('host bootstrap rule parity', () => {
       'jq',
       'openssl',
       'procps',
+      'libcap2-bin',
     ]);
     expect(imageToolPackages).not.toContain('yq');
     expect(imageToolPackages.filter((name) => imageRequiredPackages.includes(name))).toEqual([]);

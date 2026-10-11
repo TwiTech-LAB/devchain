@@ -1,5 +1,13 @@
-import { groupDockerData, checkDockerDataGroup } from './docker-data-groups';
+import {
+  groupDockerData,
+  checkDockerDataGroup,
+  mountedData,
+  overlapsData,
+} from './docker-data-groups';
+import { applyDockerGroupOwnership, type DockerOwnershipConsumer } from './docker-ownership';
+import { projectContainer } from './docker-project-resources';
 import { Inject, Injectable } from '@nestjs/common';
+import { randomUUID } from 'node:crypto';
 import { Readable } from 'node:stream';
 import { join, resolve } from 'node:path';
 import { AppError } from '../../../common/errors/error-types';
@@ -21,16 +29,29 @@ import type {
 import {
   DockerImportInventoryStore,
   vmImageCandidates,
+  inventoryBindPaths,
 } from '../operations/docker-import-inventory.store';
 import { RemoteHostClient, type HostRuntime } from '../operations/remote-host.client';
 import { ConnectChoicesStore } from '../connect-choices.store';
-import { vmUserMismatch, vmUserWarning, type VmUserMismatch } from '../vm-user-identity';
+import {
+  hasUnknownUserIds,
+  vmUserMismatch,
+  vmUserWarning,
+  type VmUserMismatch,
+} from '../vm-user-identity';
 import {
   DockerPlanRequestSchema,
+  DockerUserFixApplySchema,
+  DockerUserFixVerifySchema,
   isVolumeMount,
   type DockerPlan,
   type DockerPresence,
+  type DockerOwnershipContext,
+  type DockerOwnershipDecision,
+  type DockerUserFixProposal,
+  type DockerUserFixApplyResult,
 } from './docker-plan.dto';
+import { composeUserFixProposal, applyComposeUserFix } from './docker-compose-user-fix';
 import {
   copiesImages,
   estimateDockerPlan,
@@ -42,7 +63,7 @@ import {
   writerStops,
   keptWriterStops,
 } from './docker-plan-fit';
-import { projectAnchoredPath, within } from './docker-plan-files';
+import { projectAnchoredPath, strictlyWithin, within } from './docker-plan-files';
 import {
   applyDockerPolicy,
   applyDockerDataPolicy,
@@ -71,6 +92,7 @@ export async function pagedDockerScan(
     for (const c of more.containers) {
       const original = result.containers.find((entry) => entry.id === c.id);
       if (original && c.metadata) original.metadata = c.metadata;
+      if (original && c.user !== undefined) original.user = c.user;
     }
     result.paths.push(...more.paths);
   }
@@ -83,17 +105,31 @@ interface DockerCopySpeeds {
   probeSeconds: number;
   exportRate: number | null;
 }
-interface DockerPlanOptions {
+export interface DockerPlanOptions {
   estimate?: boolean;
   reuse?: boolean;
   /** Project-anchored paths still excluded from file sync during copy-back. */
   dataBindPaths?: readonly string[];
 }
+const USER_FIX_PROPOSAL_TTL_MS = 600_000;
+const proposalExpired = (issued: { at: number }): boolean =>
+  Date.now() - issued.at >= USER_FIX_PROPOSAL_TTL_MS;
 
 @Injectable()
 export class DockerPlanService {
   /** Per VM; a choice in the dialog cannot change them. */
   private readonly speeds = new Map<string, DockerCopySpeeds>();
+  private readonly userFixes = new Map<
+    string,
+    {
+      at: number;
+      projectId: string;
+      remoteId: string;
+      itemId?: string;
+      root: string;
+      proposal: DockerUserFixProposal;
+    }
+  >();
 
   constructor(
     @Inject(STORAGE_SERVICE) private readonly storage: ProjectStorage & RemoteStorage,
@@ -109,6 +145,79 @@ export class DockerPlanService {
 
   async presence(projectId: string, signal?: AbortSignal): Promise<DockerPresence> {
     return this.source.presence(await this.projectRoot(projectId), signal);
+  }
+
+  async applyUserFix(
+    projectId: string,
+    input: unknown,
+    signal?: AbortSignal,
+  ): Promise<DockerUserFixApplyResult> {
+    const request = DockerUserFixApplySchema.parse(input);
+    const issued = this.userFixes.get(request.proposalId);
+    if (
+      !issued ||
+      issued.projectId !== projectId ||
+      issued.remoteId !== request.remoteId ||
+      proposalExpired(issued) ||
+      (await this.projectRoot(projectId)) !== issued.root
+    )
+      throw new AppError(
+        'The Compose user proposal is unavailable. Get a fresh plan.',
+        'DOCKER_USER_FIX_STALE',
+        409,
+      );
+    if (issued.proposal.canApply) {
+      const fresh = await this.plan(projectId, { remoteId: request.remoteId }, signal, {
+        estimate: false,
+        reuse: false,
+      });
+      const fixes = issued.itemId
+        ? fresh.items
+            .filter((item) => item.id === issued.itemId)
+            .flatMap((item) => [
+              item.ownership?.fixProposal,
+              ...(item.serviceOwnership?.map((service) => service.ownership.fixProposal) ?? []),
+            ])
+        : (fresh.dataGroups?.flatMap(
+            (group) =>
+              group.ownershipConsumers?.map((consumer) => consumer.ownership.fixProposal) ?? [],
+          ) ?? []);
+      const current = fixes.find(
+        (proposal) =>
+          proposal?.service === issued.proposal.service &&
+          proposal.file === issued.proposal.file &&
+          proposal.container === issued.proposal.container,
+      );
+      if (
+        !current ||
+        current.oldUser !== issued.proposal.oldUser ||
+        current.newUser !== issued.proposal.newUser
+      )
+        throw new AppError(
+          'The Compose service or user changed since the plan. Get a fresh plan.',
+          'DOCKER_USER_FIX_STALE',
+          409,
+        );
+      if (!current.canApply)
+        throw new AppError(
+          current.reason ?? 'This proposal requires a manual edit, then Verify.',
+          'DOCKER_USER_FIX_SHOW_ONLY',
+          422,
+        );
+    }
+    signal?.throwIfAborted();
+    await applyComposeUserFix(issued.root, issued.proposal);
+    this.source.invalidate();
+    for (const [id, fix] of this.userFixes)
+      if (fix.projectId === projectId && fix.proposal.file === issued.proposal.file)
+        this.userFixes.delete(id);
+    return { applied: true };
+  }
+
+  /** Verification always resolves Compose with both identities, even immediately after a plan. */
+  verifyUserFix(projectId: string, input: unknown, signal?: AbortSignal): Promise<DockerPlan> {
+    const request = DockerUserFixVerifySchema.parse(input);
+    return this.plan(projectId, request, signal, { estimate: false, reuse: false });
   }
 
   /**
@@ -177,8 +286,14 @@ export class DockerPlanService {
       return unavailable(plan, 'remote', 'remote-unreachable', 'The VM is unavailable.');
     }
     const mismatch = vmUserMismatch(this.source.uid(), this.source.gid(), runtime);
-    if (mismatch)
+    if (mismatch && hasUnknownUserIds(mismatch))
       return unavailable(plan, 'remote', 'vm-user-mismatch', vmUserWarning(mismatch), mismatch);
+    const ownership: DockerOwnershipContext | undefined = mismatch
+      ? {
+          home: { uid: mismatch.homeUid!, gid: mismatch.homeGid! },
+          vm: { uid: mismatch.vmUid!, gid: mismatch.vmGid! },
+        }
+      : undefined;
     if (!runtime.docker?.installed)
       return unavailable(
         plan,
@@ -211,7 +326,8 @@ export class DockerPlanService {
     try {
       scanned = await this.source.scan(client, project.rootPath, scanSignal, {
         reuse,
-        previousBindPaths: absolutePaths(inventory?.items.flatMap((item) => item.bindPaths) ?? []),
+        ownership,
+        previousBindPaths: absolutePaths(inventoryBindPaths(inventory, project.rootPath)),
         dataBindPaths: absolutePaths(dataBindPaths),
       });
     } catch (error) {
@@ -225,7 +341,20 @@ export class DockerPlanService {
         ? '/'
         : projectAnchoredPath(project.rootPath, path),
     );
-    const dataGroups = groupDockerData(plan.items, project.rootPath);
+    const records = inventory?.groups ?? [];
+    const dataGroups = groupDockerData(
+      plan.items,
+      project.rootPath,
+      records.map((group) => ({
+        volumes: group.volumes,
+        bindPaths: group.bindPaths.filter(
+          (path) =>
+            strictlyWithin(project.rootPath, path) &&
+            !plan.codePaths.includes(projectAnchoredPath(project.rootPath, path)),
+        ),
+      })),
+      scanned.ownershipConsumers,
+    );
     const holderVolumes = [...new Set(dataGroups.flatMap((g) => g.volumes))];
     const externalPaths = [
       ...new Set([
@@ -253,9 +382,55 @@ export class DockerPlanService {
       if (signal?.aborted) throw error;
       return unavailable(plan, 'remote', 'remote-docker-routes', VM_ROUTES_MESSAGE);
     }
-    const records = inventory?.groups ?? [];
-    plan.dataGroups = dataGroups.map((group) =>
-      checkDockerDataGroup(group, records, scanned.holders, target, projectId),
+    const consumers: DockerOwnershipConsumer[] = scanned.ownershipConsumers ?? [];
+    const vmConsumers = new Map<string, DockerOwnershipConsumer>();
+    if (ownership) {
+      for (const container of target.containers) {
+        const consumer: DockerOwnershipConsumer = {
+          name: `VM ${container.name}`,
+          user: container.user,
+          ownership: {
+            ...ownership,
+            class:
+              (projectContainer(container, project.rootPath, projectId, target.volumes)
+                ? inventory?.items.find((item) => item.name === container.name.replace(/^\//, ''))
+                    ?.ownership?.class
+                : undefined) ?? 'exact',
+          },
+          ...mountedData(container.mounts),
+        };
+        consumers.push(consumer);
+        vmConsumers.set(container.id, consumer);
+      }
+    }
+    const ownershipGroups = ownership
+      ? groupDockerData(plan.items, project.rootPath, dataGroups, consumers)
+      : dataGroups;
+    const extraPaths = ownershipGroups
+      .flatMap((group) => group.bindPaths)
+      .filter((path) => !externalPaths.includes(path));
+    const extraVolumes = ownershipGroups
+      .flatMap((group) => group.volumes)
+      .filter((volume) => !holderVolumes.includes(volume));
+    if (extraPaths.length || extraVolumes.length) {
+      try {
+        const extra = await pagedDockerScan([...new Set(extraPaths)], (paths) =>
+          this.remote.dockerScan(request.remoteId, paths, options, [
+            ...new Set([...holderVolumes, ...extraVolumes]),
+          ]),
+        );
+        target.paths.push(...extra.paths);
+        for (const container of extra.containers) {
+          const original = target.containers.find((entry) => entry.id === container.id);
+          if (original && container.metadata) original.metadata = container.metadata;
+        }
+      } catch (error) {
+        if (signal?.aborted) throw error;
+        return unavailable(plan, 'remote', 'remote-docker-routes', VM_ROUTES_MESSAGE);
+      }
+    }
+    plan.dataGroups = ownershipGroups.map((group) =>
+      checkDockerDataGroup(group, records, scanned.holders, target, projectId, project.rootPath),
     );
     applyDockerPolicy(
       plan.items,
@@ -266,7 +441,60 @@ export class DockerPlanService {
       project.rootPath,
       request.items === undefined ? this.choices.get(projectId)?.items : undefined,
     );
-    applyDockerDataPolicy(plan.items, plan.dataGroups, request, target);
+    if (ownership) {
+      // Only a project-owned counterpart whose data remains untouched (or is explicitly
+      // reset) is removed from the mapping-conflict check. All other holders still count.
+      for (const container of target.containers) {
+        const counterpart = plan.items.find(
+          (item) => item.name === container.name.replace(/^\//, ''),
+        );
+        if (
+          !counterpart?.selectedMode ||
+          !['replace', 'leave-as-is'].includes(counterpart.targetAction)
+        )
+          continue;
+        const group = plan.dataGroups.find((entry) => entry.itemIds.includes(counterpart.id));
+        if (
+          !group ||
+          !consumers.some(
+            (consumer) =>
+              overlapsData(group, consumer) && consumer.ownership.class === 'follows-user',
+          )
+        )
+          continue;
+        const consumer = vmConsumers.get(container.id);
+        if (consumer) consumer.counterpart = true;
+      }
+      applyDockerGroupOwnership(plan.dataGroups, plan.items, consumers, ownership);
+      await this.userFixProposals(plan, consumers, project.rootPath);
+    }
+    applyDockerDataPolicy(
+      plan.items,
+      plan.dataGroups,
+      request,
+      target,
+      inventory,
+      project.rootPath,
+      projectId,
+    );
+    const acceptedFixes = new Set(
+      request.items?.filter((entry) => entry.moveWithoutUserFix).map((entry) => entry.id),
+    );
+    for (const item of plan.items) {
+      if (item.ownership?.class !== 'needs-user-fix' || !item.selectedMode) continue;
+      if (acceptedFixes.has(item.id))
+        item.warnings.push({
+          code: 'user-fix-skipped',
+          message:
+            'Move without the fix: this container keeps the home user on the VM and cannot write project folders or read project files restricted to the VM user.',
+        });
+      else
+        item.blockers.push({
+          code: 'user-fix-not-accepted',
+          message:
+            'Apply and Verify the Compose user fix, choose Move without the fix, or deselect this item. Skipping its data does not fix project-folder access.',
+        });
+    }
     for (const item of plan.items) {
       if (item.selectedMode && skipsImageCopy(item, project.rootPath)) {
         item.images = item.images.map((image) => ({ ...image, notCopied: true }));
@@ -373,9 +601,24 @@ export class DockerPlanService {
         .filter((i) => i.selectedMode && i.dataAction === 'keep-vm')
         .flatMap((i) => potentialDataMounts(i, project.rootPath)),
     ];
-    plan.managedExclusions = managedMounts
-      .filter((m) => m.kind === 'project-bind')
-      .map((m) => projectAnchoredPath(project.rootPath, m.source));
+    // Start-empty resets the whole shared group, including deselected and recorded-only members.
+    const resetBinds = plan.dataGroups
+      .filter((group) =>
+        plan.items.some(
+          (item) =>
+            group.itemIds.includes(item.id) &&
+            item.selectedMode &&
+            item.dataAction === 'start-empty',
+        ),
+      )
+      .flatMap((group) => group.bindPaths)
+      .filter((path) => strictlyWithin(project.rootPath, path));
+    plan.managedExclusions = [
+      ...new Set([
+        ...managedMounts.filter((m) => m.kind === 'project-bind').map((m) => m.source),
+        ...resetBinds,
+      ]),
+    ].map((path) => projectAnchoredPath(project.rootPath, path));
     plan.reconnect = dockerReconnect(
       plan.items,
       this.inventory.get(projectId, request.remoteId),
@@ -402,6 +645,67 @@ export class DockerPlanService {
       }
     }
     return plan;
+  }
+
+  private async userFixProposals(
+    plan: DockerPlan,
+    consumers: DockerOwnershipConsumer[],
+    root: string,
+  ): Promise<void> {
+    for (const [id, issued] of this.userFixes)
+      if (proposalExpired(issued)) this.userFixes.delete(id);
+    const seen = new Set<DockerOwnershipDecision>();
+    const proposals = new Map<string, DockerUserFixProposal>();
+    for (const consumer of consumers) {
+      const ownership = consumer.ownership;
+      const compose = ownership.compose;
+      if (
+        seen.has(ownership) ||
+        !compose ||
+        !['needs-user-fix', 'image-user-hint'].includes(ownership.class)
+      )
+        continue;
+      seen.add(ownership);
+      const item = plan.items.find((entry) => entry.id === consumer.itemId);
+      const container =
+        item?.kind === 'container'
+          ? item
+          : plan.items.find(
+              (entry) =>
+                entry.kind === 'container' &&
+                entry.ownership?.compose?.service === compose.service &&
+                entry.ownership.compose.directory === compose.directory &&
+                JSON.stringify(entry.ownership.compose.files) === JSON.stringify(compose.files),
+            );
+      const itemId = consumer.itemId ?? container?.id;
+      const key = JSON.stringify([itemId, ownership.class, compose, consumer.user]);
+      const proposal =
+        proposals.get(key) ??
+        (await composeUserFixProposal(
+          root,
+          ownership,
+          container?.name ?? null,
+          randomUUID(),
+          consumer.user,
+        ));
+      if (!proposal) continue;
+      proposals.set(key, proposal);
+      ownership.fixProposal = proposal;
+      this.userFixes.set(proposal.id, {
+        at: Date.now(),
+        projectId: plan.projectId,
+        remoteId: plan.remoteId,
+        ...(itemId ? { itemId } : {}),
+        root,
+        proposal,
+      });
+    }
+    // Evict older scans first; every proposal returned by this plan stays usable.
+    const current = new Set([...proposals.values()].map((proposal) => proposal.id));
+    for (const id of this.userFixes.keys()) {
+      if (this.userFixes.size <= 1000) break;
+      if (!current.has(id)) this.userFixes.delete(id);
+    }
   }
 
   private async copySpeeds(

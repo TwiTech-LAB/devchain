@@ -92,7 +92,7 @@ async function fetchWorkspaces({ signal }: { signal?: AbortSignal } = {}): Promi
 > {
   const response = await apiFetch('/api/workspaces', { signal }, { backend: HOME_BACKEND });
   if (!response.ok) throw new Error('Failed to fetch workspaces');
-  return response.json();
+  return response.json() as Promise<ProjectWorkspace[]>;
 }
 
 async function fetchProjects({
@@ -149,7 +149,7 @@ async function fetchProjectDetail(
 
   for (const url of urls) {
     const response = await apiFetch(url, { signal }, { backend: HOME_BACKEND });
-    if (response.ok) return response.json();
+    if (response.ok) return response.json() as Promise<ProjectWithStats>;
     if (signal?.aborted) throw new DOMException('The operation was aborted', 'AbortError');
   }
 

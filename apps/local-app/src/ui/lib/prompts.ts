@@ -6,7 +6,7 @@ import type {
 } from '@/modules/storage/interfaces/storage.interface';
 import type { Prompt } from '@/modules/storage/models/domain.models';
 import type { FetchFn } from './api-transport';
-import { fetchJsonOrThrow, SessionApiError } from './sessions';
+import { fetchJsonOrThrow, SessionApiError } from './http-json';
 
 export type { Prompt, PromptSummary };
 export type PromptsResponse = ListResult<PromptSummary>;

@@ -1,4 +1,5 @@
 import type { ProjectWriteGate } from '../../../storage/write-gate/project-write-gate';
+import { TransactionRunner } from '../../../storage/db/transaction-runner';
 import type Database from 'better-sqlite3';
 import { randomUUID } from 'crypto';
 import { createLogger } from '../../../../common/logging/logger';
@@ -26,10 +27,12 @@ export interface RenameProviderConfigInProjectPresetsInput {
 
 export class PresetSettingsDelegate {
   private readonly sqlite: Database.Database;
+  private readonly txRunner: TransactionRunner;
   private readonly gate?: ProjectWriteGate;
 
   constructor(context: PresetDelegateContext) {
     this.sqlite = context.sqlite;
+    this.txRunner = new TransactionRunner(context.sqlite);
     this.gate = context.gate;
   }
 
@@ -77,7 +80,7 @@ export class PresetSettingsDelegate {
       });
     }
 
-    this.writeInTransaction(() => {
+    await this.writeInTransaction(() => {
       const existingPresets = this.readProjectPresetsMap();
       this.writeProjectPresetsMap(
         {
@@ -92,7 +95,7 @@ export class PresetSettingsDelegate {
   }
 
   async clearProjectPresets(projectId: string): Promise<void> {
-    this.writeInTransaction(() => {
+    await this.writeInTransaction(() => {
       const existingPresets = this.readProjectPresetsMap();
       // eslint-disable-next-line @typescript-eslint/no-unused-vars
       const { [projectId]: _removed, ...remaining } = existingPresets;
@@ -148,7 +151,7 @@ export class PresetSettingsDelegate {
 
     const normalizedOldName = this.normalizeName(oldName);
 
-    this.writeInTransaction(() => {
+    await this.writeInTransaction(() => {
       const existingPresets = this.getProjectPresets(projectId);
       let changed = false;
 
@@ -215,7 +218,7 @@ export class PresetSettingsDelegate {
 
     const normalizedAgentName = this.normalizeName(trimmedAgentName);
 
-    this.writeInTransaction(() => {
+    await this.writeInTransaction(() => {
       const existingPresets = this.getProjectPresets(projectId);
       let changed = false;
 
@@ -281,7 +284,7 @@ export class PresetSettingsDelegate {
       });
     }
 
-    this.writeInTransaction(() => {
+    await this.writeInTransaction(() => {
       const existingPresets = this.getProjectPresets(projectId);
       const normalizedName = trimmedName.toLowerCase();
       const nameExists = existingPresets.some((p) => p.name.toLowerCase() === normalizedName);
@@ -315,7 +318,7 @@ export class PresetSettingsDelegate {
     presetName: string,
     updates: unknown,
   ): Promise<void> {
-    this.writeInTransaction(() => {
+    await this.writeInTransaction(() => {
       const existingPresets = this.getProjectPresets(projectId);
 
       const normalizedName = presetName.trim().toLowerCase();
@@ -445,7 +448,7 @@ export class PresetSettingsDelegate {
   }
 
   async deleteProjectPreset(projectId: string, presetName: string): Promise<void> {
-    this.writeInTransaction(() => {
+    await this.writeInTransaction(() => {
       const existingPresets = this.getProjectPresets(projectId);
 
       const normalizedName = presetName.trim().toLowerCase();
@@ -504,7 +507,7 @@ export class PresetSettingsDelegate {
   }
 
   async setProjectActivePreset(projectId: string, presetName: string | null): Promise<void> {
-    this.writeInTransaction(() => {
+    await this.writeInTransaction(() => {
       const existingActivePresets = this.readActivePresetsMap();
 
       if (presetName === null) {
@@ -562,8 +565,8 @@ export class PresetSettingsDelegate {
     return row?.value;
   }
 
-  private writeInTransaction(fn: () => void): void {
-    this.sqlite.transaction(fn)();
+  private async writeInTransaction(fn: () => void): Promise<void> {
+    await this.txRunner.runImmediateQueuedOrJoin(fn);
   }
 
   private normalizeName(name: string): string {

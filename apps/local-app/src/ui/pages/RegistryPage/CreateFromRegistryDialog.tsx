@@ -63,7 +63,7 @@ async function createProjectFromRegistry(input: CreateProjectInput): Promise<Cre
     throw new Error(error.message || 'Failed to create project');
   }
 
-  return res.json();
+  return res.json() as Promise<CreateProjectResult>;
 }
 
 export function CreateFromRegistryDialog({

@@ -127,6 +127,7 @@ export function useProjectsPageController(
     createValues: emptyProjectForm,
     editValues: projectFormValues,
   });
+  const { openEdit, patchValues } = editDialog;
   const deleteDialog = useConfirmDialog<Project>();
   const [showCreateSource, setShowCreateSource] = useState(false);
   const [createWorkspaceOpen, setCreateWorkspaceOpen] = useState(false);
@@ -152,7 +153,7 @@ export function useProjectsPageController(
     queryKey: ['workspaces'],
     queryFn: () => api.listWorkspaces(),
   });
-  const workspaces = workspacesQuery.data ?? [];
+  const workspaces = useMemo(() => workspacesQuery.data ?? [], [workspacesQuery.data]);
   const defaultWorkspace = workspaces.find((workspace) => workspace.isDefault) ?? workspaces[0];
 
   const { bindingByProjectId, remotes } = useRemotes();
@@ -224,17 +225,18 @@ export function useProjectsPageController(
     api,
     toast,
   });
+  const { setTemplateFormData, resetTemplateForm, submitTemplate } = templateForm;
 
   useEffect(() => {
     if (!showCreateSource || !defaultWorkspace || templateForm.templateFormData.workspaceId) return;
-    templateForm.setTemplateFormData((current) => ({
+    setTemplateFormData((current) => ({
       ...current,
       workspaceId: current.workspaceId || defaultWorkspace.id,
     }));
   }, [
     defaultWorkspace,
     showCreateSource,
-    templateForm.setTemplateFormData,
+    setTemplateFormData,
     templateForm.templateFormData.workspaceId,
   ]);
 
@@ -327,11 +329,11 @@ export function useProjectsPageController(
   const openCreateInWorkspace = useCallback(
     (workspaceId: string) => {
       if (!workspaces.some((workspace) => workspace.id === workspaceId)) return;
-      templateForm.resetTemplateForm();
-      templateForm.setTemplateFormData((current) => ({ ...current, workspaceId }));
+      resetTemplateForm();
+      setTemplateFormData((current) => ({ ...current, workspaceId }));
       setShowCreateSource(true);
     },
-    [templateForm.resetTemplateForm, templateForm.setTemplateFormData, workspaces],
+    [resetTemplateForm, setTemplateFormData, workspaces],
   );
 
   const openCreateProject = useCallback(() => {
@@ -339,9 +341,9 @@ export function useProjectsPageController(
       openCreateInWorkspace(defaultWorkspace.id);
       return;
     }
-    templateForm.resetTemplateForm();
+    resetTemplateForm();
     setShowCreateSource(true);
-  }, [defaultWorkspace, openCreateInWorkspace, templateForm.resetTemplateForm]);
+  }, [defaultWorkspace, openCreateInWorkspace, resetTemplateForm]);
 
   const openRenameWorkspace = useCallback((workspace: ProjectWorkspace) => {
     setRenameWorkspaceTarget(workspace);
@@ -619,7 +621,7 @@ export function useProjectsPageController(
       }
 
       setShowCreateSource(false);
-      templateForm.resetTemplateForm();
+      resetTemplateForm();
       await queryClient.invalidateQueries({ queryKey: projectsQueryKeys.all() });
       await queryClient.invalidateQueries({ queryKey: ['workspaces'] });
       if (data.project?.id) activateProject(data.project);
@@ -648,8 +650,10 @@ export function useProjectsPageController(
   });
 
   const createWizard = useCreateProjectWizard(createMutation, api);
+  const { openWizard } = createWizard;
   const [importResult, setImportResult] = useState<ImportProjectSuccess | null>(null);
   const importWizard = useImportProjectWizard({ onImported: setImportResult, toast, api });
+  const { openImportWizard } = importWizard;
 
   const invalidateUpgradeSources = useCallback(() => {
     void queryClient.invalidateQueries({ queryKey: projectsQueryKeys.list() });
@@ -670,15 +674,16 @@ export function useProjectsPageController(
     toast,
     api,
   });
+  const { openUpgradeWizard } = upgradeWizard;
 
   useEffect(() => {
     if (!upgradeTarget || !upgradeTarget.project.templateMetadata || upgradeResult) return;
-    upgradeWizard.openUpgradeWizard({
+    openUpgradeWizard({
       id: upgradeTarget.project.id,
       name: upgradeTarget.project.name,
       targetVersion: upgradeTarget.targetVersion,
     });
-  }, [upgradeResult, upgradeTarget, upgradeWizard.openUpgradeWizard]);
+  }, [upgradeResult, upgradeTarget, openUpgradeWizard]);
 
   const openProject = useCallback(
     (project: ProjectWithStats) => {
@@ -691,14 +696,14 @@ export function useProjectsPageController(
   const editProject = useCallback(
     (project: ProjectWithStats) => {
       setPathValidation(emptyPathValidation());
-      editDialog.openEdit(project);
+      openEdit(project);
     },
-    [editDialog.openEdit],
+    [openEdit],
   );
 
   const changeEditRootPath = useCallback(
     async (path: string) => {
-      editDialog.patchValues({ rootPath: path });
+      patchValues({ rootPath: path });
       const isAbsolute = path.startsWith('/') || /^[A-Z]:\\/.test(path);
       setPathValidation({ isAbsolute, exists: false, checked: false });
       if (isAbsolute && path.length > 1) {
@@ -710,7 +715,7 @@ export function useProjectsPageController(
         }
       }
     },
-    [api, editDialog.patchValues],
+    [api, patchValues],
   );
 
   const toggleSort = useCallback(
@@ -799,7 +804,7 @@ export function useProjectsPageController(
     );
     openedFromQueryRef.current = true;
     if (!exists) {
-      templateForm.setTemplateFormData((current) => ({
+      setTemplateFormData((current) => ({
         ...current,
         rootPath: newProjectPath,
         workspaceId: current.workspaceId || defaultWorkspace?.id || '',
@@ -810,7 +815,7 @@ export function useProjectsPageController(
     location.search,
     projectsQuery.data,
     projectsQuery.isSuccess,
-    templateForm.setTemplateFormData,
+    setTemplateFormData,
     defaultWorkspace?.id,
   ]);
 
@@ -846,33 +851,33 @@ export function useProjectsPageController(
       importSource.selectedVersion,
     );
     importSource.close();
-    importWizard.openImportWizard(importSource.target, request);
-  }, [importSource, importWizard.openImportWizard]);
+    openImportWizard(importSource.target, request);
+  }, [importSource, openImportWizard]);
 
   const selectImportFile = useCallback(
     async (file: File | undefined) => {
       if (!file || !importSource.target) return;
       importSource.close();
       try {
-        importWizard.openImportWizard(importSource.target, await createFileImportRequest(file));
+        openImportWizard(importSource.target, await createFileImportRequest(file));
       } catch {
         toast(importFileParseFailureToast);
       }
     },
-    [importSource, importWizard.openImportWizard, toast],
+    [importSource, openImportWizard, toast],
   );
 
   const submitCreateSource = useCallback(() => {
-    templateForm.submitTemplate((payload) => {
+    submitTemplate((payload) => {
       setShowCreateSource(false);
-      createWizard.openWizard(payload);
+      openWizard(payload);
     });
-  }, [createWizard.openWizard, templateForm.submitTemplate]);
+  }, [openWizard, submitTemplate]);
 
   const cancelCreateSource = useCallback(() => {
     setShowCreateSource(false);
-    templateForm.resetTemplateForm();
-  }, [templateForm.resetTemplateForm]);
+    resetTemplateForm();
+  }, [resetTemplateForm]);
 
   const table = buildProjectsTableModel({
     notice: noticeVisible ? { items: noticeItems, closeUntilRestart, dismissUntilNewItems } : null,
@@ -938,10 +943,10 @@ export function useProjectsPageController(
         onOpenChange: editDialog.onOpenChange,
         values: editDialog.values,
         pathValidation,
-        changeName: (name) => editDialog.patchValues({ name }),
-        changeDescription: (description) => editDialog.patchValues({ description }),
+        changeName: (name) => patchValues({ name }),
+        changeDescription: (description) => patchValues({ description }),
         changeRootPath: changeEditRootPath,
-        changeIsTemplate: (isTemplate) => editDialog.patchValues({ isTemplate }),
+        changeIsTemplate: (isTemplate) => patchValues({ isTemplate }),
         submit: () => {
           if (editDialog.entity) {
             updateMutation.mutate({ id: editDialog.entity.id, data: editDialog.values });
@@ -990,16 +995,14 @@ export function useProjectsPageController(
           sourceTab: templateForm.templateSourceTab,
           changeSourceTab: templateForm.setTemplateSourceTab,
           values: templateForm.templateFormData,
-          changeName: (name) =>
-            templateForm.setTemplateFormData((current) => ({ ...current, name })),
+          changeName: (name) => setTemplateFormData((current) => ({ ...current, name })),
           changeDescription: (description) =>
-            templateForm.setTemplateFormData((current) => ({ ...current, description })),
-          changeVersion: (version) =>
-            templateForm.setTemplateFormData((current) => ({ ...current, version })),
+            setTemplateFormData((current) => ({ ...current, description })),
+          changeVersion: (version) => setTemplateFormData((current) => ({ ...current, version })),
           workspaces,
           showWorkspaceSelector: workspaces.length >= 2,
           changeWorkspace: (workspaceId) =>
-            templateForm.setTemplateFormData((current) => ({ ...current, workspaceId })),
+            setTemplateFormData((current) => ({ ...current, workspaceId })),
           templates,
           selectedTemplateSource: templateForm.selectedTemplate?.source,
           sortedVersions: templateForm.sortedVersions,

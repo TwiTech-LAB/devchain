@@ -21,8 +21,8 @@ import {
   TimeoutError,
   ValidationError,
 } from '../../common/errors/error-types';
-import { buildSessionCommand } from '../sessions/utils/env-builder';
-import { hasCodexProfileSelector } from '../sessions/utils/profile-options';
+import { buildSessionCommand } from '../providers/utils/env-builder';
+import { hasCodexProfileSelector } from '../providers/utils/profile-options';
 import { CONTEXT_WINDOW_ENV_KEY } from './context-window-policy';
 import { getRuntimeContextCaptureRoot } from './runtime-context-capture-files';
 import type {

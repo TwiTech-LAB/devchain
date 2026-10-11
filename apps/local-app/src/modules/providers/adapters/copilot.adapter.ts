@@ -19,7 +19,7 @@ import type {
   HookCapability,
   HookEnvContext,
 } from './capabilities';
-import { stripFlag } from '../../sessions/utils/profile-options';
+import { stripFlag } from '../utils/profile-options';
 import { CopilotTrustedFoldersService } from '../../core/services/copilot-trusted-folders.service';
 import {
   CopilotAuthProbeService,

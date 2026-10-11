@@ -34,7 +34,7 @@ import {
 } from '../../../settings/services/settings.constants';
 import { TERMINAL_INPUT_MODES } from '../../../settings/dtos/settings.dto';
 import { SkillsSettingsDelegate } from '../../../settings/local/delegates/skills-settings.delegate';
-import { readRevokedDeviceKids } from '../../../e2ee/services/device-revocation-history';
+import { readRevokedDeviceKids } from '../helpers/device-revocation-history';
 import { BaseStorageDelegate, type StorageDelegateContext } from './base-storage.delegate';
 
 // Stays well under SQLite's bound-parameter limit.

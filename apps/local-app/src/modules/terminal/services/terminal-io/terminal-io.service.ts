@@ -20,7 +20,7 @@ import * as lifecycle from './lifecycle';
 import * as capture from './capture';
 import * as monitoring from './monitoring';
 import * as deliveryMod from './delivery';
-import type { SendGap } from './delivery';
+import type { ForegroundCheck, SendGap } from './delivery';
 import { TypeCommandFailedError } from './delivery';
 import { quoteShellArg } from './quote-shell-arg';
 import {
@@ -39,6 +39,9 @@ interface HealthMonitorRecord {
   readonly intervalMs: number;
   readonly fence: number;
   readonly interval: NodeJS.Timeout;
+  cliSeen: boolean;
+  shellTicks: number;
+  checking: boolean;
 }
 
 interface SessionLifecycleState {
@@ -134,6 +137,7 @@ export class TerminalIOService implements BeforeApplicationShutdown {
           policy.sessionId,
           policy.intervalMs ?? retiredMonitor?.intervalMs ?? 5000,
           state,
+          retiredMonitor?.cliSeen,
         );
       }
       if (result.outcome !== 'unknown-error' || policy.onUnknownError === 'retire') {
@@ -288,6 +292,7 @@ export class TerminalIOService implements BeforeApplicationShutdown {
     sessionId: string,
     intervalMs: number,
     state: SessionLifecycleState,
+    cliSeen = false,
   ): void {
     const token = ++this.nextMonitorToken;
     const monitor: HealthMonitorRecord = {
@@ -296,6 +301,9 @@ export class TerminalIOService implements BeforeApplicationShutdown {
       sessionId,
       intervalMs,
       fence: state.fence,
+      cliSeen,
+      shellTicks: 0,
+      checking: false,
       interval: setInterval(() => {
         void this.runHealthCheck(monitor).catch((error) => {
           logger.error(
@@ -316,16 +324,45 @@ export class TerminalIOService implements BeforeApplicationShutdown {
   private async runHealthCheck(monitor: HealthMonitorRecord): Promise<void> {
     const state = this.lifecycleStates.get(monitor.sessionName);
     if (!state || !this.isActiveMonitor(monitor, state)) return;
+    if (monitor.checking) {
+      monitor.shellTicks = 0;
+      return;
+    }
 
+    monitor.checking = true;
     state.observers += 1;
     try {
       const result = await this.healthCheck({ name: monitor.sessionName });
-      if (result.alive || !this.isActiveMonitor(monitor, state)) return;
+      if (!this.isActiveMonitor(monitor, state)) return;
+      if (result.alive) {
+        const cliState = await monitoring.readCliState(
+          this.executor,
+          { name: monitor.sessionName },
+          { checkSuspended: monitor.cliSeen },
+        );
+        if (!this.isActiveMonitor(monitor, state)) return;
+        if (cliState === 'program') monitor.cliSeen = true;
+        monitor.shellTicks = monitor.cliSeen && cliState === 'shell' ? monitor.shellTicks + 1 : 0;
+        if (monitor.shellTicks < 3) return;
+      }
+      // A live session reaches this point only after the shell stayed in front: the CLI exited.
+      const cliExited = result.alive;
 
       await this.runSerializedLifecycle(monitor.sessionName, async (serializedState) => {
         if (!this.isActiveMonitor(monitor, serializedState)) return;
 
         this.retireMonitor(monitor);
+        if (cliExited) {
+          const destroy = await lifecycle.destroyExpectedSession(this.executor, {
+            name: monitor.sessionName,
+          });
+          if (!this.isRetiredMonitorCurrent(monitor, serializedState)) return;
+          if (destroy.outcome === 'unknown-error') {
+            this.rearm(monitor, serializedState);
+            return;
+          }
+        }
+        this.humanPromptState.clearSession(monitor.sessionName);
         logger.warn(
           {
             sessionName: monitor.sessionName,
@@ -333,7 +370,9 @@ export class TerminalIOService implements BeforeApplicationShutdown {
             token: monitor.token,
             fence: monitor.fence,
           },
-          'Tmux session lost - publishing crashed event',
+          cliExited
+            ? 'CLI exited - publishing crashed event'
+            : 'Tmux session lost - publishing crashed event',
         );
         try {
           await this.eventsService.publish('session.crashed', {
@@ -341,25 +380,42 @@ export class TerminalIOService implements BeforeApplicationShutdown {
             sessionName: monitor.sessionName,
           });
         } catch (error) {
-          if (
-            !this.destroyed &&
-            serializedState.fence === monitor.fence &&
-            !this.healthMonitors.has(monitor.sessionName)
-          ) {
-            this.armHealthCheck(
-              monitor.sessionName,
-              monitor.sessionId,
-              monitor.intervalMs,
-              serializedState,
-            );
+          if (this.isRetiredMonitorCurrent(monitor, serializedState)) {
+            this.rearm(monitor, serializedState);
           }
           throw error;
         }
       });
+    } catch (error) {
+      monitor.shellTicks = 0;
+      throw error;
     } finally {
+      monitor.checking = false;
       state.observers -= 1;
       this.maybeDeleteLifecycleState(monitor.sessionName, state);
     }
+  }
+
+  /** A retired monitor may re-arm only while no shutdown, destroy or replacement has happened. */
+  private isRetiredMonitorCurrent(
+    monitor: HealthMonitorRecord,
+    state: SessionLifecycleState,
+  ): boolean {
+    return (
+      !this.destroyed &&
+      state.fence === monitor.fence &&
+      !this.healthMonitors.has(monitor.sessionName)
+    );
+  }
+
+  private rearm(monitor: HealthMonitorRecord, state: SessionLifecycleState): void {
+    this.armHealthCheck(
+      monitor.sessionName,
+      monitor.sessionId,
+      monitor.intervalMs,
+      state,
+      monitor.cliSeen,
+    );
   }
 
   private isActiveMonitor(monitor: HealthMonitorRecord, state: SessionLifecycleState): boolean {
@@ -433,9 +489,18 @@ export class TerminalIOService implements BeforeApplicationShutdown {
     text: string,
     options: DeliveryOptions,
   ): Promise<DeliveryResult> {
-    return this.runPaneOperation(target, () =>
-      deliveryMod.deliver(this.executor, this.gap, target, text, this.applyFollowNoteGate(options)),
-    );
+    return this.runPaneOperation(target, async () => {
+      const foregroundCheck = this.foregroundCheck(target, options);
+      await foregroundCheck?.();
+      return deliveryMod.deliver(
+        this.executor,
+        this.gap,
+        target,
+        text,
+        this.applyFollowNoteGate(options),
+        foregroundCheck,
+      );
+    });
   }
 
   async deliverImmediate(
@@ -443,9 +508,17 @@ export class TerminalIOService implements BeforeApplicationShutdown {
     text: string,
     options: Omit<DeliveryOptions, 'agentId'>,
   ): Promise<DeliveryResult> {
-    return this.runPaneOperation(target, () =>
-      deliveryMod.deliverImmediate(this.executor, target, text, this.applyFollowNoteGate(options)),
-    );
+    return this.runPaneOperation(target, async () => {
+      const foregroundCheck = this.foregroundCheck(target, options);
+      await foregroundCheck?.();
+      return deliveryMod.deliverImmediate(
+        this.executor,
+        target,
+        text,
+        this.applyFollowNoteGate(options),
+        foregroundCheck,
+      );
+    });
   }
 
   async sendControl(target: SessionTarget, keys: readonly string[]): Promise<void> {
@@ -461,8 +534,10 @@ export class TerminalIOService implements BeforeApplicationShutdown {
     quietSnapshot: HumanPromptQuietSnapshot | undefined,
     mutationFence?: GuardedDeliveryMutationFence,
   ): Promise<GuardedDeliveryResult> {
-    return this.runPaneOperation<GuardedDeliveryResult>(target, () =>
-      deliveryMod.deliverGuarded(
+    return this.runPaneOperation<GuardedDeliveryResult>(target, async () => {
+      const foregroundCheck = this.foregroundCheck(target, options);
+      await foregroundCheck?.();
+      return deliveryMod.deliverGuarded(
         this.executor,
         this.gap,
         target,
@@ -477,8 +552,19 @@ export class TerminalIOService implements BeforeApplicationShutdown {
           mutationFence?.markMutationStarted();
           return true;
         },
-      ),
-    );
+        foregroundCheck,
+      );
+    });
+  }
+
+  // Automated delivery checks the pane's foreground before the send-gap wait and
+  // again before each pane write; human and guest input opt out.
+  private foregroundCheck(
+    target: SessionTarget,
+    options: { requireForegroundProgram?: boolean },
+  ): ForegroundCheck | undefined {
+    if (options.requireForegroundProgram === false) return undefined;
+    return () => deliveryMod.requireForegroundProgram(this.executor, target);
   }
 
   // The messaging.followNote setting is a suppression gate: it can only remove

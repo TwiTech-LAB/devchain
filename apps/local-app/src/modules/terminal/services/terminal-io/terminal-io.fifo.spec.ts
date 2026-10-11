@@ -8,6 +8,7 @@ import type {
 } from '../process-executor/process-executor.port';
 import { ProcessExecutor } from '../process-executor/process-executor.port';
 import { TerminalIOClosingError, TerminalIOService } from './terminal-io.service';
+import { ShellForegroundError } from './delivery';
 
 const SUCCESS: ExecutorResult = {
   success: true,
@@ -22,6 +23,7 @@ const activeServices: TerminalIOService[] = [];
 
 class ControlledExecutor extends ProcessExecutor {
   readonly calls: ProcessExecutorOptions[] = [];
+  foregroundGroup = '2345';
   onRun?: (options: ProcessExecutorOptions) => void;
   private readonly heldInputs = new Map<string, () => void>();
   private readonly inputStarted = new Map<string, () => void>();
@@ -85,6 +87,8 @@ class ControlledExecutor extends ProcessExecutor {
       await heldCommand.released;
       this.heldCommand = undefined;
     }
+    if (options.argv[1] === 'display-message') return { ...SUCCESS, stdout: '1234' };
+    if (options.argv[0] === 'ps') return { ...SUCCESS, stdout: this.foregroundGroup };
     if (options.argv[1] === 'load-buffer' && options.input) {
       const failing = [...this.failingInputs].find((input) => options.input?.includes(input));
       if (failing) {
@@ -171,7 +175,7 @@ describe('TerminalIOService pane FIFO', () => {
     });
     await settle();
 
-    expect(executor.calls).toHaveLength(1);
+    expect(executor.calls).toHaveLength(3);
     executor.releaseInput('first');
     await Promise.all([immediate, control, delivery]);
 
@@ -206,6 +210,35 @@ describe('TerminalIOService pane FIFO', () => {
     await blocked;
   });
 
+  // Holding an earlier write proves the process reads use the same pane lock as delivery.
+  it.each(['deliver', 'deliverImmediate', 'deliverGuarded'] as const)(
+    'checks the foreground process only after %s reaches the FIFO head',
+    async (method) => {
+      const { executor, service } = makeService();
+      const held = executor.holdCommand('send-keys');
+      const control = service.sendControl({ name: 'pane-a' }, ['C-c']);
+      await held.started;
+      const options = { ...immediateOptions, agentId: 'agent-a' };
+      const pending =
+        method === 'deliverGuarded'
+          ? service.deliverGuarded({ name: 'pane-a' }, 'automated', options, undefined)
+          : service[method]({ name: 'pane-a' }, 'automated', options);
+      const refusal = expect(pending).rejects.toBeInstanceOf(ShellForegroundError);
+      await settle();
+
+      expect(executor.calls.map((call) => call.argv[1])).toEqual(['send-keys']);
+      executor.foregroundGroup = '1234';
+      held.release();
+      await Promise.all([control, refusal]);
+
+      expect(executor.calls.map((call) => call.argv[1])).toEqual([
+        'send-keys',
+        'display-message',
+        '-o',
+      ]);
+    },
+  );
+
   it('continues the pane queue after a failed write', async () => {
     const { executor, service } = makeService();
     executor.failInput('failed');
@@ -233,7 +266,14 @@ describe('TerminalIOService pane FIFO', () => {
       ),
     ).resolves.toEqual({ deferred: 'human_draft' });
 
-    expect(executor.calls.map((call) => call.argv[1])).toEqual(['load-buffer', 'delete-buffer']);
+    expect(executor.calls.map((call) => call.argv[1])).toEqual([
+      'display-message',
+      '-o',
+      'load-buffer',
+      'display-message',
+      '-o',
+      'delete-buffer',
+    ]);
     expect(promptState.getState('pane-a').phase).toBe('awaiting_stable_idle');
   });
 
@@ -268,8 +308,12 @@ describe('TerminalIOService pane FIFO', () => {
     expect(phaseDuringPreflight).toBe('awaiting_stable_idle');
     await expect(guarded).resolves.toEqual({ deferred: 'human_draft' });
     expect(executor.calls.map((call) => call.argv[1])).toEqual([
+      'display-message',
+      '-o',
       'capture-pane',
       'load-buffer',
+      'display-message',
+      '-o',
       'delete-buffer',
     ]);
     expect(promptState.getState('pane-a').phase).toBe('awaiting_stable_idle');
@@ -313,8 +357,12 @@ describe('TerminalIOService pane FIFO', () => {
       await expect(guarded).resolves.toEqual({ deferred: 'human_draft' });
       expect(phaseDuringLoad).toBe('awaiting_stable_idle');
       expect(executor.calls.map((call) => call.argv[1])).toEqual([
+        'display-message',
+        '-o',
         'capture-pane',
         'load-buffer',
+        'display-message',
+        '-o',
         'delete-buffer',
       ]);
       expect(promptState.getState('pane-a').phase).toBe('awaiting_stable_idle');
@@ -349,7 +397,11 @@ describe('TerminalIOService pane FIFO', () => {
     await jest.advanceTimersByTimeAsync(500);
     await expect(guarded).resolves.toEqual({ deferred: 'human_draft' });
     expect(executor.calls.slice(callCountBeforeGuard).map((call) => call.argv[1])).toEqual([
+      'display-message',
+      '-o',
       'load-buffer',
+      'display-message',
+      '-o',
       'delete-buffer',
     ]);
     expect(promptState.getState('pane-a').phase).toBe('awaiting_stable_idle');
@@ -402,7 +454,7 @@ describe('TerminalIOService pane FIFO', () => {
 
     expect(result).toEqual(expect.objectContaining({ confirmed: true }));
     expect(promptState.getState('pane-a').phase).toBe('inactive');
-    expect(executor.calls[0].input).toContain('protected\r[MsgId:');
+    expect(executor.calls[2].input).toContain('protected\r[MsgId:');
   });
 
   it('starts the first mutation before a post-release microtask can run', async () => {
@@ -479,7 +531,7 @@ describe('TerminalIOService pane FIFO', () => {
 
       expect(result).toEqual(expect.objectContaining({ confirmed: true }));
       expect(promptState.getState('pane-a').phase).toBe('inactive');
-      expect(executor.calls[0].input).toContain('force-delivered');
+      expect(executor.calls[2].input).toContain('force-delivered');
     });
 
     it.each(['awaiting_stable_idle', 'inactive'])(
@@ -509,7 +561,11 @@ describe('TerminalIOService pane FIFO', () => {
 
         await expect(guarded).resolves.toEqual({ deferred: 'human_draft' });
         expect(executor.calls.map((call) => call.argv[1])).toEqual([
+          'display-message',
+          '-o',
           'load-buffer',
+          'display-message',
+          '-o',
           'delete-buffer',
         ]);
         expect(promptState.getState('pane-a').phase).toBe('draft_active');

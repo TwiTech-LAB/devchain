@@ -17,7 +17,7 @@ const DOCS_VIEWED_KEY = 'devchain:docs-viewed';
 function getViewedDocs(): Record<string, boolean> {
   try {
     const raw = window.localStorage.getItem(DOCS_VIEWED_KEY);
-    return raw ? JSON.parse(raw) : {};
+    return raw ? (JSON.parse(raw) as Record<string, boolean>) : {};
   } catch {
     return {};
   }
@@ -51,9 +51,6 @@ export function HelpButton({ featureId, className }: HelpButtonProps) {
   // Look up doc slug for this feature
   const docSlug = FEATURE_DOC_MAP[featureId];
 
-  // Graceful degradation: don't render if no doc exists
-  if (!docSlug) return null;
-
   const handleOpenChange = useCallback(
     (isOpen: boolean) => {
       setOpen(isOpen);
@@ -64,6 +61,8 @@ export function HelpButton({ featureId, className }: HelpButtonProps) {
     },
     [featureId, seen],
   );
+
+  if (!docSlug) return null;
 
   return (
     <>

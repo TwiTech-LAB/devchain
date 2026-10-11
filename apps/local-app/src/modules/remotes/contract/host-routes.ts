@@ -20,10 +20,10 @@ import {
   SyncDeviceSchema,
   SyncFolderSchema,
   SyncFolderConfigurationSchema,
+  SyncFolderIgnoresSchema,
   SyncFolderPatchSchema,
   SyncFolderRequestSchema,
 } from '../../file-sync/file-sync.dto';
-import { SyncChownRequestSchema, SyncChownResultSchema } from '../../file-sync/sync-chown.dto';
 import {
   SyncInspectRequestSchema,
   SyncPathInspectionSchema,
@@ -319,6 +319,12 @@ export const hostRoutes = {
     timeoutMs: CONTROL_TIMEOUT_MS,
     statuses: { 200: SyncFolderConfigurationSchema },
   },
+  syncFolderIgnores: {
+    method: 'GET',
+    path: (params: FolderParams) => `${folderPath(params)}/ignores`,
+    timeoutMs: CONTROL_TIMEOUT_MS,
+    statuses: { 200: SyncFolderIgnoresSchema },
+  },
   syncRemoveFolder: {
     method: 'DELETE',
     path: folderPath,
@@ -374,13 +380,6 @@ export const hostRoutes = {
     body: SyncInspectRequestSchema,
     timeoutMs: BULK_TIMEOUT_MS,
     statuses: { 200: SyncPathInspectionSchema },
-  },
-  syncChown: {
-    method: 'POST',
-    path: fixed('/api/host/sync/chown'),
-    body: SyncChownRequestSchema,
-    timeoutMs: BULK_TIMEOUT_MS,
-    statuses: { 200: SyncChownResultSchema, 404: 'none' },
   },
   setInstanceLabel: {
     method: 'PUT',

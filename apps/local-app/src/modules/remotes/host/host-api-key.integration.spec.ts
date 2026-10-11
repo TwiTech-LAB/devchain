@@ -251,6 +251,7 @@ describe('Host API key transport integration', () => {
       '/api/docs',
       '/assets/app.js',
       '/api/mcp/sse',
+      '/api/host/sync/folders/code%3Ap1/ignores',
       '/unknown',
       '/r/vm/health',
     ]) {

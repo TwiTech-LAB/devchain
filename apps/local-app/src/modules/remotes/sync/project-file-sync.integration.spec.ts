@@ -37,8 +37,6 @@ import { RemoteFileSyncService } from './remote-file-sync.service';
 import { GitOwnerStore } from '../git-owner.store';
 import { RemoteLiveSyncService } from './remote-live-sync.service';
 import type { RemoteOperation } from '../../storage/models/domain.models';
-import type { SyncChownRequest, SyncChownResult } from '../../file-sync/sync-chown.dto';
-import type { ExclusionSuggestion } from '../../file-sync/sync-path-inspection.dto';
 
 // A small Nest app proves routing and validation with both real application services; no transfer is needed.
 describe('project file sync settings routes', () => {
@@ -61,9 +59,6 @@ describe('project file sync settings routes', () => {
     return current.json<{ revision: number }>().revision;
   };
   const host = {
-    syncChown: jest
-      .fn<Promise<SyncChownResult>, [string, SyncChownRequest]>()
-      .mockResolvedValue({ user: null, items: [] }),
     syncDevice: jest.fn(async () => ({ deviceId: 'VM' })),
     syncInspect: jest
       .fn<Promise<SyncPathInspection>, [string, SyncInspectRequest]>()
@@ -149,92 +144,6 @@ describe('project file sync settings routes', () => {
   afterAll(async () => {
     await app?.close();
     rmSync(root, { recursive: true, force: true });
-  });
-
-  it('gives only eligible VM paths through the connected queue, records the repair and retains the ignore list', async () => {
-    const failures = app.get(FileSyncFailuresService);
-    const vm = {
-      path: 'migration.ts',
-      kind: 'file' as const,
-      owner: { uid: 0, name: 'root' },
-      foreignOwner: true,
-      foreignOwners: [],
-      fileCount: 1,
-      ignored: false,
-      ignoreRule: null,
-      ignoreRules: [],
-      ignoredAncestor: null,
-      tracked: false,
-      trackedDescendants: [],
-    };
-    const group: ExclusionSuggestion = {
-      path: vm.path,
-      side: 'vm',
-      owner: vm.owner,
-      home: null,
-      vm,
-      fileCount: 1,
-      reason: 'Written by root',
-      reasonKind: 'foreignOwner',
-      selected: false,
-      patterns: ['(?d)/migration.ts'],
-    };
-    const failed = jest.spyOn(failures, 'failed').mockResolvedValue({
-      installedPrefix: ['/.git'],
-      ownerSide: 'vm',
-      vmUser: { uid: 1001, name: 'alice' },
-      home: { entries: [] },
-      vm: { entries: [] },
-      groups: [group],
-      overLimit: false,
-    });
-    const queue = jest
-      .spyOn(app.get(RemoteLiveSyncService), 'runExclusive')
-      .mockImplementation(async (_id, work) => work(() => true));
-    const list = files.getIgnores(projectId);
-    const revision = await readRevision();
-    binding.state = 'remote';
-    host.syncChown.mockResolvedValueOnce({
-      user: { uid: 1001, name: 'alice' },
-      items: [{ path: 'migration.ts', state: 'repaired', paths: ['migration.ts'] }],
-    });
-    try {
-      const result = await app.inject({
-        method: 'POST',
-        url: `/api/projects/${projectId}/file-sync/give-ownership`,
-        payload: { paths: ['migration.ts', 'not-eligible'] },
-      });
-      expect(result.statusCode).toBe(200);
-      expect(result.json().items).toEqual([
-        expect.objectContaining({ path: 'migration.ts', state: 'repaired' }),
-        expect.objectContaining({ path: 'not-eligible', state: 'refused' }),
-      ]);
-      expect(host.syncChown).toHaveBeenLastCalledWith(remoteId, {
-        root,
-        items: [{ path: 'migration.ts', mode: 'give' }],
-      });
-      expect(record).toHaveBeenCalledWith(
-        projectId,
-        expect.objectContaining({ kind: 'chown', side: 'vm', paths: ['migration.ts'] }),
-      );
-      expect(files.getIgnores(projectId)).toEqual(list);
-      expect(await readRevision()).toBe(revision);
-      operations = [{ kind: 'force_sync', state: 'running' } as RemoteOperation];
-      expect(
-        (
-          await app.inject({
-            method: 'POST',
-            url: `/api/projects/${projectId}/file-sync/give-ownership`,
-            payload: { paths: ['migration.ts'] },
-          })
-        ).statusCode,
-      ).toBe(409);
-    } finally {
-      binding.state = 'local';
-      operations = [];
-      failed.mockRestore();
-      queue.mockRestore();
-    }
   });
 
   it.each(['force_sync', 'git_owner'] as const)(

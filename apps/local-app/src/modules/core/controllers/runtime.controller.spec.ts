@@ -13,6 +13,7 @@ const fileSyncState: SyncthingState = {
   available: false,
   version: null,
   running: false,
+  privileged: false,
   deviceId: null,
   apiPort: null,
   error: 'Syncthing was not found on PATH or in ~/.devchain/bin.',

@@ -64,13 +64,14 @@ export function ExternalTaskImportDialog({
     [controller.statuses.data?.items],
   );
 
+  const { reset: resetImportMutation } = controller.mutation;
   useEffect(() => {
     if (!open || !detail) return;
     setStatusId('');
     setTitle(detail.title);
     setDescription(detail.description ?? '');
-    controller.mutation.reset();
-  }, [detail, open, projectId]);
+    resetImportMutation();
+  }, [detail, open, projectId, resetImportMutation]);
 
   const handleSubmit = (event: FormEvent) => {
     event.preventDefault();

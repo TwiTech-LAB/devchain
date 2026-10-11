@@ -157,7 +157,7 @@ const packageJson = JSON.parse(
 );
 
 const queuedScripts = {
-  test: "node scripts/test-queue.mjs --selectProjects backend-unit backend-integration ui cli-helpers --maxWorkers=75% --workerIdleMemoryLimit=2GB",
+  test: "node scripts/test-queue.mjs --selectProjects backend-unit backend-integration ui cli-helpers e2e --maxWorkers=75% --workerIdleMemoryLimit=2GB",
   "test:cov":
     "node scripts/test-queue.mjs --coverage --selectProjects backend-unit backend-integration ui cli-helpers --maxWorkers=75% --workerIdleMemoryLimit=512MB",
   "test:cov:full": "node scripts/test-queue.mjs --coverage --runInBand",

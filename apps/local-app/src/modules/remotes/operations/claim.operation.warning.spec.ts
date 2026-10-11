@@ -18,34 +18,43 @@ it.each([
     vmUid: 1001,
     vmGid: 1000,
     warning:
-      'uid 1000 is used by ubuntu on the VM; the VM user got 1001:1000. Automatic Docker moves are off for this VM.',
+      'uid 1000 is used by ubuntu on the VM; the VM user got 1001:1000. Docker moves still work; Connect shows any container that needs a user fix.',
   },
   {
     holder: null,
     vmUid: 1001,
     vmGid: 1000,
     warning:
-      'The user ids differ (1000:1000 here, 1001:1000 on the VM). Automatic Docker moves are off for this VM.',
+      'The user ids differ (1000:1000 here, 1001:1000 on the VM). Docker moves still work; Connect shows any container that needs a user fix.',
   },
   {
     holder: null,
     vmUid: 1000,
     vmGid: 2000,
     warning:
-      'The user ids differ (1000:1000 here, 1000:2000 on the VM). Automatic Docker moves are off for this VM.',
+      'The user ids differ (1000:1000 here, 1000:2000 on the VM). Docker moves still work; Connect shows any container that needs a user fix.',
   },
   {
     holder: undefined,
     vmUid: 1001,
     vmGid: 1000,
     warning:
-      'The user ids differ (1000:1000 here, 1001:1000 on the VM). Automatic Docker moves are off for this VM.',
+      'The user ids differ (1000:1000 here, 1001:1000 on the VM). Docker moves still work; Connect shows any container that needs a user fix.',
   },
   { holder: undefined, vmUid: 1000, vmGid: 1000, warning: undefined },
+  // Without this PC's ids (Windows), Connect cannot decide Docker ownership.
+  {
+    holder: undefined,
+    vmUid: 1001,
+    vmGid: 1000,
+    homeUid: null,
+    warning:
+      'The user ids differ (unknown:1000 here, 1001:1000 on the VM). Automatic Docker moves are off for this VM.',
+  },
 ])(
   'finishes the claim with holder $holder and actual ids $vmUid:$vmGid',
-  async ({ holder, vmUid, vmGid, warning }) => {
-    jest.spyOn(process, 'getuid').mockReturnValue(1000);
+  async ({ holder, vmUid, vmGid, homeUid = 1000, warning }) => {
+    jest.spyOn(process, 'getuid').mockReturnValue(homeUid as number);
     jest.spyOn(process, 'getgid').mockReturnValue(1000);
     const module = await Test.createTestingModule({
       providers: [

@@ -266,7 +266,7 @@ export function CommentPanel({
     enabled: !!reviewId,
   });
 
-  const comments = commentsData?.items ?? [];
+  const comments = useMemo(() => commentsData?.items ?? [], [commentsData]);
 
   // Filter comments based on current filter
   const filteredComments = useMemo(() => {

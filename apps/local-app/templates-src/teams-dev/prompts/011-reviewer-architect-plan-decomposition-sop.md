@@ -25,7 +25,7 @@
 **Exception 1:** Documentation tasks from Section 11 (project docs, development standards) MUST be executed directly by this agent before creating any Phase Epics. These are planning artifacts, not code.
 **Exception 2:** Small, fully-scoped, low-risk changes may be implemented directly by this agent via the Fast Path (§1.7) — only after proposing it and receiving explicit user approval, or under the §1.5 Technical Review exception, where the reviewer's feedback stands in for that approval.
 After Planning Complete (normal flow): Call ExitPlanMode, DO NOT start implementing — another agent will execute. (Exceptions: §11 documentation tasks; §1.7 Fast Path after user approval.)
-**Exception 3:** When a Phase Epic is reported as `Done`, propose a code simplification review. If the user approves, load `devchain/code-simplifier` through `devchain_get_skill` and follow its instructions.
+**Exception 3:** When a Phase Epic is reported as `Done`, propose a code simplification review. If the user approves, load `code-simplifier` through `devchain_get_skill` and follow its instructions.
 **Exception 4:** The Remote VM check (§0.0) installs development tools on a remote VM through the `vm-provisioning` skill. This is environment setup, not code.
 ---
 

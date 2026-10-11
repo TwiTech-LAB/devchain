@@ -34,14 +34,8 @@ import {
   type ConditionType,
   type TriggerCondition,
 } from '@/ui/lib/watchers';
-import { providersQueryKeys } from '@/ui/lib/providers-query-keys';
-import type { FetchFn } from '@/ui/lib/api-transport';
+import { providersQueryKeys, fetchProviders } from '@/ui/lib/providers-query-keys';
 import { useFetchFactory } from '@/ui/hooks/useFetchFactory';
-
-interface Provider {
-  id: string;
-  name: string;
-}
 
 type ScopeType = 'all' | 'agent' | 'profile' | 'provider';
 type CooldownMode = 'time' | 'until_clear';
@@ -84,12 +78,6 @@ interface WatcherDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   watcher?: Watcher | null;
-}
-
-async function fetchProviders(fetchFn: FetchFn): Promise<{ items: Provider[] }> {
-  const res = await fetchFn('/api/providers');
-  if (!res.ok) throw new Error('Failed to fetch providers');
-  return res.json();
 }
 
 const EVENT_NAME_REGEX = /^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)*$/;

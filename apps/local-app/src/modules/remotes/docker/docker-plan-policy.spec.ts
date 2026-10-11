@@ -570,6 +570,21 @@ it.each([
     action: 'replace',
   },
   {
+    name: 'Compose-created VM volume without a DevChain label',
+    data: 'volume',
+    workingDir: '/home/code',
+    vmMount: true,
+    unlabelled: true,
+    action: 'replace',
+  },
+  {
+    name: 'plain docker-run bind holder',
+    data: 'bind',
+    vmMount: true,
+    noCompose: true,
+    action: 'replace',
+  },
+  {
     name: 'config file inside root',
     data: 'volume',
     configFiles: '/etc/other.yml,/home/code/compose.yml',
@@ -632,7 +647,17 @@ it.each([
   { name: 'stateless DevChain counterpart', data: 'code', owner: 'p', action: 'replace' },
 ])(
   'plans the $name with $action',
-  ({ data, workingDir, configFiles, owner, vmMount, importedCompose, action }) => {
+  ({
+    data,
+    workingDir,
+    configFiles,
+    owner,
+    vmMount,
+    importedCompose,
+    unlabelled,
+    noCompose,
+    action,
+  }) => {
     const a = item();
     a.mounts = [
       data === 'volume'
@@ -646,8 +671,8 @@ it.each([
           name: 'handmade',
           driver: 'local',
           labels: {
-            'dev.devchain.project': 'p',
-            ...(importedCompose ? { 'com.docker.compose.project': 'app' } : {}),
+            ...(!unlabelled ? { 'dev.devchain.project': 'p' } : {}),
+            ...(importedCompose || unlabelled ? { 'com.docker.compose.project': 'app' } : {}),
           },
         },
       ];
@@ -656,7 +681,7 @@ it.each([
         id: 'vm',
         name: a.name,
         labels: {
-          'com.docker.compose.project': 'app',
+          ...(!noCompose ? { 'com.docker.compose.project': 'app' } : {}),
           ...(workingDir ? { 'com.docker.compose.project.working_dir': workingDir } : {}),
           ...(configFiles ? { 'com.docker.compose.project.config_files': configFiles } : {}),
           ...(owner ? { 'dev.devchain.project': owner } : {}),
@@ -1037,3 +1062,171 @@ it('stops the writers of every member of a kept read-only-linked group', () => {
   expect(record.volumes).toEqual([]);
   expect(record.stopIds.sort()).toEqual(['a', 'b', 'c']);
 });
+
+describe('follows-user data decisions', () => {
+  const ownership = {
+    class: 'follows-user' as const,
+    home: { uid: 1000, gid: 1000 },
+    vm: { uid: 1001, gid: 1002 },
+    target: { user: '1001:1002', groupAdd: ['1000', '1002'] },
+  };
+  function setup(state: 'no-record' | 'home-newer' | 'unknown' = 'no-record') {
+    const a = item();
+    a.ownership = ownership;
+    a.runtimeUser = '1000:1000';
+    a.mounts = [mount('named-volume', 'data')];
+    const t = target();
+    if (state !== 'no-record')
+      t.volumes.push({ name: 'data', driver: 'local', labels: { 'dev.devchain.project': 'p' } });
+    apply(a, t);
+    return { a, t, group: { itemIds: [a.id], volumes: ['data'], bindPaths: [], state, ownership } };
+  }
+  it('offers both data copy modes on first Connect and honors without-data', () => {
+    const { a, t, group } = setup();
+    applyDockerDataPolicy([a], [group], { remoteId: 'r' }, t);
+    expect(a).toMatchObject({
+      choices: ['container-and-data', 'without-data', 'data-only'],
+      selectedMode: 'container-and-data',
+      dataAction: 'replace-home',
+    });
+    expect(copiedMounts(a)).toEqual(a.mounts);
+    a.selectedMode = 'without-data';
+    applyDockerDataPolicy(
+      [a],
+      [group],
+      { remoteId: 'r', items: [{ id: a.id, mode: 'without-data' }] },
+      t,
+    );
+    expect(a.dataAction).toBe('start-empty');
+    expect(copiedMounts(a)).toEqual([]);
+  });
+  it('pins remembered without-data to keep-vm even when home is newer', () => {
+    const { a, t, group } = setup('home-newer');
+    a.selectedMode = 'without-data';
+    applyDockerDataPolicy([a], [group], { remoteId: 'r' }, t);
+    expect(a).toMatchObject({
+      dataAction: 'keep-vm',
+      dataChoice: 'keep-vm',
+      dataChoices: ['keep-vm', 'replace-home', 'start-empty'],
+      selectedMode: 'container-and-data',
+    });
+    expect(copiedMounts(a)).toEqual([]);
+  });
+  it.each([true, false])(
+    'recreates with kept data only for a matching recorded representation: %s',
+    (sameClass) => {
+      const { a, t, group } = setup('unknown');
+      t.containers.push({
+        id: 'vm',
+        name: 'web',
+        user: '1000:1000',
+        labels: { 'dev.devchain.project': 'p' },
+        mounts: [{ type: 'volume', name: 'data', destination: '/data' }],
+      });
+      a.targetAction = 'replace';
+      applyDockerDataPolicy([a], [group], { remoteId: 'r' }, t, {
+        importedAt: '2026-10-10T00:00:00.000Z',
+        items: [],
+        groups: [
+          {
+            volumes: ['data'],
+            bindPaths: [],
+            vmDiscardedAt: '2026-10-10T00:00:00.000Z',
+            ownership: { ...ownership, class: sameClass ? 'follows-user' : 'exact' },
+            representation: {
+              kind: sameClass ? 'mapped' : 'exact',
+              home: ownership.home,
+              vm: ownership.vm,
+            },
+          },
+        ],
+      });
+      expect(a.targetAction).toBe(sameClass ? 'replace' : 'leave-as-is');
+      if (!sameClass)
+        expect(a.notes).toContain('runs as 1000:1000 until its data is reset or copied again');
+    },
+  );
+  it('retains an unknown representation, and explicit reset does not copy home data', () => {
+    const { a, t, group } = setup('unknown');
+    t.containers.push({
+      id: 'vm',
+      name: 'web',
+      user: '1000:1000',
+      labels: { 'dev.devchain.project': 'p' },
+      mounts: [{ type: 'volume', name: 'data', destination: '/data' }],
+    });
+    a.targetAction = 'replace';
+    applyDockerDataPolicy([a], [group], { remoteId: 'r' }, t);
+    expect(a.targetAction).toBe('leave-as-is');
+    applyDockerDataPolicy(
+      [a],
+      [group],
+      {
+        remoteId: 'r',
+        items: [{ id: a.id, mode: 'container-and-data', dataChoice: 'start-empty' }],
+      },
+      t,
+    );
+    expect(a.targetAction).toBe('replace');
+    expect(copiedMounts(a)).toEqual([]);
+    expect(buildRecord([a], [a], '1.55', '/home/code').items[0].resetData).toBe(true);
+  });
+});
+
+it('resets all data of an explicitly chosen shared group, including deselected sibling mounts', () => {
+  const a = item();
+  const b = { ...item(), id: 'b', name: 'sidecar' };
+  a.mounts = [mount('named-volume', 'shared')];
+  b.mounts = [
+    mount('named-volume', 'shared'),
+    mount('named-volume', 'sibling-only'),
+    mount('project-bind', '/home/code/state'),
+  ];
+  a.selectedMode = 'container-and-data';
+  a.dataAction = 'start-empty';
+  const record = buildRecord([a, b], [a], '1.55', '/home/code');
+  expect(record.items[0].volumes).toEqual(['shared', 'sibling-only']);
+  expect(record.volumes.map((volume) => volume.name)).toEqual(['shared', 'sibling-only']);
+  expect(record.emptyBinds).toContainEqual(
+    expect.objectContaining({ path: '/home/code/state', reset: true }),
+  );
+  expect(record.binds).toEqual([]);
+});
+
+it.each(['foreign-volume', 'outside-project-folder'])(
+  'refuses Start with empty data for %s',
+  (resource) => {
+    const a = item();
+    a.ownership = {
+      class: 'follows-user',
+      home: { uid: 1000, gid: 1000 },
+      vm: { uid: 1001, gid: 1002 },
+      target: { user: '1001:1002', groupAdd: [] },
+    };
+    a.selectedMode = 'container-and-data';
+    a.choices = ['container-and-data'];
+    const t = target();
+    t.volumes = [{ name: 'foreign', driver: 'local', labels: {} }];
+    const group = {
+      itemIds: [a.id],
+      volumes: resource === 'foreign-volume' ? ['foreign'] : [],
+      bindPaths: resource === 'outside-project-folder' ? ['/home/shared-data'] : [],
+      state: 'unknown' as const,
+      ownership: a.ownership,
+    };
+    expect(() =>
+      applyDockerDataPolicy(
+        [a],
+        [group],
+        {
+          remoteId: 'r',
+          items: [{ id: a.id, mode: 'container-and-data', dataChoice: 'start-empty' }],
+        },
+        t,
+        null,
+        '/home/code',
+        'p',
+      ),
+    ).toThrow(/project-owned local volumes and in-project data folders/);
+  },
+);

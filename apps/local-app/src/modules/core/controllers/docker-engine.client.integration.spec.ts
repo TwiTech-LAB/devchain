@@ -553,3 +553,22 @@ it('projects requested disk categories and sized inspect metadata in the fake en
     await engine.close();
   }
 });
+
+it.each([
+  { response: '{"status":"pulling"}\n{"status":"done"}', code: undefined },
+  {
+    response: '{"status":"pulling"}\n{"errorDetail":{"message":"private registry error"}}',
+    code: 'engine-error',
+  },
+  { response: '{broken', code: 'invalid-response' },
+])('consumes image pull progress and detects $code failure', async ({ response, code }) => {
+  handler = (req, res) => {
+    expect(req.method).toBe('POST');
+    expect(req.url).toBe('/images/create?fromImage=registry.example%2Fapp%3Alatest');
+    res.write(response.slice(0, 7));
+    res.end(response.slice(7));
+  };
+  const pull = client.pullImage('registry.example/app:latest');
+  if (code) await expect(pull).rejects.toMatchObject({ code });
+  else await expect(pull).resolves.toBeUndefined();
+});

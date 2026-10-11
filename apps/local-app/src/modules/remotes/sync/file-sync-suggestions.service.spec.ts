@@ -33,7 +33,11 @@ function inspection(paths: string[]): SyncPathInspection {
   };
 }
 
-function setup(paths = ['a.egg-info', 'b.egg-info']) {
+function setup(
+  paths = ['a.egg-info', 'b.egg-info'],
+  ignores: string[] = [],
+  managed: string[] = [],
+) {
   const home = inspection(paths);
   const inspector = {
     inspect: jest.fn<Promise<SyncPathInspection>, Parameters<SyncPathInspector['inspect']>>(),
@@ -62,13 +66,101 @@ function setup(paths = ['a.egg-info', 'b.egg-info']) {
     { getProject: async () => ({ rootPath: '/checkout' }) } as never,
     inspector as never,
     host as never,
-    { getIgnores: () => [] } as never,
-    { get: () => [] } as never,
+    { getIgnores: () => ignores } as never,
+    { get: () => managed } as never,
   );
   return { service, inspector, host, home, checked };
 }
 
 describe('FileSyncSuggestionsService', () => {
+  it('checks explicit Docker targets along with the single VM ownership scan', async () => {
+    const s = setup(['foreign', 'data']);
+    const vm = inspection(['foreign', 'data']);
+    vm.candidates = ['foreign'];
+    vm.requestedPaths = ['data'];
+    s.host.syncInspect.mockImplementation(async (_remote, request) =>
+      request.patterns ? s.checked(vm, request.patterns) : vm,
+    );
+    const result = await s.service.vmSuggestions('p', 'r', ['data']);
+    expect(result.groups.map((group) => group.path)).toContain('data');
+    expect(s.host.syncInspect.mock.calls.filter(([, request]) => request.scan)).toEqual([
+      ['r', { path: '/checkout', scan: true, paths: ['data'], skipIgnores: ['/.git'] }],
+    ]);
+    expect(s.inspector.inspect).toHaveBeenNthCalledWith(1, '/checkout', false, ['foreign', 'data']);
+  });
+  it('scans only the VM with effective ignores and checks candidates and patterns against both indexes', async () => {
+    const s = setup(['a.egg-info'], ['(?d)node_modules'], ['/managed']);
+    s.home.entries[0].foreignOwners = [];
+    const vm = inspection(['a.egg-info']);
+    s.host.syncInspect.mockImplementation(async (_remote, request) =>
+      request.patterns ? s.checked(vm, request.patterns) : vm,
+    );
+    const result = await s.service.vmSuggestions('p', 'r');
+    expect(result).toMatchObject({
+      ownerSide: 'vm',
+      groups: [
+        { selected: true, side: 'vm', reasonKind: 'foreignOwner', patternChecksPassed: true },
+      ],
+    });
+    expect(s.host.syncInspect).toHaveBeenNthCalledWith(1, 'r', {
+      path: '/checkout',
+      scan: true,
+      paths: [],
+      skipIgnores: ['/.git', '/managed', '(?d)node_modules'],
+    });
+    expect(s.inspector.inspect).toHaveBeenNthCalledWith(1, '/checkout', false, ['a.egg-info']);
+    expect(s.inspector.inspect.mock.calls.every((call) => call[1] === false)).toBe(true);
+    expect(s.host.syncInspect.mock.calls.filter((call) => call[1].scan)).toHaveLength(1);
+    expect(s.inspector.inspect.mock.calls.some((call) => call[3]?.length)).toBe(true);
+    expect(s.host.syncInspect.mock.calls.some((call) => call[1].patterns?.length)).toBe(true);
+  });
+
+  it.each(['home-tracked', 'vm-tracked', 'nonignored', 'kept'] as const)(
+    'protects %s VM output',
+    async (protection) => {
+      const s = setup(['a.egg-info']);
+      const vm = inspection(['a.egg-info']);
+      s.home.entries[0].foreignOwners = [];
+      if (protection === 'home-tracked') s.home.entries[0].tracked = true;
+      if (protection === 'vm-tracked') vm.entries[0].tracked = true;
+      if (protection === 'nonignored') {
+        vm.entries[0].ignored = false;
+        vm.entries[0].ignoreRule = null;
+      }
+      s.host.syncInspect.mockImplementation(async (_remote, request) => {
+        const result = request.patterns ? s.checked(vm, request.patterns) : vm;
+        if (protection === 'kept' && result.patternChecks)
+          for (const check of result.patternChecks.results)
+            check.kept = { count: 1, sample: ['a.egg-info/keep'] };
+        return result;
+      });
+      const result = await s.service.vmSuggestions('p', 'r');
+      expect(
+        result.groups.every(
+          (group) => !group.selected || !group.patternChecksPassed || group.patterns.length === 0,
+        ),
+      ).toBe(true);
+    },
+  );
+
+  it.each(['vm-unavailable', 'vm-git', 'home-git', 'home-hidden', 'late-unavailable'] as const)(
+    'rejects %s inspection so the sequence remains pending',
+    async (failure) => {
+      const s = setup(['a.egg-info']);
+      const vm = inspection(['a.egg-info']);
+      if (failure === 'vm-git') vm.gitState = 'error';
+      if (failure === 'home-git') s.home.gitState = 'error';
+      if (failure === 'home-hidden') s.home.hiddenPaths = ['a.egg-info'];
+      if (failure === 'vm-unavailable') s.host.syncInspect.mockRejectedValue(new Error('offline'));
+      else {
+        s.host.syncInspect.mockResolvedValueOnce(vm);
+        if (failure === 'late-unavailable')
+          s.host.syncInspect.mockRejectedValue(new Error('offline'));
+      }
+      await expect(s.service.vmSuggestions('p', 'r')).rejects.toThrow();
+    },
+  );
+
   it.each(['no-root', 'unavailable', 'late-unavailable'] as const)(
     'finalizes Connect proposals with a %s peer',
     async (state) => {

@@ -12,6 +12,7 @@ import { join } from 'node:path';
 import { Readable } from 'node:stream';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { DockerArchiveJournal } from '../../core/controllers/docker-archive-journal';
+import { codeIgnores } from '../../file-sync/file-sync.dto';
 import type { RemoteOperation } from '../../storage/models/domain.models';
 import type { DockerImportInventory } from '../operations/docker-import-inventory.store';
 import { RemoteHostClient } from '../operations/remote-host.client';
@@ -315,6 +316,9 @@ suite('Docker import across two real engines', () => {
       } as never,
       inventoryStore as never,
       { recordPlan: () => undefined } as never,
+      {
+        installedIgnores: async () => ({ ignore: codeIgnores(exclusions.get(PROJECT) ?? [], []) }),
+      } as never,
     );
     copyBack = new DockerCopyBack(
       plans,
@@ -324,6 +328,16 @@ suite('Docker import across two real engines', () => {
       journal,
       inventoryStore as never,
       { getState: () => ({ online: true, versionMatches: true, apiKeyRejected: false }) } as never,
+      // This isolated Docker-engine proof models excluded binds; real Syncthing is covered separately.
+      {
+        preview: async (_p: string, _r: string, _root: string, targets: string[]) => targets,
+        prepare: async (_p: string, _r: string, _root: string, targets: string[]) => ({
+          revision: 0,
+          confirmed: targets,
+          pending: true,
+        }),
+        confirm: async (_p: string, _r: string, _root: string, targets: string[]) => targets,
+      } as never,
     );
 
     // An offline image with a marker, committed rather than built so no build cache remains.

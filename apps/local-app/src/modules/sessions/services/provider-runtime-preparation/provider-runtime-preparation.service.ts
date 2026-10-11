@@ -17,7 +17,10 @@ import {
   STORAGE_SERVICE,
   type StorageService,
 } from '../../../storage/interfaces/storage.interface';
-import { extractModelFromArgs, parseProfileOptions } from '../../utils/profile-options';
+import {
+  extractModelFromArgs,
+  parseProfileOptions,
+} from '../../../providers/utils/profile-options';
 import {
   resolve as resolveLaunchConfig,
   type LaunchConfig,

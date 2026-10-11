@@ -12,6 +12,7 @@ const { createSystem } = require("../lib/system");
 const { requestDocker, runDocker } = require("../lib/docker");
 const { requestUpdate, runUpdate } = require("../lib/update");
 const { installClis } = require("../lib/clis");
+const { installPrivilegedSyncthing } = require("../lib/syncthing");
 const { ensureBasePackages } = require("../lib/packages");
 const { refreshHostUnit, ensureIdsProfile } = require("../lib/claim");
 const { isSemver, BootstrapError } = require("../lib/validate");
@@ -41,6 +42,7 @@ async function main(argv) {
     ensureIdsProfile(sys);
     const { skippedTools } = await ensureBasePackages(argv[1], sys);
     const cliVersions = await installClis(argv[1], sys);
+    await installPrivilegedSyncthing(sys);
     if (await refreshHostUnit(sys))
       process.stderr.write(
         "devchain-host.service refreshed from this version's template.\n",

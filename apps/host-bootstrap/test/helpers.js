@@ -7,6 +7,7 @@ const path = require("node:path");
 const { createHash } = require("node:crypto");
 const { execFileSync } = require("node:child_process");
 const { installClis } = require("../lib/clis");
+const { installPrivilegedSyncthing } = require("../lib/syncthing");
 const { createSystem } = require("../lib/system");
 const defaultPins = require("../../../scripts/host-cli-pins.json");
 
@@ -102,6 +103,7 @@ function fakeSystem({
     binDir: path.join(root, "bin"),
     cliPrefix: path.join(root, "usr/local"),
     installRoot: path.join(root, "opt"),
+    syncthingBinary: path.join(root, "syncthing-source"),
   };
   for (const dir of [paths.systemdDir, paths.sudoersDir, paths.binDir])
     fs.mkdirSync(dir);
@@ -121,6 +123,8 @@ function fakeSystem({
   const calls = [];
   const callDetails = [];
   const owners = new Map();
+  const capabilities = new Map();
+  fs.writeFileSync(paths.syncthingBinary, "syncthing v2");
   let installed = null;
   // With registryCatalog (registry URL -> package names it serves), an
   // install from a registry without the package fails like npm's E404;
@@ -244,8 +248,22 @@ function fakeSystem({
       args[0] === "--clis"
     ) {
       const cliVersions = await installClis(args[1], sys);
+      await installPrivilegedSyncthing(sys);
       return { stdout: JSON.stringify({ cliVersions }) + "\n", stderr: "" };
     }
+    if (command === "stat")
+      return {
+        stdout: `0:${(fs.statSync(args.at(-1)).mode & 0o7777).toString(8)}\n`,
+        stderr: "",
+      };
+    if (command === "chown") owners.set(args[1], args[0]);
+    if (command === "setcap")
+      capabilities.set(args[1], args[0].replace("+", "="));
+    if (command === "getcap")
+      return {
+        stdout: `${args[0]} ${capabilities.get(args[0]) ?? ""}\n`,
+        stderr: "",
+      };
     if (command === "id") {
       const account = accounts.get(args.at(-1));
       const group = [...primaryGroups.values()].find(

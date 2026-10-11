@@ -41,7 +41,6 @@ function renderSudoers(userName, binDir) {
     "# DevChain host: written at claim time.",
     `${userName} ALL=(ALL) NOPASSWD:ALL`,
     `${userName} ALL=(root) NOPASSWD: ${binDir}/devchain-host-update, ${binDir}/devchain-host-project-root`,
-    `${userName} ALL=(root) NOPASSWD: ${binDir}/devchain-host-project-chown`,
     "",
   ].join("\n");
 }

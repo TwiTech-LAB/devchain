@@ -1,9 +1,16 @@
 {
+  "displayName": "e2e",
   "moduleFileExtensions": ["js", "json", "ts"],
   "rootDir": ".",
   "testEnvironment": "node",
   "testRegex": ".e2e-spec.ts$",
-  "setupFiles": ["<rootDir>/jest-e2e.setup.ts"],
+  "setupFilesAfterEnv": ["<rootDir>/../src/test-setup-node.ts", "<rootDir>/jest-e2e.setup.ts"],
+  "moduleNameMapper": {
+    "^@/(.*)$": "<rootDir>/../src/$1",
+    "^@devchain/shared$": "<rootDir>/mocks/devchain-shared.ts",
+    "^@devchain/proxmox-client$": "<rootDir>/../../../packages/proxmox-client/src/index.ts",
+    "^(\\.{1,2}/.*)\\.js$": "$1"
+  },
   "transform": {
     "^.+\\.(t|j)s$": "ts-jest"
   },

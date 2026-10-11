@@ -1,5 +1,5 @@
+import { OnCatalogEvent } from '../../events/catalog/on-catalog-event';
 import { Injectable, OnModuleDestroy } from '@nestjs/common';
-import { OnEvent } from '@nestjs/event-emitter';
 import { createLogger } from '../../../common/logging/logger';
 import { CloudSessionManagerService } from '../../cloud/services/cloud-session-manager.service';
 import { EgressQueueService } from '../../cloud/services/egress-queue.service';
@@ -49,7 +49,7 @@ export class AskUserQuestionPushGateService implements OnModuleDestroy {
     private readonly workspaceMode: WorkspaceModeCoordinatorService,
   ) {}
 
-  @OnEvent('claude.hooks.ask_user_question.pending', { async: true })
+  @OnCatalogEvent('claude.hooks.ask_user_question.pending', { async: true })
   async onPending(payload: ClaudeHooksAskUserQuestionPendingEventPayload): Promise<void> {
     const status = this.cloudSession.getStatus();
     if (!status.connected || !status.userId) return;

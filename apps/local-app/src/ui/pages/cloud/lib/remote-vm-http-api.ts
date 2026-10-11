@@ -1,5 +1,4 @@
 import { FileSyncAutoFixSchema } from '@/modules/file-sync/file-sync-auto-fix.dto';
-import { SyncChownResultSchema } from '@/modules/file-sync/sync-chown.dto';
 import { FILE_SYNC_IGNORES_CHANGED } from '@/modules/file-sync/file-sync.dto';
 import { ProviderAuthApiError, FileListChangedError } from './remote-vm-errors';
 import { HOME_BACKEND, apiFetch } from '@/ui/lib/api-transport';
@@ -17,7 +16,6 @@ import type {
   SaveProjectIgnoresResult,
   ProjectExclusionSuggestions,
   ProjectPatternPreview,
-  SyncChownResult,
   ProjectFileSyncStatus,
   DockerPlanRequest,
   DockerPlan,
@@ -73,7 +71,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     const body = await response.json().catch(() => null);
     throw new Error(body?.message ?? `Remote operation request failed (${response.status})`);
   }
-  return response.json();
+  return response.json() as Promise<T>;
 }
 
 const JSON_HEADERS = { 'Content-Type': 'application/json' } as const;
@@ -136,7 +134,7 @@ async function sendProviderAuth(path: string, init?: RequestInit): Promise<Respo
 }
 
 async function providerAuthRequest<T>(path: string, init?: RequestInit): Promise<T> {
-  return (await sendProviderAuth(path, init)).json();
+  return (await sendProviderAuth(path, init)).json() as Promise<T>;
 }
 
 /** The SSH keys this PC offers, or none when it offers none or the request fails. */
@@ -162,6 +160,11 @@ function isPlan(value: unknown): value is DockerPlan {
   );
 }
 
+function planOrThrow(body: unknown): DockerPlan {
+  if (!isPlan(body)) throw new Error('The server returned an invalid Docker plan.');
+  return body;
+}
+
 export class RemoteVmHttpApi implements RemoteVmApi {
   async listRemotes(signal: AbortSignal): Promise<RemoteListItemDto[]> {
     const res = await home('/api/remotes', { signal });
@@ -180,7 +183,7 @@ export class RemoteVmHttpApi implements RemoteVmApi {
   async createRemote(input: CreateRemoteInput): Promise<RemoteListItemDto> {
     const res = await home('/api/remotes', jsonPost(input));
     await okOrThrow(res, 'Failed to add the VM');
-    return res.json();
+    return res.json() as Promise<RemoteListItemDto>;
   }
 
   async deleteRemote(remoteId: string): Promise<void> {
@@ -191,7 +194,7 @@ export class RemoteVmHttpApi implements RemoteVmApi {
   async renameRemote(remoteId: string, name: string): Promise<RemoteListItemDto> {
     const res = await home(`/api/remotes/${remoteId}`, jsonBody('PATCH', { name }));
     await okOrThrow(res, 'Failed to rename the VM');
-    return res.json();
+    return res.json() as Promise<RemoteListItemDto>;
   }
 
   async readReadiness(signal: AbortSignal): Promise<RemoteReadinessDto> {
@@ -347,7 +350,7 @@ export class RemoteVmHttpApi implements RemoteVmApi {
   async readHomeIdentity(signal: AbortSignal): Promise<HomeIdentity> {
     const response = await home('/api/remotes/host-install/identity', { signal });
     if (!response.ok) throw new Error('identity unavailable');
-    return response.json();
+    return response.json() as Promise<HomeIdentity>;
   }
 
   listLocalSshKeys(): Promise<LocalSshKey[]> {
@@ -424,7 +427,7 @@ export class RemoteVmHttpApi implements RemoteVmApi {
       Object.entries(fields)
         // Empty address and pool fields leave the server's defaults in effect.
         .filter(([key, value]) => (key !== 'address' && key !== 'pool') || value.trim().length > 0)
-        .map(([key, value]) => [key, value.trim()]),
+        .map(([key, value]) => [key, value.trim()] as [string, string]),
     );
     const response = await home(`/api/vm-providers/proxmox/setup-block?${query.toString()}`, {});
     await okOrThrow(response, 'Could not generate the setup block.');
@@ -601,7 +604,7 @@ export class RemoteVmHttpApi implements RemoteVmApi {
         ? new FileListChangedError(message)
         : new Error(message);
     }
-    return response.json();
+    return response.json() as Promise<SaveProjectIgnoresResult>;
   }
 
   async readFileSyncSuggestions(
@@ -634,21 +637,12 @@ export class RemoteVmHttpApi implements RemoteVmApi {
     return result;
   }
 
-  async giveFileOwnership(projectId: string, paths: string[]): Promise<SyncChownResult> {
-    const response = await home(
-      `/api/projects/${encodeURIComponent(projectId)}/file-sync/give-ownership`,
-      jsonPost({ paths }),
-    );
-    await okOrThrow(response, 'Could not change VM file owners.');
-    return SyncChownResultSchema.parse(await response.json());
-  }
-
   async readFileSyncStatus(projectId: string, signal: AbortSignal): Promise<ProjectFileSyncStatus> {
     const response = await home(`/api/file-sync/projects/${encodeURIComponent(projectId)}/status`, {
       signal,
     });
     if (!response.ok) return { folders: null };
-    return response.json();
+    return response.json() as Promise<ProjectFileSyncStatus>;
   }
 
   async readDockerPlan(
@@ -667,8 +661,33 @@ export class RemoteVmHttpApi implements RemoteVmApi {
           `The Docker plan failed (${response.status})`,
       );
     }
-    if (!isPlan(body)) throw new Error('The server returned an invalid Docker plan.');
-    return body;
+    return planOrThrow(body);
+  }
+
+  async applyDockerUserFix(
+    projectId: string,
+    remoteId: string,
+    proposalId: string,
+    signal: AbortSignal,
+  ): Promise<void> {
+    const response = await home(
+      `/api/projects/${encodeURIComponent(projectId)}/docker/user-fix/apply`,
+      { ...jsonPost({ remoteId, proposalId, confirmed: true }), signal },
+    );
+    await okOrThrow(response, 'Could not apply the Compose user fix.');
+  }
+
+  async verifyDockerUserFix(
+    projectId: string,
+    remoteId: string,
+    signal: AbortSignal,
+  ): Promise<DockerPlan> {
+    const response = await home(
+      `/api/projects/${encodeURIComponent(projectId)}/docker/user-fix/verify`,
+      { ...jsonPost({ remoteId }), signal },
+    );
+    await okOrThrow(response, 'Could not verify the Compose user fix.');
+    return planOrThrow(await response.json().catch(() => null));
   }
 
   async readDockerPresence(projectId: string, signal: AbortSignal): Promise<DockerPresence> {
@@ -676,7 +695,7 @@ export class RemoteVmHttpApi implements RemoteVmApi {
       signal,
     });
     await okOrThrow(response, 'Could not read Docker presence.');
-    return response.json();
+    return response.json() as Promise<DockerPresence>;
   }
 
   async readDockerSyncState(
@@ -689,7 +708,7 @@ export class RemoteVmHttpApi implements RemoteVmApi {
       { ...jsonPost({ remoteId }), signal },
     );
     if (!response.ok) return null;
-    return response.json();
+    return response.json() as Promise<DockerSyncState | null>;
   }
 
   async readConnectChoices(projectId: string, signal: AbortSignal): Promise<ConnectChoicesDto> {

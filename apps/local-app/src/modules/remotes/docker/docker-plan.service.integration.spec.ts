@@ -5,11 +5,13 @@ import { DockerCopyBack } from './docker-copy-back';
 // The real source scanner talks to a fake Unix engine; the VM side is a stubbed RemoteHostClient.
 import { createServer, type Server } from 'node:http';
 import { once } from 'node:events';
-import { chmod, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { ZodError } from 'zod';
+import { parse } from 'yaml';
 import { ValidationError } from '../../../common/errors/error-types';
+import { AllExceptionsFilter } from '../../../common/filters/http-exception.filter';
 import type { DockerScanResult } from '../host/host-docker.dto';
 import type { DockerImportInventory } from '../operations/docker-import-inventory.store';
 import { buildRecord } from './docker-handoff';
@@ -43,6 +45,7 @@ let source: DockerPlanSourceService;
 let networkRanges: Map<string, string[]>;
 let choices: ConnectChoicesStore;
 let choicesDatabase: ReturnType<typeof createTestDatabase>;
+let imageUser: string;
 
 const fs = (path: string, filesystemId: string, freeBytes = 1e12) => ({
   path,
@@ -77,6 +80,12 @@ const web = () =>
     ],
     { Binds: ['named:/db', `${join(root, 'project', 'state')}:/state`] },
   );
+const composeLabels = (service: string, configFile = join(projectRoot, 'custom.yaml')) => ({
+  'com.docker.compose.project': 'app',
+  'com.docker.compose.project.working_dir': projectRoot,
+  'com.docker.compose.project.config_files': configFile,
+  'com.docker.compose.service': service,
+});
 const run = (body: Record<string, unknown> = {}) => service.plan(projectId, { remoteId, ...body });
 const item = (plan: DockerPlan, id: string) => plan.items.find((i) => i.id === id)!;
 function fixedWeb(): void {
@@ -97,6 +106,7 @@ beforeEach(async () => {
   requests = [];
   info = { Driver: 'overlay2', DockerRootDir: '/var/lib/docker', SecurityOptions: [] };
   containers = [web(), container('cache')];
+  imageUser = '1000';
   projectRoot = join(root, 'project');
   target = { architecture: 'x86_64', containers: [], volumes: [], paths: [] };
   networkRanges = new Map();
@@ -169,7 +179,8 @@ beforeEach(async () => {
         ...(path.endsWith('?size=true') && { SizeRw: inspect?.SizeRw ?? 17 }),
       });
     }
-    if (path === '/images/image/json') return json({ Id: 'sha256:image', Architecture: 'amd64' });
+    if (path === '/images/image/json')
+      return json({ Id: 'sha256:image', Architecture: 'amd64', Config: { User: imageUser } });
     if (path === `/images/${encodeURIComponent('sha256:image')}/get`)
       return res.end(Buffer.alloc(64 * 1024));
     res.statusCode = 404;
@@ -215,8 +226,6 @@ afterEach(async () => {
 
 // The existing engine fixture proves the gate refuses before either side scans data.
 it.each([
-  { name: 'different uid', vmUid: 2000, vmGid: 1000, homeUid: 1000, homeGid: 1000 },
-  { name: 'different gid', vmUid: 1000, vmGid: 2000, homeUid: 1000, homeGid: 1000 },
   { name: 'missing VM uid', vmUid: undefined, vmGid: 1000, homeUid: 1000, homeGid: 1000 },
   { name: 'missing VM gid', vmUid: 1000, vmGid: undefined, homeUid: 1000, homeGid: 1000 },
   { name: 'unknown VM ids', vmUid: null, vmGid: null, homeUid: 1000, homeGid: 1000 },
@@ -360,28 +369,50 @@ it('names an unselected writable code mount above selected data in the stop list
   ).toEqual(['db', 'writer']);
 });
 
-it('classifies previous import paths even when their containers are absent', async () => {
-  containers = [];
-  inventory = {
-    importedAt: '2026-09-01T00:00:00.000Z',
-    items: [
-      {
-        name: 'old',
-        imageId: 'image',
-        volumes: [],
-        bindPaths: ['/plugins', '/state'],
-        sizeBytes: 5,
-      },
-    ],
-  };
-  git.enqueueResponse({ type: 'success', stdout: 'plugins/app.py\0' }, { type: 'success' });
-  const plan = await run();
-  expect(plan.codePaths).toEqual(['/plugins']);
-  expect(git.calls.map((call) => call.argv.at(-1))).toEqual([
-    ':(literal)plugins',
-    ':(literal)state',
-  ]);
-});
+it.each(['items', 'groups'] as const)(
+  'classifies previous inventory %s paths even when their containers are absent',
+  async (form) => {
+    containers = [];
+    inventory = {
+      importedAt: '2026-09-01T00:00:00.000Z',
+      items: [
+        {
+          name: 'old',
+          imageId: 'image',
+          volumes: [],
+          bindPaths: ['/plugins', '/state'],
+          sizeBytes: 5,
+        },
+      ],
+    };
+    if (form === 'groups') {
+      inventory.items = [];
+      inventory.groups = [
+        {
+          volumes: [],
+          bindPaths: [
+            join(projectRoot, 'plugins'),
+            join(projectRoot, 'state'),
+            join(root, 'outside'),
+          ],
+          lastSyncedAt: inventory.importedAt,
+          lastSyncDirection: 'to-home',
+        },
+      ];
+    }
+    git.enqueueResponse({ type: 'success', stdout: 'plugins/app.py\0' }, { type: 'success' });
+    const plan = await run();
+    expect(plan.codePaths).toEqual(['/plugins']);
+    expect(git.calls.map((call) => call.argv.at(-1))).toEqual([
+      ':(literal)plugins',
+      ':(literal)state',
+    ]);
+    if (form === 'groups')
+      expect(plan.dataGroups).toEqual([
+        { itemIds: [], volumes: [], bindPaths: [join(projectRoot, 'state')], state: 'no-record' },
+      ]);
+  },
+);
 
 it('keeps a tracked inventory path as data when copy-back requests it', async () => {
   git.setDefaultResponse({ type: 'success', stdout: 'state/app.py\0' });
@@ -972,4 +1003,723 @@ it('serves Docker presence for the project through the GET route', async () => {
   } finally {
     await app.close();
   }
+});
+
+it.each([
+  { uid: 1001, gid: 1000 },
+  { uid: 1000, gid: 1001 },
+])('allows exact-only data with known differing VM ids %j', async (ids) => {
+  Object.assign(runtime, ids);
+  const plan = await run();
+  expect(plan.availability).toEqual({ available: true, side: null, reason: null });
+  expect(item(plan, 'web').ownership?.class).toBe('exact');
+  expect(plan.dataGroups?.[0].ownership).toMatchObject({ class: 'exact' });
+  expect(plan.dataGroups?.[0].ownership?.refusalReasons).toBeUndefined();
+  expect(plan.canConnect).toBe(true);
+});
+
+it.each([
+  { side: 'home', user: '0', refused: false },
+  { side: 'home', user: '42', refused: false },
+  { side: 'home', user: '1000', refused: true },
+  { side: 'home', user: '1001', refused: true },
+  { side: 'home', user: 'node', refused: true },
+  { side: 'vm', user: '0', refused: false },
+  { side: 'vm', user: '1001', refused: true },
+  { side: 'vm', user: 'node', refused: true },
+  { side: 'vm', user: undefined, refused: true },
+])(
+  'checks retained $side consumer with user $user in a follows-user group',
+  async ({ side, user, refused }) => {
+    runtime.uid = 1001;
+    imageUser = '';
+    if (side === 'home')
+      containers.push(
+        container(
+          'retained',
+          [{ Type: 'volume', Name: 'named', Destination: '/data', RW: false }],
+          {},
+          { User: user },
+        ),
+      );
+    else
+      target.containers.push({
+        id: 'vm-retained',
+        name: 'retained',
+        user,
+        labels: {},
+        mounts: [{ type: 'volume', name: 'named', destination: '/data' }],
+      });
+    const plan = await run({ items: [{ id: 'web', mode: 'without-data' }] });
+    expect(item(plan, 'web').ownership?.class).toBe('follows-user');
+    expect(plan.dataGroups?.[0].ownership).toMatchObject({ class: 'follows-user' });
+    expect(plan.dataGroups?.[0].ownership?.refusalReasons ?? []).toHaveLength(refused ? 1 : 0);
+    expect(
+      item(plan, 'web').blockers.some((issue) => issue.code === 'ownership-consumer-conflict'),
+    ).toBe(refused);
+    expect(plan.canConnect).toBe(!refused);
+  },
+);
+
+// The real scanner and planner must keep code classification separate from consumer overlap.
+it('refuses mapped child data held by deselected parent-code containers and absent Compose services', async () => {
+  runtime.uid = 1001;
+  imageUser = '';
+  containers.push(
+    container(
+      'viewer',
+      [bind(projectRoot, '/workspace')],
+      { Binds: [`${projectRoot}:/workspace`] },
+      { User: 'node' },
+    ),
+    container(
+      'compose-driver',
+      [],
+      {},
+      {
+        User: '0',
+        Labels: composeLabels('driver'),
+      },
+    ),
+  );
+  jest.mocked(source.compose).mockImplementation(async (_directory, options) =>
+    options?.files?.length
+      ? {
+          name: 'app',
+          services: {
+            driver: { image: 'image', user: '0' },
+            sidecar: {
+              image: 'image',
+              user: 'node',
+              profiles: ['tools'],
+              volumes: [{ type: 'bind', source: projectRoot, target: '/workspace' }],
+            },
+          },
+        }
+      : null,
+  );
+  const plan = await run({ items: [{ id: 'web', mode: 'container-and-data' }] });
+  expect(item(plan, 'viewer').mounts).toContainEqual(
+    expect.objectContaining({ source: projectRoot, kind: 'project-code' }),
+  );
+  expect(item(plan, 'viewer')).toMatchObject({ selectedMode: null, ownership: { class: 'exact' } });
+  expect(item(plan, 'web').ownership?.class).toBe('follows-user');
+  expect(plan.canConnect).toBe(false);
+  const state = join(projectRoot, 'state');
+  const group = plan.dataGroups!.find((entry) => entry.bindPaths.includes(state))!;
+  for (const name of ['viewer', 'app/sidecar']) {
+    expect(group.ownershipConsumers).toContainEqual(
+      expect.objectContaining({
+        name,
+        bindPaths: [projectRoot],
+        ownership: expect.objectContaining({ class: 'exact' }),
+      }),
+    );
+    expect(item(plan, 'web').blockers).toContainEqual({
+      code: 'ownership-consumer-conflict',
+      message: `${name}: exact consumer has an unknown user id and cannot share data whose owners follow the developer user.`,
+    });
+  }
+  expect(group.bindPaths).toEqual([state]);
+  expect(plan.codePaths).toContain('/');
+  expect(plan.managedExclusions).toEqual(['/state']);
+  const record = buildRecord(
+    plan.items,
+    plan.items.filter((entry) => entry.selectedMode),
+    plan.apiVersion!,
+    projectRoot,
+    plan.networks,
+    plan.dataGroups,
+  );
+  expect(record.binds.map((entry) => entry.path)).toEqual([state]);
+  expect(record.items.find((entry) => entry.id === 'web')?.binds).toEqual([state]);
+});
+
+it.each(['0', '1001', 'node', '1000'])(
+  'includes absent Compose service user %s in a selected data group',
+  async (user) => {
+    runtime.uid = 1001;
+    const config = containers[0].Config as { Labels: Record<string, string> };
+    config.Labels = composeLabels('web');
+    jest.mocked(source.compose).mockImplementation(async (_directory, options) =>
+      options?.files?.length
+        ? {
+            name: 'app',
+            services: {
+              web: {
+                image: 'image',
+                user: `${options.env?.DEVCHAIN_UID}:1000`,
+                volumes: [{ type: 'volume', source: 'data' }],
+              },
+              sidecar: {
+                image: 'image',
+                user,
+                profiles: ['tools'],
+                volumes: [{ type: 'volume', source: 'data', read_only: true }],
+              },
+            },
+            volumes: { data: { name: 'named' } },
+          }
+        : null,
+    );
+    const plan = await run({ items: [{ id: 'web', mode: 'without-data' }] });
+    const refused = user !== '0';
+    expect(plan.dataGroups?.[0].ownership?.refusalReasons ?? []).toHaveLength(refused ? 1 : 0);
+    expect(plan.canConnect).toBe(!refused);
+  },
+);
+
+it.each(['error', 'null'])(
+  'refuses an unresolved Compose item and shared absent consumers after a VM resolution %s until fresh verification succeeds',
+  async (failure) => {
+    runtime.uid = 1001;
+    imageUser = '';
+    containers.push(
+      container(
+        'compose-app',
+        [],
+        {},
+        {
+          Labels: composeLabels('web'),
+        },
+      ),
+    );
+    let resolved = false;
+    jest.mocked(source.compose).mockImplementation(async (_directory, options) => {
+      if (!options?.files?.length) return null;
+      if (!resolved && options.env?.DEVCHAIN_UID === '1001') {
+        if (failure === 'error') throw new Error('PRIVATE_COMPOSE_OUTPUT');
+        return null;
+      }
+      return {
+        name: 'app',
+        services: {
+          web: { image: 'image', user: `${options.env?.DEVCHAIN_UID}:1000` },
+          sidecar: {
+            image: 'image',
+            user: '0',
+            profiles: ['tools'],
+            volumes: [{ type: 'volume', source: 'data', read_only: true }],
+          },
+        },
+        volumes: { data: { name: 'named' } },
+      };
+    });
+
+    const selected = await run({ items: [{ id: 'compose-app', mode: 'container-and-data' }] });
+    expect(item(selected, 'compose-app').blockers).toContainEqual(
+      expect.objectContaining({ code: 'compose-ownership-unreadable' }),
+    );
+    expect(item(selected, 'compose-app').ownership?.refusalReasons).toContainEqual(
+      expect.objectContaining({ code: 'compose-ownership-unreadable' }),
+    );
+    expect(selected.canConnect).toBe(false);
+    expect(JSON.stringify(selected)).not.toContain('PRIVATE_COMPOSE_OUTPUT');
+
+    const input = { remoteId, items: [{ id: 'web', mode: 'without-data' }] };
+    const shared = await service.plan(projectId, input, undefined, { reuse: true });
+    expect(item(shared, 'compose-app').selectedMode).toBeNull();
+    expect(shared.dataGroups?.[0].ownershipConsumers).toContainEqual(
+      expect.objectContaining({ name: 'app/sidecar' }),
+    );
+    expect(shared.dataGroups?.[0].ownership?.refusalReasons).toContainEqual(
+      expect.objectContaining({ code: 'compose-ownership-unreadable' }),
+    );
+    expect(shared.canConnect).toBe(false);
+
+    resolved = true;
+    expect((await service.plan(projectId, input, undefined, { reuse: true })).canConnect).toBe(
+      false,
+    );
+    const verified = await service.plan(projectId, input, undefined, { reuse: false });
+    expect(item(verified, 'compose-app').ownership?.class).toBe('follows-user');
+    expect(item(verified, 'compose-app').blockers).toEqual([]);
+    expect(verified.dataGroups?.[0].ownership?.refusalReasons).toBeUndefined();
+    expect(verified.canConnect).toBe(true);
+  },
+);
+
+async function sourceUserFile(text: string, imageHint = false): Promise<string> {
+  runtime.uid = 1001;
+  runtime.gid = 1002;
+  imageUser = imageHint ? 'node' : '1000';
+  const file = join(projectRoot, 'custom.yaml');
+  await writeFile(file, text);
+  containers = [
+    container(
+      'web',
+      [
+        bind(projectRoot, '/code'),
+        {
+          Type: 'volume',
+          Name: 'named',
+          Source: '/docker/named',
+          Destination: '/data',
+          RW: true,
+        },
+      ],
+      {},
+      {
+        User: imageHint ? 'node' : '1000:1000',
+        Labels: composeLabels('web', file),
+      },
+    ),
+  ];
+  jest.mocked(source.compose).mockImplementation(async (_directory, options) => {
+    if (!options?.files?.length) return null;
+    const config = parse(await readFile(options.files[0], 'utf8')) as {
+      services: { web: { user?: string } };
+    };
+    const user = config.services.web.user
+      ?.replace(/\$\{DEVCHAIN_UID:-\d+\}/g, options.env?.DEVCHAIN_UID ?? '1000')
+      .replace(/\$\{DEVCHAIN_GID:-\d+\}/g, options.env?.DEVCHAIN_GID ?? '1000');
+    return {
+      name: 'app',
+      services: {
+        web: {
+          image: 'image',
+          ...(user ? { user } : {}),
+          volumes: [
+            { type: 'bind', source: projectRoot, target: '/code' },
+            { type: 'volume', source: 'data', target: '/data' },
+          ],
+        },
+      },
+      volumes: { data: { name: 'named' } },
+    };
+  });
+  return file;
+}
+
+async function dockerPlanApp(): Promise<NestFastifyApplication> {
+  const module = await Test.createTestingModule({
+    controllers: [DockerPlanController],
+    providers: [
+      { provide: DockerPlanService, useValue: service },
+      { provide: DockerCopyBack, useValue: {} },
+    ],
+  }).compile();
+  const app = module.createNestApplication<NestFastifyApplication>(new FastifyAdapter());
+  app.useGlobalFilters(new AllExceptionsFilter());
+  await app.init();
+  return app;
+}
+
+it('serves a literal user proposal, edits its scalar, invalidates reuse, and verifies the V target through the routes', async () => {
+  const before =
+    '# λ retain\nservices:\n  web:\n    image: image\n    user: "1000:1000" # retain owner\n    environment: [SECRET=must-never-escape]\n';
+  const file = await sourceUserFile(before);
+  const app = await dockerPlanApp();
+  try {
+    const planResponse = await app.inject({
+      method: 'POST',
+      url: `/api/projects/${projectId}/docker/plan`,
+      payload: { remoteId },
+    });
+    expect(planResponse.statusCode).toBe(200);
+    const plan = planResponse.json<DockerPlan>();
+    expect(plan.canConnect).toBe(false);
+    const proposal = item(plan, 'web').ownership!.fixProposal!;
+    expect(
+      plan.dataGroups![0].ownershipConsumers!.find((consumer) => consumer.name === 'app/web')!
+        .ownership.fixProposal?.id,
+    ).toBe(proposal.id);
+    expect(proposal).toMatchObject({
+      service: 'web',
+      container: 'web',
+      file,
+      line: 5,
+      oldUser: '1000:1000',
+      newUser: '${DEVCHAIN_UID:-1000}:${DEVCHAIN_GID:-1000}',
+      canApply: true,
+    });
+    expect(JSON.stringify(plan)).not.toContain('must-never-escape');
+    const apply = await app.inject({
+      method: 'POST',
+      url: `/api/projects/${projectId}/docker/user-fix/apply`,
+      payload: { remoteId, proposalId: proposal.id, confirmed: true },
+    });
+    expect(apply.statusCode).toBe(200);
+    expect(apply.json()).toEqual({ applied: true });
+    expect(await readFile(file, 'utf8')).toBe(
+      before.replace('"1000:1000"', '"${DEVCHAIN_UID:-1000}:${DEVCHAIN_GID:-1000}"'),
+    );
+    // The ordinary cached route also sees an Apply immediately because Apply invalidates it.
+    const next = await service.plan(projectId, { remoteId }, undefined, {
+      reuse: true,
+      estimate: false,
+    });
+    expect(item(next, 'web').ownership?.class).toBe('follows-user');
+    const pairedCalls = jest
+      .mocked(source.compose)
+      .mock.calls.filter(([, options]) => options?.env);
+    const verified = await app.inject({
+      method: 'POST',
+      url: `/api/projects/${projectId}/docker/user-fix/verify`,
+      payload: { remoteId },
+    });
+    expect(verified.statusCode).toBe(200);
+    const fresh = verified.json<DockerPlan>();
+    expect(item(fresh, 'web').ownership).toMatchObject({
+      class: 'follows-user',
+      target: { user: '1001:1002' },
+    });
+    expect(fresh.canConnect).toBe(true);
+    expect(
+      jest.mocked(source.compose).mock.calls.filter(([, options]) => options?.env),
+    ).toHaveLength(pairedCalls.length + 2);
+    expect(item(fresh, 'web').selectedMode).toBe('container-and-data');
+    expect(item(fresh, 'web').choices).toEqual(['container-and-data', 'without-data', 'data-only']);
+    expect(item(fresh, 'web').dataChoices).toEqual(['replace-home', 'start-empty']);
+    // The running home container has not been recreated; its captured User remains literal H.
+    expect(item(fresh, 'web').runtimeUser).toBe('1000:1000');
+  } finally {
+    await app.close();
+  }
+});
+
+it('freshly verifies a manual image-user hint edit despite reuse and a captured named User', async () => {
+  const file = await sourceUserFile('services:\n  web:\n    image: image\n', true);
+  const plan = await service.plan(projectId, { remoteId }, undefined, {
+    reuse: true,
+    estimate: false,
+  });
+  expect(item(plan, 'web').ownership).toMatchObject({
+    class: 'image-user-hint',
+    fixProposal: { file, oldUser: null, canApply: false },
+  });
+  await writeFile(
+    file,
+    'services:\n  web:\n    image: image\n    user: "${DEVCHAIN_UID:-1000}:${DEVCHAIN_GID:-1000}"\n',
+  );
+  const cached = await service.plan(projectId, { remoteId }, undefined, {
+    reuse: true,
+    estimate: false,
+  });
+  expect(item(cached, 'web').ownership?.class).toBe('image-user-hint');
+  const app = await dockerPlanApp();
+  try {
+    const response = await app.inject({
+      method: 'POST',
+      url: `/api/projects/${projectId}/docker/user-fix/verify`,
+      payload: { remoteId },
+    });
+    expect(response.statusCode).toBe(200);
+    const verified = response.json<DockerPlan>();
+    expect(item(verified, 'web').ownership).toMatchObject({
+      class: 'follows-user',
+      target: { user: '1001:1002' },
+    });
+    expect(item(verified, 'web').runtimeUser).toBe('node');
+    expect(verified.canConnect).toBe(true);
+  } finally {
+    await app.close();
+  }
+});
+
+it('guards the Apply route against stale scalars, unknown ids, mismatched scope, missing confirmation, and client paths', async () => {
+  const file = await sourceUserFile('services:\n  web:\n    user: "1000:1000"\n');
+  const plan = await run();
+  const proposal = item(plan, 'web').ownership!.fixProposal!;
+  const app = await dockerPlanApp();
+  try {
+    const payload = { remoteId, proposalId: proposal.id, confirmed: true };
+    for (const invalid of [
+      { ...payload, confirmed: false },
+      { ...payload, file: '/arbitrary/path' },
+      { ...payload, newUser: '0' },
+    ]) {
+      const response = await app.inject({
+        method: 'POST',
+        url: `/api/projects/${projectId}/docker/user-fix/apply`,
+        payload: invalid,
+      });
+      expect(response.statusCode).toBe(400);
+    }
+    for (const [project, body] of [
+      [projectId, { ...payload, proposalId: '33333333-3333-4333-8333-333333333333' }],
+      ['44444444-4444-4444-8444-444444444444', payload],
+      [projectId, { ...payload, remoteId: '44444444-4444-4444-8444-444444444444' }],
+    ] as const) {
+      const response = await app.inject({
+        method: 'POST',
+        url: `/api/projects/${project}/docker/user-fix/apply`,
+        payload: body,
+      });
+      expect(response.statusCode).toBe(409);
+      expect(response.json()).toMatchObject({ code: 'DOCKER_USER_FIX_STALE' });
+    }
+    const changed = 'services:\n  web:\n    user: "2000"\n';
+    await writeFile(file, changed);
+    const stale = await app.inject({
+      method: 'POST',
+      url: `/api/projects/${projectId}/docker/user-fix/apply`,
+      payload,
+    });
+    expect(stale.statusCode).toBe(409);
+    expect(await readFile(file, 'utf8')).toBe(changed);
+    expect(JSON.stringify(stale.json())).not.toContain('must-never-escape');
+  } finally {
+    await app.close();
+  }
+});
+
+it('refuses Apply for a server-issued image-hint proposal and for an expired proposal', async () => {
+  const file = await sourceUserFile('services:\n  web:\n    image: image\n', true);
+  const plan = await run();
+  const payload = {
+    remoteId,
+    proposalId: item(plan, 'web').ownership!.fixProposal!.id,
+    confirmed: true,
+  };
+  await expect(service.applyUserFix(projectId, payload)).rejects.toMatchObject({
+    code: 'DOCKER_USER_FIX_SHOW_ONLY',
+  });
+  jest.spyOn(Date, 'now').mockReturnValue(Date.now() + 600_001);
+  await expect(service.applyUserFix(projectId, payload)).rejects.toMatchObject({
+    code: 'DOCKER_USER_FIX_STALE',
+  });
+  expect(await readFile(file, 'utf8')).toBe('services:\n  web:\n    image: image\n');
+});
+
+it.each(['container-and-data', 'without-data'])(
+  'requires a fresh explicit acknowledgment for an unresolved %s selection',
+  async (mode) => {
+    await sourceUserFile('services:\n  web:\n    user: "1000:1000"\n');
+    const unresolved = await run({ items: [{ id: 'web', mode }] });
+    expect(unresolved.canConnect).toBe(false);
+    expect(item(unresolved, 'web').blockers).toContainEqual(
+      expect.objectContaining({ code: 'user-fix-not-accepted' }),
+    );
+    const accepted = await run({ items: [{ id: 'web', mode, moveWithoutUserFix: true }] });
+    expect(accepted.canConnect).toBe(true);
+    expect(item(accepted, 'web').ownership?.class).toBe('needs-user-fix');
+    expect(item(accepted, 'web').warnings).toContainEqual(
+      expect.objectContaining({ code: 'user-fix-skipped' }),
+    );
+    choices.recordPlan(projectId, remoteId, accepted.items);
+    expect(JSON.stringify(choices.get(projectId))).not.toContain('moveWithoutUserFix');
+    expect((await run()).canConnect).toBe(false);
+    expect((await run({ items: [] })).canConnect).toBe(true);
+  },
+);
+
+it('requires a fresh plan when the proposed container identity or Compose file relationship changes', async () => {
+  const file = await sourceUserFile('services:\n  web:\n    user: "1000:1000"\n');
+  const plan = await run();
+  const payload = {
+    remoteId,
+    proposalId: item(plan, 'web').ownership!.fixProposal!.id,
+    confirmed: true,
+  };
+  containers[0].Id = 'new-web-id';
+  await expect(service.applyUserFix(projectId, payload)).rejects.toMatchObject({
+    code: 'DOCKER_USER_FIX_STALE',
+  });
+  containers[0].Id = 'web';
+  const other = join(projectRoot, 'other.yaml');
+  await writeFile(other, await readFile(file, 'utf8'));
+  (containers[0].Config as { Labels: Record<string, string> }).Labels[
+    'com.docker.compose.project.config_files'
+  ] = other;
+  await expect(service.applyUserFix(projectId, payload)).rejects.toMatchObject({
+    code: 'DOCKER_USER_FIX_STALE',
+  });
+  expect(await readFile(file, 'utf8')).not.toContain('DEVCHAIN_UID');
+});
+
+it('does not let acknowledgment bypass a deselected literal-H consumer of follows-user data', async () => {
+  await sourceUserFile('services:\n  web:\n    user: "1000:1000"\n');
+  containers.push(
+    container(
+      'follower',
+      [
+        bind(projectRoot, '/code'),
+        { Type: 'volume', Name: 'named', Source: '/docker/named', Destination: '/data', RW: true },
+      ],
+      {},
+      { User: '1000', Labels: { 'dev.devchain.project': projectId } },
+    ),
+  );
+  imageUser = '';
+  const plan = await run({
+    items: [{ id: 'follower', mode: 'without-data', moveWithoutUserFix: true }],
+  });
+  expect(item(plan, 'web').selectedMode).toBeNull();
+  expect(item(plan, 'web').ownership?.fixProposal?.canApply).toBe(true);
+  expect(plan.canConnect).toBe(false);
+  expect(item(plan, 'follower').blockers).toContainEqual(
+    expect.objectContaining({
+      code: 'ownership-consumer-conflict',
+      message: expect.stringContaining('Move without the fix cannot resolve'),
+    }),
+  );
+  const both = await run({
+    items: [
+      { id: 'follower', mode: 'without-data' },
+      { id: 'web', mode: 'without-data', moveWithoutUserFix: true },
+    ],
+  });
+  expect(both.canConnect).toBe(false);
+  await service.applyUserFix(projectId, {
+    remoteId,
+    proposalId: item(plan, 'web').ownership!.fixProposal!.id,
+    confirmed: true,
+  });
+  const verified = await service.verifyUserFix(projectId, { remoteId });
+  expect(verified.canConnect).toBe(true);
+});
+
+it.each([
+  {
+    name: 'uid-only',
+    oldUser: '1000',
+    uid: 1001,
+    gid: 1000,
+    newUser: '${DEVCHAIN_UID:-1000}',
+    targetUser: '1001',
+  },
+  {
+    name: 'gid-only mismatch',
+    oldUser: '1000:1000',
+    uid: 1000,
+    gid: 1001,
+    newUser: '${DEVCHAIN_UID:-1000}:${DEVCHAIN_GID:-1000}',
+    targetUser: '1000:1001',
+  },
+])(
+  'applies and verifies the $name fix with the resolved VM target',
+  async ({ oldUser, uid, gid, newUser, targetUser }) => {
+    await sourceUserFile(`services:\n  web:\n    user: "${oldUser}"\n`);
+    runtime.uid = uid;
+    runtime.gid = gid;
+    const plan = await run();
+    const proposal = item(plan, 'web').ownership!.fixProposal!;
+    expect(proposal.newUser).toBe(newUser);
+    await service.applyUserFix(projectId, { remoteId, proposalId: proposal.id, confirmed: true });
+    const verified = await service.verifyUserFix(projectId, { remoteId });
+    expect(item(verified, 'web').ownership).toMatchObject({
+      class: 'follows-user',
+      target: { user: targetUser },
+    });
+    expect(verified.canConnect).toBe(true);
+  },
+);
+
+it('proposes and applies an unstarted Compose service fix and verifies its service target', async () => {
+  runtime.uid = 1001;
+  runtime.gid = 1002;
+  containers = [];
+  const file = join(projectRoot, 'compose.yaml');
+  await writeFile(file, 'services:\n  web:\n    image: image\n    user: "1000:1000" # keep\n');
+  jest.mocked(source.compose).mockImplementation(async (_directory, options) => {
+    const config = parse(await readFile(file, 'utf8')) as { services: { web: { user: string } } };
+    const user = config.services.web.user
+      .replace(/\$\{DEVCHAIN_UID:-\d+\}/g, options?.env?.DEVCHAIN_UID ?? '1000')
+      .replace(/\$\{DEVCHAIN_GID:-\d+\}/g, options?.env?.DEVCHAIN_GID ?? '1000');
+    return {
+      name: 'app',
+      services: {
+        web: {
+          image: 'image',
+          user,
+          volumes: [
+            { type: 'bind', source: projectRoot, target: '/code' },
+            { type: 'volume', source: 'data', target: '/data' },
+          ],
+        },
+      },
+      volumes: { data: { name: 'named' } },
+    };
+  });
+  const plan = await run();
+  const row = item(plan, 'compose:app');
+  expect(row.ownership?.class).toBe('needs-user-fix');
+  expect(plan.canConnect).toBe(false);
+  const proposal = row.serviceOwnership![0].ownership.fixProposal!;
+  expect(proposal).toMatchObject({
+    service: 'web',
+    container: null,
+    file,
+    line: 4,
+    canApply: true,
+  });
+  await service.applyUserFix(projectId, { remoteId, proposalId: proposal.id, confirmed: true });
+  expect(await readFile(file, 'utf8')).toContain(
+    'user: "${DEVCHAIN_UID:-1000}:${DEVCHAIN_GID:-1000}" # keep',
+  );
+  const verified = await service.verifyUserFix(projectId, { remoteId });
+  expect(item(verified, 'compose:app').ownership?.class).toBe('follows-user');
+  expect(item(verified, 'compose:app').serviceOwnership![0].ownership).toMatchObject({
+    class: 'follows-user',
+    target: { user: '1001:1002' },
+  });
+});
+
+it('Verify after a literal fix offers mapped replace, keep-vm or start-empty while retaining the H counterpart', async () => {
+  await sourceUserFile('services:\n  web:\n    user: "1000:1000"\n');
+  const baseline = '2026-09-21T00:00:00.000Z';
+  const before = '2026-09-20T00:00:00.000Z';
+  Object.assign(containers[0], { Created: before, State: { StartedAt: before, Running: false } });
+  const retained = {
+    class: 'needs-user-fix' as const,
+    home: { uid: 1000, gid: 1000 },
+    vm: { uid: 1001, gid: 1002 },
+    targetUser: '1000:1000',
+  };
+  target.volumes = [
+    { name: 'named', driver: 'local', labels: { 'dev.devchain.project': projectId } },
+  ];
+  target.containers = [
+    {
+      id: 'vm-web',
+      name: 'web',
+      user: '1000:1000',
+      labels: { 'dev.devchain.project': projectId },
+      mounts: [{ type: 'volume', name: 'named', destination: '/data' }],
+      metadata: { created: before, startedAt: before, running: false },
+    },
+  ];
+  inventory = {
+    items: [
+      {
+        name: 'web',
+        imageId: 'sha256:image',
+        volumes: [{ name: 'named', sizeBytes: 9 }],
+        bindPaths: [],
+        sizeBytes: 9,
+        ownership: retained,
+      },
+    ],
+    importedAt: baseline,
+    groups: [
+      {
+        volumes: ['named'],
+        bindPaths: [],
+        lastSyncedAt: baseline,
+        lastSyncDirection: 'to-vm',
+        ownership: retained,
+      },
+    ],
+  };
+  const plan = await run();
+  await service.applyUserFix(projectId, {
+    remoteId,
+    proposalId: item(plan, 'web').ownership!.fixProposal!.id,
+    confirmed: true,
+  });
+  const verified = await service.verifyUserFix(projectId, { remoteId });
+  const row = item(verified, 'web');
+  expect(verified.canConnect).toBe(true);
+  expect(row).toMatchObject({
+    ownership: { class: 'follows-user', target: { user: '1001:1002' } },
+    targetAction: 'leave-as-is',
+    vmUser: '1000:1000',
+    retainedOwnership: retained,
+    choices: ['container-and-data', 'data-only'],
+    dataChoices: ['keep-vm', 'replace-home', 'start-empty'],
+    dataChoice: 'keep-vm',
+    dataAction: 'keep-vm',
+  });
+  expect(row.notes).toContain('runs as 1000:1000 until its data is reset or copied again');
 });

@@ -15,7 +15,7 @@ import { requestAbortSignal } from '../../../common/http/request-abort-signal';
 import { DockerCopyBack } from './docker-copy-back';
 import type { DockerSyncState } from './docker-copy-back.dto';
 import { DockerPlanService } from './docker-plan.service';
-import type { DockerPlan, DockerPresence } from './docker-plan.dto';
+import type { DockerPlan, DockerPresence, DockerUserFixApplyResult } from './docker-plan.dto';
 
 @ApiTags('docker-plan')
 @Controller('api/projects/:id/docker')
@@ -56,6 +56,39 @@ export class DockerPlanController {
   ): Promise<DockerPlan> {
     // An abandoned plan (the dialog re-planned or closed) stops scanning.
     return this.plans.plan(projectId, body, requestAbortSignal(req, reply), { reuse: true });
+  }
+
+  @Post('user-fix/apply')
+  @HttpCode(200)
+  @ApiOperation({ summary: 'Apply a confirmed Compose user scalar proposal from the plan' })
+  @ApiResponse({ status: 200, description: 'The scalar was edited; Verify returns a fresh plan' })
+  @ApiResponse({
+    status: 409,
+    description: 'The proposal or expected scalar is stale; get a fresh plan',
+  })
+  @ApiResponse({ status: 422, description: 'The proposal requires a manual edit' })
+  applyUserFix(
+    @Param('id', ParseUUIDPipe) projectId: string,
+    @Body() body: unknown,
+    @Req() req: FastifyRequest,
+    @Res({ passthrough: true }) reply: FastifyReply,
+  ): Promise<DockerUserFixApplyResult> {
+    return this.plans.applyUserFix(projectId, body, requestAbortSignal(req, reply));
+  }
+
+  @Post('user-fix/verify')
+  @HttpCode(200)
+  @ApiOperation({
+    summary: 'Freshly resolve Compose with home and VM ids and return the Docker plan',
+  })
+  @ApiResponse({ status: 200, description: 'Fresh plan, including the resolved VM target user' })
+  verifyUserFix(
+    @Param('id', ParseUUIDPipe) projectId: string,
+    @Body() body: unknown,
+    @Req() req: FastifyRequest,
+    @Res({ passthrough: true }) reply: FastifyReply,
+  ): Promise<DockerPlan> {
+    return this.plans.verifyUserFix(projectId, body, requestAbortSignal(req, reply));
   }
 
   @Post('sync-state')

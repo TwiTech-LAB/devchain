@@ -1,12 +1,14 @@
 import { useEffect, useRef, useState } from 'react';
 import type {
   DockerDataChoice,
+  DockerDataGroup,
   DockerDataState,
   DockerPlan,
   DockerPlanItem,
   DockerPlanMount,
   DockerPlanSize,
   DockerSelectionItem,
+  DockerUserFixProposal,
   DockerSelectionMode,
 } from '@/modules/remotes/docker/docker-plan.dto';
 import { ChevronDown } from 'lucide-react';
@@ -31,7 +33,23 @@ import { useRemoteVmApi } from './lib/remote-vm-api-context';
 import { cn } from '@/ui/lib/utils';
 import type { DockerPresenceState } from './docker-presence';
 import { formatBytes, formatDuration } from './file-sync-display';
-import { userIds } from '@/modules/remotes/vm-user-identity';
+import { ConfirmDialog } from '@/ui/components/shared/ConfirmDialog';
+import {
+  DockerOwnershipDetails,
+  DockerUserFix,
+  ownershipDecisions,
+  proposalLocation,
+  proposalService,
+} from './DockerOwnershipDetails';
+import { ConnectDataOwners } from './DockerDataOwners';
+import {
+  dataChoicesOf,
+  dockerSelection,
+  emptyDockerPicks,
+  needsUserFix,
+  reconcileDockerPicks,
+  type DockerPicks,
+} from './lib/docker-plan-selection';
 
 /** What the Connect dialog needs to gate its button and build the request. */
 export interface DockerSectionState {
@@ -57,6 +75,19 @@ function modeLabel(item: DockerPlanItem, mode: DockerSelectionMode): string {
   return MODE_LABELS[mode];
 }
 
+/** What the chosen data action does with the VM copy of the item's data group. */
+function dataActionNote(item: DockerPlanItem, dataAction: DockerDataChoice | undefined): string {
+  if (dataAction === 'keep-vm') {
+    return 'Keeps the VM data with its recorded owners; no data owners change.';
+  }
+  if (dataAction === 'start-empty') {
+    return 'Starts with empty data for this group; its existing project-owned data is deleted.';
+  }
+  if (item.dataState !== 'no-record')
+    return "Replaces the VM data in this group with this PC's data.";
+  return "Copies this PC's data to the VM.";
+}
+
 const MOUNT_KIND_LABELS: Record<DockerPlanMount['kind'], string> = {
   'named-volume': 'named volume',
   'anonymous-volume': 'anonymous volume',
@@ -74,6 +105,15 @@ const TARGET_ACTION_LABELS: Record<DockerPlanItem['targetAction'], string> = {
   conflict: 'Conflicts with an item on the VM',
   'data-only': 'Data only; no container is created',
 };
+
+const DATA_CHOICE_LABELS: Record<DockerDataChoice, string> = {
+  'keep-vm': 'Keep VM copy',
+  'replace-home': "Replace with this PC's data",
+  'start-empty': 'Start with empty data',
+};
+
+/** The blockers that the privileged and user-fix checkboxes stand for. */
+const ACCEPTANCE_BLOCKER_CODES = ['privileged-not-accepted', 'user-fix-not-accepted'];
 
 const DATA_STATE_LABELS: Record<DockerDataState, string> = {
   'in-sync': 'In sync',
@@ -96,6 +136,14 @@ function shortSizeLabel(size: DockerPlanSize): string {
   return size.bytes > 0 ? `at least ${formatBytes(size.bytes)}` : 'size unknown';
 }
 
+/** The mode, a kept VM copy or an emptied group leaves this PC's data behind. */
+function movesNoHomeData(
+  mode: DockerSelectionMode | null | undefined,
+  dataAction: DockerDataChoice | undefined,
+): boolean {
+  return mode === 'without-data' || dataAction === 'keep-vm' || dataAction === 'start-empty';
+}
+
 /**
  * What the item moves in this mode: its images, plus its data unless the mode
  * or a kept VM copy leaves the data behind.
@@ -108,7 +156,7 @@ function itemSize(item: DockerPlanItem, mode: DockerSelectionMode): DockerPlanSi
   ];
   const parts = [
     ...(mode === 'data-only' ? [] : images),
-    ...(mode === 'without-data' || item.dataAction === 'keep-vm'
+    ...(movesNoHomeData(mode, item.dataAction)
       ? []
       : [item.dataSize ?? { bytes: 0, unknown: true }]),
   ];
@@ -123,8 +171,7 @@ function projectDataFolders(
   item: DockerPlanItem,
   mode: DockerSelectionMode | null | undefined,
 ): DockerPlanMount[] {
-  if (!mode || mode === 'without-data' || item.dataAction === 'keep-vm' || item.temporary)
-    return [];
+  if (!mode || movesNoHomeData(mode, item.dataAction) || item.temporary) return [];
   return item.mounts.filter((mount) => mount.kind === 'project-bind');
 }
 
@@ -159,27 +206,8 @@ export function formatCopyRange(minSeconds: number, maxSeconds: number): string 
   return `${formatDuration(minSeconds)}–${formatDuration(maxSeconds)} (approximate)`;
 }
 
-/** The included items with their mode: the chosen one, else the first choice. */
-function selectionOf(
-  items: readonly DockerPlanItem[],
-  include: Record<string, boolean>,
-  chosen: Record<string, DockerSelectionMode>,
-  data: Record<string, DockerDataChoice>,
-  acceptance: Record<string, boolean>,
-): DockerSelectionItem[] {
-  return items.flatMap((item) => {
-    const mode = chosen[item.id] ?? item.choices[0];
-    return include[item.id] && mode !== undefined
-      ? [
-          {
-            id: item.id,
-            mode,
-            ...(data[item.id] && { dataChoice: data[item.id] }),
-            ...(acceptance[item.id] && { acceptPrivileged: true as const }),
-          },
-        ]
-      : [];
-  });
+function failureMessage(cause: unknown): string {
+  return cause instanceof Error ? cause.message : String(cause);
 }
 
 /** A Connect without Docker work: nothing read, nothing selected. */
@@ -193,7 +221,6 @@ export const NO_DOCKER_STATE: DockerSectionState = {
 interface DockerSectionProps {
   presence: DockerPresenceState;
   initialIncludeDocker?: boolean;
-  managedVm?: boolean;
   projectId: string;
   remoteId: string;
   disabled: boolean;
@@ -248,25 +275,19 @@ export function ConnectDockerSection(props: DockerSectionProps) {
  * act on the previous answer. A plan that cannot be read never blocks a
  * Connect without Docker items — the section degrades to a note.
  */
-function DockerPlanSection({
-  projectId,
-  remoteId,
-  disabled,
-  onStateChange,
-  managedVm = false,
-}: DockerSectionProps) {
+function DockerPlanSection({ projectId, remoteId, disabled, onStateChange }: DockerSectionProps) {
   const api = useRemoteVmApi();
   const [plan, setPlan] = useState<DockerPlan | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [included, setIncluded] = useState<Record<string, boolean>>({});
-  const [modes, setModes] = useState<Record<string, DockerSelectionMode>>({});
-  const [dataChoices, setDataChoices] = useState<Record<string, DockerDataChoice>>({});
-  const [privilegedAcceptance, setPrivilegedAcceptance] = useState<Record<string, boolean>>({});
+  const [picks, setPicks] = useState<DockerPicks>(emptyDockerPicks);
+  const { included, modes, dataChoices, privilegedAcceptance, userFixAcceptance } = picks;
   const [pending, setPending] = useState(true);
+  const [fixing, setFixing] = useState(false);
+  const [applyProposal, setApplyProposal] = useState<DockerUserFixProposal | null>(null);
   const plannedRef = useRef<string | null>(null);
   const [dropped, setDropped] = useState<string[]>([]);
-  const latest = useRef({ plan, included, modes, dataChoices, privilegedAcceptance });
-  latest.current = { plan, included, modes, dataChoices, privilegedAcceptance };
+  const latest = useRef({ plan, picks });
+  latest.current = { plan, picks };
   /**
    * The newest plan request. A newer request, a remote change or an unmount
    * aborts it, so only the newest answer may change the state.
@@ -287,54 +308,16 @@ function DockerPlanSection({
       try {
         const body = await api.readDockerPlan(projectId, { remoteId }, signal);
         if (signal.aborted) return;
-        const previous = latest.current;
-        const nextIncluded: Record<string, boolean> = {};
-        const nextModes: Record<string, DockerSelectionMode> = {};
-        const nextData: Record<string, DockerDataChoice> = {};
-        const nextAcceptance: Record<string, boolean> = {};
-        const itemKey = (item: DockerPlanItem) =>
-          JSON.stringify([item.kind, item.composeProject, item.name]);
-        const oldItems = new Map((previous.plan?.items ?? []).map((item) => [itemKey(item), item]));
-        // A known item keeps its pick, a new item after the first plan starts unpicked,
-        // and the first plan uses the server's default.
-        const wasPicked = (item: DockerPlanItem, old: DockerPlanItem | undefined): boolean => {
-          if (old) return previous.included[old.id] === true;
-          if (previous.plan) return false;
-          return item.defaultSelected;
-        };
-        for (const item of body.items) {
-          const old = oldItems.get(itemKey(item));
-          nextIncluded[item.id] = item.choices.length > 0 && wasPicked(item, old);
-          const chosen = old ? previous.modes[old.id] : item.selectedMode;
-          if (chosen && item.choices.includes(chosen)) nextModes[item.id] = chosen;
-          if (old && previous.dataChoices[old.id]) nextData[item.id] = previous.dataChoices[old.id];
-          if (old && previous.privilegedAcceptance[old.id]) nextAcceptance[item.id] = true;
-        }
-        const currentKeys = new Set(body.items.map(itemKey));
-        setDropped(
-          (previous.plan?.items ?? [])
-            .filter((item) => previous.included[item.id] && !currentKeys.has(itemKey(item)))
-            .map((item) => item.name),
-        );
-        setIncluded(nextIncluded);
-        setModes(nextModes);
-        setDataChoices(nextData);
-        setPrivilegedAcceptance(nextAcceptance);
+        const reconciled = reconcileDockerPicks(body, latest.current);
+        setDropped(reconciled.dropped);
+        setPicks(reconciled.picks);
         plannedRef.current = null;
         setPlan(body);
-        if (previous.plan && body.availability.available) {
-          const items = selectionOf(body.items, nextIncluded, nextModes, nextData, nextAcceptance);
-          const refreshed = await api.readDockerPlan(projectId, { remoteId, items }, signal);
-          if (signal.aborted) return;
-          setPlan(refreshed);
-          plannedRef.current = JSON.stringify({ remoteId, items });
-        }
       } catch (cause) {
         if (signal.aborted) return;
-        setError(cause instanceof Error ? cause.message : String(cause));
+        setError(failureMessage(cause));
         setPlan(null);
-        setIncluded({});
-        setModes({});
+        setPicks(emptyDockerPicks());
       } finally {
         if (!signal.aborted) setPending(false);
       }
@@ -343,67 +326,130 @@ function DockerPlanSection({
     return () => requestRef.current?.abort();
   }, [api, projectId, remoteId]);
 
-  const requestPlan = async (items: DockerSelectionItem[]) => {
+  const refreshSelection = async (
+    body: DockerPlan,
+    signal: AbortSignal,
+    requested?: DockerSelectionItem[],
+  ) => {
+    let reconciled = reconcileDockerPicks(body, latest.current);
+    let items = dockerSelection(body.items, reconciled.picks);
+    const originalDropped = reconciled.dropped;
+    if (body.availability.available && JSON.stringify(items) !== JSON.stringify(requested)) {
+      const refreshed = await api.readDockerPlan(projectId, { remoteId, items }, signal);
+      if (signal.aborted) return;
+      reconciled = reconcileDockerPicks(refreshed, { plan: body, picks: reconciled.picks });
+      const currentItems = dockerSelection(refreshed.items, reconciled.picks);
+      if (JSON.stringify(currentItems) !== JSON.stringify(items))
+        throw new Error('Docker choices changed again. Verify to read a fresh plan.');
+      body = refreshed;
+      items = currentItems;
+    }
+    if (signal.aborted) return;
+    setDropped([...new Set([...originalDropped, ...reconciled.dropped])]);
+    setPicks(reconciled.picks);
+    setPlan(body);
+    plannedRef.current = JSON.stringify({ remoteId, items });
+  };
+
+  /** Starts a plan request: the newest one wins, and what the last one left is cleared. */
+  const beginRequest = (): AbortSignal => {
+    const signal = nextRequest();
+    plannedRef.current = null;
+    setApplyProposal(null);
+    setError(null);
+    setPending(true);
+    return signal;
+  };
+
+  const requestPlan = async (next: DockerPicks) => {
+    const items = dockerSelection(plan?.items ?? [], next);
     const payload = JSON.stringify({ remoteId, items });
     if (plannedRef.current === payload) return;
-    plannedRef.current = payload;
-    setError(null);
-    const signal = nextRequest();
-    setPending(true);
+    setPicks(next);
+    latest.current = { plan, picks: next };
+    const signal = beginRequest();
     try {
       const body = await api.readDockerPlan(projectId, { remoteId, items }, signal);
       if (signal.aborted) return;
-      setPlan(body);
+      await refreshSelection(body, signal, items);
     } catch (cause) {
       if (signal.aborted) return;
-      setError(cause instanceof Error ? cause.message : String(cause));
+      setError(failureMessage(cause));
     } finally {
       if (!signal.aborted) setPending(false);
     }
   };
 
-  const selectionFor = (
-    include: Record<string, boolean>,
-    chosen: Record<string, DockerSelectionMode>,
-    data: Record<string, DockerDataChoice> = dataChoices,
-    acceptance: Record<string, boolean> = privilegedAcceptance,
-  ): DockerSelectionItem[] => selectionOf(plan?.items ?? [], include, chosen, data, acceptance);
-
-  const selection = selectionFor(included, modes);
+  const verifyFix = async (proposal?: DockerUserFixProposal) => {
+    const signal = beginRequest();
+    setFixing(true);
+    try {
+      if (proposal) await api.applyDockerUserFix(projectId, remoteId, proposal.id, signal);
+      if (signal.aborted) return;
+      const fresh = await api.verifyDockerUserFix(projectId, remoteId, signal);
+      if (signal.aborted) return;
+      await refreshSelection(fresh, signal);
+    } catch (cause) {
+      if (signal.aborted) return;
+      setError(failureMessage(cause));
+    } finally {
+      if (!signal.aborted) {
+        setPending(false);
+        setFixing(false);
+      }
+    }
+  };
+  const verify = () => {
+    void verifyFix();
+  };
+  const apply = () => {
+    if (applyProposal) void verifyFix(applyProposal);
+  };
+  const closeApply = (open: boolean) => {
+    if (!open) setApplyProposal(null);
+  };
+  const selection = dockerSelection(plan?.items ?? [], picks);
+  const unresolvedFix = selection.some((selected) =>
+    plan?.items.some(
+      (item) => item.id === selected.id && needsUserFix(item) && !selected.moveWithoutUserFix,
+    ),
+  );
 
   useEffect(() => {
     onStateChange({
       ready: plan !== null && plan.availability.available,
       items: selection,
-      canConnect: !error && (plan?.canConnect ?? false),
+      canConnect: !error && !unresolvedFix && (plan?.canConnect ?? false),
       pending,
     });
-  }, [plan, included, modes, dataChoices, privilegedAcceptance, pending, error, onStateChange]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- selection is derived from the listed inputs; its new array identity must not retrigger parent updates.
+  }, [plan, picks, pending, error, onStateChange]);
 
   const toggle = (item: DockerPlanItem, checked: boolean) => {
-    setIncluded((current) => ({ ...current, [item.id]: checked }));
-    void requestPlan(selectionFor({ ...included, [item.id]: checked }, modes));
+    void requestPlan({ ...picks, included: { ...included, [item.id]: checked } });
   };
-
   const changeMode = (item: DockerPlanItem, mode: DockerSelectionMode) => {
-    setModes((current) => ({ ...current, [item.id]: mode }));
-    void requestPlan(selectionFor(included, { ...modes, [item.id]: mode }));
+    void requestPlan({ ...picks, modes: { ...modes, [item.id]: mode } });
   };
-
   const changeDataChoice = (item: DockerPlanItem, choice: DockerDataChoice) => {
     const next = { ...dataChoices };
     for (const id of item.dataGroup ?? [item.id]) next[id] = choice;
-    setDataChoices(next);
-    void requestPlan(selectionFor(included, modes, next));
+    void requestPlan({ ...picks, dataChoices: next });
   };
-
   const changePrivilegedAcceptance = (item: DockerPlanItem, accepted: boolean) => {
-    const next = { ...privilegedAcceptance, [item.id]: accepted };
-    setPrivilegedAcceptance(next);
-    void requestPlan(selectionFor(included, modes, dataChoices, next));
+    void requestPlan({
+      ...picks,
+      privilegedAcceptance: { ...privilegedAcceptance, [item.id]: accepted },
+    });
+  };
+  const changeUserFixAcceptance = (item: DockerPlanItem, accepted: boolean) => {
+    void requestPlan({
+      ...picks,
+      userFixAcceptance: { ...userFixAcceptance, [item.id]: accepted },
+    });
   };
 
-  if (error) {
+  if (error && !plan) {
     return (
       <p role="note" className="text-sm text-muted-foreground">
         Docker import is unavailable: {error}
@@ -417,40 +463,17 @@ function DockerPlanSection({
   }
   const { availability } = plan;
   if (!availability.available) {
-    if (availability.reason?.code === 'vm-user-mismatch') {
-      const mismatch = availability.userMismatch;
-      const conflict = mismatch?.uidConflict;
-      return (
-        <div role="note" aria-label="Docker availability" className="space-y-2 text-sm">
-          <p className="font-medium">Automatic Docker move is off for this VM.</p>
-          <p>
-            Connect, file sync and agents work as usual. Only the automatic move of containers and
-            their data needs the same user ids on this PC and the VM: here{' '}
-            {userIds(mismatch?.homeUid ?? null, mismatch?.homeGid ?? null)} and{' '}
-            {userIds(mismatch?.vmUid ?? null, mismatch?.vmGid ?? null)}.
-            {conflict?.holder &&
-              ` (uid ${conflict.requestedUid} belongs to ${conflict.holder} on the VM)`}
-          </p>
-          {!managedVm && conflict?.holder && (
-            <p>
-              To turn it on, set up the VM from another account and remove {conflict.holder}, or use
-              a VM where uid {conflict.requestedUid} is free.
-            </p>
-          )}
-          <p>
-            You can still move what you need yourself, for example with <code>docker save</code> and{' '}
-            <code>docker load</code> for images, and a volume export and import for data.
-          </p>
-        </div>
-      );
-    }
     const installHint =
       availability.reason?.code === 'remote-no-docker'
         ? ' The VM needs Docker; use Update VM with Install Docker before connecting with containers.'
         : '';
     return (
       <div role="note" aria-label="Docker availability" className="text-sm">
-        <p>{availability.reason?.message ?? 'Docker is not usable for this connect.'}</p>
+        <p>
+          {availability.reason?.code === 'vm-user-mismatch'
+            ? 'Docker cannot determine the user ids on this PC and the VM. Refresh the VM information and try again.'
+            : (availability.reason?.message ?? 'Docker is not usable for this connect.')}
+        </p>
         {installHint && <p className="text-muted-foreground">{installHint}</p>}
       </div>
     );
@@ -461,6 +484,21 @@ function DockerPlanSection({
   // Only containers linked to the project are offered. The plan keeps the others,
   // so "Connect also stops" can still name one that shares data with a pick.
   const linked = plan.items.filter((item) => item.linkedReasons.length > 0);
+  const dataGroups = plan.dataGroups ?? [];
+  const visibleProposals = new Set(
+    linked
+      .flatMap(ownershipDecisions)
+      .flatMap(({ ownership }) => (ownership.fixProposal ? [ownership.fixProposal.id] : [])),
+  );
+  const sharedFixes = new Map(
+    dataGroups
+      .flatMap((group) => group.ownershipConsumers ?? [])
+      .flatMap((consumer) =>
+        consumer.ownership.fixProposal && !visibleProposals.has(consumer.ownership.fixProposal.id)
+          ? [[consumer.ownership.fixProposal.id, consumer.ownership] as const]
+          : [],
+      ),
+  );
   // From the server's selection, like the total that it explains.
   const totalProjectFiles = projectFilesNote(
     plan.items.flatMap((item) => projectDataFolders(item, item.selectedMode)),
@@ -472,6 +510,39 @@ function DockerPlanSection({
         <h3>Docker containers</h3>
         {pending && <BusyStatus className="text-muted-foreground">Updating the plan…</BusyStatus>}
       </div>
+      {error && (
+        <div role="alert" aria-label="Docker user fix" className="space-y-1 text-destructive">
+          <p>{error}</p>
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            disabled={disabled || pending}
+            onClick={verify}
+          >
+            Refresh Docker plan
+          </Button>
+        </div>
+      )}
+      <ConfirmDialog
+        open={applyProposal !== null}
+        onOpenChange={closeApply}
+        onConfirm={apply}
+        title="Apply Compose user fix?"
+        confirmText="Apply fix"
+        confirmDisabled={disabled || pending}
+        description={
+          applyProposal && (
+            <span className="block space-y-2">
+              <span className="block">
+                {proposalService(applyProposal)}: {proposalLocation(applyProposal)}
+              </span>
+              <code className="block whitespace-pre-wrap rounded bg-muted p-2">{`- user: ${applyProposal.oldUser}\n+ user: ${applyProposal.newUser}`}</code>
+              <span className="block">{applyProposal.hint}</span>
+            </span>
+          )
+        }
+      />
       {dropped.length > 0 && (
         <p role="note">
           No longer available; removed from your Docker choices: {dropped.join(', ')}.
@@ -502,12 +573,18 @@ function DockerPlanSection({
             <DockerItemRow
               key={item.id}
               item={item}
+              dataGroups={dataGroups}
               included={included[item.id] === true}
               mode={modes[item.id] ?? item.choices[0]}
               dataChoice={dataChoices[item.id]}
               acceptPrivileged={privilegedAcceptance[item.id] === true}
               alsoStops={included[item.id] === true ? item.alsoStops.map(nameOf) : []}
-              disabled={disabled}
+              disabled={disabled || fixing}
+              fixDisabled={disabled || pending}
+              moveWithoutUserFix={userFixAcceptance[item.id] === true}
+              onUserFixAcceptanceChange={(accepted) => changeUserFixAcceptance(item, accepted)}
+              onApplyUserFix={setApplyProposal}
+              onVerifyUserFix={verify}
               onToggle={(checked) => toggle(item, checked)}
               onModeChange={(mode) => changeMode(item, mode)}
               onDataChoiceChange={(choice) => changeDataChoice(item, choice)}
@@ -518,6 +595,34 @@ function DockerPlanSection({
           ))}
         </ul>
       </div>
+      {dataGroups
+        .filter((group) => group.ownership?.refusalReasons?.length)
+        .map((group) => (
+          <div
+            key={JSON.stringify([group.volumes, group.bindPaths])}
+            role="note"
+            aria-label="Shared Docker ownership"
+            className="space-y-1 text-destructive"
+          >
+            <p>Shared data: {[...group.volumes, ...group.bindPaths].join(', ')}.</p>
+            {group.ownership?.refusalReasons?.map((reason) => (
+              <p key={`${reason.code}:${reason.message}`}>{reason.message}</p>
+            ))}
+          </div>
+        ))}
+      {[...sharedFixes].map(
+        ([id, ownership]) =>
+          ownership.fixProposal && (
+            <DockerUserFix
+              key={id}
+              proposal={ownership.fixProposal}
+              imageHint={ownership.class === 'image-user-hint'}
+              disabled={disabled || pending}
+              onApply={setApplyProposal}
+              onVerify={verify}
+            />
+          ),
+      )}
       {plan.filesystems.some((fs) => fs.status !== 'fits') && (
         <div aria-label="Docker space" className="space-y-1">
           {plan.filesystems
@@ -577,25 +682,37 @@ const REQUIRED_CLASS =
  */
 function DockerItemRow({
   item,
+  dataGroups,
   included,
   mode,
   dataChoice,
   acceptPrivileged,
+  moveWithoutUserFix,
+  onUserFixAcceptanceChange,
+  onApplyUserFix,
+  onVerifyUserFix,
   alsoStops,
   disabled,
+  fixDisabled,
   onToggle,
   onModeChange,
   onDataChoiceChange,
   onPrivilegedAcceptanceChange,
 }: {
   item: DockerPlanItem;
+  dataGroups: DockerDataGroup[];
   included: boolean;
   /** The chosen mode, else the first choice; none when the item has no choices. */
   mode: DockerSelectionMode | undefined;
   dataChoice: DockerDataChoice | undefined;
   acceptPrivileged: boolean;
+  moveWithoutUserFix: boolean;
+  onUserFixAcceptanceChange: (accepted: boolean) => void;
+  onApplyUserFix: (proposal: DockerUserFixProposal) => void;
+  onVerifyUserFix: () => void;
   alsoStops: string[];
   disabled: boolean;
+  fixDisabled: boolean;
   onToggle: (checked: boolean) => void;
   onModeChange: (mode: DockerSelectionMode) => void;
   onDataChoiceChange: (choice: DockerDataChoice) => void;
@@ -608,7 +725,11 @@ function DockerItemRow({
   const privilegedContainer =
     item.privileged && (mode === 'container-and-data' || mode === 'without-data');
   const acceptanceMissing = included && privilegedContainer && !acceptPrivileged;
-  const blockers = item.blockers.filter((blocker) => blocker.code !== 'privileged-not-accepted');
+  const fixMissing = included && needsUserFix(item) && !moveWithoutUserFix;
+  const blockers = item.blockers.filter(
+    (blocker) => !ACCEPTANCE_BLOCKER_CODES.includes(blocker.code),
+  );
+  const dataAction = dataChoice ?? item.dataAction;
   // Where the VM holds the item's data, Keep VM copy or Replace is the choice; the
   // server's default for the data state is preselected.
   const vmData = item.dataState !== 'no-record' ? item.dataState : undefined;
@@ -618,7 +739,7 @@ function DockerItemRow({
       <li
         className={cn(
           'space-y-2 rounded-md border p-2',
-          (choiceMissing || acceptanceMissing) && 'border-status-warn',
+          (choiceMissing || acceptanceMissing || fixMissing) && 'border-status-warn',
         )}
       >
         <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
@@ -711,13 +832,43 @@ function DockerItemRow({
             </Label>
           </div>
         )}
+        <DockerOwnershipDetails
+          item={item}
+          dataOnly={mode === 'data-only'}
+          disabled={fixDisabled}
+          onApply={onApplyUserFix}
+          onVerify={onVerifyUserFix}
+        />
+        {included && !movesNoHomeData(mode, dataAction) && (
+          <ConnectDataOwners item={item} groups={dataGroups} />
+        )}
+        {included && item.dataChoices?.includes('start-empty') && (
+          <p className="text-muted-foreground">{dataActionNote(item, dataAction)}</p>
+        )}
+        {needsUserFix(item) && (
+          <div className="flex items-start gap-2">
+            <Checkbox
+              id={`docker-user-fix-${item.id}`}
+              checked={moveWithoutUserFix}
+              disabled={disabled || !included}
+              aria-invalid={fixMissing}
+              className={cn(fixMissing && REQUIRED_CLASS)}
+              onCheckedChange={(checked) => onUserFixAcceptanceChange(checked === true)}
+            />
+            <Label htmlFor={`docker-user-fix-${item.id}`} className="font-normal">
+              Move without the fix: keeps the home user id on the VM and cannot write project
+              folders or read private project files. Choose this only for readers, or deselect this
+              item.
+            </Label>
+          </div>
+        )}
         {vmData && (
           <div className="flex flex-wrap items-center gap-2">
             <span className={cn(choiceMissing && 'font-medium text-status-warn')}>
               Data: {DATA_STATE_LABELS[vmData]}.
             </span>
             <Select
-              value={dataChoice ?? item.dataAction ?? ''}
+              value={dataAction ?? ''}
               disabled={disabled || !included}
               onValueChange={(value) => onDataChoiceChange(value as DockerDataChoice)}
             >
@@ -729,8 +880,11 @@ function DockerItemRow({
                 <SelectValue placeholder="Choose what to keep" />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="keep-vm">Keep VM copy</SelectItem>
-                <SelectItem value="replace-home">Replace with this PC&apos;s data</SelectItem>
+                {dataChoicesOf(item).map((choice) => (
+                  <SelectItem key={choice} value={choice}>
+                    {DATA_CHOICE_LABELS[choice]}
+                  </SelectItem>
+                ))}
               </SelectContent>
             </Select>
           </div>

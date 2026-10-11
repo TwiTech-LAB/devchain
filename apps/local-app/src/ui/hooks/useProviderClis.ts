@@ -1,8 +1,8 @@
+import type { ProviderClisController } from '@/modules/providers/controllers/provider-clis.controller';
 import { useEffect, useRef } from 'react';
 import { useMutation, useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query';
 import type {
   ProviderCliName,
-  ProviderCliStatus,
   ProviderClisOverview,
   ProviderCliVersionEntry,
 } from '@devchain/shared';
@@ -17,14 +17,14 @@ async function fetchClisOverview(
 ): Promise<ProviderClisOverview> {
   const res = await homeFetch('/api/provider-clis');
   if (!res.ok) throw new Error('Failed to load CLI versions');
-  return res.json();
+  return res.json() as Promise<ProviderClisOverview>;
 }
 
 async function putProviderCliEntry(
   homeFetch: ReturnType<typeof useHomeFetch>,
   provider: ProviderCliName,
   entry: ProviderCliVersionEntry,
-): Promise<ProviderCliStatus['setting']> {
+): Promise<Awaited<ReturnType<ProviderClisController['setVersion']>>> {
   const res = await homeFetch(`/api/provider-clis/${provider}`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
@@ -36,13 +36,13 @@ async function putProviderCliEntry(
       typeof body?.message === 'string' ? body.message : `Failed to save ${provider} version`,
     );
   }
-  return res.json();
+  return res.json() as Promise<Awaited<ReturnType<ProviderClisController['setVersion']>>>;
 }
 
 async function postProviderCliCheck(homeFetch: ReturnType<typeof useHomeFetch>) {
   const res = await homeFetch('/api/provider-clis/check', { method: 'POST' });
   if (!res.ok) throw new Error('Version check failed');
-  return res.json();
+  return res.json() as Promise<Awaited<ReturnType<ProviderClisController['check']>>>;
 }
 
 /**

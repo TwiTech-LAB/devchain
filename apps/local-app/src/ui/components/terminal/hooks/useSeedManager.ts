@@ -190,7 +190,7 @@ export function useSeedManager(
         !writePump.isDesynchronized() &&
         !isRecoverySeed
       ) {
-        console.log('[SEED] BLOCKED - Terminal already seeded, ignoring chunk', chunk);
+        termLog('seed_blocked_already_seeded', { sessionId, chunk });
         return;
       }
 

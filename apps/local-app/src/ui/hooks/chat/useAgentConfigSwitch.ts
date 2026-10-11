@@ -1,3 +1,4 @@
+import type { AgentsController } from '@/modules/agents/controllers/agents.controller';
 import { useCallback, useMemo, useState } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { getErrorMessage, useToastHelpers } from '@/ui/lib/toast-helpers';
@@ -73,7 +74,7 @@ export function useAgentConfigSwitch({
         body: JSON.stringify(buildConfigBody({ providerConfigId, modelOverride, effortOverride })),
       });
       if (!res.ok) throw new Error('Failed to update agent config');
-      return res.json();
+      return res.json() as Promise<Awaited<ReturnType<AgentsController['updateAgent']>>>;
     },
     onMutate: ({ agentId }) => {
       setUpdatingConfigAgentId(agentId);

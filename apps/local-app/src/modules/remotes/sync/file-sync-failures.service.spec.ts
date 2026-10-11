@@ -76,12 +76,10 @@ function setup() {
     getIgnores: () => [],
   };
   const host = {
-    syncChown: jest.fn(),
     syncStatus: jest.fn(async () => ({ fileErrors: [denied, staged] }) as FolderSyncStatus),
     syncInspect: jest.fn(
       async (_remoteId: string, request: { patterns?: string[] }): Promise<SyncPathInspection> => ({
         ...checked(vm, request.patterns ?? []),
-        vmUser: { uid: 1001, name: 'claimed-user' },
       }),
     ),
   };
@@ -102,20 +100,11 @@ function setup() {
 }
 
 describe('FileSyncFailuresService', () => {
-  it('uses the checkout owner when an older inspection has no claimed-user metadata', async () => {
-    const s = setup();
-    const legacy = await s.host.syncInspect('r', {});
-    delete legacy.vmUser;
-    s.host.syncInspect.mockResolvedValue(legacy);
-    expect((await s.service.failed('p')).vmUser).toEqual(owner);
-    expect(s.host.syncChown).not.toHaveBeenCalled();
-  });
-  it('classifies unique persistent failures per side with VM ignore authority and tracked repairs', async () => {
+  it('classifies unique persistent failures per side with VM ignore authority and tracked-file copy commands', async () => {
     const s = setup();
     const result = await s.service.failed('p');
     expect(result).toMatchObject({
       ownerSide: 'vm',
-      vmUser: { uid: 1001, name: 'claimed-user' },
       installedPrefix: ['/.git', '(?d)/container-output'],
       overLimit: false,
       home: { entries: [{ ...denied, owner, git: { state: 'repo', ignored: true } }] },
@@ -151,7 +140,6 @@ describe('FileSyncFailuresService', () => {
       paths: ['logs', staged.path],
     });
     expect(s.host.syncInspect).toHaveBeenCalledTimes(1);
-    expect(s.host.syncChown).not.toHaveBeenCalled();
     expect(s.inspector.inspect).toHaveBeenCalledTimes(1);
   });
 
@@ -225,8 +213,6 @@ describe('FileSyncFailuresService', () => {
       if (failure === 'vm-inspect') s.host.syncInspect.mockRejectedValue(new Error('unavailable'));
       const result = await s.service.failed('p');
       const side = failure.startsWith('home') ? 'home' : 'vm';
-      if (failure === 'vm-inspect') expect(result.vmUser).toBeUndefined();
-      expect(s.host.syncChown).not.toHaveBeenCalled();
       expect(result[side].readError).toContain(
         failure.endsWith('status') ? 'could not read' : 'could not inspect',
       );

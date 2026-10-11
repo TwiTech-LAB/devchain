@@ -35,6 +35,7 @@ export function useBackendSocket(
         }
       });
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- The caller supplies dependencies for its handlers through this hook API.
   }, [socket, ...deps]);
 
   return socket;

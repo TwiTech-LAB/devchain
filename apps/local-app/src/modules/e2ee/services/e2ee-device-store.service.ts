@@ -21,7 +21,10 @@ import {
   type PairedDeviceWorkspaceAccessRevokedEvent,
 } from '../events/paired-device-workspace-access.events';
 
-import { readRevokedDeviceKids, updateRevokedDeviceKids } from './device-revocation-history';
+import {
+  readRevokedDeviceKids,
+  updateRevokedDeviceKids,
+} from '../../storage/local/helpers/device-revocation-history';
 
 const logger = createLogger('E2eeDeviceStore');
 

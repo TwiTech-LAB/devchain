@@ -1,5 +1,5 @@
+import { OnCatalogEvent } from '../../events/catalog/on-catalog-event';
 import { Injectable, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
-import { OnEvent } from '@nestjs/event-emitter';
 import { createLogger } from '../../../common/logging/logger';
 import type { SessionActivityChangedEventPayload } from '../../events/catalog/session.activity.changed';
 import type { SessionCrashedEventPayload } from '../../events/catalog/session.crashed';
@@ -55,17 +55,17 @@ export class AgentTimeAccountingService implements OnModuleInit, OnModuleDestroy
     }
   }
 
-  @OnEvent('session.activity.changed', { async: true })
+  @OnCatalogEvent('session.activity.changed', { async: true })
   handleActivityChanged(payload: SessionActivityChangedEventPayload): Promise<void> {
     return this.requestSessionReconciliation(payload.sessionId);
   }
 
-  @OnEvent('session.stopped', { async: true })
+  @OnCatalogEvent('session.stopped', { async: true })
   handleSessionStopped(payload: SessionStoppedEventPayload): Promise<void> {
     return this.requestSessionReconciliation(payload.sessionId);
   }
 
-  @OnEvent('session.crashed', { async: true })
+  @OnCatalogEvent('session.crashed', { async: true })
   handleSessionCrashed(payload: SessionCrashedEventPayload): Promise<void> {
     return this.requestSessionReconciliation(payload.sessionId);
   }

@@ -15,6 +15,7 @@ import { SyncthingManager } from '../../file-sync/syncthing-manager.service';
 import { REMOTE_HEALTH_PORT, type RemoteHealthPort } from '../ports/remote-health.port';
 import { RemoteFileSyncService } from './remote-file-sync.service';
 import { RemoteLiveSyncService } from './remote-live-sync.service';
+import { FileSyncFailuresService } from './file-sync-failures.service';
 
 let binary = process.env.SYNCTHING_BIN;
 let canChown = false;
@@ -102,7 +103,8 @@ real('automatic exclusions and immediate retry across real peers', () => {
     }, 30_000);
   };
 
-  beforeAll(async () => {
+  beforeEach(async () => {
+    owned.length = 0;
     process.env.SYNCTHING_BIN = binary!;
     pair = await startTwoInstances({
       syncIntervalMs: 60_000,
@@ -132,7 +134,7 @@ real('automatic exclusions and immediate retry across real peers', () => {
     for (const root of [homeRoot, vmRoot]) {
       mkdirSync(root, { recursive: true });
       execFileSync('git', ['-C', root, 'init', '-q']);
-      writeFileSync(join(root, '.gitignore'), 'auto-output/\nbackoff-output/\n');
+      writeFileSync(join(root, '.gitignore'), 'auto-output/\nbackoff-output/\nhealthy-output/\n');
     }
     pair.home.sqlite
       .prepare('UPDATE projects SET root_path = ? WHERE id = ?')
@@ -141,8 +143,8 @@ real('automatic exclusions and immediate retry across real peers', () => {
     const inspect = inspector.inspect.bind(inspector);
     jest
       .spyOn(inspector, 'inspect')
-      .mockImplementation((root, scan, paths, patterns) =>
-        inspect(root === homeRoot ? vmRoot : root, scan, paths, patterns),
+      .mockImplementation((root, scan, paths, patterns, skipIgnores) =>
+        inspect(root === homeRoot ? vmRoot : root, scan, paths, patterns, skipIgnores),
       );
     // This case isolates the code-folder runner; Git inspection still uses both real repositories.
     jest.spyOn(home, 'initialFolders').mockResolvedValue([{ id: folderId(), kind: 'code' }]);
@@ -176,9 +178,14 @@ real('automatic exclusions and immediate retry across real peers', () => {
     live.start(projectId, remoteId);
     await tick();
     await waitForValue(healthy, 30_000);
+    expect(home.getIgnores(projectId)).toEqual([]);
+    expect(pair.home.app.get(FileSyncAutoFixStore).get(projectId)).toEqual({
+      enabled: true,
+      actions: [],
+    });
   }, 60_000);
 
-  afterAll(async () => {
+  afterEach(async () => {
     jest.restoreAllMocks();
     for (const path of owned) {
       execFileSync('sudo', [
@@ -195,7 +202,42 @@ real('automatic exclusions and immediate retry across real peers', () => {
     else process.env.SYNCTHING_BIN = originalBinary;
   });
 
-  it('automatically excludes a Git-ignored root-owned VM folder after the two-minute grace', async () => {
+  it('excludes readable foreign-owned VM output while both peers report no failures', async () => {
+    await tick();
+    const before = await vm.status(folderId());
+    expect(before.sequence).toBeDefined();
+    const target = join(vmRoot, 'healthy-output');
+    mkdirSync(target);
+    writeFileSync(join(target, 'data.bin'), 'readable generated output', { mode: 0o644 });
+    owned.push(target);
+    execFileSync('sudo', ['-n', 'chown', '-R', '0:0', target]);
+    execFileSync('sudo', ['-n', 'chmod', '0755', target]);
+    await vm.rescan(folderId());
+    await cleared(30_000);
+    const status = await vm.status(folderId());
+    expect(status.sequence).toBeGreaterThan(before.sequence!);
+    expect(status).toMatchObject({ state: 'idle', errors: 0, pullErrors: 0 });
+    const failures = jest.spyOn(pair.home.app.get(FileSyncFailuresService), 'failed');
+    const now = Date.now.bind(Date);
+    const clock = jest.spyOn(Date, 'now').mockImplementation(() => now() + 150_000);
+    try {
+      await tick();
+      expect(failures).not.toHaveBeenCalled();
+      expect(home.getIgnores(projectId)).toEqual(['(?d)healthy-output']);
+      expect(pair.home.app.get(FileSyncAutoFixStore).get(projectId).actions).toEqual([
+        expect.objectContaining({ kind: 'exclude', side: 'vm', patterns: ['(?d)healthy-output'] }),
+      ]);
+      await cleared(10_000);
+      process.stdout.write(
+        `Healthy VM ownership verification ${JSON.stringify({ beforeSequence: before.sequence, sequence: status.sequence, errors: status.errors, pullErrors: status.pullErrors })}\n`,
+      );
+    } finally {
+      clock.mockRestore();
+      failures.mockRestore();
+    }
+  });
+
+  it('automatically excludes a Git-ignored root-owned VM folder with actual pull failures', async () => {
     expect(pair.home.app.get(FileSyncAutoFixStore).get(projectId).enabled).toBe(true);
     await createFailure('auto-output');
     await tick();
@@ -212,8 +254,6 @@ real('automatic exclusions and immediate retry across real peers', () => {
     } finally {
       clock.mockRestore();
     }
-    maintenance.forget(projectId);
-    await tick();
   });
 
   it('clears a pull failure within ten seconds after a manual save despite a grown retry pause', async () => {
@@ -223,7 +263,7 @@ real('automatic exclusions and immediate retry across real peers', () => {
       time: string;
       data: { folder: string; errors: Array<{ path: string }> };
     };
-    const events = await waitForValue(
+    const { events, nextPause } = await waitForValue(
       async () => {
         const result = (await vmClient().request(
           'GET',
@@ -239,8 +279,22 @@ real('automatic exclusions and immediate retry across real peers', () => {
         );
         const last = failures.at(-1);
         const previous = failures.at(-2);
-        return last && previous && Date.parse(last.time) - Date.parse(previous.time) >= 7_500
-          ? failures
+        // Error events can arrive before the retry-pause log is written.
+        const retry =
+          readFileSync(join(pair.host.dataDir, 'syncthing', 'syncthing.log'), 'utf8')
+            .split('\n')
+            .reverse()
+            .find(
+              (line) =>
+                line.includes('Folder failed to sync, will be retried') &&
+                line.includes(folderId()),
+            ) ?? '';
+        const nextPause = Number(/wait=(\d+(?:\.\d+)?)s/.exec(retry)?.[1]) * 1000;
+        return last &&
+          previous &&
+          Date.parse(last.time) - Date.parse(previous.time) >= 7_500 &&
+          nextPause >= 15_000
+          ? { events: failures, nextPause }
           : null;
       },
       60_000,
@@ -248,14 +302,6 @@ real('automatic exclusions and immediate retry across real peers', () => {
     );
     const last = events.at(-1)!;
     const previous = events.at(-2)!;
-    const retry = readFileSync(join(pair.host.dataDir, 'syncthing', 'syncthing.log'), 'utf8')
-      .split('\n')
-      .reverse()
-      .find(
-        (line) =>
-          line.includes('Folder failed to sync, will be retried') && line.includes(folderId()),
-      )!;
-    const nextPause = Number(/wait=(\d+(?:\.\d+)?)s/.exec(retry)?.[1]) * 1000;
     expect(Date.parse(last.time) - Date.parse(previous.time)).toBeGreaterThanOrEqual(7_500);
     expect(nextPause).toBeGreaterThanOrEqual(15_000);
     const started = Date.now();
@@ -265,6 +311,7 @@ real('automatic exclusions and immediate retry across real peers', () => {
     });
     expect(current.statusCode).toBe(200);
     const snapshot = current.json<{ ignores: string[]; revision: number }>();
+    expect(snapshot.ignores).toEqual([]);
     const ignores = [...snapshot.ignores, '(?d)/backoff-output'];
     const save = await pair.home.app.inject({
       method: 'PUT',
@@ -273,6 +320,8 @@ real('automatic exclusions and immediate retry across real peers', () => {
     });
     expect(save.statusCode).toBe(200);
     expect(save.json()).toMatchObject({ applied: true });
+    expect(home.getIgnores(projectId)).toEqual(['(?d)/backoff-output']);
+    expect(pair.home.app.get(FileSyncAutoFixStore).get(projectId).actions).toEqual([]);
     await cleared(10_000);
     const elapsed = Date.now() - started;
     expect(elapsed).toBeLessThan(10_000);

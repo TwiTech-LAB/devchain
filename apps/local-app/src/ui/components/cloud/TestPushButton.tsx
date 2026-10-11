@@ -28,7 +28,7 @@ export function TestPushButton({ deviceId, deviceLabel }: TestPushButtonProps) {
         { backend: HOME_BACKEND },
       );
       if (!res.ok) throw new Error(`test-push:${res.status}`);
-      return res.json();
+      return res.json() as Promise<TestPushResult>;
     },
     onSuccess: (data) => {
       if (data.sent === 0 && data.failed === 0) {

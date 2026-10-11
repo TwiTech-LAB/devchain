@@ -34,7 +34,7 @@ async function applyPreset(
     body: JSON.stringify({ presetName }),
   });
   if (!res.ok) throw new Error('Failed to apply preset');
-  return res.json();
+  return res.json() as Promise<ApplyPresetResult>;
 }
 
 /** Minimal agent shape the preset-apply flow reads (config diff + presence match). */

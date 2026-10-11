@@ -1,8 +1,9 @@
 import type { EventsService } from '../../../events/services/events.service';
 import type { SettingsService } from '../../../settings/services/settings.service';
-import { FakeProcessExecutor } from '../process-executor/fake-process-executor';
+import { CliForegroundExecutor } from '../process-executor/fake-process-executor';
 import { TerminalIOService } from './terminal-io.service';
 import { HumanPromptStateService } from '../human-prompt-state.service';
+import type { ExecutorResult } from '../process-executor/process-executor.port';
 
 interface Deferred<T> {
   readonly promise: Promise<T>;
@@ -22,14 +23,14 @@ async function settle(): Promise<void> {
 }
 
 describe('TerminalIOService lifecycle monitoring', () => {
-  let executor: FakeProcessExecutor;
+  let executor: CliForegroundExecutor;
   let events: { publish: jest.Mock };
   let service: TerminalIOService;
   let humanPromptState: HumanPromptStateService;
 
   beforeEach(() => {
     jest.useFakeTimers();
-    executor = new FakeProcessExecutor();
+    executor = new CliForegroundExecutor();
     events = { publish: jest.fn().mockResolvedValue('event-id') };
     humanPromptState = new HumanPromptStateService();
     const settings = { getFollowNoteEnabled: () => true } as unknown as SettingsService;
@@ -218,5 +219,210 @@ describe('TerminalIOService lifecycle monitoring', () => {
     jest.advanceTimersByTime(100);
     await settle();
     expect(service.healthCheck).not.toHaveBeenCalled();
+  });
+
+  // Fake timers and argv-routed process results exercise monitor races without a tmux daemon.
+  describe('CLI exit detection', () => {
+    const sessionName = 'cli-pane';
+    const sessionId = 'cli-session';
+    const success: ExecutorResult = {
+      success: true,
+      exitCode: 0,
+      stdout: '',
+      stderr: '',
+      timedOut: false,
+      truncated: false,
+    };
+
+    async function tick(count = 1): Promise<void> {
+      for (let index = 0; index < count; index += 1) {
+        await jest.advanceTimersByTimeAsync(10);
+      }
+    }
+
+    async function observeCli(): Promise<void> {
+      service.startHealthCheck(sessionName, sessionId, 10);
+      await tick();
+      executor.foregroundGroup = '1234';
+    }
+
+    function kills() {
+      return executor.calls.filter((call) => call.argv[1] === 'kill-session');
+    }
+
+    it('destroys the exact session and publishes once after three shell ticks', async () => {
+      await observeCli();
+      humanPromptState.recordPromptText(sessionName);
+      executor.processStates = '1234 S\n4321 T+\n';
+      await tick(2);
+      expect(kills()).toHaveLength(0);
+      expect(events.publish).not.toHaveBeenCalled();
+
+      await tick();
+      expect(kills().map((call) => call.argv)).toEqual([
+        ['tmux', 'kill-session', '-t', '=cli-pane'],
+      ]);
+      expect(events.publish).toHaveBeenCalledTimes(1);
+      expect(events.publish).toHaveBeenCalledWith('session.crashed', {
+        sessionId,
+        sessionName,
+      });
+      expect(humanPromptState.getState(sessionName).phase).toBe('inactive');
+      await tick(5);
+      expect(events.publish).toHaveBeenCalledTimes(1);
+    });
+
+    it('leaves a pane alone when its CLI was never observed', async () => {
+      executor.foregroundGroup = '1234';
+      service.startHealthCheck(sessionName, sessionId, 10);
+      await tick(5);
+      expect(kills()).toHaveLength(0);
+      expect(events.publish).not.toHaveBeenCalled();
+    });
+
+    it('resets shell ticks while a stopped child protects a suspended CLI', async () => {
+      await observeCli();
+      await tick(2);
+      executor.processStates = '0 Ss\n1234 T+\n1234 S\n';
+      await tick(5);
+      expect(kills()).toHaveLength(0);
+      expect(events.publish).not.toHaveBeenCalled();
+      executor.processStates = '1 S\n';
+      await tick(2);
+      expect(kills()).toHaveLength(0);
+      await tick();
+      expect(events.publish).toHaveBeenCalledTimes(1);
+    });
+
+    it('requires consecutive shell ticks after a transient shell reading', async () => {
+      await observeCli();
+      await tick();
+      executor.foregroundGroup = '2345';
+      await tick();
+      executor.foregroundGroup = '1234';
+      await tick(2);
+      expect(kills()).toHaveLength(0);
+      expect(events.publish).not.toHaveBeenCalled();
+      await tick();
+      expect(events.publish).toHaveBeenCalledTimes(1);
+    });
+
+    it.each(['pane PID', 'foreground group', 'process states'])(
+      'resets the grace window for failed, timed-out, invalid or thrown %s reads',
+      async (read) => {
+        const unknowns = [
+          { ...success, success: false, exitCode: 1 },
+          { ...success, timedOut: true },
+          { ...success, stdout: 'invalid' },
+          { ...success, stdout: '1234', truncated: true },
+          new Error('spawn failed'),
+        ];
+        await observeCli();
+        for (const unknown of unknowns) {
+          await tick(2);
+          const run = executor.run.bind(executor);
+          let intercepted = false;
+          const spy = jest.spyOn(executor, 'run').mockImplementation(async (options) => {
+            const matches =
+              read === 'pane PID'
+                ? options.argv[1] === 'display-message'
+                : read === 'foreground group'
+                  ? options.argv[2] === 'tpgid='
+                  : options.argv[3] === 'ppid=,stat=';
+            if (!intercepted && matches) {
+              intercepted = true;
+              if (unknown instanceof Error) throw unknown;
+              return unknown;
+            }
+            return run(options);
+          });
+          await tick();
+          spy.mockRestore();
+          expect(intercepted).toBe(true);
+          expect(kills()).toHaveLength(0);
+          expect(events.publish).not.toHaveBeenCalled();
+        }
+        await tick(2);
+        expect(kills()).toHaveLength(0);
+        await tick();
+        expect(events.publish).toHaveBeenCalledTimes(1);
+      },
+    );
+
+    it.each(['destroy', 'replace'])(
+      'suppresses an exit callback when %s wins a deferred foreground probe',
+      async (operation) => {
+        await observeCli();
+        await tick(2);
+        const probe = deferred<ExecutorResult>();
+        const run = executor.run.bind(executor);
+        jest
+          .spyOn(executor, 'run')
+          .mockImplementation((options) =>
+            options.argv[3] === 'ppid=,stat=' ? probe.promise : run(options),
+          );
+        await tick();
+
+        if (operation === 'destroy') {
+          await service.destroyExpectedSession(
+            { name: sessionName },
+            { onUnknownError: 'rearm', sessionId },
+          );
+        } else {
+          service.startHealthCheck(sessionName, 'replacement-session', 10);
+        }
+        probe.resolve({ ...success, stdout: '1 S\n' });
+        await settle();
+        await tick(4);
+        expect(events.publish).not.toHaveBeenCalled();
+        expect(kills()).toHaveLength(operation === 'destroy' ? 1 : 0);
+      },
+    );
+
+    it('rearms after an unknown exit destroy without clearing prompt state or publishing', async () => {
+      await observeCli();
+      humanPromptState.recordPromptText(sessionName);
+      await tick(2);
+      executor.enqueueResponse(
+        { type: 'success' },
+        { type: 'failure', stderr: 'permission denied' },
+      );
+      await tick();
+      expect(kills()).toHaveLength(1);
+      expect(events.publish).not.toHaveBeenCalled();
+      expect(humanPromptState.getState(sessionName).phase).toBe('draft_active');
+      await tick(2);
+      expect(kills()).toHaveLength(1);
+      await tick();
+      expect(kills()).toHaveLength(2);
+      expect(events.publish).toHaveBeenCalledTimes(1);
+    });
+
+    it('rearms after exit crash publication fails and retries on confirmed tmux loss', async () => {
+      await observeCli();
+      events.publish.mockRejectedValueOnce(new Error('event store unavailable'));
+      await tick(3);
+      expect(kills()).toHaveLength(1);
+      expect(events.publish).toHaveBeenCalledTimes(1);
+      executor.enqueueResponse({ type: 'failure', stderr: `can't find session: ${sessionName}` });
+      await tick();
+      expect(events.publish).toHaveBeenCalledTimes(2);
+      await tick(5);
+      expect(events.publish).toHaveBeenCalledTimes(2);
+    });
+
+    it('requires a fresh foreground observation after a monitor restarts', async () => {
+      await observeCli();
+      service.stopHealthCheck(sessionName);
+      service.startHealthCheck(sessionName, sessionId, 10);
+      await tick(5);
+      expect(kills()).toHaveLength(0);
+      expect(events.publish).not.toHaveBeenCalled();
+      executor.foregroundGroup = '2345';
+      await tick();
+      executor.foregroundGroup = '1234';
+      await tick(3);
+      expect(events.publish).toHaveBeenCalledTimes(1);
+    });
   });
 });

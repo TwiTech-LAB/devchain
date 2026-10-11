@@ -1,5 +1,8 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { ActiveSessionInfo, SessionLaunchError } from '../dtos/active-session-info.dto';
+import {
+  ActiveSessionInfo,
+  SessionLaunchError,
+} from '../../session-terminal-runtime/dtos/active-session-info.dto';
 import { TerminalIOService } from '../../terminal/services/terminal-io/terminal-io.service';
 import { ActiveSessionLookup } from './active-session-lookup.service';
 import { SessionRuntime } from './session-runtime';

@@ -18,9 +18,9 @@ import {
   validateEnvKey,
   validateEnvValue,
   EnvBuilderError,
-} from '../../sessions/utils/env-builder';
+} from '../../providers/utils/env-builder';
 import { McpProviderRegistrationService } from '../../providers/services/mcp-provider-registration.service';
-import { parseProfileOptions, ProfileOptionsError } from '../../sessions/utils/profile-options';
+import { parseProfileOptions, ProfileOptionsError } from '../../providers/utils/profile-options';
 import { ProviderAdapterFactory, isMcpCli, isAuthProbeCapable } from '../../providers/adapters';
 import { ProcessExecutor } from '../../terminal/services/process-executor/process-executor.port';
 import {

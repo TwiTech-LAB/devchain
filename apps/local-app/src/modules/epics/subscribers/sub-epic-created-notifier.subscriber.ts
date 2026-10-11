@@ -1,5 +1,5 @@
+import { OnCatalogEvent } from '../../events/catalog/on-catalog-event';
 import { Inject, Injectable, Logger } from '@nestjs/common';
-import { OnEvent } from '@nestjs/event-emitter';
 import { AgentMessageDeliveryService } from '../../agent-message-delivery/agent-message-delivery.service';
 import { getEventMetadata } from '../../events/services/events.service';
 import { EventLogService } from '../../events/services/event-log.service';
@@ -26,7 +26,7 @@ export class SubEpicCreatedNotifierSubscriber {
   // different actor), both the assignment notification (from
   // EpicAssignmentNotifierSubscriber) and this sub-epic notification will fire.
   // This is intentional — no dedup logic is added.
-  @OnEvent('epic.created', { async: true })
+  @OnCatalogEvent('epic.created', { async: true })
   async handleEpicCreated(payload: EpicCreatedEventPayload): Promise<void> {
     if (!payload.parentId) {
       return;

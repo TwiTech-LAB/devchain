@@ -97,6 +97,7 @@ export type DeliveryFailureCode =
   | 'pool_capacity_exceeded'
   | 'project_delivery_failed'
   | 'send_keys_failed'
+  | 'shell_foreground'
   | 'tmux_error';
 
 export interface MessageLogEntry {

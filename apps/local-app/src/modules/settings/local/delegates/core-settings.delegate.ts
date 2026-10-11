@@ -1,4 +1,5 @@
 import type { ProjectWriteGate } from '../../../storage/write-gate/project-write-gate';
+import { TransactionRunner } from '../../../storage/db/transaction-runner';
 import type Database from 'better-sqlite3';
 import type { EventEmitter2 } from '@nestjs/event-emitter';
 import { randomUUID } from 'crypto';
@@ -40,11 +41,13 @@ export interface CoreDelegateContext {
 
 export class CoreSettingsDelegate {
   private readonly sqlite: Database.Database;
+  private readonly txRunner: TransactionRunner;
   private readonly gate?: ProjectWriteGate;
   private readonly eventEmitter: EventEmitter2;
 
   constructor(context: CoreDelegateContext) {
     this.sqlite = context.sqlite;
+    this.txRunner = new TransactionRunner(context.sqlite);
     this.gate = context.gate;
     this.eventEmitter = context.eventEmitter;
   }
@@ -324,7 +327,7 @@ export class CoreSettingsDelegate {
         updated_at = excluded.updated_at
     `);
 
-    this.sqlite.transaction(() => {
+    await this.txRunner.runImmediateQueuedOrJoin(() => {
       this.assertProjectSlicesWritable(settings);
       if (settings.claudeBinaryPath !== undefined) {
         const normalizedPath =
@@ -541,7 +544,7 @@ export class CoreSettingsDelegate {
         const encodedMap = JSON.stringify(settings.projectActivePresets);
         stmt.run(randomUUID(), 'projectActivePresets', encodedMap, now, now);
       }
-    })();
+    });
 
     logger.info('Settings updated');
 

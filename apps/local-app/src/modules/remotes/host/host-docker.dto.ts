@@ -81,6 +81,7 @@ export const DockerContainerCreateSchema = z
 export const DockerArchiveRequestSchema = z
   .object({
     projectId,
+    projectRoot: scanPath.optional(),
     image: identifier,
     // `file`: a bound single file; an older VM refuses it instead of misplacing the file.
     mountType: z.enum(['volume', 'bind', 'file']),
@@ -99,6 +100,8 @@ export interface DockerVolumeHolder {
 export const DOCKER_PROJECT_LABEL = 'dev.devchain.project';
 export const COMPOSE_PROJECT_LABEL = 'com.docker.compose.project';
 export const COMPOSE_SERVICE_LABEL = 'com.docker.compose.service';
+export const COMPOSE_VOLUME_LABEL = 'com.docker.compose.volume';
+export const COMPOSE_VERSION_LABEL = 'com.docker.compose.version';
 
 export interface DockerHostOptions {
   signal?: AbortSignal;
@@ -129,12 +132,19 @@ export const DockerBindPrepareSchema = z
             path: scanPath,
             replace: z.boolean(),
             image: identifier.optional(),
-            // A single file: only its folder is created, and the restore replaces the path.
+            owner: z
+              .object({
+                uid: z.number().int().nonnegative().max(4294967295),
+                gid: z.number().int().nonnegative().max(4294967295),
+              })
+              .strict()
+              .optional(),
+            // Preserve file layout: prepare its parent for restore, or an empty file for reset.
             file: z.literal(true).optional(),
           })
           .strict()
           // A replaced folder is emptied by a helper running the owning item's image.
-          .refine((bind) => !bind.replace || bind.image !== undefined),
+          .refine((bind) => (!bind.replace && !bind.owner) || bind.image !== undefined),
       )
       .min(1)
       .max(64),
@@ -197,6 +207,8 @@ export interface DockerScanResult {
   containers: Array<{
     id: string;
     image?: string;
+    imageReference?: string;
+    user?: string;
     metadata?: DockerHolderMetadata;
     name: string;
     labels: Record<string, string>;

@@ -1,3 +1,4 @@
+import type { ProfilesController } from '@/modules/profiles/controllers/profiles.controller';
 import { useRef, useState, useMemo, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { promptQueries, type PromptSummary } from '@/ui/lib/prompts';
@@ -46,25 +47,13 @@ import {
   AlertCircle,
 } from 'lucide-react';
 import { cn } from '@/ui/lib/utils';
-import { providersQueryKeys } from '@/ui/lib/providers-query-keys';
+import { providersQueryKeys, fetchProviders, type Provider } from '@/ui/lib/providers-query-keys';
 import { EnvEditor, type EnvEditorHandle } from '@/ui/components/EnvEditor';
 import { ConfirmDialog } from '@/ui/components/shared/ConfirmDialog';
 import { MarkdownReferenceInput } from '@/ui/components/shared';
 import { useSelectedProject } from '@/ui/hooks/useProjectSelection';
 import type { FetchFn } from '@/ui/lib/api-transport';
 import { useFetchFactory } from '@/ui/hooks/useFetchFactory';
-
-interface Provider {
-  id: string;
-  name: string;
-  binPath: string | null;
-}
-
-async function fetchProviders(fetchFn: FetchFn) {
-  const res = await fetchFn('/api/providers');
-  if (!res.ok) throw new Error('Failed to fetch providers');
-  return res.json();
-}
 
 // Note: providerId and options removed in Phase 4
 // Provider configuration now managed via ProviderConfigsSection
@@ -84,7 +73,7 @@ async function createProfile(
     body: JSON.stringify(data),
   });
   if (!res.ok) throw new Error('Failed to create profile');
-  return res.json();
+  return res.json() as Promise<Awaited<ReturnType<ProfilesController['createProfile']>>>;
 }
 
 async function updateProfile(
@@ -103,7 +92,7 @@ async function updateProfile(
     body: JSON.stringify(data),
   });
   if (!res.ok) throw new Error('Failed to update profile');
-  return res.json();
+  return res.json() as Promise<Awaited<ReturnType<ProfilesController['updateProfile']>>>;
 }
 
 async function replaceProfilePrompts(fetchFn: FetchFn, id: string, promptIds: string[]) {
@@ -113,7 +102,7 @@ async function replaceProfilePrompts(fetchFn: FetchFn, id: string, promptIds: st
     body: JSON.stringify({ promptIds }),
   });
   if (!res.ok) throw new Error('Failed to update profile prompts');
-  return res.json();
+  return res.json() as Promise<Awaited<ReturnType<ProfilesController['replaceProfilePrompts']>>>;
 }
 
 async function deleteProfile(fetchFn: FetchFn, id: string) {
@@ -144,7 +133,7 @@ async function createProviderConfig(
     const error = await res.json().catch(() => ({}));
     throw new Error(error.message || 'Failed to create provider config');
   }
-  return res.json();
+  return res.json() as Promise<ProfileProviderConfig>;
 }
 
 async function updateProviderConfig(
@@ -168,7 +157,7 @@ async function updateProviderConfig(
     const error = await res.json().catch(() => ({}));
     throw new Error(error.message || 'Failed to update provider config');
   }
-  return res.json();
+  return res.json() as Promise<ProfileProviderConfig>;
 }
 
 async function deleteProviderConfig(fetchFn: FetchFn, id: string): Promise<void> {
@@ -189,7 +178,7 @@ async function fetchProviderModels(
 ): Promise<ProviderCatalogModel[]> {
   const res = await fetchFn(`/api/providers/${encodeURIComponent(providerId)}/models`);
   if (!res.ok) throw new Error('Failed to fetch provider models');
-  return res.json();
+  return res.json() as Promise<ProviderCatalogModel[]>;
 }
 
 // Detect whether raw options text carries a conflicting flag for a structured
@@ -566,7 +555,9 @@ function ProviderConfigsSection({
         const err = await res.json();
         throw new Error(err.message || 'Failed to reorder configurations');
       }
-      return res.json();
+      return res.json() as Promise<
+        Awaited<ReturnType<ProfilesController['reorderProviderConfigs']>>
+      >;
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: providerConfigQueryKeys.profile(profileId) });
@@ -1105,7 +1096,7 @@ export function ProfilesPage() {
   type ProfilesList = ListContainer<ProfileListItem>;
 
   const createMutation = useCrudMutation<
-    ProfileListItem,
+    Awaited<ReturnType<typeof createProfile>>,
     Parameters<typeof createProfile>[1],
     void
   >({
