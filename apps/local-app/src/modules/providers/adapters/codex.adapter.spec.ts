@@ -60,8 +60,31 @@ describe('CodexAdapter', () => {
   });
 
   describe('ProviderPluginCapability', () => {
-    it('uses the JSON catalog and native add commands', () => {
-      expect(adapter.listProviderPlugins()).toEqual(['plugin', 'list', '--available', '--json']);
+    const plugin = (fields: Record<string, unknown>) => ({
+      name: 'plugin',
+      version: '1.0.0',
+      installed: false,
+      enabled: false,
+      installPolicy: 'AVAILABLE',
+      authPolicy: 'ON_INSTALL',
+      availability: 'AVAILABLE',
+      interface: null,
+      ...fields,
+    });
+
+    function parsePluginList(result: unknown) {
+      const source = adapter.providerPluginCatalog();
+      if (source.transport !== 'app-server') throw new Error('expected the app-server transport');
+      return source.parse(result);
+    }
+
+    it('reads the catalog through app-server plugin/list and installs with native add', () => {
+      expect(adapter.providerPluginCatalog()).toMatchObject({
+        transport: 'app-server',
+        args: ['app-server'],
+        method: 'plugin/list',
+        params: {},
+      });
       expect(adapter.installProviderPlugin('sample@market')).toEqual([
         'plugin',
         'add',
@@ -70,66 +93,100 @@ describe('CodexAdapter', () => {
       ]);
     });
 
-    it('normalizes the Codex catalog fields into the shared plugin contract', () => {
-      const entries = adapter.parseProviderPluginCatalog(
-        JSON.stringify({
-          installed: [
-            {
-              pluginId: 'installed@market',
-              name: 'installed',
-              marketplaceName: 'market',
-              version: '2.0.0',
-              installed: true,
-              enabled: true,
-              installPolicy: 'AVAILABLE',
-              authPolicy: 'ON_INSTALL',
-            },
-          ],
-          available: [
-            {
-              pluginId: 'available@market',
-              name: 'available',
-              marketplaceName: 'market',
-              version: '1.0.0',
-              installed: false,
-              enabled: false,
-              installPolicy: 'AVAILABLE',
-              authPolicy: 'ON_INSTALL',
-            },
-          ],
-        }),
-      );
+    it('maps plugins from every marketplace into the shared plugin contract', () => {
+      const { entries } = parsePluginList({
+        marketplaces: [
+          {
+            name: 'openai-curated-remote',
+            plugins: [
+              plugin({
+                id: 'app-6a05@openai-curated-remote',
+                name: 'app-6a05',
+                installed: true,
+                enabled: true,
+                interface: {
+                  displayName: 'Remote Desktop Commander',
+                  shortDescription: 'Control a remote desktop',
+                },
+              }),
+              plugin({ id: 'blocked@openai-curated-remote', availability: 'DISABLED_BY_ADMIN' }),
+            ],
+          },
+          {
+            name: 'local',
+            plugins: [
+              plugin({ id: 'tools@local', name: 'tools', interface: { displayName: null } }),
+            ],
+          },
+        ],
+        marketplaceLoadErrors: [],
+      });
 
       expect(entries).toEqual([
         {
-          pluginId: 'available@market',
-          name: 'available',
-          description: null,
-          marketplaceName: 'market',
+          pluginId: 'app-6a05@openai-curated-remote',
+          name: 'Remote Desktop Commander',
+          description: 'Control a remote desktop',
+          marketplaceName: 'openai-curated-remote',
           version: '1.0.0',
-          installed: false,
-          available: true,
-          providerEnabled: false,
-          installationScopes: [],
-          installCount: null,
-          installPolicy: 'AVAILABLE',
-          authPolicy: 'ON_INSTALL',
-        },
-        {
-          pluginId: 'installed@market',
-          name: 'installed',
-          description: null,
-          marketplaceName: 'market',
-          version: '2.0.0',
           installed: true,
-          available: false,
+          available: true,
           providerEnabled: true,
           installationScopes: [],
           installCount: null,
           installPolicy: 'AVAILABLE',
           authPolicy: 'ON_INSTALL',
         },
+        expect.objectContaining({
+          pluginId: 'blocked@openai-curated-remote',
+          name: 'plugin',
+          available: false,
+        }),
+        expect.objectContaining({
+          pluginId: 'tools@local',
+          name: 'tools',
+          description: null,
+          marketplaceName: 'local',
+          available: true,
+        }),
       ]);
+    });
+
+    it('keeps one entry per plugin ID: the installed one, else the first', () => {
+      const { entries } = parsePluginList({
+        marketplaces: [
+          {
+            name: 'market',
+            plugins: [
+              plugin({ id: 'twice@market', version: '1.0.0' }),
+              plugin({ id: 'twice@market', version: '2.0.0' }),
+              plugin({ id: 'installed-later@market', version: '1.0.0' }),
+              plugin({ id: 'installed-later@market', version: '2.0.0', installed: true }),
+            ],
+          },
+        ],
+      });
+
+      expect(entries.map(({ pluginId, version }) => ({ pluginId, version }))).toEqual([
+        { pluginId: 'twice@market', version: '1.0.0' },
+        { pluginId: 'installed-later@market', version: '2.0.0' },
+      ]);
+    });
+
+    it('returns marketplace load errors as warnings next to the loaded entries', () => {
+      const loadError = { marketplacePath: '/broken', message: 'invalid manifest' };
+
+      const result = parsePluginList({
+        marketplaces: [{ name: 'market', plugins: [plugin({ id: 'ok@market' })] }],
+        marketplaceLoadErrors: [loadError],
+      });
+
+      expect(result.entries).toHaveLength(1);
+      expect(result.warnings).toEqual([loadError]);
+    });
+
+    it('rejects a result without a marketplace list', () => {
+      expect(() => parsePluginList({})).toThrow('codex plugin/list is missing marketplaces');
     });
   });
 

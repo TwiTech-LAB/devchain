@@ -54,6 +54,7 @@ export class FakeFileSyncService
       | 'getIgnoresRevision'
       | 'setIgnores'
       | 'projectFolders'
+      | 'projectsWithFolder'
       | 'initialFolders'
       | 'projectNeed'
       | 'ensureFolder'
@@ -129,6 +130,13 @@ export class FakeFileSyncService
 
   async projectFolders(projectId: string): Promise<ProjectFolder[]> {
     return projectFolderList(projectId).filter((folder) => this.folders.has(folder.id));
+  }
+
+  async projectsWithFolder(kind: ProjectFolder['kind']): Promise<string[]> {
+    const prefix = `${kind}:`;
+    return [...this.folders.keys()]
+      .filter((id) => id.startsWith(prefix))
+      .map((id) => id.slice(prefix.length));
   }
 
   async initialFolders(projectId: string): Promise<ProjectFolder[]> {

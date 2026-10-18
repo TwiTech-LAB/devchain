@@ -25,7 +25,11 @@ import {
   SkillsSettingsDelegate,
 } from '../local/delegates/skills-settings.delegate';
 import { ProviderCliSettingsDelegate } from '../local/delegates/provider-cli-settings.delegate';
-import type { ProviderCliVersionEntry, ProviderCliVersionSettingsMap } from '@devchain/shared';
+import type {
+  ProviderCliVersionEntry,
+  ProviderCliVersionSettingsMap,
+  ProviderUsageSettings,
+} from '@devchain/shared';
 import type { ProjectPoolSettings, ProjectSettings } from './settings.constants';
 
 export {
@@ -103,6 +107,11 @@ export class SettingsService {
   // --- Messaging ---
   getFollowNoteEnabled(): boolean {
     return this.coreDelegate.getFollowNoteEnabled();
+  }
+
+  // --- Provider usage ---
+  getProviderUsageConfig(): ProviderUsageSettings {
+    return this.coreDelegate.getProviderUsageConfig();
   }
 
   // --- Skills ---

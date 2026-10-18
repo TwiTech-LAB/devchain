@@ -1,6 +1,12 @@
 import { z } from 'zod';
 import { isProxmoxDnsName } from '../../../common/validation/proxmox-name';
 import { ClaimChoiceFields } from './remote-operation.dto';
+import { SharedVmOccupancySchema } from '../dtos/shared-vm.dto';
+
+const SharedVmForceInputs = {
+  forceOccupied: z.boolean().optional(),
+  confirmedOccupancy: SharedVmOccupancySchema.optional(),
+};
 
 /** The claim and "Update VM" install peaks at about 1.7 GB, so smaller VMs fail. */
 export const MIN_VM_MEMORY_MIB = 4096;
@@ -41,11 +47,14 @@ export function createVmSchemaForNamePrefix(namePrefix: string) {
 export const ResetVmSchema = z
   .object({
     force: z.boolean().optional().default(false),
+    ...SharedVmForceInputs,
     ...ClaimInputs,
   })
   .strict();
 
-export const DestroyVmSchema = z.object({ force: z.boolean().optional().default(false) }).strict();
+export const DestroyVmSchema = z
+  .object({ force: z.boolean().optional().default(false), ...SharedVmForceInputs })
+  .strict();
 
 export type CreateVmData = z.infer<typeof CreateVmSchema>;
 export type ResetVmData = z.infer<typeof ResetVmSchema>;

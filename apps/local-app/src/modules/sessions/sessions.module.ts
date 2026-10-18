@@ -28,6 +28,7 @@ import { RuntimeContextCaptureModule } from '../runtime-context-capture/runtime-
 import { ProviderRuntimePreparationService } from './services/provider-runtime-preparation';
 import { EpicTimeStoreModule } from '../epic-time/epic-time-store.module';
 import { SessionTerminalRuntimeModule } from '../session-terminal-runtime/session-terminal-runtime.module';
+import { GIT_SHIM_BIN, gitShimBin } from '../../common/git-shim-paths';
 
 @Module({
   imports: [
@@ -56,6 +57,10 @@ import { SessionTerminalRuntimeModule } from '../session-terminal-runtime/sessio
     SessionLaunchPipeline,
     SessionRestorePipeline,
     ProviderRuntimePreparationService,
+    {
+      provide: GIT_SHIM_BIN,
+      useFactory: () => (process.env.NODE_ENV === 'test' ? null : gitShimBin()),
+    },
     SessionRuntime,
     SessionLauncherFacade,
     TeamsStore,

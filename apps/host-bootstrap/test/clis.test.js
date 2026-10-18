@@ -7,7 +7,7 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
 const { installAgy, installClis } = require("../lib/clis");
-const { fakeSystem, mode, pinnedCliVersions } = require("./helpers");
+const { fakeSystem, mode, pinnedCliVersions, pins } = require("./helpers");
 
 async function installDevchainVersion(sys, version) {
   await sys.run("npm", [
@@ -148,4 +148,30 @@ test("installClis keeps a working agy when the download fails", async (t) => {
     fs.readFileSync(path.join(sys.paths.binDir, "agy"), "utf8"),
     "old agy",
   );
+});
+
+test("installClis replaces a legacy opencode-ai install before installing @opencode/cli", async (t) => {
+  const { sys, callDetails, cleanup } = fakeSystem();
+  t.after(cleanup);
+  await installDevchainVersion(sys, "1.0.0");
+  const legacy = path.join(sys.paths.cliPrefix, "lib/node_modules/opencode-ai");
+  fs.mkdirSync(legacy, { recursive: true });
+  fs.writeFileSync(path.join(legacy, "package.json"), '{"version":"1.18.32"}');
+  callDetails.length = 0;
+
+  await installClis("1.0.0", sys);
+
+  const opencodeCalls = callDetails
+    .filter(({ command }) => command === "npm")
+    .map(({ args }) => args)
+    .filter((args) => args.at(-1).includes("opencode"));
+  assert.deepEqual(
+    opencodeCalls.map((args) => [args[0], args.at(-1)]),
+    [
+      ["uninstall", "opencode-ai"],
+      ["install", `@opencode/cli@${pins.opencode.version}`],
+    ],
+  );
+  assert.ok(opencodeCalls[0].includes(`--prefix=${sys.paths.cliPrefix}`));
+  assert.equal(fs.existsSync(legacy), false);
 });

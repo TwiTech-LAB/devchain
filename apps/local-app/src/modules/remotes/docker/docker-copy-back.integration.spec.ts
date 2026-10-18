@@ -1,3 +1,4 @@
+import { sharedVmGuardStub } from '../../../common/test/shared-vm.stub';
 import { createTestDatabase } from '../../../common/test/test-database.helper';
 import { HostDockerVolumeAssociationsStore } from '../host/host-docker-volume-associations.store';
 import { ProjectFreezeService } from '../host/project-freeze.service';
@@ -1319,6 +1320,8 @@ describe('composition', () => {
       unused,
       copyBack,
       {} as never,
+      { assertRemoteEmpty: jest.fn().mockResolvedValue(null) } as never,
+      {} as never,
     );
 
   it('does not copy home during Reset without the optional Disconnect flag', async () => {
@@ -1330,6 +1333,8 @@ describe('composition', () => {
       { steps: [] } as never,
       { steps: [] } as never,
       unused,
+      { assertRemoteEmpty: jest.fn().mockResolvedValue(null) } as never,
+      sharedVmGuardStub(),
     );
     const resetDetails = { projectIds: [PROJECT], force: false };
     const ids = reset.stepsFor(resetDetails).map((step) => step.id);

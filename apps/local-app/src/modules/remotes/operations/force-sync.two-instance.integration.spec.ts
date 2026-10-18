@@ -34,6 +34,7 @@ import { RemoteLiveSyncService } from '../sync/remote-live-sync.service';
 import { RemoteHostClient, RemoteHostRequestError } from './remote-host.client';
 import type { ForceSyncOperationDetails } from './force-sync.operation';
 import { GitOwnerStore, type GitOwner } from '../git-owner.store';
+import { GitCoordinatorStore } from '../git-coordinator/git-coordinator.store';
 import { FileSyncHandoff } from './file-sync-handoff';
 import { HomeGitGuardService } from '../../file-sync/home-git-guard.service';
 
@@ -217,7 +218,7 @@ real('Force sync through two DevChain apps and private Syncthing peers', () => {
         expect(
           await client.request('GET', `/rest/db/ignores?folder=${encodeURIComponent(gitId())}`),
         ).toMatchObject({
-          ignore: ['*.lock', '/hooks', '/index'],
+          ignore: ['*.lock', '/hooks', '/index', '/worktrees'],
         });
       }
     });
@@ -498,6 +499,8 @@ real('Force sync through two DevChain apps and private Syncthing peers', () => {
             chmodSync(join(root, '.git/hooks', name), 0o755);
           }
         pair.home.app.get(GitOwnerStore).set(projectId, 'home');
+        const vmRecord = pair.host.app.get(GitCoordinatorStore);
+        vmRecord.write(projectId, { ...vmRecord.read(projectId), owner: 'home' });
         await pair.home.app.get(FileSyncHandoff).flipBackToHost(remoteId, projectId, false);
       });
       await pausedHomeProblem();
@@ -515,7 +518,7 @@ real('Force sync through two DevChain apps and private Syncthing peers', () => {
       }
       const refused = spawnSync('git', ['-C', vmRoot, 'tag', 'must-refuse'], { encoding: 'utf8' });
       expect(refused.status).not.toBe(0);
-      expect(refused.stderr).toContain('devchain git return');
+      expect(refused.stderr).toContain('DevChain git shim');
       write(homeRoot, 'after-force.txt', 'PC can commit after repair\n');
       git(homeRoot, 'add', 'after-force.txt');
       git(homeRoot, 'commit', '-m', 'PC still owns Git');

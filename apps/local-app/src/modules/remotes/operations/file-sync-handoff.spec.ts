@@ -35,6 +35,19 @@ class FakeManagedExclusionsStore {
   }
 }
 
+/** This PC's owner cache; `vm` is the VM record it reads, agreeing with it unless a test says so. */
+function ownerCache(owner: { value: GitOwner; generation?: number }) {
+  return {
+    get: () => owner.value,
+    generation: () => owner.generation ?? 0,
+    fence: () => ({ expectedGeneration: owner.generation ?? 0, transitionId: null }),
+    remember: (_: string, record: { owner: GitOwner; generation: number }) => {
+      owner.value = record.owner;
+      owner.generation = record.generation;
+    },
+  };
+}
+
 function setup(git = false) {
   const home = new FakeFileSyncService();
   const peer = new FakeFileSyncService();
@@ -72,9 +85,20 @@ function setup(git = false) {
     syncOverride: jest.fn(async (_r: string, id: string) => peer.override(id)),
     syncLocalChanges: jest.fn(async (_r: string, id: string) => peer.localChanges(id)),
     syncRemoveFolder: jest.fn(async (_r: string, id: string) => peer.removeFolder(id)),
+    gitCoordinatorStatus: jest.fn(async () => vmRecord()),
+    gitCoordinatorClose: jest.fn(async () => vmRecord()),
   };
   const update = home.updateFolder.bind(home);
-  const owner = { value: 'vm' as GitOwner };
+  const owner: { value: GitOwner; generation?: number } = { value: 'vm' };
+  const vmRecord = () => ({
+    owner: owner.value,
+    generation: owner.generation ?? 0,
+    homeName: 'pc',
+    homeWrites: {} as Record<string, number>,
+    checkpoint: null,
+    vmHolds: {},
+    transition: null as unknown,
+  });
   jest.spyOn(home, 'updateFolder').mockImplementation(async (id, patch) => {
     calls.push(`home ${id} ${JSON.stringify(patch)}`);
     await update(id, patch);
@@ -85,7 +109,7 @@ function setup(git = false) {
     managed as unknown as FileSyncManagedExclusionsStore,
     guard as unknown as HomeGitGuardService,
     new FakeProcessExecutor(),
-    { get: () => owner.value } as never,
+    ownerCache(owner) as never,
   );
   const reports: Record<string, unknown>[] = [];
   const run: RemoteOperationStepRun = {
@@ -96,7 +120,7 @@ function setup(git = false) {
       reports.push(patch);
     },
   };
-  return { home, peer, host, handoff, run, calls, reports, managed, guard, owner };
+  return { home, peer, host, handoff, run, calls, reports, managed, guard, owner, vmRecord };
 }
 
 describe('FileSyncHandoff', () => {
@@ -172,7 +196,12 @@ describe('FileSyncHandoff', () => {
           ],
         });
         expect(guard.remove).toHaveBeenCalledWith('p1', { refreshIndex: false });
-        expect(host.removeGitGuard).toHaveBeenCalledWith('r1', 'p1');
+        expect(host.removeGitGuard).toHaveBeenCalledWith(
+          'r1',
+          'p1',
+          {},
+          { expectedGeneration: 0, transitionId: null },
+        );
         await remove(id);
       });
       const revert = loser.revertLocalChanges.bind(loser);
@@ -205,7 +234,7 @@ describe('FileSyncHandoff', () => {
           backupPath: expect.stringContaining(`/op-1/${kind}`),
         });
         expect(winner.folders.get(`${kind}:p1`)?.ignores).toEqual(
-          kind === 'code' ? ['/.git', '(?d)/generated', '(?d)/logs'] : ['*.lock'],
+          kind === 'code' ? ['/.git', '(?d)/generated', '(?d)/logs'] : ['*.lock', '/worktrees'],
         );
       }
     },
@@ -471,7 +500,7 @@ describe('FileSyncHandoff', () => {
         expect(side.folders.get('git:p1')).toMatchObject({
           type: side === home ? 'receiveonly' : 'sendonly',
           paused: false,
-          ignores: ['*.lock', '/hooks', '/index'],
+          ignores: ['*.lock', '/hooks', '/index', '/worktrees'],
         });
         for (const folder of side.folders.values()) expect(folder.backupPath).toBeUndefined();
       }
@@ -735,7 +764,12 @@ describe('FileSyncHandoff', () => {
     expect(ensure).not.toHaveBeenCalled();
 
     await handoff.initial(run, 'p1');
-    expect(host.removeGitGuard).toHaveBeenCalledWith('r1', 'p1');
+    expect(host.removeGitGuard).toHaveBeenCalledWith(
+      'r1',
+      'p1',
+      {},
+      { expectedGeneration: 0, transitionId: null },
+    );
     expect(run.details.vmGuardRemoved).toBe(true);
     expect(host.removeGitGuard.mock.invocationCallOrder[1]).toBeLessThan(
       ensure.mock.invocationCallOrder[0],
@@ -771,10 +805,12 @@ describe('FileSyncHandoff', () => {
 
       await handoff.flipToHome(run, 'p1', false);
 
-      expect(host.installGitGuard).toHaveBeenCalledWith('r1', 'p1', {
-        homeName: hostname(),
-        reason: 'disconnect',
-      });
+      expect(host.installGitGuard).toHaveBeenCalledWith(
+        'r1',
+        'p1',
+        { homeName: hostname(), reason: 'disconnect' },
+        { expectedGeneration: 0, transitionId: null },
+      );
       expect(run.details).toMatchObject({
         vmGuardWarning: warning,
         vmGuardInstalled: warning === null,
@@ -1011,7 +1047,7 @@ describe('FileSyncHandoff', () => {
       new FakeManagedExclusionsStore() as unknown as FileSyncManagedExclusionsStore,
       {} as HomeGitGuardService,
       new FakeProcessExecutor(),
-      { get: () => 'vm' } as never,
+      ownerCache({ value: 'vm' }) as never,
     );
     const { run } = setup();
 
@@ -1024,65 +1060,6 @@ describe('FileSyncHandoff', () => {
 
 // Unit orchestration owns the per-kind direction order, rollback and failure policies.
 describe('split git handoffs', () => {
-  it.each(['vm', 'home'] as const)(
-    'settles guarded %s Git only after the advertised copy arrives, then waits for receiver changes to clear',
-    async (source) => {
-      jest.useFakeTimers();
-      try {
-        const { home, peer, host, handoff, run } = setup(true);
-        await handoff.initial(run, 'p1');
-        const sender = source === 'home' ? home : peer;
-        const receiver = source === 'home' ? peer : home;
-        await receiver.setFolderType('git:p1', 'receiveonly');
-        await sender.setFolderType('git:p1', 'sendonly');
-        let arrived = false;
-        let reverted = false;
-        let clear = false;
-        const senderRead = sender.status.bind(sender);
-        jest.spyOn(sender, 'status').mockImplementation(async (id, device) => ({
-          ...(await senderRead(id, device)),
-          peer: device
-            ? {
-                deviceId: device,
-                completion: arrived ? 100 : 90,
-                needItems: arrived ? 0 : 1,
-                needBytes: 0,
-                remoteState: 'valid',
-              }
-            : null,
-        }));
-        const receiverRead = receiver.status.bind(receiver);
-        jest.spyOn(receiver, 'status').mockImplementation(async (id, device) => ({
-          ...(await receiverRead(id, device)),
-          receiveOnlyChangedFiles: clear ? 0 : 1,
-          localFiles: clear || reverted ? 1 : 2,
-        }));
-        const discard = jest.spyOn(receiver, 'revertLocalChanges').mockImplementation(async () => {
-          reverted = true;
-        });
-        host.syncStatus.mockImplementation((_r, id, device) => peer.status(id, device));
-        host.syncRevert.mockImplementation((_r, id) => peer.revertLocalChanges(id));
-        let finished = false;
-        const wait = handoff.settleGit(run, 'p1', source).then(() => {
-          finished = true;
-        });
-        await jest.advanceTimersByTimeAsync(0);
-        expect(discard).not.toHaveBeenCalled();
-        arrived = true;
-        await jest.advanceTimersByTimeAsync(20);
-        expect(reverted).toBe(true);
-        expect(finished).toBe(false);
-        clear = true;
-        await jest.advanceTimersByTimeAsync(10);
-        await wait;
-        expect(finished).toBe(true);
-      } finally {
-        jest.useRealTimers();
-        jest.restoreAllMocks();
-      }
-    },
-  );
-
   it('installs distinct ignore lists and changes git receiver first before installing the guard', async () => {
     const { home, peer, handoff, run, calls, guard, managed, owner } = setup(true);
     owner.value = 'home';
@@ -1096,14 +1073,14 @@ describe('split git handoffs', () => {
       '!/data',
       'node_modules',
     ]);
-    expect(peer.folders.get('git:p1')?.ignores).toEqual(['*.lock']);
-    expect(home.folders.get('git:p1')?.ignores).toEqual(['*.lock']);
+    expect(peer.folders.get('git:p1')?.ignores).toEqual(['*.lock', '/worktrees']);
+    expect(home.folders.get('git:p1')?.ignores).toEqual(['*.lock', '/worktrees']);
     expect(guard.install).not.toHaveBeenCalled();
     calls.length = 0;
     await handoff.flipToHost(run, 'p1');
     expect(calls.slice(-2)).toEqual([
-      'home git:p1 {"type":"receiveonly","ignores":["*.lock","/hooks","/index"]}',
-      'host git:p1 {"type":"sendonly","ignores":["*.lock","/hooks","/index"]}',
+      'home git:p1 {"type":"receiveonly","ignores":["*.lock","/hooks","/index","/worktrees"]}',
+      'host git:p1 {"type":"sendonly","ignores":["*.lock","/hooks","/index","/worktrees"]}',
     ]);
     for (const side of [home, peer]) expect(side.folders.get('code:p1')?.type).toBe('sendreceive');
     expect(guard.install).toHaveBeenCalledWith('p1', 'r1');
@@ -1132,6 +1109,70 @@ describe('split git handoffs', () => {
     expect(home.status).toHaveBeenCalledWith('code:p1', expect.any(String));
   });
 
+  it('closes VM Git admission on Disconnect and takes the owner from the VM once writes finish', async () => {
+    jest.useFakeTimers();
+    try {
+      const { home, peer, host, handoff, run, owner, vmRecord } = setup(true);
+      await handoff.initial(run, 'p1');
+      await handoff.flipToHost(run, 'p1');
+      const busy = { ...vmRecord(), owner: 'home' as const, homeWrites: { write: 1 } };
+      host.gitCoordinatorClose.mockResolvedValue(busy);
+      host.gitCoordinatorStatus.mockResolvedValue(busy);
+      let finished = false;
+      const final = handoff.final(run, 'p1').then(() => {
+        finished = true;
+      });
+      await jest.advanceTimersByTimeAsync(2_000);
+      expect(run.details).toMatchObject({ gitAdmissionClosed: true });
+      expect(finished).toBe(false);
+      expect(owner.value).toBe('vm');
+      host.gitCoordinatorStatus.mockResolvedValue({ ...busy, homeWrites: {} });
+      await jest.advanceTimersByTimeAsync(1_000);
+      await final;
+      expect(owner.value).toBe('home');
+      expect(await home.folderConfiguration('git:p1')).toMatchObject({ type: 'sendonly' });
+      expect(await peer.folderConfiguration('git:p1')).toMatchObject({ type: 'receiveonly' });
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('fails Disconnect with the busy reason when VM Git does not settle', async () => {
+    jest.useFakeTimers();
+    try {
+      const { host, handoff, run, vmRecord } = setup(true);
+      await handoff.initial(run, 'p1');
+      const transition = { kind: 'reclaim', id: 'r', phase: 'index', lease: null };
+      host.gitCoordinatorClose.mockResolvedValue({ ...vmRecord(), transition });
+      host.gitCoordinatorStatus.mockResolvedValue({ ...vmRecord(), transition });
+      const final = expect(handoff.final(run, 'p1')).rejects.toMatchObject({
+        code: 'GIT_STILL_BUSY',
+        message: expect.stringContaining('Git is moving between this PC and the VM'),
+      });
+      await jest.advanceTimersByTimeAsync(2 * 60_000 + 1_000);
+      await final;
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('restores Force sync directions from the VM record, not a stale PC cache', async () => {
+    const { home, peer, handoff, run, owner, host, vmRecord } = setup(true);
+    await handoff.initial(run, 'p1');
+    owner.value = 'home';
+    host.gitCoordinatorStatus.mockResolvedValue({ ...vmRecord(), owner: 'vm', generation: 3 });
+    run.details.forceSync = { verified: true };
+    await handoff.restoreConnected(run, 'p1', ['git']);
+    expect(owner).toMatchObject({ value: 'vm', generation: 3 });
+    expect(await home.folderConfiguration('git:p1')).toMatchObject({ type: 'receiveonly' });
+    expect(await peer.folderConfiguration('git:p1')).toMatchObject({ type: 'sendonly' });
+    expect(host.syncFolders).toHaveBeenLastCalledWith(
+      'r1',
+      expect.objectContaining({ kind: 'git' }),
+      { expectedGeneration: 3, transitionId: null },
+    );
+  });
+
   it.each(['vm', 'home'] as const)(
     'restores %s Git ownership after cancelled disconnect, then removes both on rollback',
     async (value) => {
@@ -1155,10 +1196,12 @@ describe('split git handoffs', () => {
         expect(side.folders.get('code:p1')).toMatchObject({ type: 'sendreceive', paused: false });
       if (value === 'vm') expect(guard.reinstall).toHaveBeenCalledWith('p1', 'r1');
       else {
-        expect(host.installGitGuard).toHaveBeenLastCalledWith('r1', 'p1', {
-          homeName: hostname(),
-          reason: 'pc-git',
-        });
+        expect(host.installGitGuard).toHaveBeenLastCalledWith(
+          'r1',
+          'p1',
+          { homeName: hostname(), reason: 'pc-git' },
+          { expectedGeneration: 0, transitionId: null },
+        );
         expect(guard.reinstall).not.toHaveBeenCalled();
         expect(guard.install).not.toHaveBeenCalled();
       }

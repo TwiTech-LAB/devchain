@@ -4,9 +4,10 @@ import { SessionRuntime } from './session-runtime';
 import { SessionsService } from './sessions.service';
 import type { SessionDetailDto, SessionDto, SessionHistoryResponseDto } from '../dtos/sessions.dto';
 import { ProjectWriteGate } from '../../storage/write-gate/project-write-gate';
+import type { SessionStoppedSource } from '../../events/catalog/session.stopped';
 
 /**
- * Narrow facade over the session lifecycle primitives needed by mobile chat:
+ * Narrow facade over the session lifecycle primitives needed by mobile chat and teams:
  * explicit launch, sequential terminate-then-launch restart, restore, and terminate.
  *
  * Exists so the cloud tunnel can drive lifecycle without importing the broad
@@ -34,7 +35,11 @@ export class SessionLifecycleFacade {
    * its internal acquisition before launch takes its own. There is deliberately
    * no outer/composite lock because the coordinator is non-reentrant.
    */
-  async restart(agentId: string, projectId: string): Promise<SessionDetailDto> {
+  async restart(
+    agentId: string,
+    projectId: string,
+    options?: { source?: SessionStoppedSource },
+  ): Promise<SessionDetailDto> {
     // Refuse before the terminate so a refused launch never leaves the agent stopped.
     this.gate.assertWritable(projectId);
     const activeSessions = await this.sessionsService.listActiveSessions(projectId);
@@ -42,7 +47,7 @@ export class SessionLifecycleFacade {
     if (existing) {
       try {
         await this.sessionsService.terminateSession(existing.id, {
-          source: 'mobile-rpc',
+          source: options?.source ?? 'mobile-rpc',
           reason: 'restart',
         });
       } catch (error) {
@@ -67,9 +72,9 @@ export class SessionLifecycleFacade {
   }
 
   /** Terminate a session. Idempotent: missing/already-stopped is treated as success. */
-  async terminate(sessionId: string): Promise<void> {
+  async terminate(sessionId: string, options?: { source?: SessionStoppedSource }): Promise<void> {
     return this.sessionsService.terminateSession(sessionId, {
-      source: 'mobile-rpc',
+      source: options?.source ?? 'mobile-rpc',
       reason: 'user-requested',
     });
   }

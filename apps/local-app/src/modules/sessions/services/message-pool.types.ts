@@ -10,6 +10,15 @@ export function isMessageDeliveryMode(value: unknown): value is MessageDeliveryM
   return MESSAGE_DELIVERY_MODES.some((mode) => mode === value);
 }
 
+/** Refusal codes of a `commandGuard` enqueue; callers may pass them through to their caller. */
+export const COMMAND_GUARD_ERRORS = ['SESSION_CHANGED', 'AGENT_BUSY', 'HUMAN_TYPING'] as const;
+
+export type CommandGuardError = (typeof COMMAND_GUARD_ERRORS)[number];
+
+export function isCommandGuardError(value: unknown): value is CommandGuardError {
+  return COMMAND_GUARD_ERRORS.some((code) => code === value);
+}
+
 export function deliveryModeFromLegacyImmediate(value: unknown): MessageDeliveryMode {
   return value === true || value === 'true' ? 'immediate' : 'default';
 }
@@ -52,6 +61,8 @@ export interface EnqueueOptions {
   senderAgentId?: string;
   deliveryMode?: MessageDeliveryMode;
   immediate?: boolean;
+  /** Deliver raw command text only to this exact idle session; never defer or batch. */
+  commandGuard?: { sessionId: string };
   projectId?: string;
   agentName?: string;
   failureDisclosure?: FailureDisclosurePolicy;

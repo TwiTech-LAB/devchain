@@ -35,6 +35,7 @@ import type {
   ClaimRemoteData,
   InstallHostData,
   ProviderAuthSelection,
+  DisconnectAllData,
 } from './remote-operation.dto';
 import { RemoteOperationRunner } from './remote-operation.runner';
 import { HOST_LIFECYCLE_KINDS, VM_LIFECYCLE_KINDS } from './remote-operation.types';
@@ -46,16 +47,11 @@ import { SshKeyService } from '../host-install/ssh-key.service';
 import { ConnectChoicesStore } from '../connect-choices.store';
 import { RemoteFileSyncService } from '../sync/remote-file-sync.service';
 import type { ForceSyncSource } from './remote-operation.dto';
-import { GitOwnerOperation } from './git-owner.operation';
-import { GitOwnerStore, type GitOwner } from '../git-owner.store';
+import { GitOwnerStore } from '../git-owner.store';
 import { RemoteHostClient } from './remote-host.client';
-import { RemoteOperationStepRefusedError } from './remote-operation.errors';
-import { TURN_FALLBACK_IDLE_MS } from '../../terminal/services/terminal-activity.service';
-import {
-  type GitOwnerStartResult,
-  type GitOwnerStatus,
-  type GitSwitchAgent,
-} from './git-owner.dto';
+import { findBatchChild, type DisconnectAllDetails } from './disconnect-all.operation';
+import { isSharedVmGuardedKind, type SharedVmRetryConfirmation } from '../dtos/shared-vm.dto';
+import type { GitOwnerStatus } from './git-owner.dto';
 
 const logger = createLogger('RemoteOperationsService');
 
@@ -73,129 +69,55 @@ export class RemoteOperationsService {
     @Inject(REMOTE_HEALTH_PORT) private readonly health: RemoteHealthPort,
     private readonly choices: ConnectChoicesStore,
     private readonly files: RemoteFileSyncService,
-    private readonly gitSwitch: GitOwnerOperation,
     private readonly gitOwners: GitOwnerStore,
     private readonly host: RemoteHostClient,
   ) {}
 
-  async gitOwner(
-    remoteId: string,
-    projectId: string,
-    owner: GitOwner,
-    force: boolean,
-  ): Promise<GitOwnerStartResult> {
-    requireRemoteAddress(await this.storage.getRemote(remoteId));
-    await this.assertNoOpenVmOperation(remoteId);
-    await this.storage.getProject(projectId);
-    if (owner === 'vm' && force)
-      throw new RemoteOperationStepRefusedError(
-        'GIT_RETURN_FORCE_UNSUPPORTED',
-        'Return does not support --force. Run `devchain git return`.',
-      );
-    const [open] = await this.storage.listRemoteOperations({
-      projectId,
-      states: ['running', 'failed'],
-      limit: 1,
-    });
-    let cancelledOperationId: string | undefined;
-    if (open) {
-      if (open.kind !== 'git_owner' || open.remoteId !== remoteId)
-        throw inProgress(open, 'Another operation is open for this project.');
-      if (open.state === 'running') return open;
-      await this.runner.whenIdle(open.id);
-      const current = await this.storage.getRemoteOperation(open.id);
-      if (current.state === 'running') return current;
-      if (current.state === 'failed') {
-        if (current.details.owner === owner && (current.details.force === true) === force)
-          return this.retry(current.id);
-        // After git_flip has started, the cancel refuses with GIT_SWITCH_UNFINISHED.
-        await this.runner.cancel(current.id);
-        cancelledOperationId = current.id;
-      }
-    }
-    const binding = await this.storage.getRemoteProjectBinding(projectId);
-    if (binding?.state !== 'remote' || binding.remoteId !== remoteId)
-      throw new RemoteOperationStepRefusedError(
-        'GIT_PROJECT_NOT_CONNECTED',
-        'The project must be connected to this VM to move Git.',
-        { projectId, remoteId },
-      );
-    if (this.gitOwners.get(projectId) === owner)
-      return { owner, changed: false, ...(cancelledOperationId && { cancelledOperationId }) };
-    await this.gitSwitch.validate(remoteId, projectId);
-    const unknownAgents: GitSwitchAgent[] = [];
-    if (owner === 'home' && !force) {
-      let busy: GitSwitchAgent[];
-      try {
-        const sessions = await this.host.listSessions(remoteId, projectId);
-        busy = [];
-        for (const session of sessions) {
-          if (session.status !== 'running' || !session.agentId || session.activityState === 'idle')
-            continue;
-          const agent = await this.storage.getAgent(session.agentId);
-          const starting =
-            session.activityState !== 'busy' &&
-            Date.now() - Date.parse(session.startedAt) < TURN_FALLBACK_IDLE_MS;
-          const state =
-            session.activityState === 'busy' ? 'busy' : starting ? 'starting' : 'unknown';
-          const info: GitSwitchAgent = {
-            agentName: agent.name,
-            state,
-            since: state === 'busy' ? (session.busySince ?? session.startedAt) : session.startedAt,
-          };
-          if (state === 'unknown') unknownAgents.push(info);
-          else busy.push(info);
-        }
-      } catch (error) {
-        logger.warn({ error, projectId, remoteId }, 'VM agent sessions could not be checked');
-        throw new RemoteOperationStepRefusedError(
-          'GIT_TAKE_AGENTS_UNKNOWN',
-          'Agent sessions on the VM could not be checked. Try again, or use `devchain git take --force`.',
-        );
-      }
-      if (busy.length)
-        throw new RemoteOperationStepRefusedError(
-          'GIT_TAKE_AGENTS_BUSY',
-          'Agents on the VM are busy or starting. Wait for them to finish, or use `devchain git take --force`.',
-          { agents: busy },
-        );
-    }
-    return this.runner.start({
-      kind: 'git_owner',
-      remoteId,
-      projectId,
-      details: { owner, force, unknownAgents },
-    });
-  }
-
+  /** The VM record is the authority; this PC's cached owner and generation answer when it cannot be read. */
   async gitOwnerStatus(projectId: string): Promise<GitOwnerStatus> {
     await this.storage.getProject(projectId);
     const binding = await this.storage.getRemoteProjectBinding(projectId);
-    const [operation] = await this.storage.listRemoteOperations({
-      projectId,
-      kinds: ['git_owner'],
-      states: ['running', 'failed'],
-      limit: 1,
-    });
-    const remote = binding ? await this.storage.getRemote(binding.remoteId) : null;
-    const step =
-      operation?.steps.find((item) => item.state === 'running' || item.state === 'failed') ??
-      operation?.steps.find((item) => item.state === 'pending');
+    if (binding?.state !== 'remote') {
+      return {
+        connected: false,
+        remoteId: null,
+        remoteName: null,
+        owner: 'home',
+        generation: 0,
+        live: false,
+        homeWrites: 0,
+        vmHolds: 0,
+        transition: null,
+        checkpoint: null,
+        warnings: [],
+      };
+    }
+    const remote = await this.storage.getRemote(binding.remoteId);
+    const warnings: string[] = [];
+    const syncWarning = this.files.warning(projectId);
+    if (syncWarning) warnings.push(syncWarning);
+    const record = await this.host
+      .gitCoordinatorStatus(binding.remoteId, projectId)
+      .catch((error: unknown) => {
+        logger.warn({ error, projectId }, 'VM Git record could not be read');
+        warnings.push("The VM could not be reached. Showing this PC's last known Git owner.");
+        return null;
+      });
+    if (record?.closed) warnings.push('The project is disconnecting; new Git writes wait.');
     return {
-      connected: binding?.state === 'remote',
-      remoteId: binding?.remoteId ?? null,
-      remoteName: remote?.name ?? null,
-      owner: binding ? this.gitOwners.get(projectId) : 'home',
-      open: operation
-        ? {
-            operationId: operation.id,
-            owner: operation.details.owner as GitOwner,
-            force: operation.details.force === true,
-            state: operation.state === 'failed' ? 'failed' : 'running',
-            step: step?.id ?? null,
-            error: step?.error ?? null,
-          }
+      connected: true,
+      remoteId: binding.remoteId,
+      remoteName: remote.name,
+      owner: record?.owner ?? this.gitOwners.get(projectId),
+      generation: record?.generation ?? this.gitOwners.generation(projectId),
+      live: record !== null,
+      homeWrites: Object.keys(record?.homeWrites ?? {}).length,
+      vmHolds: Object.keys(record?.vmHolds ?? {}).length,
+      transition: record?.transition
+        ? { kind: record.transition.kind, phase: record.transition.phase }
         : null,
+      checkpoint: record?.checkpoint ?? null,
+      warnings,
     };
   }
 
@@ -257,13 +179,19 @@ export class RemoteOperationsService {
   async installHost(input: InstallHostData): Promise<RemoteOperation> {
     // The claim would refuse this only after the full install; check it now
     // so a refusal costs no SSH connection and names the rule and the value.
-    assertClaimableIdentity();
+    const identity = assertClaimableIdentity();
     const resolvedSsh = await this.sshKeys.resolve(input.ssh);
     const port = getEnvConfig().PORT;
     const source = new URL(input.address);
     source.protocol = 'https:';
     source.port = '3000';
-    const prepared = await this.prepareAddressRemote(source.origin, input.name, port);
+    const prepared = await this.prepareAddressRemote(
+      source.origin,
+      input.name ?? `${source.hostname} (${identity.user})`,
+      port,
+      null,
+      false,
+    );
     await this.assertNoOpenHostOperation(prepared.remote.id);
     const claim = await this.claimDetails({
       bootstrapUrl: prepared.bootstrapUrl,
@@ -330,6 +258,7 @@ export class RemoteOperationsService {
     await this.assertNoOpenHostOperation(remoteId);
     const health = await this.health.refresh(remoteId);
     const optedIn = (await this.lastInstallDockerChoice(remoteId)) === true;
+    const npmRegistry = getEnvConfig().HOST_NPM_REGISTRY;
     const details: UpdateHostDetails = {
       version: getAppVersion(),
       versionChange: health.version !== getAppVersion(),
@@ -337,6 +266,7 @@ export class RemoteOperationsService {
       dockerChange:
         installDocker === true &&
         (!optedIn || !(health.docker?.installed && health.docker.userInGroup)),
+      ...(npmRegistry ? { npmRegistry } : {}),
     };
     return this.runner.start({
       kind: 'update_host',
@@ -499,33 +429,76 @@ export class RemoteOperationsService {
     if (current.kind === 'detach' && !force) {
       throw inProgress(current, 'A disconnect failed; retry it or force a new disconnect.');
     }
-    if ((current.kind === 'force_sync' || current.kind === 'git_owner') && !force) {
-      throw inProgress(
-        current,
-        `${current.kind === 'git_owner' ? 'The Git switch' : 'Force sync'} failed; retry it, or force a disconnect.`,
-      );
+    if (current.kind === 'force_sync' && !force) {
+      throw inProgress(current, 'Force sync failed; retry it, or force a disconnect.');
     }
-    if (
-      current.kind !== 'attach' &&
-      current.kind !== 'detach' &&
-      current.kind !== 'force_sync' &&
-      current.kind !== 'git_owner'
-    ) {
+    if (current.kind !== 'attach' && current.kind !== 'detach' && current.kind !== 'force_sync') {
       throw inProgress(current, 'Another operation is open for this project.');
     }
     return this.runner.supersede(current, { supersededAt: new Date().toISOString() });
   }
 
-  list(filter: {
+  async disconnectAll(remoteId: string, input: DisconnectAllData): Promise<RemoteOperation> {
+    await this.storage.getRemote(remoteId);
+    await this.assertNoOpenHostOperation(remoteId);
+    const details: DisconnectAllDetails = {
+      force: input.force,
+      projects: input.projects.map((project) => ({
+        projectId: project.projectId,
+        operationId: randomUUID(),
+        ...(!input.force &&
+          project.dockerCopyBack && {
+            dockerCopyBack: structuredClone(project.dockerCopyBack),
+          }),
+      })),
+    };
+    return this.runner.start({
+      kind: 'disconnect_all',
+      remoteId,
+      projectId: null,
+      details: details as unknown as Record<string, unknown>,
+    });
+  }
+
+  private async assertChildNotOwned(operation: RemoteOperation): Promise<void> {
+    const parentId = operation.details.parentOperationId;
+    if (typeof parentId !== 'string') return;
+    const parent = await this.storage.getRemoteOperation(parentId);
+    if (parent.state === 'running' || parent.state === 'failed') {
+      throw new ConflictError(
+        'Use Retry or Cancel on Disconnect all while it owns this Disconnect.',
+        {
+          code: 'REMOTE_OPERATION_OWNED_BY_PARENT',
+          operationId: operation.id,
+          parentOperationId: parentId,
+        },
+      );
+    }
+  }
+
+  async list(filter: {
     projectId?: string;
     state?: RemoteOperationState;
     limit?: number;
-  }): Promise<RemoteOperation[]> {
-    return this.storage.listRemoteOperations({
+  }): Promise<Array<RemoteOperation & { children?: RemoteOperation[] }>> {
+    const operations = await this.storage.listRemoteOperations({
       projectId: filter.projectId,
       states: filter.state ? [filter.state] : undefined,
       limit: filter.limit,
     });
+    return Promise.all(
+      operations.map(async (operation) => {
+        if (operation.kind !== 'disconnect_all') return operation;
+        const batch = operation.details as unknown as DisconnectAllDetails;
+        const children = await Promise.all(
+          batch.projects.map(({ operationId }) => findBatchChild(this.storage, operationId)),
+        );
+        return {
+          ...operation,
+          children: children.filter((child): child is RemoteOperation => child !== null),
+        };
+      }),
+    );
   }
 
   get(id: string): Promise<RemoteOperation> {
@@ -540,13 +513,10 @@ export class RemoteOperationsService {
     id: string,
     providerAuth?: ProviderAuthSelection,
     ssh?: InstallHostData['ssh'],
+    vm?: SharedVmRetryConfirmation,
   ): Promise<RemoteOperation> {
     const operation = await this.storage.getRemoteOperation(id);
-    // A switch that just failed may still be finishing; a running one is refused at once below.
-    if (operation.kind === 'git_owner' && operation.state === 'failed') {
-      await this.runner.whenIdle(id);
-      await this.gitSwitch.validate(operation.remoteId, operation.projectId!, operation);
-    }
+    await this.assertChildNotOwned(operation);
     const mismatch = claimIdentityMismatch(operation.kind, operation.details);
     if (mismatch) {
       throw new ValidationError(mismatch, {
@@ -576,6 +546,25 @@ export class RemoteOperationsService {
     }
     if (providerAuth && Object.keys(providerAuth).length > 0) {
       await this.replaceFailedChoices(id, providerAuth);
+    }
+    if (vm) {
+      if (!isSharedVmGuardedKind(operation.kind) || operation.state !== 'failed') {
+        throw new ValidationError('VM confirmation applies only to a failed Reset or Destroy.');
+      }
+      const current = await this.storage.getRemoteOperation(id);
+      await this.storage.updateRemoteOperation(id, {
+        expectedState: 'failed',
+        details: {
+          ...current.details,
+          force: current.details.force === true || vm.force === true,
+          forceOccupied: vm.forceOccupied ?? current.details.forceOccupied,
+          confirmedOccupancy: vm.confirmedOccupancy ?? current.details.confirmedOccupancy,
+        },
+      });
+      if (vm.forceOccupied || vm.force)
+        await this.host
+          .sharedVmNotify(operation.remoteId, { action: 'forced' })
+          .catch(() => undefined);
     }
     return this.runner.retry(id);
   }
@@ -621,14 +610,17 @@ export class RemoteOperationsService {
     name: string | undefined,
     port: number,
     tlsCertificate: string | null = null,
+    reuseExisting = true,
   ): Promise<{ remote: Remote; bootstrapUrl: string }> {
     const url = new URL(origin);
     const bootstrapUrl = url.origin;
     url.port = String(port);
     const devchainUrl = url.origin;
-    const existing = (await this.storage.listRemotes({ limit: 500 })).items.find(
-      (item) => item.baseUrl === devchainUrl,
-    );
+    const existing = reuseExisting
+      ? (await this.storage.listRemotes({ limit: 500 })).items.find(
+          (item) => item.baseUrl === devchainUrl,
+        )
+      : undefined;
     const remote =
       existing ??
       (await this.storage.createRemote({
@@ -723,7 +715,8 @@ export class RemoteOperationsService {
     if (open) throw inProgress(open, 'A VM lifecycle operation is open for this remote.');
   }
 
-  cancel(id: string): Promise<RemoteOperation> {
+  async cancel(id: string): Promise<RemoteOperation> {
+    await this.assertChildNotOwned(await this.storage.getRemoteOperation(id));
     return this.runner.cancel(id);
   }
 }

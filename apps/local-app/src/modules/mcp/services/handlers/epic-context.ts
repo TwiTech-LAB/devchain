@@ -2,12 +2,13 @@ import type {
   EpicStorage,
   StatusStorage,
   AgentStorage,
+  WorktreeStorage,
 } from '../../../storage/interfaces/storage.interface';
 import type { EpicsService } from '../../../epics/services/epics.service';
 import type { EpicRelationsService } from '../../../epics/services/epic-relations.service';
 import type { McpResponse } from '../../dtos/mcp.dto';
 
-export type EpicToolStorage = EpicStorage & StatusStorage & AgentStorage;
+export type EpicToolStorage = EpicStorage & StatusStorage & AgentStorage & WorktreeStorage;
 
 export interface EpicToolContext {
   storage: EpicToolStorage;

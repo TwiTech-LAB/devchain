@@ -1,6 +1,6 @@
 import { X509Certificate } from 'node:crypto';
 import { spawn, spawnSync } from 'node:child_process';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { resetEnvConfig } from '../../common/config/env.config';
 import { FakeBootstrapServer } from '../../common/test/fake-bootstrap.server';
@@ -13,6 +13,7 @@ import {
 import type { RemoteOperation } from '../storage/models/domain.models';
 import { ProviderAuthWritebackService } from '../provider-auth/provider-auth-writeback.service';
 import { ProviderAuthVaultService } from '../provider-auth/provider-auth-vault.service';
+import { HostHelperService } from '../remotes/host/host-helper.service';
 import { RemoteHostClient } from '../remotes/operations/remote-host.client';
 import type { ConnectProxmoxPlacement } from './vm-providers.service';
 
@@ -93,6 +94,55 @@ describeWithBootstrapPort('Proxmox create and reset through two DevChain instanc
   let bootstrap: FakeBootstrapServer;
   const savedEnv = new Map<string, string | undefined>();
 
+  /**
+   * Writes what the real bootstrap writes at a claim, so the VM can check home's key: the
+   * Reset and Destroy guards read the VM roster, which needs the key even on loopback. A
+   * claimed homePath is under /home/, so the key digest goes to a home this test owns.
+   */
+  function writeClaim(body: Record<string, unknown>): void {
+    const files = (body.providerAuth as { files: Array<{ path: string; contentBase64: string }> })
+      .files;
+    const keyFile = files.find((file) => file.path.endsWith('/.devchain/host-api-key'));
+    const claimHome = join(instances.rootDir, 'claim-home');
+    const keyPath = join(claimHome, '.devchain', 'host-api-key');
+    mkdirSync(join(claimHome, '.devchain'), { recursive: true });
+    // The proof script claims without a key, as a claim from outside DevChain does.
+    if (keyFile) writeFileSync(keyPath, Buffer.from(keyFile.contentBase64, 'base64'));
+    else rmSync(keyPath, { force: true });
+    writeFileSync(
+      join(instances.rootDir, 'host-etc', 'claim.json'),
+      JSON.stringify({
+        userName: body.userName,
+        homePath: claimHome,
+        version: body.version,
+        port: body.port,
+      }),
+    );
+    claimedUser = String(body.userName);
+  }
+  let claimedUser = 'vmuser';
+
+  /** The destroy fence runs the root helper through sudo; the fake VM answers as it does. */
+  function stubDestroyFence(): void {
+    jest
+      .spyOn(instances.host.app.get(HostHelperService), 'destroyFence')
+      .mockImplementation(async (mode, operationId) => ({
+        fence:
+          mode === 'clear'
+            ? null
+            : {
+                ownerUser: claimedUser,
+                operationId,
+                expiresAt: new Date(Date.now() + 30 * 60_000).toISOString(),
+              },
+      }));
+  }
+
+  async function replaceHost(): Promise<void> {
+    await instances.replaceHost();
+    stubDestroyFence();
+  }
+
   beforeAll(async () => {
     for (const key of ['PORT', 'HOST_IMAGE_URL', 'HOST_IMAGE_SHA256', 'DEVCHAIN_HOST_ETC_DIR']) {
       savedEnv.set(key, process.env[key]);
@@ -103,7 +153,7 @@ describeWithBootstrapPort('Proxmox create and reset through two DevChain instanc
     process.env.HOST_IMAGE_URL = proxmox.imageUrl;
     process.env.HOST_IMAGE_SHA256 = proxmox.imageSha256;
     resetEnvConfig();
-    bootstrap = new FakeBootstrapServer();
+    bootstrap = new FakeBootstrapServer({ claim: async (body) => writeClaim(body) });
     await bootstrap.listen({ host: VM_IP, port: BOOTSTRAP_PORT });
     proxmox.guestCertificate = bootstrap.certificate;
     instances = await startTwoInstances({
@@ -116,10 +166,11 @@ describeWithBootstrapPort('Proxmox create and reset through two DevChain instanc
     writeFileSync(join(etcDir, 'claim.json'), '{}');
     process.env.DEVCHAIN_HOST_ETC_DIR = etcDir;
     resetEnvConfig();
+    stubDestroyFence();
     proxmox.onDelete = async (vmid) => {
       if (vmid === 199) throw new Error('Outside-pool VM must never be deleted');
       bootstrap.version = null;
-      await instances.replaceHost();
+      await replaceHost();
     };
   }, 60_000);
 
@@ -549,7 +600,7 @@ describeWithBootstrapPort('Proxmox create and reset through two DevChain instanc
     proxmox.onDelete = async (vmid) => {
       if (vmid === 199) throw new Error('Outside-pool VM must never be deleted');
       bootstrap.version = null;
-      await instances.replaceHost();
+      await replaceHost();
     };
     const connection = await instances.home.storage.createVmProviderConnection({
       kind: 'proxmox',

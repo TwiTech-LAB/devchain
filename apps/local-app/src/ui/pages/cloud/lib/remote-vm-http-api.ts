@@ -2,7 +2,10 @@ import { FileSyncAutoFixSchema } from '@/modules/file-sync/file-sync-auto-fix.dt
 import { FILE_SYNC_IGNORES_CHANGED } from '@/modules/file-sync/file-sync.dto';
 import { ProviderAuthApiError, FileListChangedError } from './remote-vm-errors';
 import { HOME_BACKEND, apiFetch } from '@/ui/lib/api-transport';
+import { SHARED_VM_GUARD_CODE } from '@/modules/remotes/dtos/shared-vm.dto';
 import type { RemoteVmApi } from './remote-vm-api';
+import { SharedVmGuardApiError } from './remote-vm-errors';
+import type { SharedVmGuardContext, SharedVmNotifyResult } from './remote-vm-contracts';
 import type {
   ProviderAuthEntryItem,
   ImportResult,
@@ -28,6 +31,8 @@ import type {
   CreateRemoteInput,
   CreateVmRequestBody,
   DetachProjectRequest,
+  DisconnectAllRequest,
+  RemoteProjectLanes,
   ForceSyncRequest,
   HomeIdentity,
   InstallHostRequestBody,
@@ -43,10 +48,12 @@ import type {
   RemoteProjectBindingRow,
   RemoteReadinessDto,
   RemoteStatsHistoryDto,
+  SyncDevice,
   ResetVmRequestBody,
   RetryOperationRequest,
   UpdateLoginsRequestBody,
   VmProviderConnectionView,
+  RemoteNoticeDto,
 } from './remote-vm-contracts';
 
 /** The server's `message` from an error response, or `fallback`. */
@@ -69,6 +76,9 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await home(path, init);
   if (!response.ok) {
     const body = await response.json().catch(() => null);
+    if (body?.code === SHARED_VM_GUARD_CODE) {
+      throw new SharedVmGuardApiError(body.message, body.details as SharedVmGuardContext);
+    }
     throw new Error(body?.message ?? `Remote operation request failed (${response.status})`);
   }
   return response.json() as Promise<T>;
@@ -180,6 +190,17 @@ export class RemoteVmHttpApi implements RemoteVmApi {
     return body.items ?? [];
   }
 
+  async listNotices(signal: AbortSignal): Promise<RemoteNoticeDto[]> {
+    const res = await home('/api/remotes/notices', { signal });
+    await okOrThrow(res, 'Could not read VM notices.');
+    return ((await res.json()) as { notices?: RemoteNoticeDto[] }).notices ?? [];
+  }
+
+  async dismissNotice(remoteId: string, id: string): Promise<void> {
+    const res = await home(`/api/remotes/${remoteId}/notices/dismiss`, jsonPost({ id }));
+    await okOrThrow(res, 'Could not dismiss the notice.');
+  }
+
   async createRemote(input: CreateRemoteInput): Promise<RemoteListItemDto> {
     const res = await home('/api/remotes', jsonPost(input));
     await okOrThrow(res, 'Failed to add the VM');
@@ -205,6 +226,12 @@ export class RemoteVmHttpApi implements RemoteVmApi {
       throw new Error('Could not check this PC: the answer was incomplete.');
     }
     return body as RemoteReadinessDto;
+  }
+
+  async readSyncthingDevice(remoteId: string, signal: AbortSignal): Promise<SyncDevice | null> {
+    const response = await apiFetch('/api/host/sync/device', { signal }, { backend: remoteId });
+    if (!response.ok) return null;
+    return response.json() as Promise<SyncDevice>;
   }
 
   async readStatsHistory(remoteId: string, signal: AbortSignal): Promise<RemoteStatsHistoryDto> {
@@ -287,6 +314,23 @@ export class RemoteVmHttpApi implements RemoteVmApi {
     );
   }
 
+  disconnectAll(remoteId: string, input: DisconnectAllRequest): Promise<RemoteOperationDto> {
+    return request(`/api/remotes/${encodeURIComponent(remoteId)}/disconnect-all`, jsonPost(input));
+  }
+
+  async readRemoteProjectLanes(
+    remoteId: string,
+    projectId: string,
+    signal?: AbortSignal,
+  ): Promise<RemoteProjectLanes> {
+    const response = await home(
+      `/r/${encodeURIComponent(remoteId)}/api/host/projects/${encodeURIComponent(projectId)}/worktrees`,
+      { signal },
+    );
+    await okOrThrow(response, 'Could not check lanes on the VM.');
+    return response.json() as Promise<RemoteProjectLanes>;
+  }
+
   updateHost(remoteId: string, input?: { installDocker: true }): Promise<RemoteOperationDto> {
     return request(`/api/remotes/${remoteId}/update`, jsonPost(input));
   }
@@ -303,8 +347,22 @@ export class RemoteVmHttpApi implements RemoteVmApi {
     return request(`/api/remotes/${remoteId}/reset`, jsonPost(input));
   }
 
-  destroyVm(remoteId: string, input: { force: boolean }): Promise<RemoteOperationDto> {
+  destroyVm(
+    remoteId: string,
+    input: import('./remote-vm-contracts').SharedVmForceRequest,
+  ): Promise<RemoteOperationDto> {
     return request(`/api/remotes/${remoteId}/destroy-vm`, jsonPost(input));
+  }
+
+  readSharedVm(remoteId: string, signal: AbortSignal): Promise<SharedVmGuardContext> {
+    return request(`/api/remotes/${remoteId}/shared-vm`, { signal });
+  }
+
+  notifySharedVm(
+    remoteId: string,
+    input: { action: 'reset' | 'destroy'; message?: string },
+  ): Promise<SharedVmNotifyResult> {
+    return request(`/api/remotes/${remoteId}/shared-vm/notify`, jsonPost(input));
   }
 
   updateLogins(remoteId: string, input: UpdateLoginsRequestBody): Promise<RemoteOperationDto> {
@@ -319,6 +377,7 @@ export class RemoteVmHttpApi implements RemoteVmApi {
     const body = {
       ...(input?.providerAuth ? { providerAuth: input.providerAuth } : {}),
       ...(input?.ssh ? { ssh: input.ssh } : {}),
+      ...(input?.vm ? { vm: input.vm } : {}),
     };
     return request(
       `/api/remotes/operations/${operationId}/retry`,

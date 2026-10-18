@@ -34,7 +34,15 @@ interface CodexProjectTrustContext {
   env?: Record<string, string>;
 }
 
+export type CodexPluginDefaultReadResult =
+  | { success: true; defined: boolean }
+  | { success: false; reason: 'read_failed' | 'invalid' };
+
 type ConfigParseResult = { success: true; value: Record<string, unknown> } | { success: false };
+
+type ConfigReadResult =
+  | { success: true; content: string; value: Record<string, unknown> }
+  | { success: false; reason: 'read_failed' | 'invalid' };
 
 const writeTails = new Map<string, Promise<void>>();
 
@@ -50,6 +58,14 @@ function resolveCodexHome(
   const codexHome = context?.env?.CODEX_HOME || process.env.CODEX_HOME;
   if (codexHome) return resolve(projectPath, codexHome);
   return resolve(projectPath, context?.env?.HOME || homedir(), '.codex');
+}
+
+/** The `config.toml` that Codex reads for this launch env. */
+export function resolveCodexConfigPath(
+  context: CodexProjectTrustContext | undefined,
+  projectPath: string,
+): string {
+  return join(resolveCodexHome(context, projectPath), 'config.toml');
 }
 
 async function resolveProjectIdentities(projectPath: string): Promise<string[]> {
@@ -69,6 +85,36 @@ function parseConfig(raw: string): ConfigParseResult {
   } catch {
     return { success: false };
   }
+}
+
+/** A missing file reads as an empty config. */
+async function readConfig(configPath: string): Promise<ConfigReadResult> {
+  let content: string;
+  try {
+    content = await readFile(configPath, 'utf-8');
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+      return { success: false, reason: 'read_failed' };
+    }
+    content = '';
+  }
+  const parsed = parseConfig(content);
+  return parsed.success
+    ? { success: true, content, value: parsed.value }
+    : { success: false, reason: 'invalid' };
+}
+
+/**
+ * Whether a Codex `config.toml` defines a `plugins._default` table in any TOML form.
+ * A missing file counts as not defined.
+ */
+export async function readCodexPluginDefault(
+  configPath: string,
+): Promise<CodexPluginDefaultReadResult> {
+  const config = await readConfig(configPath);
+  if (!config.success) return config;
+  const plugins = config.value.plugins;
+  return { success: true, defined: isObjectRecord(plugins) && isObjectRecord(plugins._default) };
 }
 
 function isProjectTrusted(config: Record<string, unknown>, projectPath: string): boolean {
@@ -272,26 +318,17 @@ async function updateProjectTrust(
 ): Promise<CodexProjectTrustResult> {
   await mkdir(dirname(configPath), { recursive: true, mode: DEFAULT_CODEX_HOME_MODE });
 
-  let content: string;
-  try {
-    content = await readFile(configPath, 'utf-8');
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
-      content = '';
-    } else {
-      return failed('CODEX_TRUST_CONFIG_READ_FAILED', 'Codex config could not be read.');
-    }
-  }
-
-  const current = parseConfig(content);
+  const current = await readConfig(configPath);
   if (!current.success) {
-    return failed('CODEX_TRUST_CONFIG_INVALID', 'Codex config contains invalid TOML.');
+    return current.reason === 'invalid'
+      ? failed('CODEX_TRUST_CONFIG_INVALID', 'Codex config contains invalid TOML.')
+      : failed('CODEX_TRUST_CONFIG_READ_FAILED', 'Codex config could not be read.');
   }
 
   const missingPaths = projectPaths.filter((path) => !isProjectTrusted(current.value, path));
   if (missingPaths.length === 0) return { success: true };
 
-  let updatedContent = content;
+  let updatedContent = current.content;
   for (const projectPath of missingPaths) {
     updatedContent = applyProjectTrust(updatedContent, projectPath);
   }
@@ -351,7 +388,7 @@ export async function ensureCodexProjectTrusted(
 ): Promise<CodexProjectTrustResult> {
   try {
     const projectPaths = await resolveProjectIdentities(projectPath);
-    const configPath = join(resolveCodexHome(context, projectPaths[0]), 'config.toml');
+    const configPath = resolveCodexConfigPath(context, projectPaths[0]);
     return await enqueueFileMutation(configPath, () =>
       updateProjectTrust(configPath, projectPaths),
     );

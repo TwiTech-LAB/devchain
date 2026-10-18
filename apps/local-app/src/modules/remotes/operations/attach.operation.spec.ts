@@ -10,8 +10,13 @@ import type { RemoteOperation } from '../../storage/models/domain.models';
 import { FakeProcessExecutor } from '../../terminal/services/process-executor/fake-process-executor';
 import { FakeFileSyncService } from '../../file-sync/testing/fake-file-sync.service';
 import { AttachOperation } from './attach.operation';
+import { buildClaudeUserInstructionsFile } from './claude-user-instructions';
 import { FileSyncHandoff } from './file-sync-handoff';
 import { RemoteHostRequestError, type RemoteHostClient } from './remote-host.client';
+
+// The step must never read the developer's real ~/.claude/CLAUDE.md.
+jest.mock('./claude-user-instructions');
+const buildClaudeFile = jest.mocked(buildClaudeUserInstructionsFile);
 
 const HOST_FROZEN_AT = '2026-09-22T10:00:00.000Z';
 // Home runs five minutes ahead of the host; a home-made cursor would carry this time.
@@ -50,6 +55,7 @@ function makeOperation(
     {} as never,
     executor,
     { clear: jest.fn() } as never,
+    { assertLocalEmpty: jest.fn().mockResolvedValue(null) } as never,
   );
 }
 
@@ -145,6 +151,7 @@ describe('AttachOperation preflight home gate', () => {
       {} as never,
       new FakeProcessExecutor(),
       { clear: jest.fn() } as never,
+      { assertLocalEmpty: jest.fn().mockResolvedValue(null) } as never,
     );
   }
 
@@ -313,6 +320,7 @@ describe('AttachOperation rollback managed exclusions', () => {
       docker as never,
       new FakeProcessExecutor(),
       { clear: jest.fn() } as never,
+      { assertLocalEmpty: jest.fn().mockResolvedValue(null) } as never,
     );
   }
 
@@ -351,7 +359,7 @@ describe('AttachOperation rollback managed exclusions', () => {
       { get: () => [] } as never,
       { remove: async () => ({ removed: false, indexRefreshed: null, warning: null }) } as never,
       new FakeProcessExecutor(),
-      { get: () => 'vm' } as never,
+      { get: () => 'vm', fence: () => ({ expectedGeneration: 0, transitionId: null }) } as never,
     );
     const details: Record<string, unknown> = { pushStarted: true };
     const started = { id: 'file_sync_initial', state: 'running', startedAt: HOST_FROZEN_AT };
@@ -612,6 +620,7 @@ describe('AttachOperation Docker steps', () => {
       docker as never,
       new FakeProcessExecutor(),
       { clear: jest.fn() } as never,
+      { assertLocalEmpty: jest.fn().mockResolvedValue(null) } as never,
     );
   };
 
@@ -620,7 +629,8 @@ describe('AttachOperation Docker steps', () => {
     const ids = steps.map((step) => step.id);
     const after = (id: string, previous: string) =>
       expect(ids.indexOf(id)).toBe(ids.indexOf(previous) + 1);
-    after('docker_preflight', 'git_config');
+    after('claude_instructions', 'git_config');
+    after('docker_preflight', 'claude_instructions');
     after('docker_stop_home', 'stop_home_sessions');
     after('docker_push', 'transcripts_push');
     after('docker_create_host', 'file_sync_flip');
@@ -712,5 +722,39 @@ describe('AttachOperation git config step', () => {
 
     expect(details.gitConfig).toBe('failed');
     expect(details.gitConfigError).toBe('The VM refused the write.');
+  });
+});
+
+describe('AttachOperation Claude instructions step', () => {
+  const FILE = {
+    path: join(homedir(), '.claude', 'CLAUDE.md'),
+    mode: '0600' as const,
+    contentBase64: Buffer.from('# Rules\n', 'utf8').toString('base64'),
+  };
+
+  beforeEach(() => buildClaudeFile.mockReset());
+
+  it('sends the file to the VM and records sent', async () => {
+    buildClaudeFile.mockResolvedValue(FILE);
+    const host: Partial<RemoteHostClient> = {
+      applyProviderAuth: jest.fn().mockResolvedValue(undefined),
+    };
+
+    const details = await runStep(makeOperation(host), 'claude_instructions');
+
+    expect(buildClaudeFile).toHaveBeenCalledWith(homedir());
+    expect(details.claudeInstructions).toBe('sent');
+    expect(host.applyProviderAuth).toHaveBeenCalledWith('remote-1', { env: {}, files: [FILE] });
+  });
+
+  it('records failed with the message and sends nothing when the file cannot be read', async () => {
+    buildClaudeFile.mockRejectedValue(new Error('~/.claude/CLAUDE.md is larger than 256 KiB'));
+    const host: Partial<RemoteHostClient> = { applyProviderAuth: jest.fn() };
+
+    const details = await runStep(makeOperation(host), 'claude_instructions');
+
+    expect(details.claudeInstructions).toBe('failed');
+    expect(details.claudeInstructionsError).toBe('~/.claude/CLAUDE.md is larger than 256 KiB');
+    expect(host.applyProviderAuth).not.toHaveBeenCalled();
   });
 });

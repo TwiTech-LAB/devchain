@@ -7,6 +7,7 @@ import { Inject, Injectable, OnModuleDestroy, OnModuleInit, Optional } from '@ne
 import { ConflictError, NotFoundError, ValidationError } from '../../common/errors/error-types';
 import { createLogger } from '../../common/logging/logger';
 import { ProviderAdapterFactory } from '../providers/adapters/provider-adapter.factory';
+import { ProviderCliVersionProbe } from '../providers/services/provider-cli-version-probe.service';
 import { STORAGE_SERVICE, type ProviderStorage } from '../storage/interfaces/storage.interface';
 import { ProcessExecutor } from '../terminal/services/process-executor/process-executor.port';
 import {
@@ -175,6 +176,7 @@ export class ProviderAuthGeneratorService implements OnModuleInit, OnModuleDestr
     private readonly adapters: ProviderAdapterFactory,
     private readonly executor: ProcessExecutor,
     @Inject(STORAGE_SERVICE) private readonly storage: Pick<ProviderStorage, 'listProviders'>,
+    private readonly versionProbe: ProviderCliVersionProbe,
     @Optional()
     @Inject(PROVIDER_AUTH_GENERATOR_OPTIONS)
     options: ProviderAuthGeneratorOptions | null = null,
@@ -245,10 +247,13 @@ export class ProviderAuthGeneratorService implements OnModuleInit, OnModuleDestr
 
   private async launch(
     name: string,
-    adapter: ProviderAuthLoginAdapter,
+    baseAdapter: ProviderAuthLoginAdapter,
     label: string | undefined,
   ): Promise<ProviderAuthGeneration> {
-    const bin = await this.binResolver(adapter);
+    const bin = await this.binResolver(baseAdapter);
+    const adapter = baseAdapter.forCliVersion
+      ? baseAdapter.forCliVersion(await this.versionProbe.probe(name, bin(name)), bin(name))
+      : baseAdapter;
     const id = randomUUID();
     const dir = join(this.baseDir, `${process.pid}-${id}`);
     await mkdir(this.baseDir, { recursive: true, mode: 0o700 });

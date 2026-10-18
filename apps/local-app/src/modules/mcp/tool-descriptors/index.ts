@@ -10,6 +10,7 @@ import { chatMetadata } from './chat.metadata';
 import { teamMetadata } from './team.metadata';
 import { reviewMetadata } from './review.metadata';
 import { projectMetadata } from './project.metadata';
+import { worktreeMetadata } from './worktree.metadata';
 
 export const allMetadata: ToolMetadataEntry[] = [
   ...sessionMetadata,
@@ -22,6 +23,7 @@ export const allMetadata: ToolMetadataEntry[] = [
   ...projectMetadata,
   ...teamMetadata,
   ...reviewMetadata,
+  ...worktreeMetadata,
 ];
 
 export type { ToolMetadataEntry } from './types';

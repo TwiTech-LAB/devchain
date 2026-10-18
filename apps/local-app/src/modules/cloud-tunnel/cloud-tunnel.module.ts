@@ -16,6 +16,7 @@ import { E2eeModule } from '../e2ee/e2ee.module';
 import { WorkspacesModule } from '../workspaces/workspaces.module';
 import { HostHelperModule } from '../remotes/host/host-helper.module';
 import { RealtimeBroadcastModule } from '../realtime/realtime-broadcast.module';
+import { ProviderUsageModule } from '../provider-usage/provider-usage.module';
 import { TunnelKeypairService } from './services/tunnel-keypair.service';
 import {
   TunnelHandlerService,
@@ -77,6 +78,8 @@ import { MobileRpcWorkspaceAccessService } from './services/mobile-rpc-workspace
     E2eeModule,
     WorkspacesModule,
     HostHelperModule,
+    // chat.getProviderUsage reads the same ProviderUsageService singleton the web API uses.
+    ProviderUsageModule,
   ],
   providers: [
     TunnelKeypairService,

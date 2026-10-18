@@ -18,6 +18,8 @@ export interface PoolMessage {
   readonly senderAgentId?: string;
   readonly deliveryMode?: MessageDeliveryMode;
   readonly immediate?: boolean;
+  /** Raw command delivery; see `EnqueueOptions.commandGuard`. */
+  readonly commandGuard?: { sessionId: string };
   readonly projectId?: string;
   readonly agentName?: string;
   readonly failureDisclosure?: FailureDisclosurePolicy;
@@ -61,6 +63,7 @@ export class MessageEnqueueService {
         senderAgentId: message.senderAgentId,
         deliveryMode: message.deliveryMode,
         immediate: message.immediate,
+        commandGuard: message.commandGuard,
         projectId: message.projectId,
         agentName: message.agentName,
         failureDisclosure: message.failureDisclosure,

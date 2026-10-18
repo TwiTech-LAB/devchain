@@ -4,10 +4,12 @@ import type { HostStats } from '../../core/models/host-stats.model';
 import type { HostEnvOverrideEntry } from '../host/host-env-override-report';
 import type { VmPowerState } from '../../vm-providers/vm-provider.port';
 import type { VmUidConflict } from '../vm-user-identity';
+import type { SharedVmSavedRoster } from '../dtos/shared-vm.dto';
 
 export const REMOTE_HEALTH_PORT = Symbol('RemoteHealthPort');
 
 export interface RemoteHealthState {
+  sharedVmRoster?: SharedVmSavedRoster;
   cliVersions?: Record<string, string> | null;
   providerClis?: ProviderCliRuntimeReport | null;
   docker?: DockerRuntime;

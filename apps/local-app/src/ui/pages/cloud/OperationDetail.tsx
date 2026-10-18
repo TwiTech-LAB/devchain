@@ -36,6 +36,7 @@ import {
 } from './file-sync-display';
 import { HostInstallRetryForm } from './SshCredentialForms';
 import { providerName } from './login-choices';
+import { VmPorts } from './VmPorts';
 
 type Step = RemoteOperationDto['steps'][number];
 
@@ -92,6 +93,12 @@ function formatTime(iso: string): string {
 
 /** A `reset_vm` step carries its project id in the label; show the name instead. */
 function stepLabel(operation: RemoteOperationDto, step: Step, names: ActivityNames): string {
+  if (operation.kind === 'disconnect_all') {
+    const index = /^disconnect:(\d+)$/.exec(step.id)?.[1];
+    const projects = operation.details.projects as Array<{ projectId: string }> | undefined;
+    const projectId = index === undefined ? undefined : projects?.[Number(index)]?.projectId;
+    return projectId ? `Disconnect ${names.projects.get(projectId) ?? projectId}` : step.label;
+  }
   if (operation.kind !== 'reset_vm') return step.label;
   const projectId = /^(?:attach|detach):([^:]+):/.exec(step.id)?.[1];
   const name = projectId ? names.projects.get(projectId) : undefined;
@@ -256,6 +263,41 @@ function Note({
   );
 }
 
+/** A Connect step that copies one file of this PC to the VM; `sent` shows nothing. */
+function HomeFileCopyNote({
+  label,
+  title,
+  outcome,
+  error,
+  notOnPc,
+  kept,
+}: {
+  label: string;
+  title: string;
+  outcome: unknown;
+  error: unknown;
+  notOnPc: string;
+  kept: string;
+}) {
+  if (outcome === 'not_set_on_pc') {
+    return (
+      <Note label={label} title={title}>
+        <p className="text-muted-foreground">{notOnPc}</p>
+      </Note>
+    );
+  }
+  if (outcome !== 'failed') return null;
+  const message = typeof error === 'string' ? error : null;
+  // The error message keeps its own punctuation, so it gets a line
+  // of its own instead of splicing into the next sentence.
+  return (
+    <Note label={label} title={title}>
+      <p className="text-muted-foreground">The copy failed{message ? `: ${message}` : '.'}</p>
+      <p className="text-muted-foreground">{kept}</p>
+    </Note>
+  );
+}
+
 function FamilyPullLines({
   operation,
   subject,
@@ -323,6 +365,19 @@ function OperationNotes({
   const checkWarnings = Array.isArray(details.checkWarnings)
     ? details.checkWarnings.filter((warning): warning is string => typeof warning === 'string')
     : [];
+  // Disconnect stores one laneWarning; reset stores laneWarnings per project.
+  const laneWarnings = new Set<string>();
+  if (typeof details.laneWarning === 'string') {
+    laneWarnings.add(details.laneWarning);
+  } else if (Array.isArray(details.laneWarnings)) {
+    for (const item of details.laneWarnings as unknown[]) {
+      if (typeof item === 'object' && item !== null && 'warning' in item) {
+        if (typeof item.warning === 'string') laneWarnings.add(item.warning);
+      }
+    }
+  }
+  if (typeof details.laneThawWarning === 'string' && details.laneThawWarning)
+    laneWarnings.add(details.laneThawWarning);
   const dockerUserWarning =
     typeof details.dockerUserWarning === 'string' ? details.dockerUserWarning : null;
   const transcripts = details.transcripts as TranscriptTransferDetails | undefined;
@@ -351,11 +406,6 @@ function OperationNotes({
   const verified = Object.entries(
     (details.verified ?? {}) as Record<string, { ok: boolean; hint: string | null }>,
   );
-  const gitConfigOutcome =
-    kind === 'attach' && (details.gitConfig === 'not_set_on_pc' || details.gitConfig === 'failed')
-      ? details.gitConfig
-      : null;
-  const gitConfigError = typeof details.gitConfigError === 'string' ? details.gitConfigError : null;
   const forceSync =
     kind === 'force_sync'
       ? (details.forceSync as Partial<ForceSyncOperationDetails['forceSync']> | undefined)
@@ -366,6 +416,18 @@ function OperationNotes({
 
   return (
     <div className="space-y-3">
+      {kind === 'install_host' && details.mode === 'join' && (
+        <VmPorts
+          remoteId={operation.remoteId}
+          port={
+            (typeof details.joinExpiresAt === 'string' || details.claimed === true) &&
+            typeof details.port === 'number'
+              ? details.port
+              : null
+          }
+          enabled={details.claimed === true && state !== 'cancelled'}
+        />
+      )}
       {kind === 'force_sync' && (forceSource === 'home' || forceSource === 'vm') && (
         <Note label="Force sync files" title="Force sync files">
           <p>
@@ -444,6 +506,15 @@ function OperationNotes({
           </p>
         </Note>
       )}
+      {laneWarnings.size > 0 && (
+        <Note label="VM lanes" title="Forced handoff">
+          {[...laneWarnings].map((warning) => (
+            <p key={warning} className="text-muted-foreground">
+              {warning}
+            </p>
+          ))}
+        </Note>
+      )}
       {dockerUserWarning && (
         <Note label="Docker user ids" title="The VM user has other ids than this PC">
           <p className="text-muted-foreground">{dockerUserWarning}</p>
@@ -458,23 +529,25 @@ function OperationNotes({
           </ul>
         </Note>
       )}
-      {gitConfigOutcome && (
-        <Note label="Git settings" title="This PC's git settings were not copied">
-          {gitConfigOutcome === 'not_set_on_pc' ? (
-            <p className="text-muted-foreground">
-              This PC has no readable global git config; the VM keeps its own git settings.
-            </p>
-          ) : (
-            // The host's message keeps its own punctuation, so it gets a line
-            // of its own instead of splicing into the next sentence.
-            <>
-              <p className="text-muted-foreground">
-                The copy failed{gitConfigError ? `: ${gitConfigError}` : '.'}
-              </p>
-              <p className="text-muted-foreground">The VM keeps its own git settings.</p>
-            </>
-          )}
-        </Note>
+      {kind === 'attach' && (
+        <>
+          <HomeFileCopyNote
+            label="Git settings"
+            title="This PC's git settings were not copied"
+            outcome={details.gitConfig}
+            error={details.gitConfigError}
+            notOnPc="This PC has no readable global git config; the VM keeps its own git settings."
+            kept="The VM keeps its own git settings."
+          />
+          <HomeFileCopyNote
+            label="Claude instructions"
+            title="This PC's Claude instructions were not copied"
+            outcome={details.claudeInstructions}
+            error={details.claudeInstructionsError}
+            notOnPc="This PC has no ~/.claude/CLAUDE.md. The VM keeps any copy from an earlier Connect."
+            kept="The VM keeps its own copy."
+          />
+        </>
       )}
       {(
         [
@@ -606,7 +679,7 @@ function OperationNotes({
 function runningCancelAllowed(operation: RemoteOperationDto): boolean {
   // A started force copy is refused earlier, in cancelAllowed.
   if (
-    ['install_host', 'create_vm', 'update_logins', 'force_sync', 'git_owner'].includes(
+    ['install_host', 'create_vm', 'update_logins', 'force_sync', 'disconnect_all'].includes(
       operation.kind,
     )
   )
@@ -633,15 +706,8 @@ function forceCopyStarted(operation: RemoteOperationDto): boolean {
 
 /** A failed operation offers Cancel unless its recovery leaves Cancel out. */
 function cancelAllowed(operation: RemoteOperationDto, recovery: RecoveryAction[] | null): boolean {
-  if (
-    operation.kind === 'git_owner' &&
-    operation.steps.some(
-      (step) =>
-        step.id === 'git_flip' &&
-        (step.startedAt != null || (step.state !== 'pending' && step.state !== 'skipped')),
-    )
-  )
-    return false;
+  // No server code runs a Git switch any more; its row is history.
+  if (operation.kind === 'git_owner') return false;
   if (operation.kind === 'force_sync' && forceCopyStarted(operation)) return false;
   if (operation.state === 'failed') return recovery ? recovery.includes('cancel') : true;
   if (operation.state === 'running') return runningCancelAllowed(operation);
@@ -664,6 +730,7 @@ export function OperationDetail({
   pending,
   error,
   actions,
+  ownedByParent = false,
 }: {
   operation: RemoteOperationDto;
   names: ActivityNames;
@@ -671,6 +738,7 @@ export function OperationDetail({
   /** The last Retry or Cancel refusal, shown as the server sent it. */
   error: string | null;
   actions: ActivityActions;
+  ownedByParent?: boolean;
 }) {
   const { state, details } = operation;
   const { current, total } = stepProgress(operation);
@@ -681,8 +749,9 @@ export function OperationDetail({
     state === 'failed' &&
     operation.steps.some((step) => isHostInstallRetryFormCode(step.error?.code));
   const recovery = projectRecovery(operation);
-  const canRetry = state === 'failed' && !sshRetry;
-  const canCancel = cancelAllowed(operation, recovery);
+  const canRetry =
+    !ownedByParent && state === 'failed' && !sshRetry && operation.kind !== 'git_owner';
+  const canCancel = !ownedByParent && cancelAllowed(operation, recovery);
   const reauth =
     state === 'failed' && Array.isArray(details.reauth) ? (details.reauth as string[]) : [];
   const generations =
@@ -740,6 +809,7 @@ export function OperationDetail({
         >
           <p className="font-medium">Stopped at “{stepLabel(operation, failedStep, names)}”</p>
           {failedStep.error && <p className="break-words">{failedStep.error.message}</p>}
+          {failedStep.error?.code === 'INSTANCE_EXISTS' && <p>Already joined? Enter host:P.</p>}
         </div>
       )}
 
@@ -795,6 +865,12 @@ export function OperationDetail({
       {state === 'failed' && operation.kind === 'force_sync' && forceCopyStarted(operation) && (
         <p className="text-sm">Retry, or force a disconnect from the project row.</p>
       )}
+      {operation.kind === 'disconnect_all' &&
+        failedStep?.error?.code === 'DOCKER_COPY_BACK_CHOICE_REQUIRED' && (
+          <p className="text-sm">
+            Cancel, then start Disconnect all again to choose from a fresh Docker check.
+          </p>
+        )}
       <div className="flex flex-wrap gap-2">
         {canRetry && (
           <Button size="sm" {...press('retry', () => actions.retry(operation))}>
@@ -821,7 +897,7 @@ export function OperationDetail({
             Disconnect instead
           </Button>
         )}
-        {recovery?.includes('force-disconnect') && (
+        {!ownedByParent && recovery?.includes('force-disconnect') && (
           <Button
             size="sm"
             variant="outline"

@@ -468,6 +468,7 @@ describe('connect, edit on the host, mirror, and disconnect', () => {
       host_release: 'skipped',
       unbind: 'done',
       thaw_home: 'done',
+      thaw_lanes: 'done',
     });
     expect(done.details.forcedLoss).toEqual({
       hostCursor: expect.any(String),

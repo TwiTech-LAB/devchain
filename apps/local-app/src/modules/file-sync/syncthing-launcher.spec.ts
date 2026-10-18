@@ -2,6 +2,7 @@ import { Test } from '@nestjs/testing';
 import fs from 'fs/promises';
 import { join } from 'path';
 import { ProcessExecutor } from '../terminal/services/process-executor/process-executor.port';
+import { resetEnvConfig } from '../../common/config/env.config';
 import { createProductionFileSyncPaths } from './file-sync-paths';
 import {
   SYNCTHING_INSTALL_GUIDANCE,
@@ -70,6 +71,25 @@ describe('findSyncthingBinary', () => {
       findSyncthingBinary(deps({ [HOST_SYNCTHING_BINARY]: V2, '/usr/bin/syncthing': V2 })),
     ).resolves.toEqual({ found: true, path: HOST_SYNCTHING_BINARY, version: 'v2.1.5' });
   });
+
+  it.each([undefined, V1])(
+    'falls back to PATH when the instance copy is unavailable or unsupported: %p',
+    async (version) => {
+      const hostPath = '/opt/devchain-host/instances/bob/bin/syncthing';
+      await expect(
+        findSyncthingBinary(
+          deps(
+            {
+              [HOST_SYNCTHING_BINARY]: V2,
+              '/usr/bin/syncthing': V2,
+              ...(version ? { [hostPath]: version } : {}),
+            },
+            { hostPath },
+          ),
+        ),
+      ).resolves.toEqual({ found: true, path: '/usr/bin/syncthing', version: 'v2.1.5' });
+    },
+  );
 
   it('searches PATH in order, then ~/.devchain/bin', async () => {
     const onPath = await findSyncthingBinary(
@@ -148,27 +168,51 @@ describe('hasOwnershipCapabilities', () => {
   });
 });
 
-(process.platform === 'linux' ? describe : describe.skip)(
-  'NodeSyncthingLauncher capabilities',
-  () => {
-    it('reads the requested process and fails closed when its status cannot be read', async () => {
-      const moduleRef = await Test.createTestingModule({
-        providers: [NodeSyncthingLauncher, { provide: ProcessExecutor, useValue: {} }],
-      }).compile();
-      const read = jest.spyOn(fs, 'readFile').mockResolvedValue('CapEff:\t000000000000000b\n');
+(process.platform === 'linux' ? describe : describe.skip)('NodeSyncthingLauncher', () => {
+  // The launcher boundary catches env wiring errors without executing a binary.
+  it.each([undefined, '/opt/devchain-host/instances/bob/bin/syncthing'])(
+    'selects the privileged copy configured by DEVCHAIN_HOST_SYNCTHING_BINARY=%p',
+    async (hostPath) => {
+      const originalEnv = process.env;
+      process.env = { ...originalEnv };
+      delete process.env.SYNCTHING_BIN;
+      if (hostPath) process.env.DEVCHAIN_HOST_SYNCTHING_BINARY = hostPath;
+      else delete process.env.DEVCHAIN_HOST_SYNCTHING_BINARY;
+      resetEnvConfig();
+      const executable = jest.spyOn(fs, 'access').mockResolvedValue(undefined);
+      const run = jest.fn().mockResolvedValue({ success: true, stdout: V2 });
+      const launcher = new NodeSyncthingLauncher({ run } as unknown as ProcessExecutor);
       try {
-        const launcher = moduleRef.get(NodeSyncthingLauncher);
-        await expect(launcher.hasOwnershipCapabilities(123)).resolves.toBe(true);
-        expect(read).toHaveBeenCalledWith('/proc/123/status', 'utf8');
-        read.mockRejectedValue(new Error('process gone'));
-        await expect(launcher.hasOwnershipCapabilities(124)).resolves.toBe(false);
+        await expect(launcher.findBinary()).resolves.toEqual({
+          found: true,
+          path: hostPath ?? HOST_SYNCTHING_BINARY,
+          version: 'v2.1.5',
+        });
       } finally {
-        read.mockRestore();
-        await moduleRef.close();
+        executable.mockRestore();
+        process.env = originalEnv;
+        resetEnvConfig();
       }
-    });
-  },
-);
+    },
+  );
+
+  it('reads the requested process and fails closed when its status cannot be read', async () => {
+    const moduleRef = await Test.createTestingModule({
+      providers: [NodeSyncthingLauncher, { provide: ProcessExecutor, useValue: {} }],
+    }).compile();
+    const read = jest.spyOn(fs, 'readFile').mockResolvedValue('CapEff:\t000000000000000b\n');
+    try {
+      const launcher = moduleRef.get(NodeSyncthingLauncher);
+      await expect(launcher.hasOwnershipCapabilities(123)).resolves.toBe(true);
+      expect(read).toHaveBeenCalledWith('/proc/123/status', 'utf8');
+      read.mockRejectedValue(new Error('process gone'));
+      await expect(launcher.hasOwnershipCapabilities(124)).resolves.toBe(false);
+    } finally {
+      read.mockRestore();
+      await moduleRef.close();
+    }
+  });
+});
 
 describe('createProductionFileSyncPaths', () => {
   const paths = createProductionFileSyncPaths('/home/dev');

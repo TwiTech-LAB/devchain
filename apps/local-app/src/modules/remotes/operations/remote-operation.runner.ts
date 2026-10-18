@@ -27,11 +27,15 @@ import { UpdateHostOperation } from './update-host.operation';
 import { CreateVmOperation } from './create-vm.operation';
 import { ResetVmOperation } from './reset-vm.operation';
 import { DestroyVmOperation } from './destroy-vm.operation';
-import { VM_LIFECYCLE_KINDS, type RemoteOperationDefinition } from './remote-operation.types';
+import {
+  isSupersedableVmKind,
+  VM_LIFECYCLE_KINDS,
+  type RemoteOperationDefinition,
+} from './remote-operation.types';
 import { UpdateLoginsOperation } from './update-logins.operation';
 import { InstallHostOperation } from './install-host.operation';
 import { ForceSyncOperation } from './force-sync.operation';
-import { GitOwnerOperation } from './git-owner.operation';
+import { DisconnectAllOperation } from './disconnect-all.operation';
 
 const logger = createLogger('RemoteOperationRunner');
 
@@ -69,14 +73,14 @@ export class RemoteOperationRunner implements OnApplicationBootstrap, OnApplicat
     @Optional() installHost?: InstallHostOperation,
     @Optional() updateLogins?: UpdateLoginsOperation,
     @Optional() forceSync?: ForceSyncOperation,
-    @Optional() gitOwner?: GitOwnerOperation,
+    @Optional() disconnectAll?: DisconnectAllOperation,
   ) {
     this.definitions = new Map<RemoteOperationKind, RemoteOperationDefinition>([
       [attach.kind, attach],
       ...(updateLogins ? [[updateLogins.kind, updateLogins] as const] : []),
       [detach.kind, detach],
+      ...(disconnectAll ? [[disconnectAll.kind, disconnectAll] as const] : []),
       ...(forceSync ? [[forceSync.kind, forceSync] as const] : []),
-      ...(gitOwner ? [[gitOwner.kind, gitOwner] as const] : []),
       [claim.kind, claim],
       [updateHost.kind, updateHost],
       ...(installHost ? [[installHost.kind, installHost] as const] : []),
@@ -84,11 +88,14 @@ export class RemoteOperationRunner implements OnApplicationBootstrap, OnApplicat
       ...(resetVm ? [[resetVm.kind, resetVm] as const] : []),
       ...(destroyVm ? [[destroyVm.kind, destroyVm] as const] : []),
     ]);
+    disconnectAll?.useRunner(this);
   }
 
   async onApplicationBootstrap(): Promise<void> {
+    await this.retireGitOwnerOperations();
     const unfinished = await this.storage.listRemoteOperations({ states: ['running'] });
     for (const operation of unfinished) {
+      if (this.active.has(operation.id)) continue;
       logger.info({ operationId: operation.id, kind: operation.kind }, 'Resuming remote operation');
       try {
         const from = this.definitions.get(operation.kind)?.resumeFrom?.(operation) ?? null;
@@ -101,7 +108,27 @@ export class RemoteOperationRunner implements OnApplicationBootstrap, OnApplicat
           'Remote operation resume step reset failed',
         );
       }
-      this.launch(operation.id);
+      if (!this.active.has(operation.id)) this.launch(operation.id);
+    }
+  }
+
+  /** No definition runs `git_owner` any more: an unfinished row would stay open and block its project. */
+  private async retireGitOwnerOperations(): Promise<void> {
+    const open = await this.storage.listRemoteOperations({
+      kinds: ['git_owner'],
+      states: ['running', 'failed'],
+    });
+    for (const operation of open.filter((row) => row.kind === 'git_owner')) {
+      try {
+        await this.persist(operation, {
+          state: 'cancelled',
+          expectedState: operation.state,
+          details: { ...operation.details, retiredAt: new Date().toISOString() },
+        });
+        logger.info({ operationId: operation.id }, 'Closed an unfinished manual Git switch');
+      } catch (error) {
+        logger.warn({ error, operationId: operation.id }, 'Manual Git switch could not be closed');
+      }
     }
   }
 
@@ -149,12 +176,16 @@ export class RemoteOperationRunner implements OnApplicationBootstrap, OnApplicat
         state: current.state,
       });
     }
-    const from = this.definition(current.kind).retryFrom?.(current) ?? null;
+    const definition = this.definition(current.kind);
+    const reconciled = definition.reconcileRetry?.(current);
+    const prepared = reconciled ? { ...current, ...reconciled } : current;
+    const from = (await definition.retryFrom?.(prepared)) ?? null;
     const reopened = this.persist(current, {
+      ...reconciled,
       state: 'running',
       // A takeover may have cancelled it since the read.
       expectedState: 'failed',
-      steps: stepsFrom(current.steps, from, true),
+      steps: stepsFrom(prepared.steps, from, true),
     });
     // Active before the write, so a cancel during it stops the run instead of
     // rolling back beside it.
@@ -232,7 +263,7 @@ export class RemoteOperationRunner implements OnApplicationBootstrap, OnApplicat
       limit: 1,
     });
     if (!open) return null;
-    if (open.state === 'running' || open.kind === 'destroy_vm') {
+    if (open.state === 'running' || !isSupersedableVmKind(open.kind)) {
       throw new ConflictError('A VM lifecycle operation is open for this remote.', {
         code: 'REMOTE_OPERATION_IN_PROGRESS',
         operationId: open.id,
@@ -253,6 +284,17 @@ export class RemoteOperationRunner implements OnApplicationBootstrap, OnApplicat
   /** Resolves once the operation has no step executing in this process. */
   async whenIdle(id: string): Promise<void> {
     await this.active.get(id);
+  }
+
+  /** Joins a saved child on startup, even before the bootstrap scan reaches it. */
+  async resumeChild(id: string): Promise<void> {
+    if (this.active.has(id)) return;
+    const operation = await this.storage.getRemoteOperation(id);
+    if (operation.state !== 'running' || this.active.has(id)) return;
+    const from = this.definition(operation.kind).resumeFrom?.(operation) ?? null;
+    if (from !== null)
+      await this.persist(operation, { steps: stepsFrom(operation.steps, from, false) });
+    if (!this.active.has(id)) this.launch(id);
   }
 
   private definition(kind: RemoteOperationKind): RemoteOperationDefinition {
@@ -341,7 +383,7 @@ export class RemoteOperationRunner implements OnApplicationBootstrap, OnApplicat
 
     for (const stepDefinition of definition.stepsFor?.(operation.details) ?? definition.steps) {
       if (this.stopped) return;
-      if (this.cancelRequested.has(id)) {
+      if (this.cancelRequested.has(id) || definition.cancellationRequested?.(operation)) {
         await this.rollback(operation, definition);
         return;
       }
@@ -404,6 +446,10 @@ export class RemoteOperationRunner implements OnApplicationBootstrap, OnApplicat
       });
     }
 
+    if (this.cancelRequested.has(id) || definition.cancellationRequested?.(operation)) {
+      await this.rollback(operation, definition);
+      return;
+    }
     operation = await this.persist(operation, { state: 'done' });
     logger.info({ operationId: id, kind: operation.kind }, 'Remote operation completed');
     try {

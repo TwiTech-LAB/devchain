@@ -27,10 +27,12 @@ import { ProcessExecutorModule } from '../terminal/services/process-executor/pro
 import { ProviderEffortSeedingModule } from './services/provider-effort-seeding.module';
 import { ProviderPluginPolicyService } from './services/provider-plugin-policy.service';
 import { ProviderPluginsService } from './services/provider-plugins.service';
+import { CodexAppServerClient } from './services/codex-app-server.client';
 import {
   NPM_REGISTRY_BASE_URL,
   ProviderCliNpmLookupService,
 } from './services/provider-cli-npm-lookup.service';
+import { ProviderCliVersionProbeModule } from './services/provider-cli-version-probe.module';
 import { ProviderCliVersionsService } from './services/provider-cli-versions.service';
 import { NPM_PUBLIC_REGISTRY_URL } from '@devchain/shared';
 
@@ -43,6 +45,7 @@ import { NPM_PUBLIC_REGISTRY_URL } from '@devchain/shared';
     SettingsModule,
     RegistryModule,
     ProcessExecutorModule,
+    ProviderCliVersionProbeModule,
     ProviderEffortSeedingModule,
   ],
   controllers: [
@@ -65,6 +68,7 @@ import { NPM_PUBLIC_REGISTRY_URL } from '@devchain/shared';
     ProviderMcpEnsureService,
     ProviderPluginPolicyService,
     ProviderPluginsService,
+    CodexAppServerClient,
     { provide: NPM_REGISTRY_BASE_URL, useValue: NPM_PUBLIC_REGISTRY_URL },
     ProviderCliNpmLookupService,
     ProviderCliVersionsService,
@@ -80,6 +84,7 @@ import { NPM_PUBLIC_REGISTRY_URL } from '@devchain/shared';
     ProviderPluginsService,
     ProviderCliVersionsService,
     ProviderCliInstallerService,
+    ProviderCliVersionProbeModule,
   ],
 })
 export class ProvidersModule {}

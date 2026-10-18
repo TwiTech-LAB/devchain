@@ -251,6 +251,15 @@ export const broadcastRegistry: Record<string, BroadcastRegistryTopicEntry<P>[]>
       clientReaction: { kind: 'invalidate', owner: 'BackendProvider' },
     },
   ],
+  // Machine-level: usage is shared by every project of this instance.
+  'provider-usage.updated': [
+    {
+      topic: 'provider-usage',
+      type: 'updated',
+      payloadProjection: (p) => ({ accountKey: p.accountKey }),
+      clientReaction: { kind: 'invalidate', owner: 'useProviderUsage' },
+    },
+  ],
 
   // ── Claude hooks: AskUserQuestion (normalized questions only — never raw toolInput) ──
   'claude.hooks.ask_user_question.pending': [

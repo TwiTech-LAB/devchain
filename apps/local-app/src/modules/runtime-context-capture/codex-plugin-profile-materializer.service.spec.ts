@@ -13,6 +13,8 @@ import {
 const PROJECT_ID = '11111111-1111-4111-8111-111111111111';
 const SESSION_ID = 'session-11111111';
 const NONCE = 'attempt_nonce_1234567890abcdef';
+const ABSENT_CODEX_CONFIG = join(tmpdir(), 'devchain-codex-profile-absent-home', 'config.toml');
+const PLUGIN_DEFAULT = '[plugins._default]\nenabled = true\n';
 
 describe('CodexPluginProfileMaterializerService (unit)', () => {
   let temporaryRoot: string;
@@ -61,9 +63,85 @@ describe('CodexPluginProfileMaterializerService (unit)', () => {
         sessionId: SESSION_ID,
         pluginPolicy: [],
         attemptNonce: NONCE,
+        codexConfigPath: ABSENT_CODEX_CONFIG,
       }),
     ).resolves.toBeNull();
     await expect(stat(privateRoot)).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it.each([
+    { form: 'a missing file', userConfig: null, includesDefault: true },
+    {
+      form: 'no _default',
+      userConfig: 'model = "gpt-5"\n[plugins."gmail@openai-curated"]\nenabled = false\n',
+      includesDefault: true,
+    },
+    {
+      form: 'a section header',
+      userConfig: '[plugins._default]\nenabled = false\n',
+      includesDefault: false,
+    },
+    {
+      form: 'a dotted key',
+      userConfig: 'plugins._default.enabled = true\n',
+      includesDefault: false,
+    },
+    {
+      form: 'an inline table',
+      userConfig: 'plugins = { _default = { enabled = false } }\n',
+      includesDefault: false,
+    },
+  ])('adds _default to the profile only when user config.toml has $form', async (testCase) => {
+    const codexConfigPath = join(temporaryRoot, 'codex-home', 'config.toml');
+    if (testCase.userConfig !== null) {
+      await mkdir(dirname(codexConfigPath), { recursive: true });
+      await writeFile(codexConfigPath, testCase.userConfig);
+    }
+
+    const prepared = await prepare(service, { codexConfigPath });
+    const source = await readFile(prepared.sourceRevisionPath, 'utf8');
+
+    expect(source).toBe(
+      (testCase.includesDefault ? `${PLUGIN_DEFAULT}\n` : '') +
+        '[plugins."gmail@openai-curated"]\nenabled = false\n',
+    );
+  });
+
+  it('stops before writing artifacts when user config.toml does not parse', async () => {
+    const codexConfigPath = join(temporaryRoot, 'codex-home', 'config.toml');
+    await mkdir(dirname(codexConfigPath), { recursive: true });
+    await writeFile(codexConfigPath, '[plugins._default\nenabled = true\n');
+
+    await expect(prepare(service, { codexConfigPath })).rejects.toThrow(codexConfigPath);
+    await expect(stat(privateRoot)).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('reads user config.toml from the launch CODEX_HOME, with configEnv over providerEnv', async () => {
+    const providerHome = join(temporaryRoot, 'provider-home');
+    const configHome = join(temporaryRoot, 'config-home');
+    await mkdir(providerHome, { recursive: true });
+    await mkdir(configHome, { recursive: true });
+    await writeFile(join(providerHome, 'config.toml'), 'not toml [');
+    await writeFile(join(configHome, 'config.toml'), '[plugins._default]\nenabled = false\n');
+
+    const handle = await service.prepare({
+      provider: { name: 'codex', claudeLaunchSettingsJson: null },
+      providerBinPath: '/usr/bin/codex',
+      profileOptionArgs: [],
+      providerEnv: { CODEX_HOME: providerHome },
+      configEnv: { CODEX_HOME: 'config-home' },
+      sessionId: SESSION_ID,
+      epoch: 'epoch-1',
+      projectId: PROJECT_ID,
+      projectName: 'DevChain Project',
+      projectRootPath: temporaryRoot,
+      pluginPolicy: [{ pluginId: 'sites@openai-curated-remote', enabled: false }],
+      launchUnsetEnv: [],
+    });
+    const helperArgv = handle.wrapCommand?.({ argv: [], env: null }) ?? [];
+    const sourcePath = helperArgv[helperArgv.indexOf('--source') + 1];
+
+    expect(await readFile(sourcePath, 'utf8')).not.toContain('_default');
   });
 
   it('builds path-safe session target names and shares immutable policy revisions', async () => {
@@ -523,6 +601,7 @@ async function prepare(
     pluginPolicy?: Array<{ pluginId: string; enabled: boolean }>;
     nonce?: string;
     sessionId?: string;
+    codexConfigPath?: string;
   } = {},
 ): Promise<PreparedCodexPluginProfile> {
   const prepared = await service.prepareProfile({
@@ -531,6 +610,7 @@ async function prepare(
     sessionId: overrides.sessionId ?? SESSION_ID,
     pluginPolicy: overrides.pluginPolicy ?? [{ pluginId: 'gmail@openai-curated', enabled: false }],
     attemptNonce: overrides.nonce ?? NONCE,
+    codexConfigPath: overrides.codexConfigPath ?? ABSENT_CODEX_CONFIG,
   });
   if (!prepared) throw new Error('Expected a prepared Codex plugin profile');
   return prepared;

@@ -293,6 +293,30 @@ describe('Host API key transport integration', () => {
     ).toBe(200);
   });
 
+  it('admits only the own key when the app uses a joined instance etc directory', async () => {
+    const etcDir = join(root, 'instances', 'bob');
+    const homePath = join(root, 'home', 'bob');
+    mkdirSync(etcDir, { recursive: true });
+    mkdirSync(join(homePath, '.devchain'), { recursive: true });
+    writeFileSync(join(etcDir, 'claim.json'), JSON.stringify({ userName: 'bob', homePath }));
+    writeFileSync(join(homePath, '.devchain', 'host-api-key'), `${hash(nextKey)}\n`);
+    jest.mocked(config.getEnvConfig).mockReturnValue({
+      ...config.getEnvConfig(),
+      DEVCHAIN_HOST_ETC_DIR: etcDir,
+    });
+    for (const [apiKey, expectedStatus] of [
+      [key, 401],
+      [nextKey, 200],
+    ] as const) {
+      const response = await fastify.inject({
+        url: '/health',
+        remoteAddress: peerAddress,
+        headers: { authorization: `Bearer ${apiKey}` },
+      });
+      expect(response.statusCode).toBe(expectedStatus);
+    }
+  });
+
   it('registers admission before the real proxy plugin inherits its hooks', async () => {
     const rejected = await fastify.inject({ url: '/r/vm/health', remoteAddress: peerAddress });
     expect(rejected.statusCode).toBe(401);

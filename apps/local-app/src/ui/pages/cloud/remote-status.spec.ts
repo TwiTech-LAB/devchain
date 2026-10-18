@@ -14,6 +14,66 @@ import {
 
 const NOW = Date.parse('2026-09-28T12:00:00.000Z');
 
+// Pure notice projection owns the displayed action/message and both entry callbacks.
+it.each([
+  [
+    'reset',
+    'Save your work',
+    'owner asks you to disconnect from lab-vm before reset: Save your work',
+  ],
+  ['destroy', undefined, 'owner asks you to disconnect from lab-vm before destroy.'],
+  ['forced', 'The VM was reset', 'owner forced a reset/destroy of lab-vm: The VM was reset'],
+] as const)('maps a %s notice to Disconnect all and Dismiss', (action, message, text) => {
+  const ctx = createStatusContext({ remotes: [remote()], bindings: [], operations: [] });
+  expect(
+    attentionItems(ctx, {}, [
+      {
+        id: 'notice',
+        remoteId: 'vm1',
+        fromUser: 'owner',
+        action,
+        message,
+        at: '2026-10-12T15:00:00Z',
+      },
+    ]),
+  ).toContainEqual({
+    key: 'notice:vm1:notice',
+    tone: 'warn',
+    text,
+    action: { kind: 'disconnect-all', label: 'Disconnect all', remoteId: 'vm1' },
+    secondaryAction: { kind: 'dismiss-notice', label: 'Dismiss', remoteId: 'vm1', id: 'notice' },
+  });
+});
+
+// Pure status mapping covers queued and already-unbound projects without mounting a page.
+it.each(['running', 'failed'] as const)(
+  'locks all batch project rows while Disconnect all is %s',
+  (state) => {
+    const batch = operation({
+      kind: 'disconnect_all',
+      state,
+      details: { projects: [{ projectId: 'queued' }, { projectId: 'done' }] },
+    });
+    const ctx = createStatusContext({
+      remotes: [remote()],
+      bindings: [binding({ projectId: 'queued' })],
+      operations: [batch],
+    });
+    for (const projectId of ['queued', 'done']) {
+      expect(projectStatus(projectId, ctx)).toMatchObject({
+        state: state === 'running' ? 'busy' : 'stopped',
+        label: state === 'running' ? 'Disconnecting' : 'Disconnect all stopped',
+        action: null,
+        operation: batch,
+      });
+    }
+    expect(vmStatus(remote(), ctx)).toMatchObject({
+      state: state === 'running' ? 'busy' : 'stopped',
+      operation: batch,
+    });
+  },
+);
+
 function remote(overrides: Partial<RemoteListItemDto> = {}): RemoteListItemDto {
   return {
     id: 'vm1',
@@ -371,8 +431,6 @@ describe('projectStatus', () => {
     ['attach', 'Connecting to lab-vm', {}],
     ['detach', 'Disconnecting from lab-vm', {}],
     ['force_sync', 'Force syncing', {}],
-    ['git_owner', 'Moving Git to the VM', { owner: 'vm' }],
-    ['git_owner', 'Moving Git to this PC', { owner: 'home' }],
   ])('row 1: a running %s makes the project busy', (kind, label, details) => {
     const running = operation({ kind, projectId: 'p1', details });
     expect(
@@ -394,7 +452,6 @@ describe('projectStatus', () => {
     ['attach', 'Connect stopped'],
     ['detach', 'Disconnect stopped'],
     ['force_sync', 'Force sync stopped'],
-    ['git_owner', 'Git switch stopped'],
   ])('row 2: a failed %s stops the project with the error first line', (kind, label) => {
     const failed = operation({
       kind,

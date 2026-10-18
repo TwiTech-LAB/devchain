@@ -13,6 +13,8 @@ import {
   isProjectProvisioningCapable,
   isTranscriptDiscoveryCapable,
   isProviderPluginCapable,
+  isSessionCommandCapable,
+  type SessionCommandCapability,
 } from './type-guards';
 
 describe('type-guards', () => {
@@ -24,6 +26,29 @@ describe('type-guards', () => {
     { ensure: jest.fn() } as never,
     { isAuthenticated: jest.fn() } as never,
   );
+
+  // Unit coverage checks command declarations and narrowing without launching a CLI.
+  describe('isSessionCommandCapable', () => {
+    const emptyCommands = {
+      providerName: 'empty',
+      buildLaunchArgs: () => ({ argv: [] }),
+      sessionCommands: {},
+    } satisfies ProviderAdapter & SessionCommandCapability;
+
+    it.each([
+      { adapter: claude, commands: { compact: '/compact' } },
+      { adapter: codex, commands: { compact: '/compact' } },
+      { adapter: opencode, commands: undefined },
+      { adapter: antigravity, commands: undefined },
+      { adapter: copilot, commands: undefined },
+      { adapter: emptyCommands, commands: {} },
+    ])('narrows $adapter.providerName to its declared commands', ({ adapter, commands }) => {
+      expect(isSessionCommandCapable(adapter)).toBe(commands !== undefined);
+      if (isSessionCommandCapable(adapter)) {
+        expect(adapter.sessionCommands).toEqual(commands);
+      }
+    });
+  });
 
   describe('isGlobalMcpConfigCapable', () => {
     it('returns false for CLI and project-local config providers', () => {

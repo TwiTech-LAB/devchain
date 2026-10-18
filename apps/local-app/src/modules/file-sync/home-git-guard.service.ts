@@ -19,6 +19,8 @@ const GUARD_HOOKS = [REFERENCE_TRANSACTION_HOOK, POST_CHECKOUT_HOOK] as const;
 const SAVED_SUFFIX = '.devchain-saved';
 /** Opening lines of every hook this service writes; only such files are ever replaced or removed. */
 const OWNED_HEADER = '#!/bin/sh\n# devchain remote-guard\n';
+/** Owner-side hooks that protect only the branches checked out in VM worktrees. */
+const LANE_BRANCHES_HEADER = `${OWNED_HEADER}# devchain lane-branches\n`;
 /** Touch-file that stops the post-checkout switch-back from re-entering itself. */
 const SWITCHBACK_MARKER = '.devchain-guard-switchback';
 /** The reference-transaction hook needs git 2.28. */
@@ -39,12 +41,21 @@ function safeRemoteName(name: string, fallback: string): string {
 const STASH_COMMAND = ['st', 'ash'].join('');
 
 function guardMessage(remoteName: string): string {
-  return `This project runs on the remote VM "${remoteName}". Normal file editing is allowed: your changes sync to the VM. Git changes (commit, branch, tag, ${STASH_COMMAND}, merge, rebase, switch) are blocked here. Run them on the VM. To use Git on this PC, run \`devchain git take\` in the project folder.`;
+  // The rules set the note apart from Git's own output around it.
+  const title = `${'-'.repeat(25)} Remote VM note ${'-'.repeat(25)}`;
+  return [
+    title,
+    `Git for this project is on the VM "${remoteName}", so Git changes here are blocked.`,
+    'The DevChain git shim helps to avoid conflicts between your PC and the remote VM. Set it up once:',
+    '',
+    'eval "$(devchain git shim install --shell)"',
+    '-'.repeat(title.length),
+  ].join('\n');
 }
 
 function vmGuardMessage({ homeName, reason }: VmGitGuardRequest): string {
   if (reason === 'pc-git') {
-    return `Git for this project is on the PC '${homeName}'. You can edit files here: your changes sync to the PC. Git changes (commit, branch, tag, ${STASH_COMMAND}, merge, rebase, switch) are blocked here. To move Git back to this VM, run \`devchain git return\` in the project folder on the PC '${homeName}'.`;
+    return `Git for this project is on the PC '${homeName}'. You can edit files here: your changes sync to the PC. Git changes (commit, branch, tag, ${STASH_COMMAND}, merge, rebase, switch) run outside the DevChain git shim are blocked here. Run Git through the shim on this VM and it moves Git back here first.`;
   }
   const location =
     reason === 'disconnect'
@@ -96,6 +107,55 @@ exit 0
 `;
 }
 
+/** Shell `case` pattern that matches exactly the given refs; quoted so names stay literal. */
+function refsPattern(refs: readonly string[]): string {
+  return refs.map(quoteShellArg).join('|');
+}
+
+function laneReferenceTransactionScript(refs: readonly string[], remoteName: string): string {
+  return `${LANE_BRANCHES_HEADER}# These branches are checked out in worktrees on the VM.
+[ "$1" = "prepared" ] || exit 0
+while read -r old new ref; do
+  case "$ref" in
+    ${refsPattern(refs)})
+      printf '%s%s%s\\n' ${quoteShellArg("Branch '")} "\${ref#refs/heads/}" ${quoteShellArg(`' is checked out in a worktree on the VM "${remoteName}". Change it there, or remove that worktree first.`)} >&2
+      exit 1
+      ;;
+  esac
+done
+exit 0
+`;
+}
+
+function lanePostCheckoutScript(refs: readonly string[], remoteName: string): string {
+  return `${LANE_BRANCHES_HEADER}# These branches are checked out in worktrees on the VM.
+marker="$(dirname "$0")/${SWITCHBACK_MARKER}"
+[ "$3" = "1" ] || exit 0
+current=$(git symbolic-ref -q HEAD) || exit 0
+case "$current" in
+  ${refsPattern(refs)}) ;;
+  *) exit 0 ;;
+esac
+if [ -e "$marker" ]; then
+  rm -f "$marker"
+  exit 0
+fi
+busy=${quoteShellArg(`' is checked out in a worktree on the VM "${remoteName}".`)}
+previous=$(git rev-parse --symbolic-full-name '@{-1}' 2>/dev/null)
+case "$previous" in refs/heads/*) ;; *) previous= ;; esac
+if [ -z "$previous" ] || [ "$previous" = "$current" ]; then
+  printf '%s%s%s Do not change it here.\\n' ${quoteShellArg("Branch '")} "\${current#refs/heads/}" "$busy" >&2
+  exit 0
+fi
+printf '%s%s%s Switching back to %s.\\n' ${quoteShellArg("Branch '")} "\${current#refs/heads/}" "$busy" "\${previous#refs/heads/}" >&2
+touch "$marker"
+branch="\${previous#refs/heads/}"
+git checkout "$branch" >/dev/null 2>&1 || git switch "$branch" >/dev/null 2>&1 || true
+rm -f "$marker"
+exit 0
+`;
+}
+
 /**
  * Refuses git ref changes on the non-owning project copy on either instance.
  * File editing stays open: worktree changes are outside git's ref machinery.
@@ -111,36 +171,76 @@ export class HomeGitGuardService {
   async install(projectId: string, owner: string | VmGitGuardRequest): Promise<string | null> {
     const root = await this.fileSync.folderPath(projectId);
     const onVm = typeof owner !== 'string';
-    const skip = (reason: string) => this.skipWarning(projectId, reason, onVm);
+    const unsupported = await this.unsupported(projectId, root);
+    if (unsupported) return this.skipWarning(projectId, unsupported, onVm);
+    const message = onVm
+      ? vmGuardMessage(owner)
+      : guardMessage(safeRemoteName(await this.remoteName(projectId, owner), owner));
+    await this.installHooks(root, {
+      [REFERENCE_TRANSACTION_HOOK]: referenceTransactionScript(message),
+      [POST_CHECKOUT_HOOK]: postCheckoutScript(message),
+    });
+    logger.info({ projectId, side: onVm ? 'vm' : 'home' }, 'Git guard installed');
+    return null;
+  }
+
+  /**
+   * On the Git owner, refuses ref updates to `refs` and switches back from checkouts of them;
+   * an empty list removes this protection. It never replaces the full guard, so call it in the
+   * same queue that installs and removes that guard. Returns why the hooks cannot run, if so.
+   */
+  async protectBranches(
+    projectId: string,
+    remoteId: string,
+    refs: readonly string[],
+  ): Promise<string | null> {
+    const root = await this.fileSync.folderPath(projectId);
+    const hooksDir = join(root, '.git', 'hooks');
+    const current = await this.readHook(join(hooksDir, REFERENCE_TRANSACTION_HOOK));
+    if (current?.startsWith(OWNED_HEADER) && !current.startsWith(LANE_BRANCHES_HEADER)) return null;
+    if (refs.length === 0) {
+      if (current?.startsWith(LANE_BRANCHES_HEADER)) await this.stripHooks(root);
+      return null;
+    }
+    const unsupported = await this.unsupported(projectId, root);
+    if (unsupported) return `VM worktree branches are not protected on this PC: ${unsupported}.`;
+    const name = safeRemoteName(await this.remoteName(projectId, remoteId), remoteId);
+    const scripts = {
+      [REFERENCE_TRANSACTION_HOOK]: laneReferenceTransactionScript(refs, name),
+      [POST_CHECKOUT_HOOK]: lanePostCheckoutScript(refs, name),
+    };
+    const unchanged = await Promise.all(
+      GUARD_HOOKS.map(
+        async (hook) => (await this.readHook(join(hooksDir, hook))) === scripts[hook],
+      ),
+    );
+    if (unchanged.every(Boolean)) return null;
+    await this.installHooks(root, scripts);
+    logger.info({ projectId, refs: refs.length }, 'VM worktree branch protection installed');
+    return null;
+  }
+
+  /** Why the hook guard cannot work in this checkout, or null when it can. */
+  private async unsupported(projectId: string, root: string): Promise<string | null> {
     if (!(await this.isDirectory(join(root, '.git')))) {
-      return skip('the project root has no .git directory (worktrees are unsupported)');
+      return 'the project root has no .git directory (worktrees are unsupported)';
     }
     // The guard protects the flip; it must never fail it. If its own
     // preconditions cannot be verified, degrade to a warning instead.
-    let hooksPath: string | null = null;
-    let version: GitVersion | null = null;
+    let version: GitVersion;
     try {
-      hooksPath = await this.git.getConfigValue(projectId, 'core.hooksPath', root);
+      const hooksPath = await this.git.getConfigValue(projectId, 'core.hooksPath', root);
       if (hooksPath) {
-        return skip(
-          `core.hooksPath is set (${hooksPath}); the guard cannot install into .git/hooks`,
-        );
+        return `core.hooksPath is set (${hooksPath}); the guard cannot install into .git/hooks`;
       }
       version = await this.git.getVersion(projectId, root);
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
-      return skip(`git could not be consulted (${reason})`);
+      return `git could not be consulted (${reason})`;
     }
     if (!isSupportedGit(version)) {
-      return skip(
-        `git ${version.major}.${version.minor}.${version.patch} is older than 2.28; the reference-transaction hook is unavailable`,
-      );
+      return `git ${version.major}.${version.minor}.${version.patch} is older than 2.28; the reference-transaction hook is unavailable`;
     }
-    const message = onVm
-      ? vmGuardMessage(owner)
-      : guardMessage(safeRemoteName(await this.remoteName(projectId, owner), owner));
-    await this.installHooks(root, message);
-    logger.info({ projectId, side: onVm ? 'vm' : 'home' }, 'Git guard installed');
     return null;
   }
 
@@ -193,7 +293,10 @@ export class HomeGitGuardService {
     }
   }
 
-  private async installHooks(root: string, message: string): Promise<void> {
+  private async installHooks(
+    root: string,
+    scripts: Record<(typeof GUARD_HOOKS)[number], string>,
+  ): Promise<void> {
     const hooksDir = join(root, '.git', 'hooks');
     await mkdir(hooksDir, { recursive: true });
     for (const name of GUARD_HOOKS) {
@@ -204,12 +307,11 @@ export class HomeGitGuardService {
         await rm(savedPath, { force: true });
         await rename(hookPath, savedPath);
       }
-      const script =
-        name === REFERENCE_TRANSACTION_HOOK
-          ? referenceTransactionScript(message)
-          : postCheckoutScript(message);
-      await writeFile(hookPath, script, 'utf8');
-      await chmod(hookPath, 0o755);
+      // Git may run the hook at any moment; it must never see a partial script.
+      const temp = `${hookPath}.devchain-tmp`;
+      await writeFile(temp, scripts[name], 'utf8');
+      await chmod(temp, 0o755);
+      await rename(temp, hookPath);
     }
   }
 
@@ -219,7 +321,14 @@ export class HomeGitGuardService {
    */
   private async stripHooks(root: string, failOnReadError = false): Promise<boolean> {
     const hooksDir = join(root, '.git', 'hooks');
-    if (!existsSync(hooksDir)) return false;
+    if (failOnReadError) {
+      try {
+        await stat(hooksDir);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
+        throw error;
+      }
+    } else if (!existsSync(hooksDir)) return false;
     let removed = false;
     for (const name of GUARD_HOOKS) {
       const hookPath = join(hooksDir, name);
@@ -245,6 +354,15 @@ export class HomeGitGuardService {
     } catch (error) {
       if (failOnReadError && (error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
       return false;
+    }
+  }
+
+  private async readHook(hookPath: string): Promise<string | null> {
+    try {
+      return await readFile(hookPath, 'utf8');
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+      throw error;
     }
   }
 

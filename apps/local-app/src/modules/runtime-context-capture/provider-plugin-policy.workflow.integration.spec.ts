@@ -117,6 +117,7 @@ describe('provider plugin policy preparation workflow integration', () => {
 
     const prepared = await prepare(mode, provider, new CodexAdapter(), {
       profileOptions: '--model "gpt model with spaces" --search',
+      configEnv: { CODEX_HOME: join(temporaryRoot, 'codex-home') },
     });
     const profileIndex = prepared.config.argv.indexOf('--profile');
     const profileName = prepared.config.argv[profileIndex + 1];
@@ -213,7 +214,8 @@ describe('provider plugin policy preparation workflow integration', () => {
     mode: (typeof MODES)[number],
     provider: Provider,
     adapter: ProviderAdapter,
-    overrides: Pick<NewProviderRuntimePlanInput, 'profileOptions'>,
+    overrides: Pick<NewProviderRuntimePlanInput, 'profileOptions'> &
+      Partial<Pick<NewProviderRuntimePlanInput, 'configEnv'>>,
   ) {
     const sessionId = `session-plugin-policy-${provider.name}-${mode}`;
     const shared = {

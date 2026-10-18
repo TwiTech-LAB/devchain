@@ -1,4 +1,4 @@
-import { getProviderCliNoUpdateOptions } from './provider-cli-policy';
+import { getProviderCliNoUpdateOptions, opencodeCommandArgs } from './provider-cli-policy';
 
 // Unit layer: policy merging is pure; a process cannot add coverage for these inputs.
 describe('provider CLI update policy', () => {
@@ -22,5 +22,18 @@ describe('provider CLI update policy', () => {
       'check_for_update_on_startup=false',
     ]);
     expect(getProviderCliNoUpdateOptions('claude').env).toEqual({ DISABLE_AUTOUPDATER: '1' });
+  });
+});
+
+describe('opencodeCommandArgs', () => {
+  it('appends --standalone for v2 only, without mutating the input', () => {
+    const argv = ['/bin/opencode', 'models'];
+    expect(opencodeCommandArgs({ major: 2 }, argv)).toEqual([
+      '/bin/opencode',
+      'models',
+      '--standalone',
+    ]);
+    expect(opencodeCommandArgs({ major: 1 }, argv)).toEqual(['/bin/opencode', 'models']);
+    expect(argv).toEqual(['/bin/opencode', 'models']);
   });
 });

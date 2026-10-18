@@ -6,6 +6,7 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
 const { fakeSystem } = require("./helpers");
+const { createInstanceSystem } = require("../lib/system");
 const { requestDocker, runDocker, readDockerStatus } = require("../lib/docker");
 
 function fixture(
@@ -160,4 +161,71 @@ test("apt failure records a retriable failure without restarting the host", asyn
         : run(command, args, options);
   await runDocker(sys);
   assert.equal(readDockerStatus(sys).state, "done");
+});
+
+test("two instance Docker workers share one installation under the host lock", async (t) => {
+  const { sys, calls } = fixture(t);
+  const own = createInstanceSystem(sys, "bob");
+  fs.mkdirSync(own.paths.etcDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(own.paths.etcDir, "claim.json"),
+    JSON.stringify({ userName: "bob", version: "1.0.0" }),
+  );
+  await Promise.all([runDocker(sys, "job-alice"), runDocker(own, "job-bob")]);
+  assert.equal(
+    calls.filter((call) => call[0] === "apt-get" && call.includes("install"))
+      .length,
+    1,
+  );
+  assert.deepEqual(
+    calls
+      .filter((call) => call[0] === "usermod")
+      .map((call) => call.at(-1))
+      .sort(),
+    ["alice", "bob"],
+  );
+  assert.deepEqual(
+    calls
+      .filter((call) => call[0] === "systemctl" && call[1] === "restart")
+      .map((call) => call[2])
+      .sort(),
+    ["devchain-host.service", "devchain-user-bob.service"],
+  );
+  assert.equal(readDockerStatus(sys).jobId, "job-alice");
+  assert.equal(readDockerStatus(own).jobId, "job-bob");
+  assert.equal(readDockerStatus(sys).state, "done");
+  assert.equal(readDockerStatus(own).state, "done");
+});
+
+test("a joined Docker request checks only its own transient unit and status after a start conflict", async (t) => {
+  const { sys, calls } = fixture(t);
+  const own = createInstanceSystem(sys, "bob");
+  fs.mkdirSync(own.paths.etcDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(own.paths.etcDir, "claim.json"),
+    JSON.stringify({ userName: "bob", version: "1.0.0" }),
+  );
+  fs.writeFileSync(
+    path.join(own.paths.etcDir, "docker.json"),
+    JSON.stringify({ state: "installing", jobId: "job-bob" }),
+  );
+  fs.writeFileSync(
+    path.join(sys.paths.etcDir, "docker.json"),
+    JSON.stringify({ state: "installing", jobId: "job-alice" }),
+  );
+  const run = own.run;
+  own.run = async (command, args, options) => {
+    const result = await run(command, args, options);
+    if (command === "systemd-run") throw new Error("unit already active");
+    if (command === "systemctl") return { stdout: "active\n" };
+    return result;
+  };
+  assert.deepEqual(await requestDocker(own), { jobId: "job-bob" });
+  assert.deepEqual(calls.at(-1), [
+    "systemctl",
+    "show",
+    "devchain-docker-bob.service",
+    "--property=ActiveState",
+    "--value",
+  ]);
 });

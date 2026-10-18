@@ -34,10 +34,29 @@ describe('Git owner persistence', () => {
     const row = database.sqlite
       .prepare('SELECT value FROM settings WHERE key = ?')
       .get('remotes.gitOwner') as { value: string };
-    expect(JSON.parse(row.value)).toEqual({ other: 'home' });
+    expect(JSON.parse(row.value)).toEqual({ other: { owner: 'home', generation: 0 } });
     owner.clear('other');
     owner.clear('other');
     expect(reopened.get('other')).toBe('vm');
+  });
+
+  it('caches the VM generation for fences, reads the earlier format and counts real changes', () => {
+    database.sqlite
+      .prepare(
+        "INSERT INTO settings (id, key, value, created_at, updated_at) VALUES ('id', 'remotes.gitOwner', ?, 'now', 'now')",
+      )
+      .run(JSON.stringify({ p: 'home' }));
+    expect([owner.get('p'), owner.generation('p')]).toEqual(['home', 0]);
+    const revision = owner.revision('p');
+    owner.remember('p', { owner: 'vm', generation: 3 });
+    expect(new GitOwnerStore(database.db).fence('p')).toEqual({
+      expectedGeneration: 3,
+      transitionId: null,
+    });
+    owner.set('p', 'home');
+    expect(owner.generation('p')).toBe(3);
+    owner.remember('p', { owner: 'home', generation: 3 });
+    expect(owner.revision('p')).toBe(revision + 2);
   });
 
   it.each(['bind_remote', 'unbind'] as const)('clears saved ownership at %s', async (stepId) => {
@@ -69,6 +88,7 @@ describe('Git owner persistence', () => {
             unused,
             unused,
             owner,
+            {} as never,
           )
         : new DetachOperation(
             unused,
@@ -82,6 +102,8 @@ describe('Git owner persistence', () => {
             unused,
             unused,
             owner,
+            {} as never,
+            {} as never,
           );
     const step = instance.steps.find((candidate) => candidate.id === stepId)!;
     await step.run({

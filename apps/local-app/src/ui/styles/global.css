@@ -33,6 +33,7 @@
     --metric-disk: 165 72% 32%;
     --status-ok: 142 72% 29%;
     --status-warn: 32 95% 40%;
+    --status-danger: 0 55% 50%;
     --canvas: 0 0% 100%;
     --shell: 0 0% 100%;
     --group: 210 40% 98.8%;
@@ -84,6 +85,7 @@
     --metric-disk: 160 75% 55%;
     --status-ok: 142 65% 50%;
     --status-warn: 38 92% 55%;
+    --status-danger: 0 60% 68%;
     --canvas: 0 0% 10%;
     --shell: 0 0% 13%;
     --group: 0 0% 11.8%;
@@ -157,6 +159,7 @@
     --metric-disk: 174 75% 28%;
     --status-ok: 154.6 67.6% 26.7%;
     --status-warn: 37.4 100% 27.1%;
+    --status-danger: 353 45% 45%;
     --terminal-background: 201.8 35.5% 93.9%;
     --terminal-foreground: 205.7 43.2% 15.9%;
     --terminal-cursor: 198.2 86.6% 32.2%;

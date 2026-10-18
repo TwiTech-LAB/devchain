@@ -83,6 +83,104 @@ function renderDialog(
 // Component rendering is the cheapest layer for the list groups and the
 // navigation between modes; the page spec covers when each mode opens.
 describe('ActivityDialog', () => {
+  // Component interaction is the cheapest layer for ownership-aware controls and child grouping.
+  it.each(['running', 'failed'] as const)(
+    'shows a %s batch with its children and routes controls only to the parent',
+    async (state) => {
+      const parent = operation({
+        id: 'batch',
+        kind: 'disconnect_all',
+        projectId: null,
+        state,
+        details: { projects: [{ projectId: 'p1', operationId: 'child' }] },
+      });
+      const child = operation({
+        id: 'child',
+        kind: 'detach',
+        state: 'failed',
+        details: { parentOperationId: 'batch' },
+      });
+      const retry = jest.fn();
+      const cancel = jest.fn();
+      const props = {
+        operations: [parent, child],
+        recentFinished: [],
+        names: NAMES,
+        pending: false,
+        error: null,
+        actions: { ...ACTIONS, retry, cancel },
+        onOpenList: jest.fn(),
+        onOpenDetail: jest.fn(),
+        onClose: jest.fn(),
+      };
+      const { rerender } = render(<ActivityDialog view={{ mode: 'list' }} {...props} />);
+      expect(screen.getAllByRole('button', { name: /Disconnect all · lab-vm/ })).toHaveLength(1);
+      expect(
+        screen.queryByRole('button', { name: /Disconnect · Project One/ }),
+      ).not.toBeInTheDocument();
+      rerender(
+        <ActivityDialog
+          view={{ mode: 'detail', operationId: parent.id, fromList: true }}
+          {...props}
+        />,
+      );
+      const children = screen.getByRole('region', { name: 'Project Disconnects' });
+      expect(
+        within(children).getByRole('heading', { name: 'Disconnect · Project One' }),
+      ).toBeInTheDocument();
+      expect(within(children).queryByRole('button', { name: 'Retry' })).not.toBeInTheDocument();
+      expect(within(children).queryByRole('button', { name: 'Cancel' })).not.toBeInTheDocument();
+      expect(
+        within(children).queryByRole('button', { name: 'Force disconnect' }),
+      ).not.toBeInTheDocument();
+      if (state === 'failed') {
+        await userEvent.click(screen.getByRole('button', { name: 'Retry' }));
+        expect(retry).toHaveBeenCalledWith(parent);
+      }
+      await userEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+      expect(cancel).toHaveBeenCalledWith(parent);
+      rerender(
+        <ActivityDialog
+          view={{ mode: 'detail', operationId: child.id, fromList: true }}
+          {...props}
+        />,
+      );
+      expect(screen.queryByRole('button', { name: 'Retry' })).not.toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: 'Cancel' })).not.toBeInTheDocument();
+    },
+  );
+
+  it('restores child controls once its parent no longer owns it', async () => {
+    const parent = operation({
+      id: 'batch',
+      kind: 'disconnect_all',
+      projectId: null,
+      state: 'cancelled',
+    });
+    const child = operation({
+      id: 'child',
+      kind: 'detach',
+      state: 'failed',
+      details: { parentOperationId: 'batch' },
+    });
+    const retry = jest.fn();
+    render(
+      <ActivityDialog
+        view={{ mode: 'detail', operationId: child.id, fromList: true }}
+        operations={[parent, child]}
+        recentFinished={[]}
+        names={NAMES}
+        pending={false}
+        error={null}
+        actions={{ ...ACTIONS, retry }}
+        onOpenList={jest.fn()}
+        onOpenDetail={jest.fn()}
+        onClose={jest.fn()}
+      />,
+    );
+    await userEvent.click(screen.getByRole('button', { name: 'Retry' }));
+    expect(retry).toHaveBeenCalledWith(child);
+  });
   it('groups running, failed and recently finished operations', async () => {
     const { onOpenDetail } = renderDialog({ mode: 'list' });
     const dialog = screen.getByRole('dialog', { name: 'Activity' });

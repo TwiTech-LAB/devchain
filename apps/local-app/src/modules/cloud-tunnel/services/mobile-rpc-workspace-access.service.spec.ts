@@ -55,13 +55,13 @@ function createAccessHarness(options?: {
 }
 
 describe('MobileRpcWorkspaceAccessService classification', () => {
-  it('classifies every one of the 39 non-E2EE methods exactly once', () => {
+  it('classifies every one of the 40 non-E2EE methods exactly once', () => {
     const nonE2eeMethods = MOBILE_RPC_METHODS.filter((method) => !method.startsWith('e2ee.'));
     expect(Object.keys(MOBILE_RPC_WORKSPACE_SCOPES)).toEqual(nonE2eeMethods);
-    expect(nonE2eeMethods).toHaveLength(39);
+    expect(nonE2eeMethods).toHaveLength(40);
 
     const scopes = Object.values(MOBILE_RPC_WORKSPACE_SCOPES);
-    expect(scopes.filter((scope) => scope === 'projectId')).toHaveLength(33);
+    expect(scopes.filter((scope) => scope === 'projectId')).toHaveLength(34);
     expect(
       scopes.filter((scope) =>
         ['parentId', 'statusId-or-projectId', 'epicId', 'subscriptionId'].includes(scope),

@@ -2,13 +2,17 @@ import { Body, Controller, Delete, HttpCode, Param, Post } from '@nestjs/common'
 import { ApiOperation, ApiOkResponse, ApiTags } from '@nestjs/swagger';
 import { HostProjectIdSchema } from '../remotes/host/host.dto';
 import { HomeGitGuardService } from './home-git-guard.service';
+import { GitCoordinatorService } from '../remotes/git-coordinator/git-coordinator.service';
 import { hostRoutes } from '../remotes/contract/host-routes';
 import type { HostHandlerResponse } from '../remotes/contract/host-routes';
 
 @ApiTags('Host git guard')
 @Controller('api/host/projects/:id/git-guard')
 export class HostGitGuardController {
-  constructor(private readonly guard: HomeGitGuardService) {}
+  constructor(
+    private readonly guard: HomeGitGuardService,
+    private readonly coordinator: GitCoordinatorService,
+  ) {}
 
   @Post()
   @HttpCode(200)
@@ -20,7 +24,9 @@ export class HostGitGuardController {
   ): Promise<HostHandlerResponse<typeof hostRoutes.installGitGuard, 200>> {
     const projectId = HostProjectIdSchema.parse(id);
     const request = hostRoutes.installGitGuard.body.parse(body);
-    return { warning: await this.guard.install(projectId, request) };
+    return this.coordinator.withHostMutation(projectId, request, async () => ({
+      warning: await this.guard.install(projectId, request),
+    }));
   }
 
   @Delete()
@@ -31,7 +37,9 @@ export class HostGitGuardController {
     @Body() body: unknown,
   ): Promise<HostHandlerResponse<typeof hostRoutes.removeGitGuard, 200>> {
     const projectId = HostProjectIdSchema.parse(id);
-    const { refreshIndex } = hostRoutes.removeGitGuard.body.parse(body ?? {});
-    return this.guard.remove(projectId, { refreshIndex, failOnReadError: true });
+    const request = hostRoutes.removeGitGuard.body.parse(body);
+    return this.coordinator.withHostMutation(projectId, request, () =>
+      this.guard.remove(projectId, { refreshIndex: request.refreshIndex, failOnReadError: true }),
+    );
   }
 }

@@ -1,4 +1,5 @@
 import { spawnSync } from 'child_process';
+import promises from 'fs/promises';
 import {
   chmodSync,
   existsSync,
@@ -34,7 +35,8 @@ const gitAvailable = (() => {
 })();
 
 const describeWithGit = gitAvailable ? describe : describe.skip;
-const GUARD_MESSAGE_PART = 'This project runs on the remote VM "vm-01"';
+const GUARD_MESSAGE_PART =
+  'Git for this project is on the VM "vm-01", so Git changes here are blocked.';
 // The architecture spec forbids the unfragmented spelling of this git command
 // anywhere under src; build the word the same way it does.
 const STASH_COMMAND = ['st', 'ash'].join('');
@@ -98,6 +100,20 @@ describeWithGit('HomeGitGuardService (real git)', () => {
   let repo: string;
   let guard: HomeGitGuardService;
   let headBefore: string;
+
+  // The filesystem boundary is stubbed because access errors are not portable under privileged test users.
+  it('refuses strict removal when hook-directory liveness cannot be inspected', async () => {
+    const read = jest
+      .spyOn(promises, 'stat')
+      .mockRejectedValueOnce(Object.assign(new Error('hooks unreadable'), { code: 'EACCES' }));
+    try {
+      await expect(
+        guard.remove('p1', { refreshIndex: false, failOnReadError: true }),
+      ).rejects.toThrow('hooks unreadable');
+    } finally {
+      read.mockRestore();
+    }
+  });
   let baseBranch: string;
 
   beforeEach(async () => {
@@ -131,11 +147,18 @@ describeWithGit('HomeGitGuardService (real git)', () => {
   it.each<{ owner: string | VmGitGuardRequest; message: string }>([
     {
       owner: 'r1',
-      message: `This project runs on the remote VM "vm-01". Normal file editing is allowed: your changes sync to the VM. Git changes (commit, branch, tag, ${STASH_COMMAND}, merge, rebase, switch) are blocked here. Run them on the VM. To use Git on this PC, run \`devchain git take\` in the project folder.`,
+      message: [
+        '------------------------- Remote VM note -------------------------',
+        GUARD_MESSAGE_PART,
+        'The DevChain git shim helps to avoid conflicts between your PC and the remote VM. Set it up once:',
+        '',
+        'eval "$(devchain git shim install --shell)"',
+        '------------------------------------------------------------------',
+      ].join('\n'),
     },
     {
       owner: { homeName: "pc's $(touch injected)", reason: 'pc-git' },
-      message: `Git for this project is on the PC 'pc's $(touch injected)'. You can edit files here: your changes sync to the PC. Git changes (commit, branch, tag, ${STASH_COMMAND}, merge, rebase, switch) are blocked here. To move Git back to this VM, run \`devchain git return\` in the project folder on the PC 'pc's $(touch injected)'.`,
+      message: `Git for this project is on the PC 'pc's $(touch injected)'. You can edit files here: your changes sync to the PC. Git changes (commit, branch, tag, ${STASH_COMMAND}, merge, rebase, switch) run outside the DevChain git shim are blocked here. Run Git through the shim on this VM and it moves Git back here first.`,
     },
   ])('prints the literal control hint for owner $owner', async ({ owner, message }) => {
     await guard.install('p1', owner);
@@ -432,5 +455,65 @@ describe('HomeGitGuardService (skip decisions)', () => {
     const warning = await guard.install('p1', 'r1');
 
     expect(warning).toContain('no .git directory');
+  });
+});
+
+// Real git: the protection is defined by what the git binary refuses on the owner side.
+describeWithGit('HomeGitGuardService VM worktree branch protection (real git)', () => {
+  const LANE_MESSAGE = `Branch 'lane' is checked out in a worktree on the VM "vm-01".`;
+  let repo: string;
+  let guard: HomeGitGuardService;
+  let baseBranch: string;
+
+  beforeEach(async () => {
+    repo = makeRepo();
+    guard = realGuard(repo);
+    baseBranch = runGit(repo, ['symbolic-ref', '--short', 'HEAD']).stdout.trim();
+    runGit(repo, ['branch', 'lane']);
+    expect(await guard.protectBranches('p1', 'r1', ['refs/heads/lane'])).toBeNull();
+  });
+
+  afterEach(() => {
+    rmSync(repo, { recursive: true, force: true });
+  });
+
+  it('refuses updates to a protected branch with one line and allows other branches', () => {
+    const lane = runGit(repo, ['rev-parse', 'lane']).stdout.trim();
+    writeFileSync(join(repo, 'file.txt'), 'two\n');
+    expect(runGit(repo, ['commit', '--quiet', '-am', 'owner commit']).status).toBe(0);
+    const attempts = [
+      () => runGit(repo, ['branch', '-f', 'lane', baseBranch]),
+      () => runGit(repo, ['branch', '-D', 'lane']),
+      () => {
+        // Moving HEAD without a checkout skips post-checkout; the commit must still be refused.
+        runGit(repo, ['symbolic-ref', 'HEAD', 'refs/heads/lane']);
+        return runGit(repo, ['commit', '--quiet', '--no-verify', '--allow-empty', '-m', 'home']);
+      },
+    ];
+    for (const attempt of attempts) {
+      const refused = attempt();
+      expect(refused.status).not.toBe(0);
+      expect(refused.stderr.split('\n').filter((line) => line.includes(LANE_MESSAGE))).toHaveLength(
+        1,
+      );
+    }
+    expect(runGit(repo, ['rev-parse', 'lane']).stdout.trim()).toBe(lane);
+  });
+
+  it('switches back from a checkout of a protected branch', () => {
+    const result = runGit(repo, ['checkout', 'lane']);
+    expect(result.stderr).toContain(`${LANE_MESSAGE} Switching back to ${baseBranch}.`);
+    expect(runGit(repo, ['symbolic-ref', '--short', 'HEAD']).stdout.trim()).toBe(baseBranch);
+  });
+
+  it('never replaces the full guard, and an empty list lifts the protection', async () => {
+    await guard.install('p1', 'r1');
+    await guard.protectBranches('p1', 'r1', ['refs/heads/lane']);
+    expect(runGit(repo, ['branch', 'feature']).stderr).toContain(GUARD_MESSAGE_PART);
+    await guard.remove('p1', { refreshIndex: false });
+    await guard.protectBranches('p1', 'r1', ['refs/heads/lane']);
+    await guard.protectBranches('p1', 'r1', []);
+    expect(runGit(repo, ['branch', '-f', 'lane', 'HEAD']).status).toBe(0);
+    expect(existsSync(join(repo, '.git', 'hooks', 'reference-transaction'))).toBe(false);
   });
 });

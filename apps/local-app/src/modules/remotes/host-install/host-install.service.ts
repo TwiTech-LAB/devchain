@@ -8,9 +8,11 @@ import { getDbConfig } from '../../storage/db/db.config';
 import { ProcessExecutor } from '../../terminal/services/process-executor/process-executor.port';
 import {
   generateHostInstallBlock,
+  SHARED_VM_PROTOCOL,
   type HostInstallBlockOptions,
   type HostInstallPins,
 } from './host-install-block';
+import { generateHostJoinBlock, type HostJoinRenderOptions } from './host-join-block';
 
 const SOURCE_PACK_TIMEOUT_MS = 120_000;
 
@@ -148,6 +150,15 @@ export class HostInstallService {
     return this.sourceInputsPromise;
   }
 
+  async renderJoin(options: HostJoinRenderOptions): Promise<string> {
+    const inputs = await this.loadInputs();
+    return generateHostJoinBlock({
+      ...options,
+      pins: inputs.pins,
+      bootstrapTgzBase64: inputs.bootstrapTgzBase64,
+    });
+  }
+
   private async readInputs(directory: string): Promise<HostInstallInputs> {
     const [archive, unit, sysctl, aptPreference, pinsText] = await Promise.all([
       readFile(join(directory, 'devchain-host-bootstrap.tgz')),
@@ -216,6 +227,7 @@ export class HostInstallService {
       await readFile(join(repositoryRoot, 'apps/host-image/versions.env'), 'utf8'),
     );
     const pins: HostInstallPins = {
+      sharedVmProtocol: SHARED_VM_PROTOCOL,
       nodeVersion: versions.NODE_VERSION,
       syncthingVersion: versions.SYNCTHING_VERSION,
       npmRegistry: versions.NPM_REGISTRY,

@@ -153,6 +153,7 @@ export class RemotesController {
       ...remote,
       online: health.online,
       apiKeyRejected: health.apiKeyRejected ?? false,
+      sharedVmRoster: health.sharedVmRoster,
       version: health.version,
       versionMatches: health.versionMatches,
       uid: health.uid,

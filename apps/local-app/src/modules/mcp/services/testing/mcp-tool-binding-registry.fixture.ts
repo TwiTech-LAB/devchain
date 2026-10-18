@@ -18,6 +18,8 @@ export type McpToolBindingRegistryFixtureDependencies = Partial<
     | 'terminalIO'
     | 'agentMessageDelivery'
     | 'projectCommunicationService'
+    | 'projectWriteGate'
+    | 'worktreesService'
   >
 >;
 
@@ -40,5 +42,7 @@ export function createMcpToolBindingRegistryFixture(
     dependencies.terminalIO,
     dependencies.agentMessageDelivery,
     dependencies.projectCommunicationService,
+    dependencies.projectWriteGate,
+    dependencies.worktreesService,
   );
 }

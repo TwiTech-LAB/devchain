@@ -1,3 +1,4 @@
+import type { ComponentProps } from 'react';
 import { act, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
@@ -189,11 +190,11 @@ beforeEach(() => {
   }) as unknown as typeof fetch;
 });
 
-function renderPanel() {
+function renderPanel(props: Omit<Partial<ComponentProps<typeof LoginsTab>>, 'remotes'> = {}) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const view = render(
     <QueryClientProvider client={client}>
-      <LoginsTab remotes={remotes} />
+      <LoginsTab remotes={remotes} {...props} />
     </QueryClientProvider>,
   );
   return { ...view, client };
@@ -648,6 +649,55 @@ describe('LoginsTab sections', () => {
     expect(spare).toHaveTextContent('Free');
     expect(within(spare).queryByRole('button', { name: /Release/ })).not.toBeInTheDocument();
     expect(family).toHaveTextContent('Not checked yet');
+  });
+
+  it('assigns a free login or a token only to the VMs that can take it', async () => {
+    entries = [
+      entry({ id: 'e1', provider: 'claude', label: 'Main token' }),
+      entry({
+        id: 'e3',
+        provider: 'codex',
+        kind: 'family',
+        payloadKind: 'files',
+        label: 'Held family',
+        checkedOutRemoteId: 'r1',
+      }),
+      entry({
+        id: 'e4',
+        provider: 'codex',
+        kind: 'family',
+        payloadKind: 'files',
+        label: 'Spare family',
+      }),
+      entry({ id: 'e9', provider: 'gemini', label: 'Gemini key' }),
+    ];
+    remotes = [
+      { id: 'r1', name: 'lab-vm', logins: { claude: { choice: 'reuse', entryIds: ['e1'] } } },
+      { id: 'r2', name: 'build-vm', logins: {} },
+    ] as unknown as RemoteListItemDto[];
+    const onAssign = jest.fn();
+    renderPanel({ assignTargets: remotes, onAssign });
+    const menuNames = () => screen.getAllByRole('menuitem').map((item) => item.textContent);
+
+    const spare = await screen.findByRole('listitem', { name: 'Spare family' });
+    await userEvent.click(within(spare).getByRole('button', { name: 'Assign Spare family' }));
+    expect(menuNames()).toEqual(['lab-vm', 'build-vm']);
+    await userEvent.click(screen.getByRole('menuitem', { name: 'build-vm' }));
+    expect(onAssign).toHaveBeenCalledWith(remotes[1], expect.objectContaining({ id: 'e4' }));
+
+    // A token skips the VM that already uses it.
+    await userEvent.click(screen.getByRole('button', { name: 'Assign Main token' }));
+    expect(menuNames()).toEqual(['build-vm']);
+    await userEvent.keyboard('{Escape}');
+
+    // A held login offers Release instead; Change logins has no row for other keys.
+    for (const label of ['Held family', 'Gemini key']) {
+      expect(
+        within(screen.getByRole('listitem', { name: label })).queryByRole('button', {
+          name: /^Assign/,
+        }),
+      ).not.toBeInTheDocument();
+    }
   });
 });
 

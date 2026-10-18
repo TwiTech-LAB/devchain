@@ -32,6 +32,8 @@ import {
   type ProviderAuthGeneration,
 } from './provider-auth-generator.service';
 import { ProviderAuthVaultService } from './provider-auth-vault.service';
+import { OpencodePcLoginsReader } from './opencode-pc-logins.service';
+import { ProviderCliVersionProbe } from '../providers/services/provider-cli-version-probe.service';
 
 const CODEX_REFRESH = 'codex-refresh-token-0123456789';
 const AGY_REFRESH = 'agy-refresh-token-0123456789';
@@ -93,6 +95,23 @@ echo "stdin=$(readlink /proc/$$/fd/0)" >> "$FAKE_LOG"
 echo "not authenticated"; exit 1`,
   opencode: `
 [ "$OPENCODE_DISABLE_AUTOUPDATE" = "true" ] || exit 91
+if [ "$1" = "--version" ]; then
+  if [ -n "$FAKE_OPENCODE_V2" ]; then echo "opencode v2.0.31"; else echo "1.18.32"; fi
+  exit 0
+fi
+if [ -n "$FAKE_OPENCODE_V2" ]; then
+  [ "$3" = "--standalone" ] || exit 93
+  if [ "$1 $2" = "auth login" ]; then
+    echo "login-args=$*" >> "$FAKE_LOG"
+    mkdir -p "$XDG_DATA_HOME/opencode"
+    : > "$XDG_DATA_HOME/opencode/opencode.db"
+    printf '%s' '[{"id":"cred_1","integrationID":"openai","label":"OAuth","active":true,"value":{"type":"oauth","methodID":"chatgpt-browser","refresh":"oc2-refresh-0123456","access":"oc2-access-0123456","expires":1,"metadata":{"accountID":"acct-0123456"}}},{"id":"cred_2","integrationID":"anthropic","label":"API key","active":true,"value":{"type":"key","key":"sk-ant-api-key-0123456789"}}]' > "$XDG_DATA_HOME/opencode/export.json"
+    exit 0
+  fi
+  [ "$1 $2" = "auth export" ] && exec cat "$XDG_DATA_HOME/opencode/export.json"
+  [ "$1 $2" = "auth list" ] && { echo "OpenAI OAuth stored"; echo "Anthropic API key stored"; exit 0; }
+  exit 2
+fi
 if [ "$1 $2" = "auth list" ]; then
   echo "stdin=$(readlink /proc/$$/fd/0)" >> "$FAKE_LOG"
   echo "Credentials $XDG_DATA_HOME/opencode/auth.json"
@@ -169,12 +188,20 @@ describe('ProviderAuthGeneratorService', () => {
   } as unknown as ProviderAdapterFactory;
 
   function makeGenerator(options: { timeoutMs?: number } = {}): ProviderAuthGeneratorService {
+    const executor = new ChildProcessExecutor();
+    const probe = new ProviderCliVersionProbe(executor);
+    const providers = { listProviders: async () => ({ items: providerBins }) } as never;
     return new ProviderAuthGeneratorService(
-      new ProviderAuthVaultService(storage, adapters),
+      new ProviderAuthVaultService(
+        storage,
+        adapters,
+        new OpencodePcLoginsReader(probe, executor, providers),
+      ),
       terminals as unknown as StandaloneTerminalService,
       adapters,
-      new ChildProcessExecutor(),
-      { listProviders: async () => ({ items: providerBins }) } as never,
+      executor,
+      providers,
+      probe,
       { baseDir, pollIntervalMs: 10, timeoutMs: options.timeoutMs ?? 20_000 },
     );
   }
@@ -370,6 +397,26 @@ describe('ProviderAuthGeneratorService', () => {
     ]);
   });
 
+  it('stores OpenCode 2 oauth logins from auth export, running every command standalone', async () => {
+    process.env.FAKE_OPENCODE_V2 = '1';
+    const done = await settle((await generator.start('opencode', 'Work OpenCode')).id);
+
+    expect(done.state).toBe('stored');
+    expect(done.entries.map((entry) => entry.label)).toEqual(['Work OpenCode · openai']);
+    expect(await storage.readProviderAuthPayload(done.entries[0].id)).toEqual({
+      payloadKind: 'opencode-entry',
+      providerId: 'openai',
+      entry: {
+        type: 'oauth',
+        refresh: 'oc2-refresh-0123456',
+        access: 'oc2-access-0123456',
+        expires: 1,
+        accountId: 'acct-0123456',
+      },
+    });
+    expect(readFileSync(log, 'utf8')).toContain('login-args=auth login --standalone');
+  });
+
   it('cancel ends the terminal, removes the isolated dir, and stores nothing', async () => {
     process.env.FAKE_CODEX_NEVER = '1';
     const started = await generator.start('codex');
@@ -421,6 +468,7 @@ describe('ProviderAuthGeneratorService', () => {
   });
 
   it.each(['copilot', 'gh'])('refuses missing %s before creating resources', async (cli) => {
+    process.env.PATH = join(root, 'bin');
     rmSync(join(root, 'bin', cli));
 
     await expect(generator.start('copilot')).rejects.toMatchObject({

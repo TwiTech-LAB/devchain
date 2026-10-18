@@ -149,18 +149,39 @@ export function ActivityDialog({
   onOpenDetail: (operationId: string) => void;
   onClose: () => void;
 }) {
-  const running = useMemo(
-    () => operations.filter((operation) => operation.state === 'running').sort(newestFirst),
+  const topLevel = useCallback(
+    (operation: RemoteOperationDto) =>
+      !operations.some((parent) => parent.id === operation.details.parentOperationId),
     [operations],
   );
+  const running = useMemo(
+    () =>
+      operations
+        .filter((operation) => operation.state === 'running' && topLevel(operation))
+        .sort(newestFirst),
+    [operations, topLevel],
+  );
   const failed = useMemo(
-    () => operations.filter((operation) => operation.state === 'failed').sort(newestFirst),
-    [operations],
+    () =>
+      operations
+        .filter((operation) => operation.state === 'failed' && topLevel(operation))
+        .sort(newestFirst),
+    [operations, topLevel],
   );
   const detail =
     view?.mode === 'detail'
       ? (operations.find((operation) => operation.id === view.operationId) ?? null)
       : null;
+  const parent = detail
+    ? operations.find((candidate) => candidate.id === detail.details.parentOperationId)
+    : undefined;
+  const ownedByParent = parent?.state === 'running' || parent?.state === 'failed';
+  const children =
+    detail?.kind === 'disconnect_all'
+      ? operations
+          .filter((operation) => operation.details.parentOperationId === detail.id)
+          .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
+      : [];
 
   return (
     <Dialog open={view !== null} onOpenChange={(open) => !open && onClose()}>
@@ -194,11 +215,30 @@ export function ActivityDialog({
                 pending={pending}
                 error={error}
                 actions={actions}
+                ownedByParent={ownedByParent}
               />
             ) : (
               <p className="text-sm text-muted-foreground">
                 This operation is no longer in the list.
               </p>
+            )}
+            {children.length > 0 && (
+              <section aria-label="Project Disconnects" className="space-y-3">
+                <h3 className="text-sm font-medium">Project Disconnects</h3>
+                {children.map((child) => (
+                  <div key={child.id} className="rounded-md border p-3">
+                    <h4 className="mb-2 text-sm font-medium">{operationTitle(child, names)}</h4>
+                    <OperationDetail
+                      operation={child}
+                      names={names}
+                      pending={pending}
+                      error={null}
+                      actions={actions}
+                      ownedByParent={detail?.state === 'running' || detail?.state === 'failed'}
+                    />
+                  </div>
+                ))}
+              </section>
             )}
           </>
         ) : (
@@ -207,7 +247,7 @@ export function ActivityDialog({
               <DialogTitle>Activity</DialogTitle>
               <DialogDescription>Work on your VMs and projects.</DialogDescription>
             </DialogHeader>
-            {running.length + failed.length + recentFinished.length === 0 ? (
+            {running.length + failed.length + recentFinished.filter(topLevel).length === 0 ? (
               <p className="text-sm text-muted-foreground">No activity yet.</p>
             ) : (
               <div className="space-y-4">
@@ -225,7 +265,7 @@ export function ActivityDialog({
                 />
                 <ActivityGroup
                   title="Finished"
-                  operations={recentFinished}
+                  operations={recentFinished.filter(topLevel)}
                   names={names}
                   onOpen={onOpenDetail}
                 />

@@ -3,13 +3,16 @@
 
 // Root helper behind DevChain's POST /api/host/projects/roots (run through sudo).
 //   devchain-host-project-root <absolute-path>
-const { createSystem } = require("../lib/system");
+const { createInstalledSystem } = require("../lib/system");
+const { requireHelperInstance } = require("../lib/helper-instance");
 const { createProjectRoot } = require("../lib/project-root");
 
 async function main(argv) {
   if (process.getuid() !== 0)
     throw Object.assign(new Error("Run as root."), { exitCode: 77 });
-  return createProjectRoot(argv[0], createSystem());
+  const sys = createInstalledSystem();
+  await requireHelperInstance(sys, { sudoUser: process.env.SUDO_USER ?? null });
+  return createProjectRoot(argv[0], sys);
 }
 
 main(process.argv.slice(2)).then(

@@ -146,27 +146,24 @@ describe('project file sync settings routes', () => {
     rmSync(root, { recursive: true, force: true });
   });
 
-  it.each(['force_sync', 'git_owner'] as const)(
-    'refuses ignore saves during a persisted %s hold before storing the desired list',
-    async (kind) => {
-      const before = files.getIgnores(projectId);
-      operations = [{ kind, state: 'failed' } as RemoteOperation];
-      try {
-        const result = await app.inject({
-          method: 'PUT',
-          url: `/api/projects/${projectId}/file-sync/ignores`,
-          payload: { revision: await readRevision(), ignores: ['/blocked'] },
-        });
-        expect(result.statusCode).toBe(409);
-        expect(result.json().message).toBe(
-          'Force sync or a Git switch is running for this project. Save the list after it finishes.',
-        );
-        expect(files.getIgnores(projectId)).toEqual(before);
-      } finally {
-        operations = [];
-      }
-    },
-  );
+  it('refuses ignore saves during a persisted force_sync hold before storing the desired list', async () => {
+    const before = files.getIgnores(projectId);
+    operations = [{ kind: 'force_sync', state: 'failed' } as RemoteOperation];
+    try {
+      const result = await app.inject({
+        method: 'PUT',
+        url: `/api/projects/${projectId}/file-sync/ignores`,
+        payload: { revision: await readRevision(), ignores: ['/blocked'] },
+      });
+      expect(result.statusCode).toBe(409);
+      expect(result.json().message).toBe(
+        'Force sync is running for this project. Save the list after it finishes.',
+      );
+      expect(files.getIgnores(projectId)).toEqual(before);
+    } finally {
+      operations = [];
+    }
+  });
 
   it('rechecks the hold inside the live-sync queue before an earlier save changes ignores', async () => {
     const live = app.get(RemoteLiveSyncService);

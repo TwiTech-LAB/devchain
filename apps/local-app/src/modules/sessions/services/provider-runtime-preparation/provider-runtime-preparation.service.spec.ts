@@ -1,8 +1,11 @@
 import { processIdsEnv } from '../../../../common/process-ids-env';
+import type { Provider as NestProvider } from '@nestjs/common';
 import { Test, type TestingModule } from '@nestjs/testing';
 import type { EffortCapability } from '../../../providers/adapters/capabilities/effort.capability';
 import type { HookCapability } from '../../../providers/adapters/capabilities/hook.capability';
+import { OpencodeAdapter } from '../../../providers/adapters/opencode.adapter';
 import type { ProviderAdapter } from '../../../providers/adapters/provider-adapter.interface';
+import { ProviderCliVersionProbe } from '../../../providers/services/provider-cli-version-probe.service';
 import { ProviderPluginPolicyService } from '../../../providers/services/provider-plugin-policy.service';
 import { ClaudeLaunchSettingsMaterializerService } from '../../../runtime-context-capture/claude-launch-settings-materializer.service';
 import {
@@ -156,6 +159,20 @@ describe('ProviderRuntimePreparationService', () => {
   };
   let codex: ReturnType<typeof createCodexOwnerMock>;
 
+  function compileModule(extraProviders: NestProvider[] = []): Promise<TestingModule> {
+    return Test.createTestingModule({
+      providers: [
+        ProviderRuntimePreparationService,
+        { provide: STORAGE_SERVICE, useValue: storage },
+        { provide: ProviderPluginPolicyService, useValue: policy },
+        { provide: RuntimeContextCaptureService, useValue: capture },
+        { provide: ClaudeLaunchSettingsMaterializerService, useValue: claude },
+        { provide: CodexPluginProfileMaterializerService, useValue: codex.owner },
+        ...extraProviders,
+      ],
+    }).compile();
+  }
+
   beforeEach(async () => {
     storage = { getProviderEnvForProject: jest.fn().mockReturnValue(null) };
     policy = { resolveAll: jest.fn().mockResolvedValue([]) };
@@ -177,16 +194,7 @@ describe('ProviderRuntimePreparationService', () => {
     };
     codex = createCodexOwnerMock();
 
-    module = await Test.createTestingModule({
-      providers: [
-        ProviderRuntimePreparationService,
-        { provide: STORAGE_SERVICE, useValue: storage },
-        { provide: ProviderPluginPolicyService, useValue: policy },
-        { provide: RuntimeContextCaptureService, useValue: capture },
-        { provide: ClaudeLaunchSettingsMaterializerService, useValue: claude },
-        { provide: CodexPluginProfileMaterializerService, useValue: codex.owner },
-      ],
-    }).compile();
+    module = await compileModule();
     service = module.get(ProviderRuntimePreparationService);
   });
 
@@ -293,6 +301,56 @@ describe('ProviderRuntimePreparationService', () => {
         service.createPlan(makeNewInput(makeAdapter(), { profileOptions: '"unterminated' })),
       ).rejects.toThrow('unterminated quote');
       expect(capture.rotateEpoch).not.toHaveBeenCalled();
+    });
+
+    describe('adapters that require the CLI version', () => {
+      const opencodeProvider: Provider = {
+        ...provider,
+        name: 'OpenCode',
+        binPath: '/bin/opencode',
+      };
+      let probe: { probe: jest.Mock };
+      let probedService: ProviderRuntimePreparationService;
+
+      beforeEach(async () => {
+        probe = { probe: jest.fn().mockResolvedValue('opencode v2.0.31') };
+        const probedModule = await compileModule([
+          { provide: ProviderCliVersionProbe, useValue: probe },
+        ]);
+        probedService = probedModule.get(ProviderRuntimePreparationService);
+      });
+
+      function opencodeRestoreInput() {
+        return makeRestoreInput(new OpencodeAdapter(), {
+          provider: opencodeProvider,
+          providerBinPath: '/bin/opencode',
+          providerSessionId: 'ses_abc',
+          configModel: 'a/b',
+        });
+      }
+
+      it('probes the binary and builds an OpenCode 2 restore that keeps its identity', async () => {
+        const plan = await probedService.createPlan(opencodeRestoreInput());
+        const { config } = await probedService.materialize(plan);
+
+        expect(probe.probe).toHaveBeenCalledWith('opencode', '/bin/opencode');
+        expect(config.argv).toEqual(['--session', 'ses_abc', '--standalone']);
+        expect(JSON.parse(config.env!.OPENCODE_CONFIG_CONTENT)).toEqual({ model: 'a/b' });
+      });
+
+      it('rejects an unsupported version before materialization', async () => {
+        probe.probe.mockResolvedValue('opencode v3.0.0');
+        await expect(probedService.createPlan(opencodeRestoreInput())).rejects.toThrow(
+          "Unsupported OpenCode version 'opencode v3.0.0' at /bin/opencode.",
+        );
+        expect(capture.rotateEpoch).not.toHaveBeenCalled();
+      });
+
+      it('fails closed when no probe is available', async () => {
+        await expect(service.createPlan(opencodeRestoreInput())).rejects.toThrow(
+          'the CLI version probe is unavailable',
+        );
+      });
     });
   });
 

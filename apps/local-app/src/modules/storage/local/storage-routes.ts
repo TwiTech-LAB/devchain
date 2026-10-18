@@ -27,6 +27,7 @@ import type { RecordStorageDelegate } from './delegates/record.delegate';
 import type { WatcherStorageDelegate } from './delegates/watcher.delegate';
 import type { SubscriberStorageDelegate } from './delegates/subscriber.delegate';
 import type { GuestStorageDelegate } from './delegates/guest.delegate';
+import type { WorktreeStorageDelegate } from './delegates/worktree.delegate';
 import type { ReviewStorageDelegate } from './delegates/review.delegate';
 import type { ProviderModelStorageDelegate } from './delegates/provider-model.delegate';
 import type { ProviderEffortStorageDelegate } from './delegates/provider-effort.delegate';
@@ -58,6 +59,7 @@ export type LocalStorageDelegates = {
   watcher: WatcherStorageDelegate;
   subscriber: SubscriberStorageDelegate;
   guest: GuestStorageDelegate;
+  worktree: WorktreeStorageDelegate;
   review: ReviewStorageDelegate;
   providerModel: ProviderModelStorageDelegate;
   providerEffort: ProviderEffortStorageDelegate;
@@ -381,6 +383,15 @@ export const STORAGE_ROUTES = {
   getProjectByRootPath: { delegate: 'project', scope: 'read' },
   findProjectContainingPath: { delegate: 'project', scope: 'read' },
   createGuest: { delegate: 'guest', scope: projectIds(([data]) => [data.projectId]) },
+  createWorktree: { delegate: 'worktree', scope: projectIds(([data]) => [data.projectId]) },
+  createWorktreeAtomicCapped: {
+    delegate: 'worktree',
+    scope: projectIds(([data]) => [data.projectId]),
+  },
+  getWorktree: { delegate: 'worktree', scope: 'read' },
+  getWorktreeByName: { delegate: 'worktree', scope: 'read' },
+  listWorktrees: { delegate: 'worktree', scope: 'read' },
+  deleteWorktree: { delegate: 'worktree', scope: ownedBy('worktree') },
   getGuest: { delegate: 'guest', scope: 'read' },
   getGuestByName: { delegate: 'guest', scope: 'read' },
   getGuestByTmuxSessionId: { delegate: 'guest', scope: 'read' },

@@ -1,6 +1,7 @@
 import type { ExclusionSuggestion } from '../../file-sync/sync-path-inspection.dto';
 import { hostname } from 'node:os';
 import type { GitOwner } from '../git-owner.store';
+import type { GitCoordinatorRecord } from '../git-coordinator/git-coordinator.dto';
 import { DEFAULT_FILE_SYNC_IGNORES } from '../../file-sync/file-sync.dto';
 import { FakeFileSyncService } from '../../file-sync/testing/fake-file-sync.service';
 import { SyncthingRestError } from '../../file-sync/syncthing-rest.client';
@@ -16,6 +17,26 @@ function deferred(): { promise: Promise<void>; resolve: () => void } {
 
 // Unit tests exercise lifecycle gates and retries; actual file survival uses real Syncthing below.
 function setup() {
+  const vmRecord = (): GitCoordinatorRecord => ({
+    owner: owner.value,
+    generation: owner.generation,
+    homeName: 'pc',
+    homeWrites: {},
+    checkpoint: null,
+    vmHolds: {},
+    transition: null,
+  });
+  const ownerCache = {
+    get: () => owner.value,
+    generation: () => owner.generation,
+    revision: () => owner.revision,
+    fence: () => ({ expectedGeneration: owner.generation, transitionId: null }),
+    remember: jest.fn((_: string, record: { owner: GitOwner; generation: number }) => {
+      owner.value = record.owner;
+      owner.generation = record.generation;
+      owner.revision += 1;
+    }),
+  };
   const files = Object.assign(new FakeFileSyncService(), {
     folderPath: jest.fn(async () => '/checkout'),
   });
@@ -31,14 +52,10 @@ function setup() {
   files.folders.set('code:p', initial);
   hostFiles.folders.set('code:p', { ...initial, type: 'sendonly' });
   const host = {
+    syncFolderIgnores: jest.fn((_: string, id: string) => hostFiles.installedIgnores(id)),
     syncFolderConfiguration: jest.fn((_: string, id: string) => hostFiles.folderConfiguration(id)),
     syncRevert: jest.fn((_: string, id: string) => hostFiles.revertLocalChanges(id)),
     installGitGuard: jest.fn(async () => ({ warning: null as string | null })),
-    refreshGitIndex: jest.fn(async (_: string, _project: string, _since: string | null) => ({
-      head: 'head1',
-      refreshed: true,
-      warning: null as string | null,
-    })),
     syncDevice: jest.fn(async () => hostFiles.device()),
     syncPeer: jest.fn(async () => undefined),
     syncFolders: jest.fn((_: string, request: Parameters<typeof files.ensureFolder>[0]) =>
@@ -50,6 +67,11 @@ function setup() {
     ),
     syncScan: jest.fn(async () => undefined),
     syncStatus: jest.fn((_: string, id: string, peer?: string) => hostFiles.status(id, peer)),
+    // The VM record agrees with this PC's cache unless a test says otherwise.
+    gitCoordinatorStatus: jest.fn(async () => ({
+      ...vmRecord(),
+      worktreeBranches: [] as string[],
+    })),
   };
   const binding = { state: 'remote', remoteId: 'r' };
   const health: { online: boolean; versionMatches: boolean; apiKeyRejected?: boolean } = {
@@ -60,7 +82,10 @@ function setup() {
     mirroredHead: jest.fn(async () => 'head1'),
     refreshIndexFromHead: jest.fn(async () => undefined),
   };
-  const guard = { install: jest.fn(async () => undefined) };
+  const guard = {
+    install: jest.fn(async () => undefined),
+    protectBranches: jest.fn(async () => null as string | null),
+  };
   const bindings = { get: jest.fn(async () => binding) };
   const storage = {
     listRemoteOperations: jest.fn<Promise<RemoteOperation[]>, []>().mockResolvedValue([]),
@@ -73,7 +98,7 @@ function setup() {
       .fn<Promise<Pick<ProjectFileSyncFailures, 'groups'> & Partial<ProjectFileSyncFailures>>, []>()
       .mockResolvedValue({ groups: [] }),
   };
-  const owner = { value: 'vm' as GitOwner, generation: 0 };
+  const owner = { value: 'vm' as GitOwner, generation: 0, revision: 0 };
   const suggestions = {
     vmSuggestions: jest
       .fn<Promise<{ groups: ExclusionSuggestion[] }>, [string, string]>()
@@ -91,7 +116,7 @@ function setup() {
       storage as never,
       autoFix as never,
       failures as never,
-      { get: () => owner.value, generation: () => owner.generation } as never,
+      ownerCache as never,
       suggestions as never,
     );
   const service = createService();
@@ -112,6 +137,8 @@ function setup() {
     failures,
     tick,
     owner,
+    ownerCache,
+    vmRecord,
     suggestions,
     createService,
   };
@@ -234,7 +261,7 @@ describe('VM ownership scans without failures', () => {
       if (failure === 'hold')
         s.suggestions.vmSuggestions.mockImplementationOnce(async () => {
           s.storage.listRemoteOperations.mockResolvedValue([
-            { kind: 'git_owner', state: 'running' } as RemoteOperation,
+            { kind: 'force_sync', state: 'running' } as RemoteOperation,
           ]);
           return { groups: [exclusion()] };
         });
@@ -712,7 +739,10 @@ describe('remote file maintenance', () => {
     const homeRevert = jest.spyOn(s.files, 'revertLocalChanges');
     const homeEnsure = jest.spyOn(s.files, 'ensureFolder');
     await s.tick();
-    expect(s.host.syncRevert).toHaveBeenCalledWith('r', 'git:p');
+    expect(s.host.syncRevert).toHaveBeenCalledWith('r', 'git:p', {
+      expectedGeneration: 0,
+      transitionId: null,
+    });
     expect(s.files.receiveOnlyChanges.get('git:p')).toEqual({
       count: 1,
       sample: ['refs/heads/local-commit'],
@@ -726,37 +756,24 @@ describe('remote file maintenance', () => {
     expect(s.host.syncFolders.mock.invocationCallOrder[0]).toBeLessThan(
       homeEnsure.mock.invocationCallOrder[0],
     );
-    expect(s.host.installGitGuard).toHaveBeenLastCalledWith('r', 'p', {
-      homeName: hostname(),
-      reason: 'pc-git',
-    });
+    expect(s.host.installGitGuard).toHaveBeenLastCalledWith(
+      'r',
+      'p',
+      { homeName: hostname(), reason: 'pc-git' },
+      { expectedGeneration: 0, transitionId: null },
+    );
     expect(s.guard.install).not.toHaveBeenCalled();
     expect(homeRevert).not.toHaveBeenCalled();
     expect(s.git.refreshIndexFromHead).not.toHaveBeenCalled();
     expect(s.service.warning('p')).toBeNull();
   });
 
-  it('rebuilds the VM index once per synced HEAD, retries warnings and reverts only idle VM Git', async () => {
+  it('never rebuilds the VM index while this PC owns Git and reverts only idle VM Git', async () => {
     const s = setup();
     s.owner.value = 'home';
     await s.tick();
-    s.host.refreshGitIndex.mockResolvedValueOnce({
-      head: 'head1',
-      refreshed: false,
-      warning: 'index locked',
-    });
-    await s.tick();
-    expect(s.service.warning('p')).toBe('index locked');
-    await s.tick();
-    expect(s.host.refreshGitIndex).toHaveBeenNthCalledWith(2, 'r', 'p', null);
-    await s.tick();
-    expect(s.host.refreshGitIndex).toHaveBeenCalledTimes(2);
     s.git.mirroredHead.mockResolvedValue('head2');
-    s.host.refreshGitIndex.mockResolvedValue({ head: 'head2', refreshed: true, warning: null });
     await s.tick();
-    await s.tick();
-    expect(s.host.refreshGitIndex).toHaveBeenCalledTimes(3);
-    expect(s.host.refreshGitIndex).toHaveBeenLastCalledWith('r', 'p', 'head1');
     const read = s.hostFiles.status.bind(s.hostFiles);
     s.hostFiles.receiveOnlyChanges.set('git:p', { count: 1, sample: ['refs/heads/vm-edit'] });
     s.host.syncStatus.mockImplementation(async (...args) => ({
@@ -775,6 +792,96 @@ describe('remote file maintenance', () => {
     expect(s.hostFiles.receiveOnlyChanges.has('git:p')).toBe(false);
     expect(s.git.refreshIndexFromHead).not.toHaveBeenCalled();
     expect(s.service.warning('p')).toBeNull();
+  });
+
+  it('protects VM worktree branches only while this PC owns Git, without blocking upkeep', async () => {
+    const vmOwned = setup();
+    await vmOwned.tick();
+    await vmOwned.tick();
+    expect(vmOwned.guard.protectBranches).not.toHaveBeenCalled();
+    const s = setup();
+    s.owner.value = 'home';
+    s.host.gitCoordinatorStatus.mockResolvedValue({
+      ...s.vmRecord(),
+      worktreeBranches: ['refs/heads/lane'],
+    });
+    await s.tick();
+    await s.tick();
+    expect(s.guard.protectBranches).toHaveBeenLastCalledWith('p', 'r', ['refs/heads/lane']);
+    s.guard.protectBranches.mockRejectedValueOnce(new Error('hooks unwritable'));
+    s.hostFiles.receiveOnlyChanges.set('git:p', { count: 1, sample: ['refs/heads/vm-edit'] });
+    await s.tick();
+    expect(s.host.syncRevert).toHaveBeenCalledTimes(1);
+    expect(s.service.warning('p')).toBeNull();
+  });
+
+  it.each([
+    ['an unconfirmed home write', { homeWrites: { write: 1 } }],
+    [
+      'a transition',
+      { transition: { kind: 'reclaim', id: 'r1', phase: 'sending', lease: null } as const },
+    ],
+    ['a Disconnect', { closed: true }],
+  ])('holds Git maintenance during %s on the VM', async (_, activity) => {
+    const s = setup();
+    await s.tick();
+    await s.tick();
+    const rebuilds = s.git.refreshIndexFromHead.mock.calls.length;
+    s.host.gitCoordinatorStatus.mockResolvedValue({
+      ...s.vmRecord(),
+      ...activity,
+      worktreeBranches: [],
+    });
+    s.files.receiveOnlyChanges.set('git:p', { count: 1, sample: ['refs/heads/home-edit'] });
+    s.git.mirroredHead.mockResolvedValue('head2');
+    await s.tick();
+    expect(s.files.receiveOnlyChanges.has('git:p')).toBe(true);
+    expect(s.git.refreshIndexFromHead).toHaveBeenCalledTimes(rebuilds);
+  });
+
+  it('leaves a VM that reclaimed Git alone when this PC restarts with a stale cache', async () => {
+    const s = setup();
+    s.owner.value = 'home';
+    s.hostFiles.folders.set('git:p', {
+      type: 'sendonly',
+      paused: false,
+      peerDeviceId: 'peer',
+      ignores: [],
+    });
+    s.host.gitCoordinatorStatus.mockResolvedValue({
+      ...s.vmRecord(),
+      owner: 'vm',
+      generation: 1,
+      worktreeBranches: [],
+    });
+    await s.tick();
+    await s.tick();
+    expect(s.hostFiles.folders.get('git:p')).toMatchObject({ type: 'sendonly' });
+    expect(s.host.syncFolders).not.toHaveBeenCalledWith(
+      'r',
+      expect.objectContaining({ kind: 'git' }),
+      expect.anything(),
+    );
+    expect(s.ownerCache.remember).not.toHaveBeenCalled();
+    expect(s.service.warning('p')).toContain('The VM took Git back');
+  });
+
+  it('moves the cached generation forward from a VM-owned record and fences VM calls with it', async () => {
+    const s = setup();
+    s.host.gitCoordinatorStatus.mockResolvedValue({
+      ...s.vmRecord(),
+      generation: 2,
+      worktreeBranches: [],
+    });
+    await s.tick();
+    expect(s.owner).toMatchObject({ value: 'vm', generation: 2 });
+    expect(s.host.syncFolders).toHaveBeenCalledWith(
+      'r',
+      expect.objectContaining({ kind: 'git', type: 'sendonly' }),
+      { expectedGeneration: 2, transitionId: null },
+    );
+    await s.tick();
+    expect(s.git.refreshIndexFromHead).toHaveBeenCalledTimes(1);
   });
 
   it('gates all work by ownership, health version, and the live lifecycle', async () => {
@@ -800,7 +907,7 @@ describe('remote file maintenance', () => {
     await s.tick();
     expect(s.files.folders.get('git:p')).toMatchObject({
       type: 'receiveonly',
-      ignores: ['*.lock', '/hooks', '/index'],
+      ignores: ['*.lock', '/hooks', '/index', '/worktrees'],
     });
     expect(s.hostFiles.folders.get('git:p')).toMatchObject({ type: 'sendonly' });
     for (const files of [s.files, s.hostFiles]) {
@@ -846,7 +953,7 @@ describe('remote file maintenance', () => {
     await s.tick();
     expect(s.git.refreshIndexFromHead).toHaveBeenCalledTimes(1);
     // Take, commit on the PC and return, all between two ticks; the VM then checks out head1 again.
-    s.owner.generation += 2;
+    s.owner.revision += 2;
     await s.tick();
     expect(s.git.refreshIndexFromHead).toHaveBeenCalledTimes(2);
     await s.tick();
@@ -1249,5 +1356,32 @@ describe('connected file sync checks', () => {
     });
     await s.tick(() => active);
     expect(s.service.warning('p')).toBeNull();
+  });
+});
+
+// Existing connected folders must be repaired without waiting for a new Connect.
+describe('worktree metadata ignore upkeep', () => {
+  const start = Date.parse('2026-10-12T00:00:00.000Z');
+  beforeEach(() => jest.useFakeTimers().setSystemTime(start));
+  afterEach(() => jest.useRealTimers());
+
+  it('repairs legacy ignore lists on both hosts at most once per check interval', async () => {
+    const s = setup();
+    await s.tick();
+    for (const files of [s.files, s.hostFiles])
+      await files.updateFolder('git:p', { ignores: ['*.lock'] });
+    await s.tick();
+    for (const files of [s.files, s.hostFiles])
+      expect((await files.installedIgnores('git:p')).ignore).toContain('/worktrees');
+    for (const files of [s.files, s.hostFiles]) await files.updateFolder('git:p', { ignores: [] });
+    // A pass inside the interval makes no ignore requests to either host.
+    jest.setSystemTime(start + 10_000);
+    await s.tick();
+    for (const files of [s.files, s.hostFiles])
+      expect((await files.installedIgnores('git:p')).ignore).toEqual([]);
+    jest.setSystemTime(start + 31_000);
+    await s.tick();
+    for (const files of [s.files, s.hostFiles])
+      expect((await files.installedIgnores('git:p')).ignore).toContain('/worktrees');
   });
 });

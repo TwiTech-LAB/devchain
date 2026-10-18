@@ -1,3 +1,4 @@
+import { RemoteWorktreeGuard } from './remote-worktree-guard';
 import { TranscriptHandoff } from './transcript-handoff';
 import { GitOwnerStore } from '../git-owner.store';
 import { DockerHandoff } from '../docker/docker-handoff';
@@ -16,6 +17,7 @@ import { FileSyncHandoff, type FileSyncLoss } from './file-sync-handoff';
 import { RemoteHostClient } from './remote-host.client';
 import { HOST_API_KEY_REJECTED, HOST_API_KEY_REJECTED_MESSAGE } from '../host-api-key';
 import { RemoteOperationStepRefusedError } from './remote-operation.errors';
+import { RemoteForcedDetachService } from '../services/remote-forced-detach.service';
 import {
   requireProjectId,
   stepStarted,
@@ -26,8 +28,10 @@ import {
 
 /** Values the detach steps keep in `operation.details`. */
 export interface DetachDetails {
-  /** Skip every host step: the remote is unreachable and home keeps its mirror as is. */
+  /** Keep home's mirror as is; an online host must still close lane admission. */
   force?: boolean;
+  lanesFrozen?: boolean;
+  laneThawWarning?: string | null;
   /** "Copy Docker data back to this PC" with the user's choices; absent when off. */
   dockerCopyBack?: DockerCopyBackRequest;
   dockerCopyBackSkipped?: Array<{ path: string; reason: typeof FILE_SYNC_SKIP_REASON }>;
@@ -37,11 +41,14 @@ export interface DetachDetails {
   markedDetaching?: boolean;
   /** `file_sync_final` paused both sides' folders; a cancel unpauses them. */
   fileSyncPaused?: boolean;
+  /** `file_sync_final` closed VM Git admission; a cancel reopens it. */
+  gitAdmissionClosed?: boolean;
   vmGuardInstalled?: boolean;
   /** How the host settled the project's agent time before the final pull. */
   timeSettlement?: ProjectTimeSettlement;
   /** Host-side time of the final pull. */
   finalCursor?: string;
+  laneWarning?: string | null;
   /** What a forced detach may have lost, measured when it began. */
   forcedLoss?: {
     hostCursor: string | null;
@@ -98,6 +105,8 @@ export class DetachOperation implements RemoteOperationDefinition {
     private readonly docker: DockerHandoff,
     private readonly dockerCopyBack: DockerCopyBack,
     private readonly gitOwner: GitOwnerStore,
+    private readonly worktrees: RemoteWorktreeGuard,
+    private readonly forcedDetach: RemoteForcedDetachService,
   ) {
     const skipOnForce = (details: Record<string, unknown>) =>
       (details as DetachDetails).force === true;
@@ -170,16 +179,31 @@ export class DetachOperation implements RemoteOperationDefinition {
       },
       { id: 'unbind', label: 'Make this PC the project owner', run: (c) => this.unbind(c) },
       { id: 'thaw_home', label: 'Unlock the project on this PC', run: (c) => this.thawHome(c) },
+      { id: 'thaw_lanes', label: 'Allow lane operations on the VM', run: (c) => this.thawLanes(c) },
     ];
-    this.steps = steps.map((step) =>
-      HOST_STEPS.has(step.id)
-        ? {
-            ...step,
-            skip: (details: Record<string, unknown>) =>
-              skipOnForce(details) || (step.skip?.(details) ?? false),
+    this.steps = steps.map((step) => ({
+      ...step,
+      ...(HOST_STEPS.has(step.id) && {
+        skip: (details: Record<string, unknown>) =>
+          skipOnForce(details) || (step.skip?.(details) ?? false),
+      }),
+      run: async (run) => {
+        // A failed final thaw must retain its intent until this step is retried.
+        if (step.id === 'thaw_lanes') return step.run(run);
+        try {
+          // A retry can skip preflight, and a host restart loses its in-memory freeze.
+          if (step.id !== 'preflight') {
+            await this.protectForcedLanes(run);
+            // Forced recovery may retain a completed non-forced preflight.
+            await this.recordForcedLoss(run);
           }
-        : step,
-    );
+          await step.run(run);
+        } catch (error) {
+          await this.thawLanes(run);
+          throw error;
+        }
+      },
+    }));
   }
 
   /** The Docker copy steps exist only when the Disconnect asked for them; composers use this list. */
@@ -194,7 +218,15 @@ export class DetachOperation implements RemoteOperationDefinition {
   }
 
   async completed(operation: RemoteOperation): Promise<void> {
-    await this.dockerCopyBack.finish(operation.id);
+    try {
+      await this.dockerCopyBack.finish(operation.id);
+    } finally {
+      if (operation.details.force === true) {
+        const health = this.health.getState(operation.remoteId);
+        if (health.online && !health.apiKeyRejected)
+          await this.forcedDetach.flush(operation.remoteId);
+      }
+    }
   }
 
   assertCancellable(operation: RemoteOperation): void {
@@ -212,14 +244,18 @@ export class DetachOperation implements RemoteOperationDefinition {
    * named, from its durable record.
    */
   async rollback(operation: RemoteOperation): Promise<{ dockerCopyBackPartial?: string[] } | void> {
-    const projectId = requireProjectId(operation);
-    const details = operation.details as DetachDetails;
-    const partial = await this.dockerCopyBack.partialGroups(operation.id);
-    const result = partial.length ? { dockerCopyBackPartial: partial } : undefined;
-    if (details.markedDetaching) await this.giveBack(operation, projectId, details);
-    // Kept until here, so a rollback that failed can name the groups when it runs again.
-    await this.dockerCopyBack.finish(operation.id);
-    return result;
+    try {
+      const projectId = requireProjectId(operation);
+      const details = operation.details as DetachDetails;
+      const partial = await this.dockerCopyBack.partialGroups(operation.id);
+      const result = partial.length ? { dockerCopyBackPartial: partial } : undefined;
+      if (details.markedDetaching) await this.giveBack(operation, projectId, details);
+      // Kept until here, so a rollback that failed can name the groups when it runs again.
+      await this.dockerCopyBack.finish(operation.id);
+      return result;
+    } finally {
+      await this.thawLanes({ operation, details: operation.details });
+    }
   }
 
   private async giveBack(
@@ -230,10 +266,17 @@ export class DetachOperation implements RemoteOperationDefinition {
     // final() re-creates both sides paused; a failure before its unpause leaves them so.
     if (stepStarted(operation, 'file_sync_flip') || details.fileSyncPaused) {
       if (details.vmGuardInstalled && this.gitOwner.get(projectId) === 'vm') {
-        await this.host.removeGitGuard(operation.remoteId, projectId);
+        await this.host.removeGitGuard(
+          operation.remoteId,
+          projectId,
+          {},
+          this.gitOwner.fence(projectId),
+        );
       }
       await this.fileSync.flipBackToHost(operation.remoteId, projectId, details.force === true);
     }
+    if (details.gitAdmissionClosed && details.force !== true)
+      await this.host.gitCoordinatorReopen(operation.remoteId, projectId);
     if (stepStarted(operation, 'freeze_host')) {
       await this.host.thaw(operation.remoteId, projectId);
     }
@@ -245,7 +288,8 @@ export class DetachOperation implements RemoteOperationDefinition {
     }
   }
 
-  private async preflight({ operation, details }: RemoteOperationStepRun): Promise<void> {
+  private async preflight(run: RemoteOperationStepRun): Promise<void> {
+    const { operation, details } = run;
     const projectId = requireProjectId(operation);
     const { remoteId } = operation;
     const force = (details as DetachDetails).force === true;
@@ -287,19 +331,15 @@ export class DetachOperation implements RemoteOperationDefinition {
     }
 
     const target = details as DetachDetails;
+    if (force) await this.protectForcedLanes(run);
+    else {
+      await this.worktrees.assertRemoteEmpty(remoteId, projectId);
+      target.laneWarning = null;
+    }
     if (binding.state === 'remote') {
       target.hostCursor = binding.hostCursor;
     }
-    if (force && !target.forcedLoss) {
-      const cursor = target.hostCursor ?? binding.hostCursor;
-      target.forcedLoss = {
-        hostCursor: cursor,
-        mirrorAgeMs: cursor ? Math.max(0, Date.now() - Date.parse(cursor)) : null,
-        fileSync: await this.fileSync.forcedLoss(projectId),
-        teamLanes: 'unfinalized',
-        transcripts: 'remote-changes',
-      };
-    }
+    await this.recordForcedLoss(run, binding.hostCursor);
     await this.liveSync.stop(projectId);
     if (binding.state !== 'detaching') {
       await this.bindings.update(projectId, { state: 'detaching' });
@@ -307,8 +347,62 @@ export class DetachOperation implements RemoteOperationDefinition {
     target.markedDetaching = true;
   }
 
+  private async recordForcedLoss(
+    { operation, details }: RemoteOperationStepRun,
+    bindingCursor?: string | null,
+  ): Promise<void> {
+    const target = details as DetachDetails;
+    if (!target.force || target.forcedLoss) return;
+    const projectId = requireProjectId(operation);
+    const fallback =
+      bindingCursor === undefined
+        ? ((await this.bindings.get(projectId))?.hostCursor ?? null)
+        : bindingCursor;
+    const cursor = target.hostCursor ?? fallback;
+    target.forcedLoss = {
+      hostCursor: cursor,
+      mirrorAgeMs: cursor ? Math.max(0, Date.now() - Date.parse(cursor)) : null,
+      fileSync: await this.fileSync.forcedLoss(projectId),
+      teamLanes: 'unfinalized',
+      transcripts: 'remote-changes',
+    };
+  }
+
   private async freezeHost({ operation }: RemoteOperationStepRun): Promise<void> {
     await this.host.freeze(operation.remoteId, requireProjectId(operation));
+    // The host lane query drains its Git lock after project admission closes.
+    await this.worktrees.assertRemoteEmpty(operation.remoteId, requireProjectId(operation));
+  }
+
+  private async protectForcedLanes(run: RemoteOperationStepRun): Promise<void> {
+    if ((run.details as DetachDetails).force !== true) return;
+    (run.details as DetachDetails).laneWarning = await this.worktrees.freezeRemoteEmpty(
+      run.operation.remoteId,
+      requireProjectId(run.operation),
+      () => run.progress({ lanesFrozen: true }, { durable: true }),
+    );
+  }
+
+  private async thawLanes(run: {
+    operation: RemoteOperation;
+    details: Record<string, unknown>;
+    progress?: RemoteOperationStepRun['progress'];
+  }): Promise<void> {
+    if (!run.details.lanesFrozen) return;
+    if (
+      await this.worktrees.thawRemoteAdmission(
+        run.operation.remoteId,
+        requireProjectId(run.operation),
+      )
+    ) {
+      run.details.lanesFrozen = false;
+      run.details.laneThawWarning = null;
+      await run.progress?.({ lanesFrozen: false, laneThawWarning: null }, { durable: true });
+    } else {
+      const warning = 'Lane admission on the VM may stay closed. Connect clears it.';
+      run.details.laneThawWarning = warning;
+      await run.progress?.({ laneThawWarning: warning }, { durable: true });
+    }
   }
 
   private async stopHostSessions({ operation }: RemoteOperationStepRun): Promise<void> {
@@ -340,9 +434,13 @@ export class DetachOperation implements RemoteOperationDefinition {
     await this.host.release(operation.remoteId, requireProjectId(operation));
   }
 
-  private async unbind({ operation }: RemoteOperationStepRun): Promise<void> {
+  private async unbind({ operation, details }: RemoteOperationStepRun): Promise<void> {
     const projectId = requireProjectId(operation);
     await this.liveSync.stop(projectId);
+    // Persist before losing the binding; a restart must still be able to exclude
+    // the retained VM row once unbind has crossed its cancellation boundary.
+    if (operation.kind === 'detach' && details.force === true)
+      await this.forcedDetach.record(operation.remoteId, projectId);
     await this.bindings.delete(projectId);
     this.gitOwner.clear(projectId);
   }

@@ -1,13 +1,5 @@
 import { execFileSync } from 'child_process';
-import {
-  existsSync,
-  mkdirSync,
-  readFileSync,
-  rmSync,
-  statSync,
-  utimesSync,
-  writeFileSync,
-} from 'fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { seedRemoteProject } from '../../../common/test/remote-project.fixture';
 import {
@@ -20,7 +12,6 @@ import { FileSyncManagedExclusionsStore } from '../../file-sync/file-sync-manage
 import { SyncthingManager } from '../../file-sync/syncthing-manager.service';
 import { GitService } from '../../git/services/git.service';
 import { RemoteHostClient } from '../operations/remote-host.client';
-import { RemoteOperationsService } from '../operations/remote-operations.service';
 import { REMOTE_HEALTH_PORT, type RemoteHealthPort } from '../ports/remote-health.port';
 import { RemoteBindingsService } from '../services/remote-bindings.service';
 import { FileSyncAutoFixStore } from '../../file-sync/file-sync-auto-fix.store';
@@ -245,96 +236,6 @@ real('connected file layout migration', () => {
     expect(revert).not.toHaveBeenCalled();
     expect(refresh).not.toHaveBeenCalled();
     expect((await home.status(`git:${projectId}`)).receiveOnlyChangedFiles).toBe(0);
-  });
-
-  it('takes Git on the PC and returns it to the VM with replicated commits and clean receiver indexes', async () => {
-    jest.restoreAllMocks();
-    const upkeep = pair.home.app.get(RemoteFileSyncService);
-    const operations = pair.home.app.get(RemoteOperationsService);
-    const owners = pair.home.app.get(GitOwnerStore);
-    const gitId = `git:${projectId}`;
-    const hook = '.git/hooks/reference-transaction';
-    const wait = async (label: string, probe: () => Promise<boolean>) => {
-      try {
-        await waitForValue(probe, 30_000);
-      } catch (error) {
-        throw new Error(`${label}: ${error instanceof Error ? error.message : String(error)}`);
-      }
-    };
-
-    await wait('Connected Git layout and home guard did not become ready', async () => {
-      await upkeep.tick(projectId, remoteId, () => true);
-      return read(homeRoot, hook)?.includes('devchain git take') === true;
-    });
-
-    let previousHead = git(hostRoot, 'rev-parse', 'HEAD');
-    for (const owner of ['home', 'vm'] as const) {
-      const command = owner === 'home' ? 'take' : 'return';
-      const operation = await operations.gitOwner(remoteId, projectId, owner, false);
-      if (!('id' in operation)) throw new Error(`${command} unexpectedly reported no change`);
-      await wait(`${command} operation ${operation.id} did not complete`, async () => {
-        const current = await operations.get(operation.id);
-        if (current.state === 'failed')
-          throw new Error(`Switch failed: ${JSON.stringify(current.steps)}`);
-        return current.state === 'done';
-      });
-      expect(owners.get(projectId)).toBe(owner);
-      expect(await home.folderConfiguration(gitId)).toMatchObject({
-        type: owner === 'home' ? 'sendonly' : 'receiveonly',
-        paused: false,
-      });
-      expect(await host.folderConfiguration(gitId)).toMatchObject({
-        type: owner === 'vm' ? 'sendonly' : 'receiveonly',
-        paused: false,
-      });
-      const sender = owner === 'home' ? home : host;
-      const receiver = owner === 'home' ? host : home;
-      const senderRoot = owner === 'home' ? homeRoot : hostRoot;
-      const receiverRoot = owner === 'home' ? hostRoot : homeRoot;
-      expect(read(senderRoot, hook)).toBeNull();
-      expect(read(receiverRoot, hook)).toContain('# devchain remote-guard');
-      expect(read(receiverRoot, hook)).toContain(
-        owner === 'home' ? 'devchain git return' : 'devchain git take',
-      );
-      if (owner === 'home') {
-        expect(read(receiverRoot, hook)).toContain('Git for this project is on the PC');
-        // A revert re-creates .git directories, and Syncthing's watcher loses a re-created
-        // directory; the next commit's ref update must still reach the VM.
-        const heads = join(senderRoot, '.git/refs/heads');
-        const main = join(heads, 'main');
-        const ref = readFileSync(main);
-        const { atime, mtime } = statSync(main);
-        rmSync(heads, { recursive: true });
-        mkdirSync(heads);
-        writeFileSync(main, ref);
-        utimesSync(main, atime, mtime);
-        await new Promise((resolve) => setTimeout(resolve, 2500));
-      }
-
-      writeFileSync(join(senderRoot, 'ownership.txt'), `${owner} owns Git\n`);
-      git(senderRoot, 'add', 'ownership.txt');
-      git(senderRoot, 'commit', '-m', `${command} owner commit`);
-      const head = git(senderRoot, 'rev-parse', 'HEAD');
-      expect(head).not.toBe(previousHead);
-      await wait(`${command} commit ${head} did not reach the receiver HEAD`, async () => {
-        return git(receiverRoot, 'rev-parse', 'HEAD') === head;
-      });
-      // HEAD can arrive before its objects; wait for the full Git transfer before rebuilding.
-      await sender.waitForComplete(gitId, {
-        sender: () => sender.status(gitId, receiver.device().deviceId),
-        receiver: () => receiver.status(gitId),
-        requireNoReceiveOnlyChanges: true,
-        sides: {
-          sender: owner === 'home' ? 'the PC' : 'the VM',
-          receiver: owner === 'home' ? 'the VM' : 'the PC',
-        },
-        timeoutMs: 30_000,
-      });
-      await upkeep.tick(projectId, remoteId, () => true);
-      expect(git(receiverRoot, 'diff', '--cached', '--quiet')).toBe('');
-      expect(git(receiverRoot, 'merge-base', '--is-ancestor', previousHead, head)).toBe('');
-      previousHead = head;
-    }
   });
 
   // Real Syncthing proves peer selection excludes home and a paused device is disconnected.

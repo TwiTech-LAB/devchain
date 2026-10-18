@@ -38,6 +38,14 @@ export function requireString(record: JsonRecord, key: string, context: string):
   return value;
 }
 
+export function requireArray(record: JsonRecord, key: string, context: string): unknown[] {
+  const value = record[key];
+  if (!Array.isArray(value)) {
+    throw new Error(`${context} is missing ${key}`);
+  }
+  return value;
+}
+
 export function optionalString(record: JsonRecord, key: string): string | null {
   const value = record[key];
   return typeof value === 'string' && value.length > 0 ? value : null;
@@ -66,11 +74,11 @@ export function parseQualifiedPluginId(pluginId: string): {
   };
 }
 
-function isRecord(value: unknown): value is JsonRecord {
+export function isRecord(value: unknown): value is JsonRecord {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-function requireRecord(value: unknown, context: string): JsonRecord {
+export function requireRecord(value: unknown, context: string): JsonRecord {
   if (!isRecord(value)) {
     throw new Error(`${context} must be an object`);
   }

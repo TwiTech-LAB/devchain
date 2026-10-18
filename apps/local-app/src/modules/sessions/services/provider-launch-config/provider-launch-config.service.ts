@@ -1,3 +1,4 @@
+import { delimiter } from 'node:path';
 import { processIdsEnv } from '../../../../common/process-ids-env';
 import type {
   ProviderAdapter,
@@ -53,6 +54,8 @@ export interface LaunchConfigInput {
   providerOptionArgs?: string[];
   /** DevChain-owned launch-only env that must win over configurable env. */
   runtimeEnv?: Record<string, string>;
+  /** The git shim's directory, put first on the session PATH so Git in agent shells uses it. */
+  gitShimBin?: string;
   hookContext?: HookEnvContext;
   /**
    * Pre-rendered initial prompt for opt-in seeding adapters
@@ -61,6 +64,8 @@ export interface LaunchConfigInput {
    * default post-launch paste path and when no initial prompt is configured.
    */
   initialPrompt?: string;
+  /** `<bin> --version` output; set for adapters with `requiresCliVersion`. */
+  cliVersion?: string;
 }
 
 export interface LaunchConfig {
@@ -152,19 +157,35 @@ export function resolve(input: LaunchConfigInput): LaunchConfig {
     env = { ...(env ?? {}), ...input.runtimeEnv };
   }
 
+  if (input.gitShimBin) {
+    const path = env?.PATH ?? process.env.PATH ?? '';
+    if (path.split(delimiter)[0] !== input.gitShimBin)
+      env = {
+        ...(env ?? {}),
+        PATH: path ? `${input.gitShimBin}${delimiter}${path}` : input.gitShimBin,
+      };
+  }
+
   const idsEnv = processIdsEnv();
   if (Object.keys(idsEnv).length > 0) {
     env = { ...(env ?? {}), ...idsEnv };
   }
 
   const finalOptionArgs = [...(input.providerOptionArgs ?? []), ...optionArgs];
-  const { argv } = input.adapter.buildLaunchArgs({
+  const launchArgs = input.adapter.buildLaunchArgs({
     mode: input.mode,
     providerSessionId: input.providerSessionId,
     sessionId: input.sessionId,
     profileOptionArgs: finalOptionArgs,
     initialPrompt: input.initialPrompt,
+    ...(input.adapter.requiresCliVersion && {
+      cliVersion: input.cliVersion,
+      providerBinPath: input.providerBinPath,
+      env,
+    }),
   });
+  const { argv } = launchArgs;
+  if (launchArgs.env !== undefined) env = launchArgs.env;
 
   // Providers declare any env vars that must be cleared from their launch
   // environment via `launchUnsetEnv` (e.g. Claude unsets $TMUX/$TMUX_PANE to

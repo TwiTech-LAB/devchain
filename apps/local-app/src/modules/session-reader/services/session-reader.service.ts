@@ -996,6 +996,9 @@ export class SessionReaderService implements OnModuleDestroy {
     );
     const session = this.sessionsService.getSession(sessionId);
     const providerNameAtLaunch = session?.providerNameAtLaunch?.toLowerCase() ?? null;
+    const providerAdapter = providerNameAtLaunch
+      ? this.adapterFactory.getAdapter(providerNameAtLaunch)
+      : undefined;
     const capture = liveContext?.claudeCapture;
     const eligibleCapture =
       capture &&
@@ -1009,10 +1012,11 @@ export class SessionReaderService implements OnModuleDestroy {
       primaryModel: metrics.primaryModel,
       configuredOverride: liveContext?.configuredOverride ?? null,
       claudeCapture: eligibleCapture,
-      // Codex records the effective runtime window in token_count events. That
-      // provider-native value is more precise than the catalog's API maximum.
-      providerReportedContextWindowTokens:
-        providerNameAtLaunch === 'codex' ? metrics.contextWindowTokens : null,
+      // Codex records the effective runtime window in token_count events, and OpenCode reads its
+      // own model catalog. Both are more precise than the pricing catalog's API maximum.
+      providerReportedContextWindowTokens: providerAdapter?.reportsContextWindow
+        ? metrics.contextWindowTokens
+        : null,
       catalogContextWindowTokens,
     });
 

@@ -228,6 +228,46 @@ function permissionHandler(
 }
 
 describe('ProxmoxVmProvider over fake HTTPS', () => {
+  // HTTPS is the cheapest reliable boundary for task filters and audit admission;
+  // a permission-filtered empty task list must not release a destroy fence.
+  it.each([
+    ['idle', true],
+    ['busy', false],
+    ['locked', false],
+    ['no-audit', false],
+    ['audit-denied', false],
+    ['malformed', false],
+  ] as const)(
+    'confirms VM idle only with node audit and no active task: %s',
+    async (state, expected) => {
+      handler = (_method, url, _body, respond) => {
+        if (url.pathname === '/api2/json/nodes/hw/qemu')
+          return respond(200, [{ vmid: 101, name: 'dc-vm', status: 'stopped' }]);
+        if (url.pathname.endsWith('/qemu/101/config'))
+          return respond(200, state === 'locked' ? { lock: 'backup' } : {});
+        if (url.pathname === '/api2/json/access/permissions') {
+          expect(url.searchParams.get('path')).toBe('/nodes/hw');
+          return respond(200, {
+            '/nodes/hw':
+              state === 'no-audit' ? {} : { 'Sys.Audit': state === 'audit-denied' ? 0 : 1 },
+          });
+        }
+        if (url.pathname === '/api2/json/nodes/hw/tasks') {
+          expect(Object.fromEntries(url.searchParams)).toEqual({
+            source: 'active',
+            vmid: '101',
+            limit: '1',
+          });
+          return respond(
+            200,
+            state === 'busy' ? [{ upid: 'UPID:active' }] : state === 'malformed' ? {} : [],
+          );
+        }
+        return respond(404, {});
+      };
+      expect(await provider().confirmsVmIdle(101)).toBe(expected);
+    },
+  );
   it('accepts pool-scoped rights after checking a free VMID without creating anything', async () => {
     permissionHandler();
     await expect(provider().checkPermissions()).resolves.toEqual({ ok: true, missing: [] });

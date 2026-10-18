@@ -1,9 +1,13 @@
-import { Inject, Injectable } from '@nestjs/common';
+import { Inject, Injectable, Optional } from '@nestjs/common';
+import { existsSync } from 'node:fs';
+import { join } from 'node:path';
 import { HostResolver } from '@devchain/shared';
 import { getEnvConfig } from '../../../../common/config/env.config';
+import { GIT_SHIM_BIN } from '../../../../common/git-shim-paths';
 import { ValidationError } from '../../../../common/errors/error-types';
 import { isHookCapable } from '../../../providers/adapters/capabilities';
 import { ProviderPluginPolicyService } from '../../../providers/services/provider-plugin-policy.service';
+import { ProviderCliVersionProbe } from '../../../providers/services/provider-cli-version-probe.service';
 import { ClaudeLaunchSettingsMaterializerService } from '../../../runtime-context-capture/claude-launch-settings-materializer.service';
 import { CodexPluginProfileMaterializerService } from '../../../runtime-context-capture/codex-plugin-profile-materializer.service';
 import type {
@@ -78,6 +82,10 @@ export class ProviderRuntimePreparationService {
     private readonly runtimeContextCapture: RuntimeContextCaptureService,
     claudeLaunchSettings: ClaudeLaunchSettingsMaterializerService,
     codexPluginProfiles: CodexPluginProfileMaterializerService,
+    @Optional() @Inject(GIT_SHIM_BIN) private readonly gitShimBin: string | null = null,
+    @Optional()
+    @Inject(ProviderCliVersionProbe)
+    private readonly cliVersionProbe: ProviderCliVersionProbe | null = null,
   ) {
     this.artifactOwners = [claudeLaunchSettings, codexPluginProfiles];
   }
@@ -101,6 +109,9 @@ export class ProviderRuntimePreparationService {
     for (const owner of this.ownersFor(providerName)) {
       owner.assertNoPolicyConflict(profileOptionArgs, pluginPolicy.length > 0);
     }
+    const cliVersion = input.adapter.requiresCliVersion
+      ? await this.probeCliVersion(providerName, input.providerBinPath)
+      : undefined;
 
     const environment = getEnvConfig();
     const baseInput: Readonly<LaunchConfigInput> = Object.freeze({
@@ -113,9 +124,12 @@ export class ProviderRuntimePreparationService {
       modelOverride: effectiveModel,
       effortOverride: effectiveEffort,
       providerBinPath: input.providerBinPath,
+      ...(cliVersion !== undefined && { cliVersion }),
       providerEnv: providerEnv ? Object.freeze({ ...providerEnv }) : null,
       configEnv: input.configEnv ? Object.freeze({ ...input.configEnv }) : null,
       provider: frozenProvider,
+      ...(this.gitShimBin &&
+        existsSync(join(this.gitShimBin, 'git')) && { gitShimBin: this.gitShimBin }),
       hookContext: isHookCapable(input.adapter)
         ? Object.freeze({
             apiUrl: HostResolver.buildInternalBaseUrl({
@@ -229,6 +243,15 @@ export class ProviderRuntimePreparationService {
       await this.rollbackPrepared(rollbackState(), true);
       throw error;
     }
+  }
+
+  private probeCliVersion(providerName: string, providerBinPath: string): Promise<string> {
+    if (!this.cliVersionProbe) {
+      throw new ValidationError(
+        `Cannot launch ${providerName}: the CLI version probe is unavailable.`,
+      );
+    }
+    return this.cliVersionProbe.probe(providerName, providerBinPath);
   }
 
   private ownersFor(providerName: string): ProviderLaunchArtifacts[] {

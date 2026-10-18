@@ -13,16 +13,21 @@ import type {
   TranscriptDiscoveryCapability,
   EffortCapability,
   ProviderPluginCapability,
+  ProviderPluginCatalogResult,
+  ProviderPluginCatalogSource,
   ProjectProvisioningCapability,
   ProjectProvisioningContext,
   ProvisioningResult,
+  SessionCommandCapability,
 } from './capabilities';
 import type { ProviderPluginCatalogEntry } from '../dtos/provider-plugin.dto';
 import { ensureCodexProjectTrusted } from '../utils/codex-config';
 import {
+  isRecord,
   optionalBoolean,
   optionalString,
-  parseProviderPluginCatalogPayload,
+  requireArray,
+  requireRecord,
   requireString,
 } from './plugin-catalog.utils';
 
@@ -34,10 +39,12 @@ export class CodexAdapter
     TranscriptDiscoveryCapability,
     EffortCapability,
     ProviderPluginCapability,
-    ProjectProvisioningCapability
+    ProjectProvisioningCapability,
+    SessionCommandCapability
 {
   readonly providerName = 'codex';
   readonly traits = CODEX_TRAITS;
+  readonly sessionCommands = { compact: '/compact' } as const;
 
   // Effort maps to the config key `model_reasoning_effort` (`-c
   // model_reasoning_effort=<value>`). Static seed/endpoint metadata.
@@ -81,64 +88,18 @@ export class CodexAdapter
     };
   }
 
-  listProviderPlugins(): string[] {
-    return ['plugin', 'list', '--available', '--json'];
+  providerPluginCatalog(): ProviderPluginCatalogSource {
+    return {
+      transport: 'app-server',
+      args: ['app-server'],
+      method: 'plugin/list',
+      params: {},
+      parse: parseCodexPluginList,
+    };
   }
 
   installProviderPlugin(pluginId: string): string[] {
     return ['plugin', 'add', pluginId, '--json'];
-  }
-
-  parseProviderPluginCatalog(stdout: string): ProviderPluginCatalogEntry[] {
-    const payload = parseProviderPluginCatalogPayload(stdout, this.providerName);
-    const entries = new Map<string, ProviderPluginCatalogEntry>();
-
-    for (const available of payload.available) {
-      const pluginId = requireString(available, 'pluginId', 'Codex available plugin');
-      entries.set(pluginId, this.normalizeProviderPlugin(available, pluginId, true));
-    }
-
-    for (const installed of payload.installed) {
-      const pluginId = requireString(installed, 'pluginId', 'Codex installed plugin');
-      const existing = entries.get(pluginId);
-      const normalized = this.normalizeProviderPlugin(
-        installed,
-        pluginId,
-        existing?.available ?? false,
-      );
-      entries.set(pluginId, {
-        ...normalized,
-        description: existing?.description ?? normalized.description,
-        marketplaceName: normalized.marketplaceName ?? existing?.marketplaceName ?? null,
-        available: existing?.available ?? normalized.available,
-        installed: true,
-        installPolicy: normalized.installPolicy ?? existing?.installPolicy ?? null,
-        authPolicy: normalized.authPolicy ?? existing?.authPolicy ?? null,
-      });
-    }
-
-    return [...entries.values()];
-  }
-
-  private normalizeProviderPlugin(
-    plugin: Record<string, unknown>,
-    pluginId: string,
-    available: boolean,
-  ): ProviderPluginCatalogEntry {
-    return {
-      pluginId,
-      name: requireString(plugin, 'name', `Codex plugin ${pluginId}`),
-      description: optionalString(plugin, 'description'),
-      marketplaceName: optionalString(plugin, 'marketplaceName'),
-      version: optionalString(plugin, 'version'),
-      installed: optionalBoolean(plugin, 'installed'),
-      available,
-      providerEnabled: optionalBoolean(plugin, 'enabled'),
-      installationScopes: [],
-      installCount: null,
-      installPolicy: optionalString(plugin, 'installPolicy'),
-      authPolicy: optionalString(plugin, 'authPolicy'),
-    };
   }
 
   addMcpServer(options: AddMcpServerOptions): string[] {
@@ -243,4 +204,57 @@ export class CodexAdapter
 
     return entries;
   }
+}
+
+/**
+ * Maps a `codex app-server` `plugin/list` result. The same plugin ID can appear more than once;
+ * the UI and plugin policy key on the ID, so one entry is kept per ID.
+ */
+function parseCodexPluginList(result: unknown): ProviderPluginCatalogResult {
+  const payload = requireRecord(result, 'codex plugin/list result');
+  const entries = new Map<string, ProviderPluginCatalogEntry>();
+
+  const marketplaces = requireArray(payload, 'marketplaces', 'codex plugin/list');
+  for (const [index, value] of marketplaces.entries()) {
+    const marketplace = requireRecord(value, `codex marketplace ${index}`);
+    const marketplaceName = requireString(marketplace, 'name', `codex marketplace ${index}`);
+    const context = `codex marketplace ${marketplaceName}`;
+    for (const plugin of requireArray(marketplace, 'plugins', context)) {
+      const entry = normalizeCodexPlugin(
+        requireRecord(plugin, `${context} plugin`),
+        marketplaceName,
+      );
+      const existing = entries.get(entry.pluginId);
+      if (!existing || (entry.installed && !existing.installed)) {
+        entries.set(entry.pluginId, entry);
+      }
+    }
+  }
+
+  const loadErrors = payload.marketplaceLoadErrors;
+  return { entries: [...entries.values()], warnings: Array.isArray(loadErrors) ? loadErrors : [] };
+}
+
+function normalizeCodexPlugin(
+  plugin: Record<string, unknown>,
+  marketplaceName: string,
+): ProviderPluginCatalogEntry {
+  const pluginId = requireString(plugin, 'id', `codex marketplace ${marketplaceName} plugin`);
+  const pluginInterface = isRecord(plugin.interface) ? plugin.interface : {};
+  return {
+    pluginId,
+    name:
+      optionalString(pluginInterface, 'displayName') ??
+      requireString(plugin, 'name', `codex plugin ${pluginId}`),
+    description: optionalString(pluginInterface, 'shortDescription'),
+    marketplaceName,
+    version: optionalString(plugin, 'version'),
+    installed: optionalBoolean(plugin, 'installed'),
+    available: plugin.availability !== 'DISABLED_BY_ADMIN',
+    providerEnabled: optionalBoolean(plugin, 'enabled'),
+    installationScopes: [],
+    installCount: null,
+    installPolicy: optionalString(plugin, 'installPolicy'),
+    authPolicy: optionalString(plugin, 'authPolicy'),
+  };
 }

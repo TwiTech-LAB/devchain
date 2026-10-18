@@ -37,10 +37,12 @@ async function requestJson(
   fetchImpl,
   baseUrl,
   path,
-  { method = "GET", body, timeoutMs = REQUEST_TIMEOUT_MS } = {},
+  { method = "GET", body, timeoutMs = REQUEST_TIMEOUT_MS, signal } = {},
 ) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  // A caller's signal also ends the request; closing the connection tells the app it is gone.
+  signal?.addEventListener("abort", () => controller.abort(), { once: true });
   let response;
   try {
     response = await fetchImpl(
@@ -122,7 +124,7 @@ async function getOperation(fetchImpl, baseUrl, operationId, context) {
     const remainingMs = deadline - context.now();
     if (remainingMs <= 0) {
       throw new Error(
-        `DevChain did not come back within 3 minutes. ${context.recoveryHint ?? `Resume operation ${operationId} from the Cloud page.`}`,
+        `DevChain did not come back within 3 minutes. Resume operation ${operationId} from the Cloud page.`,
       );
     }
     try {

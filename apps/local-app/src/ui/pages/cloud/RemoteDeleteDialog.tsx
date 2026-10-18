@@ -10,8 +10,9 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/ui/components/ui/dialog';
-import { BusyStatus } from '@/ui/components/ui/spinner';
 import { StartError } from './StartError';
+import { SharedVmGuardDialog } from './SharedVmGuardDialog';
+import type { SharedVmGuardContext, SharedVmForceRequest } from './lib/remote-vm-contracts';
 
 interface BoundProject {
   id: string;
@@ -31,6 +32,8 @@ export function RemoteDeleteDialog({
   onClose,
   onDelete,
   onDestroy,
+  onDisconnectAll,
+  refusal,
 }: {
   remote: RemoteListItemDto;
   purpose: DeletePurpose;
@@ -43,9 +46,10 @@ export function RemoteDeleteDialog({
   initialDestroy?: boolean;
   onClose: () => void;
   onDelete: () => void;
-  onDestroy: (force: boolean) => void;
+  onDestroy: (input: SharedVmForceRequest) => void;
+  onDisconnectAll?: () => void;
+  refusal?: SharedVmGuardContext | null;
 }) {
-  const [confirmForce, setConfirmForce] = useState(false);
   const terminal = purpose === 'cancelled-create' || purpose === 'completed-destroy';
   const failedVm = purpose === 'failed-vm';
   const cancelledCreate = purpose === 'cancelled-create';
@@ -56,11 +60,32 @@ export function RemoteDeleteDialog({
     !!remote.vmProviderConnectionId &&
     (!!remote.vmIdentity || failedVm);
   const [destroyVm, setDestroyVm] = useState(initialDestroy && managedVm);
-  // A VM that rejects this PC's API key cannot answer the final login pull either.
-  const unreachable = remote.online === false || remote.apiKeyRejected === true;
-  const hasBindings = projects.length > 0;
-  const cannotDestroy =
-    destroyVm && (bindingsLoading || hasBindings || (unreachable && !confirmForce));
+
+  if (destroyVm)
+    return (
+      <SharedVmGuardDialog
+        remote={remote}
+        action="destroy"
+        projects={projects}
+        bindingsLoading={bindingsLoading}
+        pending={pending}
+        error={error}
+        refusal={refusal}
+        onClose={onClose}
+        onConfirm={onDestroy}
+        onDisconnectAll={onDisconnectAll}
+      >
+        <label className="flex items-center gap-2 text-sm">
+          <Checkbox
+            checked
+            onCheckedChange={() => setDestroyVm(false)}
+            disabled={pending}
+            aria-label="Destroy VM too"
+          />
+          Destroy VM too
+        </label>
+      </SharedVmGuardDialog>
+    );
 
   return (
     <Dialog open onOpenChange={(open) => !open && !pending && onClose()}>
@@ -89,45 +114,12 @@ export function RemoteDeleteDialog({
                 checked={destroyVm}
                 onCheckedChange={(checked) => {
                   setDestroyVm(checked === true);
-                  setConfirmForce(false);
                 }}
                 disabled={pending}
                 aria-label="Destroy VM too"
               />
               Destroy VM too
             </label>
-
-            {destroyVm && bindingsLoading && <BusyStatus>Checking project connections…</BusyStatus>}
-            {destroyVm && hasBindings && (
-              <div role="alert" className="space-y-1">
-                <p>Disconnect these projects first:</p>
-                <ul aria-label="Projects connected to this VM" className="list-disc pl-5">
-                  {projects.map((project) => (
-                    <li key={project.id}>{project.name}</li>
-                  ))}
-                </ul>
-              </div>
-            )}
-            {destroyVm && unreachable && (
-              <div className="space-y-2">
-                <p role="note">
-                  {remote.apiKeyRejected
-                    ? "The VM rejects this PC's API key."
-                    : 'The VM is offline.'}{' '}
-                  Provider logins keep their last saved copy if they cannot be pulled from the VM.
-                </p>
-                <label className="flex items-start gap-2">
-                  <Checkbox
-                    checked={confirmForce}
-                    onCheckedChange={(checked) => setConfirmForce(checked === true)}
-                    disabled={pending}
-                    aria-label="Force destruction while the VM is unreachable"
-                    className="mt-0.5"
-                  />
-                  Use the last saved provider logins and continue.
-                </label>
-              </div>
-            )}
           </div>
         )}
 
@@ -136,23 +128,8 @@ export function RemoteDeleteDialog({
           <Button type="button" variant="outline" onClick={onClose} disabled={pending}>
             Cancel
           </Button>
-          <Button
-            type="button"
-            variant="destructive"
-            onClick={() => {
-              if (destroyVm) onDestroy(unreachable && confirmForce);
-              else onDelete();
-            }}
-            disabled={cannotDestroy}
-            pending={pending}
-          >
-            {pending
-              ? 'Processing…'
-              : terminal
-                ? 'Remove'
-                : destroyVm
-                  ? 'Destroy VM'
-                  : 'Delete registration'}
+          <Button type="button" variant="destructive" onClick={onDelete} pending={pending}>
+            {pending ? 'Processing…' : terminal ? 'Remove' : 'Delete registration'}
           </Button>
         </DialogFooter>
       </DialogContent>

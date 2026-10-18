@@ -30,6 +30,16 @@ export class RemoteHostRequestError extends AppError {
   get status(): number | null {
     return (this.details?.status as number | null | undefined) ?? null;
   }
+
+  /** The host's own error code, when its answer carried one. */
+  get hostCode(): string | null {
+    return (this.details?.hostCode as string | null | undefined) ?? null;
+  }
+}
+
+/** The host's error code of a failed host request; null for any other error. */
+export function hostErrorCode(error: unknown): string | null {
+  return error instanceof RemoteHostRequestError ? error.hostCode : null;
 }
 
 /** The host answered, but its answer does not match the contract; `path` may carry a query. */

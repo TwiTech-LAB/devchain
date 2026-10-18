@@ -25,6 +25,7 @@ import {
   type ProjectReplicaBuildResult,
 } from '../replica/project-replica.builder';
 import { ProjectFreezeService } from './project-freeze.service';
+import { GitCoordinatorService } from '../git-coordinator/git-coordinator.service';
 import { HostSkillSettingsService } from './host-skill-settings.service';
 import type { HostChangesQuery } from './host.dto';
 import {
@@ -52,6 +53,7 @@ export class HostService {
     private readonly timeSettler: ProjectTimeSettler,
     private readonly skillSettings: HostSkillSettingsService,
     private readonly settings: SettingsService,
+    private readonly gitCoordinator: GitCoordinatorService,
   ) {}
 
   async importProject(
@@ -87,6 +89,8 @@ export class HostService {
       throw error;
     }
     this.skillSettings.syncSourcesTurnedOn(sourcesEnabledBefore);
+    // A new connection starts with the VM owning Git at generation 0.
+    if (!options.resnapshot) await this.gitCoordinator.forget(projectId);
     logger.info({ projectId, resnapshot: options.resnapshot }, 'Imported project replica');
     return { projectId, cursor };
   }
@@ -138,6 +142,7 @@ export class HostService {
   async releaseProject(projectId: string): Promise<void> {
     await this.storage.releaseProject(projectId);
     this.freeze.forget(projectId);
+    await this.gitCoordinator.forget(projectId);
   }
 
   async findEpicByIdempotencyKey(projectId: string, key: string): Promise<{ epicId: string }> {

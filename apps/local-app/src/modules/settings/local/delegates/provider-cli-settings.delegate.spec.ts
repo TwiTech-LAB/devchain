@@ -115,6 +115,26 @@ describe('ProviderCliSettingsDelegate', () => {
       expect(result.codex).toEqual({ version: 'latest', homeManaged: false });
     });
 
+    it('reads a stored opencode 1.x pin as latest and keeps homeManaged', () => {
+      const now = new Date().toISOString();
+      db.prepare(
+        `INSERT INTO settings (id, key, value, created_at, updated_at) VALUES (?, ?, ?, ?, ?)`,
+      ).run(
+        'row-1',
+        PROVIDER_CLI_VERSIONS_SETTING_KEY,
+        JSON.stringify({
+          opencode: { version: '1.18.32', homeManaged: true },
+          claude: { version: '1.0.0', homeManaged: false },
+        }),
+        now,
+        now,
+      );
+
+      const result = delegate.getProviderCliVersions();
+      expect(result.opencode).toEqual({ version: 'latest', homeManaged: true });
+      expect(result.claude).toEqual({ version: '1.0.0', homeManaged: false });
+    });
+
     it('falls back to defaults for malformed stored JSON', () => {
       const now = new Date().toISOString();
       db.prepare(

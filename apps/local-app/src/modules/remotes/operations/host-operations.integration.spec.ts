@@ -1,3 +1,4 @@
+import { sharedVmGuardStub } from '../../../common/test/shared-vm.stub';
 import { certificateFingerprint } from '../../../common/tls/certificate';
 import { createHash } from 'node:crypto';
 import { RemoteApiKeyService } from '../auth/remote-api-key.service';
@@ -131,6 +132,8 @@ class InstalledHostSshSession implements SshSession {
   }
 
   async exec(command: string): Promise<SshCommandResult> {
+    if (command.includes('__DEVCHAIN_HOST_STATE__'))
+      return { code: 0, stdout: '__DEVCHAIN_HOST_STATE__unclaimed', stderr: '' };
     if (command.includes(' --check')) {
       return { code: 0, stdout: 'Pre-validation passed.\n', stderr: '' };
     }
@@ -252,7 +255,6 @@ describe('claim and update_host operations', () => {
       {} as never,
       {} as never,
       {} as never,
-      {} as never,
     );
   }
 
@@ -278,7 +280,7 @@ describe('claim and update_host operations', () => {
       }),
     );
     apiKeys = new RemoteApiKeyService(storage);
-    vault = new ProviderAuthVaultService(storage, adapters);
+    vault = new ProviderAuthVaultService(storage, adapters, {} as never);
     generator = new FakeGenerator(vault);
     health = new RemoteHealthService(
       storage,
@@ -291,8 +293,11 @@ describe('claim and update_host operations', () => {
         prune: () => undefined,
       } as never,
       { pushIfChanged: async () => undefined } as never,
+      { pushIfChanged: async () => undefined } as never,
       { registerRemoteCheck: () => () => undefined } as never,
       apiKeys,
+      sharedVmGuardStub(),
+      { poll: async () => undefined, prune: () => undefined } as never,
     );
     host = new RemoteHostClient(storage, apiKeys);
     processExecutor = new FakeProcessExecutor();
@@ -652,6 +657,7 @@ describe('claim and update_host operations', () => {
         providers,
         {} as never,
         {} as never,
+        sharedVmGuardStub(),
       ),
       connectionId: connection.id,
     };

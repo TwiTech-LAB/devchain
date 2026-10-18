@@ -6,6 +6,7 @@ import {
   handleTeamsConfigsList,
   handleTeamsCreateAgent,
   handleTeamsDeleteAgent,
+  handleTeamsSessionControl,
   handleDevchainTeam,
 } from '../services/handlers/teams-tools';
 import { createNullAdapter } from '../services/handlers/null-adapter';
@@ -25,5 +26,6 @@ export const teamBindings = defineToolGroup<TeamsToolContext>(createTeamsContext
   ['devchain_teams_configs_list', handleTeamsConfigsList],
   ['devchain_teams_create_agent', handleTeamsCreateAgent],
   ['devchain_teams_delete_agent', handleTeamsDeleteAgent],
+  ['devchain_teams_session_control', handleTeamsSessionControl],
   ['devchain_team', handleDevchainTeam],
 ]);

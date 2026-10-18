@@ -39,6 +39,7 @@ import { getErrorMessage, useToastHelpers } from '@/ui/lib/toast-helpers';
 import { cn } from '@/ui/lib/utils';
 import { useFetchFactory } from '@/ui/hooks/useFetchFactory';
 
+type ProviderFilter = 'all' | 'claude' | 'codex';
 type StatusFilter = 'all' | 'installed' | 'available';
 type PolicyScope = ProviderPluginPolicySource;
 
@@ -50,6 +51,15 @@ interface PolicyMutationVariables {
 }
 
 const providerPluginsKey = ['provider-plugins'] as const;
+/** Claude's catalog lists thousands of plugins; search and filters still cover all of them. */
+const MAX_VISIBLE_PLUGINS = 200;
+
+function pluginCountText(matching: number): string {
+  if (matching > MAX_VISIBLE_PLUGINS) {
+    return `Showing ${MAX_VISIBLE_PLUGINS} of ${matching.toLocaleString('en-US')} plugins. Search to narrow the list.`;
+  }
+  return `${matching} plugin${matching === 1 ? '' : 's'}`;
+}
 
 function providerPluginPoliciesKey(projectId: string | undefined) {
   return ['provider-plugin-policies', projectId ?? null] as const;
@@ -149,6 +159,7 @@ export function PluginsPage() {
   const { showSuccess, showError } = useToastHelpers();
   const { selectedProjectId, selectedProject } = useSelectedProject();
   const [search, setSearch] = useState('');
+  const [providerFilter, setProviderFilter] = useState<ProviderFilter>('all');
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
   const policiesKey = providerPluginPoliciesKey(selectedProjectId);
 
@@ -172,40 +183,48 @@ export function PluginsPage() {
     return result;
   }, [policiesQuery.data]);
 
+  // The catalog has thousands of rows: sort only when data or policy changes, so a search
+  // keystroke only filters. The sort is stable, so filtering keeps the same order.
+  const sortedPlugins = useMemo(() => {
+    const plugins = pluginsQuery.data ?? [];
+    const active = new Map(
+      plugins.map((plugin) => {
+        const defaultPolicy = policyByKey.get(
+          policyKey(plugin.providerId, plugin.pluginId, 'default'),
+        );
+        const projectPolicy = policyByKey.get(
+          policyKey(plugin.providerId, plugin.pluginId, 'project'),
+        );
+        return [
+          plugin,
+          plugin.installed && getProjectEnabled(plugin, projectPolicy, defaultPolicy),
+        ] as const;
+      }),
+    );
+    return [...plugins].sort(
+      (left, right) =>
+        Number(active.get(right)) - Number(active.get(left)) ||
+        left.providerName.localeCompare(right.providerName) ||
+        (left.marketplaceName ?? '').localeCompare(right.marketplaceName ?? '') ||
+        left.name.localeCompare(right.name) ||
+        left.pluginId.localeCompare(right.pluginId),
+    );
+  }, [pluginsQuery.data, policyByKey]);
+
   const filteredPlugins = useMemo(() => {
     const normalizedSearch = search.trim().toLowerCase();
-    return (pluginsQuery.data ?? [])
-      .filter((plugin) => {
-        const matchesSearch =
-          normalizedSearch.length === 0 || getSearchValue(plugin).includes(normalizedSearch);
-        const matchesProvider = plugin.providerName.toLowerCase() === 'claude';
-        const matchesStatus =
-          statusFilter === 'all' ||
-          (statusFilter === 'installed' && plugin.installed) ||
-          (statusFilter === 'available' && plugin.available && !plugin.installed);
-        return matchesSearch && matchesProvider && matchesStatus;
-      })
-      .sort((left, right) => {
-        const leftDefault = policyByKey.get(policyKey(left.providerId, left.pluginId, 'default'));
-        const leftProject = policyByKey.get(policyKey(left.providerId, left.pluginId, 'project'));
-        const rightDefault = policyByKey.get(
-          policyKey(right.providerId, right.pluginId, 'default'),
-        );
-        const rightProject = policyByKey.get(
-          policyKey(right.providerId, right.pluginId, 'project'),
-        );
-        const leftActive = left.installed && getProjectEnabled(left, leftProject, leftDefault);
-        const rightActive = right.installed && getProjectEnabled(right, rightProject, rightDefault);
-
-        return (
-          Number(rightActive) - Number(leftActive) ||
-          left.providerName.localeCompare(right.providerName) ||
-          (left.marketplaceName ?? '').localeCompare(right.marketplaceName ?? '') ||
-          left.name.localeCompare(right.name) ||
-          left.pluginId.localeCompare(right.pluginId)
-        );
-      });
-  }, [pluginsQuery.data, policyByKey, search, statusFilter]);
+    return sortedPlugins.filter((plugin) => {
+      const matchesSearch =
+        normalizedSearch.length === 0 || getSearchValue(plugin).includes(normalizedSearch);
+      const matchesProvider =
+        providerFilter === 'all' || plugin.providerName.toLowerCase() === providerFilter;
+      const matchesStatus =
+        statusFilter === 'all' ||
+        (statusFilter === 'installed' && plugin.installed) ||
+        (statusFilter === 'available' && plugin.available && !plugin.installed);
+      return matchesSearch && matchesProvider && matchesStatus;
+    });
+  }, [sortedPlugins, providerFilter, search, statusFilter]);
 
   const policyMutation = useCrudMutation<
     ProviderPluginPolicy | void,
@@ -378,13 +397,22 @@ export function PluginsPage() {
           />
         </div>
         <div className="w-full sm:w-44">
-          <span className="mb-1.5 block text-sm font-medium">Provider</span>
-          <div
-            className="flex h-10 items-center rounded-md border border-input bg-muted px-3 text-sm text-muted-foreground"
-            aria-label="Provider filter pinned to Claude"
+          <label htmlFor="plugin-provider-filter" className="mb-1.5 block text-sm font-medium">
+            Provider
+          </label>
+          <Select
+            value={providerFilter}
+            onValueChange={(value) => setProviderFilter(value as ProviderFilter)}
           >
-            Claude
-          </div>
+            <SelectTrigger id="plugin-provider-filter" aria-label="Filter by provider">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All</SelectItem>
+              <SelectItem value="claude">Claude</SelectItem>
+              <SelectItem value="codex">Codex</SelectItem>
+            </SelectContent>
+          </Select>
         </div>
         <div className="w-full sm:w-44">
           <label htmlFor="plugin-status-filter" className="mb-1.5 block text-sm font-medium">
@@ -405,9 +433,7 @@ export function PluginsPage() {
           </Select>
         </div>
         <p className="pb-2 text-sm text-muted-foreground" aria-live="polite">
-          {isLoading
-            ? 'Loading…'
-            : `${filteredPlugins.length} plugin${filteredPlugins.length === 1 ? '' : 's'}`}
+          {isLoading ? 'Loading…' : pluginCountText(filteredPlugins.length)}
         </p>
       </div>
 
@@ -435,13 +461,13 @@ export function PluginsPage() {
             ) : filteredPlugins.length === 0 ? (
               <TableRow>
                 <TableCell colSpan={5} className="py-10 text-center text-muted-foreground">
-                  {search.trim() || statusFilter !== 'all'
+                  {search.trim() || providerFilter !== 'all' || statusFilter !== 'all'
                     ? 'No plugins match these filters.'
                     : 'No provider plugins are available.'}
                 </TableCell>
               </TableRow>
             ) : (
-              filteredPlugins.map((plugin) => {
+              filteredPlugins.slice(0, MAX_VISIBLE_PLUGINS).map((plugin) => {
                 const defaultPolicy = policyByKey.get(
                   policyKey(plugin.providerId, plugin.pluginId, 'default'),
                 );

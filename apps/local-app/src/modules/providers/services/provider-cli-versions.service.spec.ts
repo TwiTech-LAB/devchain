@@ -275,7 +275,7 @@ describe('ProviderCliVersionsService', () => {
         },
         install: null,
       });
-      expect(overview.providers.opencode.npmPackage).toBe('opencode-ai');
+      expect(overview.providers.opencode.npmPackage).toBe('@opencode/cli');
       expect(overview.providers.codex.setting).toEqual({
         version: 'latest',
         homeManaged: false,

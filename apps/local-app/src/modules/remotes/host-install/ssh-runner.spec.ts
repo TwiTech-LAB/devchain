@@ -180,6 +180,21 @@ describe('SshRunner host verification', () => {
     }
   });
 
+  it('keeps a private structured reply intact when a credential occurs in its fields', async () => {
+    const nonce = 'a'.repeat(64);
+    const payload = JSON.stringify({ userName: 'mira', nonce });
+    const server = await startFakeSsh(hostKey(), 0, payload);
+    try {
+      const reply = await runner.withSession(
+        { host: '127.0.0.1', port: server.port, credentials: { user: 'mira', password: 'a' } },
+        (session) => session.exec('private reply', '', { capture: 'private' }),
+      );
+      expect(JSON.parse(reply.stdout)).toEqual({ userName: 'mira', nonce });
+    } finally {
+      await server.close();
+    }
+  });
+
   it('uploads a generated block through SFTP to a mktemp file with mode 0600', async () => {
     const server = await startFakeSsh(hostKey());
     try {

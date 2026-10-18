@@ -12,6 +12,7 @@ function setup(owner: GitOwner = 'vm') {
   const host = {
     thaw: jest.fn().mockResolvedValue(undefined),
     removeGitGuard: jest.fn().mockResolvedValue({ removed: true }),
+    gitCoordinatorReopen: jest.fn().mockResolvedValue(undefined),
   };
   const copyBack = {
     partialGroups: jest.fn().mockResolvedValue([]),
@@ -31,7 +32,16 @@ function setup(owner: GitOwner = 'vm') {
     unused,
     unused,
     copyBack as never,
-    { clear: jest.fn(), get: () => owner } as never,
+    {
+      clear: jest.fn(),
+      get: () => owner,
+      fence: () => ({ expectedGeneration: 0, transitionId: null }),
+    } as never,
+    {
+      assertRemoteEmpty: jest.fn().mockResolvedValue(null),
+      thawRemoteAdmission: jest.fn().mockResolvedValue(true),
+    } as never,
+    {} as never,
   );
   return { detach, fileSync, bindings, liveSync, copyBack, host };
 }
@@ -66,12 +76,42 @@ describe('DetachOperation rollback', () => {
         }),
       );
       if (installed && owner === 'vm') {
-        expect(host.removeGitGuard).toHaveBeenCalledWith('remote-1', 'A');
+        expect(host.removeGitGuard).toHaveBeenCalledWith(
+          'remote-1',
+          'A',
+          {},
+          {
+            expectedGeneration: 0,
+            transitionId: null,
+          },
+        );
         expect(host.removeGitGuard.mock.invocationCallOrder[0]).toBeLessThan(
           fileSync.flipBackToHost.mock.invocationCallOrder[0],
         );
       } else {
         expect(host.removeGitGuard).not.toHaveBeenCalled();
+      }
+    },
+  );
+
+  it.each([false, true])(
+    'reopens VM Git admission after flipping back unless forced (force=%s)',
+    async (force) => {
+      const { detach, host, fileSync } = setup();
+      await detach.rollback(
+        operation([{ id: 'file_sync_final', state: 'failed' }], {
+          markedDetaching: true,
+          fileSyncPaused: true,
+          gitAdmissionClosed: true,
+          force,
+        }),
+      );
+      if (force) expect(host.gitCoordinatorReopen).not.toHaveBeenCalled();
+      else {
+        expect(host.gitCoordinatorReopen).toHaveBeenCalledWith('remote-1', 'A');
+        expect(fileSync.flipBackToHost.mock.invocationCallOrder[0]).toBeLessThan(
+          host.gitCoordinatorReopen.mock.invocationCallOrder[0],
+        );
       }
     },
   );
@@ -225,6 +265,11 @@ describe('DetachOperation preflight', () => {
       unused,
       unused,
       { clear: jest.fn() } as never,
+      {
+        assertRemoteEmpty: jest.fn().mockResolvedValue(null),
+        freezeRemoteEmpty: jest.fn().mockResolvedValue(null),
+      } as never,
+      {} as never,
     );
     const step = detach.steps.find((definition) => definition.id === 'preflight')!;
     return (details: Record<string, unknown>) =>

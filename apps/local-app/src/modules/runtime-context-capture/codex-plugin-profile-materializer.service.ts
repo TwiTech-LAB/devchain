@@ -21,6 +21,7 @@ import {
   TimeoutError,
   ValidationError,
 } from '../../common/errors/error-types';
+import { readCodexPluginDefault, resolveCodexConfigPath } from '../providers/utils/codex-config';
 import { buildSessionCommand } from '../providers/utils/env-builder';
 import { hasCodexProfileSelector } from '../providers/utils/profile-options';
 import { CONTEXT_WINDOW_ENV_KEY } from './context-window-policy';
@@ -51,6 +52,8 @@ export interface PrepareCodexPluginProfileInput {
   sessionId: string;
   pluginPolicy: ReadonlyArray<ProviderPluginPolicyEntry>;
   attemptNonce: string;
+  /** The user's Codex `config.toml`, as the launched Codex will resolve it. */
+  codexConfigPath: string;
 }
 
 export interface PreparedCodexPluginProfile {
@@ -528,6 +531,10 @@ export class CodexPluginProfileMaterializerService
       sessionId: input.sessionId,
       pluginPolicy: input.pluginPolicy,
       attemptNonce: randomUUID(),
+      codexConfigPath: resolveCodexConfigPath(
+        { env: { ...input.providerEnv, ...input.configEnv } },
+        input.projectRootPath,
+      ),
     });
     if (!profile) return { optionArgs: [], runtimeEnv: {} };
 
@@ -565,7 +572,8 @@ export class CodexPluginProfileMaterializerService
     if (input.pluginPolicy.length === 0) return null;
     this.validateIdentity(input);
 
-    const profileToml = this.serializePolicy(input.pluginPolicy);
+    const includeDefault = !(await this.userConfigDefinesPluginDefault(input.codexConfigPath));
+    const profileToml = this.serializePolicy(input.pluginPolicy, { includeDefault });
     const projectDigest = this.sha256(input.projectId);
     const policyHash = this.sha256(profileToml);
     const sessionDigest = this.sha256(input.sessionId);
@@ -729,7 +737,14 @@ export class CodexPluginProfileMaterializerService
     await this.cleanupLifecycleLocators((locator) => nonLiveSessionIds.has(locator.sessionId));
   }
 
-  serializePolicy(policy: ReadonlyArray<ProviderPluginPolicyEntry>): string {
+  /**
+   * `includeDefault` adds `[plugins._default] enabled = true`: Codex honours an explicit
+   * entry for a remote plugin only when the effective config has a `_default`.
+   */
+  serializePolicy(
+    policy: ReadonlyArray<ProviderPluginPolicyEntry>,
+    options: { includeDefault?: boolean } = {},
+  ): string {
     const byPluginId = new Map<string, boolean>();
     for (const entry of policy) {
       this.validatePolicyEntry(entry);
@@ -741,13 +756,30 @@ export class CodexPluginProfileMaterializerService
       byPluginId.set(entry.pluginId, entry.enabled);
     }
 
-    return [...byPluginId.entries()]
+    const tables = [...byPluginId.entries()]
       .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
       .map(
         ([pluginId, enabled]) =>
           `[plugins.${JSON.stringify(pluginId)}]\nenabled = ${enabled ? 'true' : 'false'}\n`,
-      )
-      .join('\n');
+      );
+    if (options.includeDefault) tables.unshift('[plugins._default]\nenabled = true\n');
+    return tables.join('\n');
+  }
+
+  /** A user `_default` already makes explicit entries win; overriding it would change its value. */
+  private async userConfigDefinesPluginDefault(configPath: string): Promise<boolean> {
+    const result = await readCodexPluginDefault(configPath);
+    if (result.success) return result.defined;
+    if (result.reason === 'invalid') {
+      throw new ValidationError(`Codex config is not valid TOML: ${configPath}`, {
+        field: 'codexConfig',
+        path: configPath,
+      });
+    }
+    throw new IOError(`Codex config could not be read: ${configPath}`, {
+      stage: 'codex_config',
+      path: configPath,
+    });
   }
 
   private async cleanupLifecycleLocators(

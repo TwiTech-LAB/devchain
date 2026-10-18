@@ -15,6 +15,7 @@ import { STORAGE_SERVICE } from '../../storage/interfaces/storage.interface';
 import { TeamsService } from '../../teams/services/teams.service';
 import { TerminalIOService } from '../../terminal/services/terminal-io/terminal-io.service';
 import { ProjectWriteGate } from '../../storage/write-gate/project-write-gate';
+import { WorktreesService } from '../../worktrees/worktrees.service';
 import { allMetadata } from '../tool-descriptors';
 import type { BoundMcpToolHandler, McpBindingRuntime } from '../tool-descriptors/binding-types';
 import { allBindingDefinitions } from '../tool-descriptors/runtime-bindings';
@@ -69,6 +70,7 @@ export class McpToolBindingRegistry {
     agentMessageDelivery?: AgentMessageDeliveryService,
     @Optional() projectCommunicationService?: ProjectCommunicationService,
     @Optional() projectWriteGate?: ProjectWriteGate,
+    @Optional() worktreesService?: WorktreesService,
   ) {
     const instructionsResolver = new InstructionsResolver(storage);
     const sessionContextResolver = new SessionContextResolver(
@@ -93,6 +95,7 @@ export class McpToolBindingRegistry {
       agentMessageDelivery,
       projectCommunicationService,
       projectWriteGate,
+      worktreesService,
       instructionsResolver,
       defaultInlineMaxBytes: 64 * 1024,
       resolveSessionContext: (sessionId: string) => sessionContextResolver.resolve(sessionId),

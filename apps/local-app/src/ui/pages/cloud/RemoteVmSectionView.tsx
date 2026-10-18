@@ -16,6 +16,7 @@ import { ApiKeyDialog } from './ApiKeyDialog';
 import { ChangeLoginsDialog } from './ChangeLoginsDialog';
 import { ConnectDialog } from './ConnectDialog';
 import { DisconnectProjectDialog } from './DisconnectProjectDialog';
+import { DisconnectAllDialog } from './DisconnectAllDialog';
 import { FileSyncSettingsDialog } from './FileSyncSettingsDialog';
 import { FirstRunChecklist } from './FirstRunChecklist';
 import { FixFileSyncDialog } from './FixFileSyncDialog';
@@ -189,6 +190,9 @@ export function RemoteVmSectionView({
       )}
       {dialogs.connect && <ConnectDialog {...dialogs.connect} />}
       {dialogs.disconnect && <DisconnectProjectDialog {...dialogs.disconnect} />}
+      {dialogs.disconnectAll && (
+        <DisconnectAllDialog key={dialogs.disconnectAll.remoteId} {...dialogs.disconnectAll} />
+      )}
       {dialogs.fixFileSync && (
         <FixFileSyncDialog key={dialogs.fixFileSync.projectId} {...dialogs.fixFileSync} />
       )}

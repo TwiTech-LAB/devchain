@@ -21,10 +21,12 @@ import type {
   RecordStorage,
   ReviewStorage,
   StatusStorage,
+  WorktreeStorage,
 } from '../../storage/interfaces/storage.interface';
 import type { TeamsService } from '../../teams/services/teams.service';
 import type { TerminalIOService } from '../../terminal/services/terminal-io/terminal-io.service';
 import type { ProjectWriteGate } from '../../storage/write-gate/project-write-gate';
+import type { WorktreesService } from '../../worktrees/worktrees.service';
 import type { InstructionsResolver } from '../services/instructions-resolver';
 
 export type ContextualMcpToolHandler<TContext> = (
@@ -44,7 +46,8 @@ export interface McpBindingRuntime {
     PromptStorage &
     RecordStorage &
     ReviewStorage &
-    StatusStorage;
+    StatusStorage &
+    WorktreeStorage;
   readonly sessionsService?: SessionsService;
   readonly epicsService?: EpicsService;
   readonly epicRelationsService?: EpicRelationsService;
@@ -59,6 +62,7 @@ export interface McpBindingRuntime {
   readonly agentMessageDelivery?: AgentMessageDeliveryService;
   readonly projectCommunicationService?: ProjectCommunicationService;
   readonly projectWriteGate?: ProjectWriteGate;
+  readonly worktreesService?: WorktreesService;
   readonly instructionsResolver: InstructionsResolver;
   readonly defaultInlineMaxBytes: number;
   readonly resolveSessionContext: (sessionId: string) => Promise<McpResponse>;

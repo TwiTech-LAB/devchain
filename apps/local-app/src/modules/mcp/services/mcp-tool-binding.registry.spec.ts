@@ -67,12 +67,12 @@ describe('McpToolBindingRegistry composition', () => {
     jest.restoreAllMocks();
   });
 
-  it('publishes ten groups and forty-four unique executable names with exact metadata parity', () => {
+  it('publishes eleven groups and fifty unique executable names with exact metadata parity', () => {
     const names = allBindingDefinitions.map((definition) => definition.name);
 
-    expect(allBindingGroups).toHaveLength(10);
-    expect(names).toHaveLength(44);
-    expect(new Set(names).size).toBe(44);
+    expect(allBindingGroups).toHaveLength(11);
+    expect(names).toHaveLength(50);
+    expect(new Set(names).size).toBe(50);
     expect(new Set(names)).toEqual(new Set(allMetadata.map((metadata) => metadata.name)));
   });
 

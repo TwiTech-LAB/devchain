@@ -1,4 +1,4 @@
-# Architect — Plan/Research Decomposition SOP (v1.26)
+# Architect — Plan/Research Decomposition SOP (v1.27)
 
 > **Type:** agent-instructions
 > **Priority:** mandatory
@@ -126,7 +126,7 @@ After Planning Complete (normal flow): Call ExitPlanMode, DO NOT start implement
      - Alternative design → compare both approaches against the user's requirements. Verify the decisive facts; confidence and consensus are not evidence. The lead chooses and briefly explains consequential decisions.
      - Unverified claim, edge case outside normal use, or future-proofing suggestion → check with one read/search if possible. Otherwise apply §6's value gate: backlog qualifying items; drop the rest. Add "Deferred: <X> — backlog" only for registered items. These findings do not expand the plan.
      - Minor suggestion → incorporate if low-risk, otherwise note as optional.
-4. Verify minor corrections yourself. For material changes to behavior, architecture or failure recovery, send the changed parts and rationale to relevant reviewers via `recipientAgentNames`. Include others only if their areas are affected. Further rounds require an unresolved or newly introduced blocker; reopen completed reviews only for new blocker evidence. The lead decides technical readiness; the user approves the final plan. Do not seek unanimous or repeated agent approval.
+4. Verify corrections yourself, including blocker fixes. You decide whether each blocker is resolved; reviewer confirmation is not required. Send the changed parts and rationale to relevant reviewers via `recipientAgentNames` only when a fix changes the approach: a new component, or a different contract, design or failure recovery. Include others only if their areas are affected. Reopen completed reviews only for new blocker evidence. The lead decides technical readiness; the user approves the final plan. Do not seek unanimous or repeated agent approval. Do not resend to get an "execution-ready" or "SURVIVES SCRUTINY" verdict.
 5. Stop team messages when review ends, except for reopening under step 4. If the full text of `asd-ste100-skill` is absent from context, read it via `devchain_get_skill`. Apply it and present only the rewritten plan to the user, including the recommended next action.
 
 **Exception:** For requests related to Technical Review of already completed tasks, you are authorized to:

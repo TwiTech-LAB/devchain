@@ -1,5 +1,14 @@
 const fs = require("node:fs");
-const { mkdtempSync, writeFileSync, mkdirSync, readFileSync, lstatSync, symlinkSync, rmSync, readdirSync } = require("node:fs");
+const {
+  mkdtempSync,
+  writeFileSync,
+  mkdirSync,
+  readFileSync,
+  lstatSync,
+  symlinkSync,
+  rmSync,
+  readdirSync,
+} = require("node:fs");
 const { tmpdir } = require("node:os");
 const { join } = require("node:path");
 const { createHash } = require("node:crypto");
@@ -14,7 +23,10 @@ function makeVm({ claim = true } = {}) {
   mkdirSync(etcDir, { recursive: true });
   mkdirSync(homePath, { recursive: true });
   if (claim) {
-    writeFileSync(join(etcDir, "claim.json"), JSON.stringify({ userName: "vmuser", homePath }));
+    writeFileSync(
+      join(etcDir, "claim.json"),
+      JSON.stringify({ userName: "vmuser", homePath }),
+    );
   }
   return {
     root,
@@ -27,8 +39,12 @@ function makeVm({ claim = true } = {}) {
 
 function run(vm, { getuid = () => ACCOUNT.uid, ...rest } = {}) {
   return runHostApiKeyReset({
-    env: { DEVCHAIN_HOST_ETC_DIR: vm.etcDir },
+    env: {
+      DEVCHAIN_HOST_ETC_DIR: vm.etcDir,
+      ...(getuid() === 0 ? { SUDO_USER: "vmuser" } : {}),
+    },
     getuid,
+    getUserInfo: () => ({ username: getuid() === 0 ? "root" : "vmuser" }),
     lookupAccount: () => ACCOUNT,
     log: jest.fn(),
     error: jest.fn(),
@@ -38,6 +54,7 @@ function run(vm, { getuid = () => ACCOUNT.uid, ...rest } = {}) {
 
 const sha256 = (value) => createHash("sha256").update(value).digest("hex");
 
+// Real temporary files prove caller selection and that another instance's key stays intact.
 describe("devchain host api-key reset", () => {
   let vms;
 
@@ -57,7 +74,9 @@ describe("devchain host api-key reset", () => {
     const exitCode = run(vm, { error });
 
     expect(exitCode).toBe(1);
-    expect(error).toHaveBeenCalledWith("This machine is not a claimed DevChain VM.");
+    expect(error).toHaveBeenCalledWith(
+      "This machine is not a claimed DevChain VM.",
+    );
     expect(fs.existsSync(vm.keyDir)).toBe(false);
   });
 
@@ -91,7 +110,7 @@ describe("devchain host api-key reset", () => {
     expect(fs.existsSync(vm.keyDir)).toBe(false);
   });
 
-  it("as root, hands the key file and a newly created key dir to the claimed user", () => {
+  it("under sudo, hands the key file and a newly created key dir to the calling user", () => {
     const vm = makeVm();
     vms.push(vm);
     const chownSync = jest.fn();
@@ -107,10 +126,12 @@ describe("devchain host api-key reset", () => {
       ACCOUNT.gid,
     );
     expect(readdirSync(vm.keyDir)).toEqual(["host-api-key"]);
-    expect(fs.readFileSync(vm.keyFile, "utf8")).toBe(`${sha256(log.mock.calls[0][0])}\n`);
+    expect(fs.readFileSync(vm.keyFile, "utf8")).toBe(
+      `${sha256(log.mock.calls[0][0])}\n`,
+    );
   });
 
-  it("as root with an existing key dir, chowns only the temp key file", () => {
+  it("under sudo with an existing key dir, chowns only the temp key file", () => {
     const vm = makeVm();
     vms.push(vm);
     mkdirSync(vm.keyDir, { mode: 0o700 });
@@ -137,7 +158,9 @@ describe("devchain host api-key reset", () => {
     const exitCode = run(vm, { error });
 
     expect(exitCode).toBe(1);
-    expect(error).toHaveBeenCalledWith(expect.stringContaining("symbolic link"));
+    expect(error).toHaveBeenCalledWith(
+      expect.stringContaining("symbolic link"),
+    );
     expect(lstatSync(vm.keyFile).isSymbolicLink()).toBe(true);
   });
 
@@ -189,7 +212,158 @@ describe("devchain host api-key reset", () => {
     const exitCode = run(vm, { error });
 
     expect(exitCode).toBe(1);
-    expect(error).toHaveBeenCalledWith(expect.stringContaining("Cannot read the claim record"));
+    expect(error).toHaveBeenCalledWith(
+      expect.stringContaining("Cannot read the claim record"),
+    );
     expect(fs.existsSync(vm.keyDir)).toBe(false);
+  });
+
+  function sharedVm() {
+    const vm = makeVm();
+    vms.push(vm);
+    const joinedEtc = join(vm.etcDir, "instances", "bob");
+    const joinedHome = join(vm.root, "home", "bob");
+    const joinedKey = join(joinedHome, ".devchain", "host-api-key");
+    mkdirSync(joinedEtc, { recursive: true });
+    mkdirSync(joinedHome, { recursive: true });
+    writeFileSync(
+      join(joinedEtc, "claim.json"),
+      JSON.stringify({ userName: "bob", homePath: joinedHome }),
+    );
+    mkdirSync(vm.keyDir);
+    writeFileSync(vm.keyFile, "legacy digest\n");
+    mkdirSync(join(joinedHome, ".devchain"));
+    writeFileSync(joinedKey, "joined digest\n");
+    return { ...vm, joinedEtc, joinedKey };
+  }
+
+  it.each([
+    ["root", 0, "vmuser", false],
+    ["bob", 1001, "vmuser", true],
+  ])(
+    "resets only the caller's instance as %s uid=%i sudo=%p scoped=%p",
+    (caller, uid, sudoUser, scoped) => {
+      const vm = sharedVm();
+      const log = jest.fn();
+      const selectedUser = uid === 0 ? sudoUser : caller;
+      const selectedKey = selectedUser === "bob" ? vm.joinedKey : vm.keyFile;
+      const otherKey = selectedUser === "bob" ? vm.keyFile : vm.joinedKey;
+      const otherBefore = readFileSync(otherKey, "utf8");
+      expect(
+        run(vm, {
+          env: {
+            DEVCHAIN_HOST_ETC_DIR: scoped ? vm.joinedEtc : vm.etcDir,
+            SUDO_USER: sudoUser,
+          },
+          getuid: () => uid,
+          getUserInfo: () => ({ username: caller }),
+          lookupAccount: (name) =>
+            name === "bob" ? { uid: 1001, gid: 1001 } : ACCOUNT,
+          chownSync: jest.fn(),
+          log,
+        }),
+      ).toBe(0);
+      expect(readFileSync(selectedKey, "utf8")).toBe(
+        `${sha256(log.mock.calls[0][0])}\n`,
+      );
+      expect(readFileSync(otherKey, "utf8")).toBe(otherBefore);
+    },
+  );
+
+  it.each([1001, 0])(
+    "resolves the caller's joined instance without app env under uid=%i",
+    (uid) => {
+      const vm = sharedVm();
+      const read = fs.readFileSync;
+      const list = fs.readdirSync;
+      const inVm = (file) =>
+        String(file).replace(/^\/etc\/devchain-host(?=\/|$)/, vm.etcDir);
+      const readSpy = jest
+        .spyOn(fs, "readFileSync")
+        .mockImplementation((file, ...args) => read(inVm(file), ...args));
+      const listSpy = jest
+        .spyOn(fs, "readdirSync")
+        .mockImplementation((file, ...args) => list(inVm(file), ...args));
+      const log = jest.fn();
+      try {
+        expect(
+          run(vm, {
+            env: uid === 0 ? { SUDO_USER: "bob" } : {},
+            getuid: () => uid,
+            getUserInfo: () => ({ username: uid === 0 ? "root" : "bob" }),
+            lookupAccount: () => ({ uid: 1001, gid: 1001 }),
+            chownSync: jest.fn(),
+            log,
+          }),
+        ).toBe(0);
+        expect(read(vm.joinedKey, "utf8")).toBe(
+          `${sha256(log.mock.calls[0][0])}\n`,
+        );
+        expect(read(vm.keyFile, "utf8")).toBe("legacy digest\n");
+      } finally {
+        readSpy.mockRestore();
+        listSpy.mockRestore();
+      }
+    },
+  );
+
+  it.each([
+    ["root", 0, undefined],
+    ["root", 0, "admin"],
+    ["admin", 1234, undefined],
+  ])(
+    "refuses an unregistered caller %s uid=%i sudo=%p and names instance users",
+    (caller, uid, sudoUser) => {
+      const vm = sharedVm();
+      const error = jest.fn();
+      const log = jest.fn();
+      expect(
+        run(vm, {
+          env: { DEVCHAIN_HOST_ETC_DIR: vm.etcDir, SUDO_USER: sudoUser },
+          getuid: () => uid,
+          getUserInfo: () => ({ username: caller }),
+          error,
+          log,
+        }),
+      ).toBe(1);
+      expect(error).toHaveBeenCalledWith(
+        expect.stringContaining("Instance users: bob, vmuser"),
+      );
+      expect(log).not.toHaveBeenCalled();
+      expect(readFileSync(vm.keyFile, "utf8")).toBe("legacy digest\n");
+      expect(readFileSync(vm.joinedKey, "utf8")).toBe("joined digest\n");
+    },
+  );
+
+  it("refuses an instance whose claim names another user without falling back to legacy", () => {
+    const vm = sharedVm();
+    writeFileSync(
+      join(vm.joinedEtc, "claim.json"),
+      JSON.stringify({ userName: "vmuser", homePath: vm.homePath }),
+    );
+    const error = jest.fn();
+    expect(run(vm, { error })).toBe(1);
+    expect(error).toHaveBeenCalledWith(
+      expect.stringContaining('does not match instance user "bob"'),
+    );
+    expect(readFileSync(vm.keyFile, "utf8")).toBe("legacy digest\n");
+    expect(readFileSync(vm.joinedKey, "utf8")).toBe("joined digest\n");
+  });
+
+  it("refuses a missing joined claim without resetting the legacy key", () => {
+    const vm = sharedVm();
+    fs.unlinkSync(join(vm.joinedEtc, "claim.json"));
+    const error = jest.fn();
+    expect(
+      run(vm, {
+        getUserInfo: () => ({ username: "bob" }),
+        getuid: () => 1001,
+        error,
+      }),
+    ).toBe(1);
+    expect(error).toHaveBeenCalledWith(
+      expect.stringContaining('No DevChain instance belongs to "bob"'),
+    );
+    expect(readFileSync(vm.keyFile, "utf8")).toBe("legacy digest\n");
   });
 });

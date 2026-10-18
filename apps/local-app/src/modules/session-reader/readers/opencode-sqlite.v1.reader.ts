@@ -21,8 +21,11 @@
  */
 
 import Database from 'better-sqlite3';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
 import { createLogger } from '../../../common/logging/logger';
-import { NotFoundError, ValidationError } from '../../../common/errors/error-types';
+import { NotFoundError } from '../../../common/errors/error-types';
 import type {
   UnifiedSession,
   UnifiedMessage,
@@ -36,61 +39,39 @@ import type {
 } from '../dtos/unified-session.types';
 import type { PricingServiceInterface } from '../services/pricing.interface';
 import { estimateVisibleFromMessages } from '../adapters/utils/estimate-content-tokens';
+import {
+  asContextLimit,
+  assertOpencodeColumns,
+  assertOpencodeTables,
+  capToolOutput,
+  DEFAULT_MAX_TOOL_OUTPUT_CHARS,
+  OPENCODE_PROVIDER_NAME,
+  parseOpencodeJson,
+  parseSessionModelId,
+  resolveContextWindowTokens,
+  resolveCostUsd,
+  withOpencodeDb,
+  type OpencodeCandidateQuery,
+  type OpencodeConnectionOptions,
+  type OpencodeFreshness,
+  type OpencodeModelRef,
+  type OpencodeSessionCandidate,
+  type OpencodeSessionRead,
+  type OpencodeSummaryRead,
+  type OpencodeTranscriptReader,
+} from './opencode-sqlite.db';
 
 type DatabaseInstance = Database.Database;
 
-const logger = createLogger('OpencodeSqliteReader');
+const logger = createLogger('OpencodeSqliteV1Reader');
 
-const PROVIDER_NAME = 'opencode';
+/** OpenCode 1's cached copy of the models.dev catalog, relative to the home dir. */
+const MODELS_CATALOG_FILE = path.join('.cache', 'opencode', 'models.json');
 
-/** Default cap on a single tool output (chars) to bound memory/wire size. */
-const DEFAULT_MAX_TOOL_OUTPUT_CHARS = 100_000;
-/** SQLite busy-wait before SQLITE_BUSY (ms). */
-const DEFAULT_BUSY_TIMEOUT_MS = 5_000;
-/** Retries when the container is briefly locked by a concurrent writer. */
-const DEFAULT_OPEN_RETRIES = 3;
-const OPEN_RETRY_DELAY_MS = 50;
-/** Default context window when pricing can't resolve one for the model. */
-const DEFAULT_CONTEXT_WINDOW_TOKENS = 200_000;
-
-// ---------------------------------------------------------------------------
-// Public result shapes
-// ---------------------------------------------------------------------------
-
-/**
- * Cheap freshness inputs for the staleness/version layer (no full parse).
- * `count` = number of parts in the session; `maxUpdated` = max `time_updated`
- * across the session's session/message/part rows (catches in-place part edits).
- */
-export interface OpencodeFreshness {
-  count: number;
-  maxUpdated: number;
-}
-
-/** Full read result: the normalized session plus size/freshness side-channels. */
-export interface OpencodeSessionRead {
-  session: UnifiedSession;
-  /** Session-specific size = sum of this session's part-blob byte sizes (UTF-8). */
-  sizeBytes: number;
-  freshness: OpencodeFreshness;
-}
-
-export interface OpencodeSummaryRead {
-  metrics: UnifiedMetrics;
-}
-
-/** A discovery candidate: a session created in a directory around a launch time. */
-export interface OpencodeSessionCandidate {
-  providerSessionId: string;
-  directory: string;
-  timeCreated: number;
-  timeUpdated: number;
-}
-
-export interface OpencodeReaderOptions {
+export interface OpencodeReaderOptions extends OpencodeConnectionOptions {
+  /** Overrides `~/.cache/opencode/models.json` (the model catalog). */
+  modelsCatalogPath?: string;
   maxToolOutputChars?: number;
-  busyTimeoutMs?: number;
-  openRetries?: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -126,6 +107,7 @@ interface RawMessageData {
   parentID?: string;
   modelID?: string;
   providerID?: string;
+  cost?: number;
   tokens?: RawTokens;
   time?: { created?: number; completed?: number };
   // `finish` is OpenCode's per-step turn-boundary signal: 'tool-calls' means the
@@ -164,21 +146,74 @@ interface RawPartData {
 }
 
 // ---------------------------------------------------------------------------
+// Model catalog (context window)
+// ---------------------------------------------------------------------------
+
+/** Context limits of one parsed catalog file, valid while its mtime and size are unchanged. */
+const catalogCache = new Map<
+  string,
+  { mtimeMs: number; size: number; limits: Map<string, number> }
+>();
+
+const catalogKey = (ref: OpencodeModelRef) => `${ref.providerId}\u0000${ref.modelId}`;
+
+/**
+ * Context window of `ref` from the models.dev catalog file (`{ <providerID>: { models:
+ * { <modelID>: { limit: { context } } } } }`), or null when the file, the model or the limit is
+ * missing. The file is OpenCode-internal storage, so any drift degrades to null.
+ */
+function lookupCatalogContextWindow(catalogPath: string, ref: OpencodeModelRef): number | null {
+  try {
+    const stat = fs.statSync(catalogPath);
+    let entry = catalogCache.get(catalogPath);
+    if (!entry || entry.mtimeMs !== stat.mtimeMs || entry.size !== stat.size) {
+      entry = {
+        mtimeMs: stat.mtimeMs,
+        size: stat.size,
+        limits: parseCatalogLimits(fs.readFileSync(catalogPath, 'utf8')),
+      };
+      catalogCache.set(catalogPath, entry);
+    }
+    return entry.limits.get(catalogKey(ref)) ?? null;
+  } catch (error) {
+    logger.debug(
+      { error: String((error as Error)?.message ?? error) },
+      'OpenCode model catalog unavailable — using the fallback window',
+    );
+    return null;
+  }
+}
+
+/** Only the context limits are kept; the full catalog is several MB. */
+function parseCatalogLimits(json: string): Map<string, number> {
+  const limits = new Map<string, number>();
+  const catalog = JSON.parse(json) as Record<string, { models?: Record<string, unknown> }>;
+  for (const [providerId, provider] of Object.entries(catalog ?? {})) {
+    for (const [modelId, model] of Object.entries(provider?.models ?? {})) {
+      const context = asContextLimit((model as { limit?: { context?: unknown } })?.limit?.context);
+      if (context != null) limits.set(catalogKey({ providerId, modelId }), context);
+    }
+  }
+  return limits;
+}
+
+// ---------------------------------------------------------------------------
 // Reader
 // ---------------------------------------------------------------------------
 
-export class OpencodeSqliteReader {
+export class OpencodeSqliteV1Reader implements OpencodeTranscriptReader {
   private readonly maxToolOutputChars: number;
-  private readonly busyTimeoutMs: number;
-  private readonly openRetries: number;
+  private readonly connection: OpencodeConnectionOptions;
+  private readonly modelsCatalogPath: string;
 
   constructor(
     private readonly pricing?: PricingServiceInterface,
     options?: OpencodeReaderOptions,
   ) {
     this.maxToolOutputChars = options?.maxToolOutputChars ?? DEFAULT_MAX_TOOL_OUTPUT_CHARS;
-    this.busyTimeoutMs = options?.busyTimeoutMs ?? DEFAULT_BUSY_TIMEOUT_MS;
-    this.openRetries = options?.openRetries ?? DEFAULT_OPEN_RETRIES;
+    this.connection = { busyTimeoutMs: options?.busyTimeoutMs, openRetries: options?.openRetries };
+    this.modelsCatalogPath =
+      options?.modelsCatalogPath ?? path.join(os.homedir(), MODELS_CATALOG_FILE);
   }
 
   /**
@@ -189,8 +224,8 @@ export class OpencodeSqliteReader {
    * @throws ValidationError when the DB schema has drifted from the expected layout.
    */
   readSession(dbPath: string, providerSessionId: string): OpencodeSessionRead {
-    return this.withDb(dbPath, (db) => {
-      this.assertSchema(db);
+    return withOpencodeDb(dbPath, this.connection, (db) => {
+      assertV1Schema(db);
 
       const sessionRow = db
         .prepare(
@@ -219,17 +254,18 @@ export class OpencodeSqliteReader {
         )
         .all(providerSessionId) as PartRow[];
 
-      return normalizeOpencodeSession(dbPath, sessionRow, messageRows, partRows, {
+      return normalizeOpencodeV1Session(dbPath, sessionRow, messageRows, partRows, {
         pricing: this.pricing,
         maxToolOutputChars: this.maxToolOutputChars,
+        catalogContextWindow: (ref) => lookupCatalogContextWindow(this.modelsCatalogPath, ref),
       });
     });
   }
 
   /** Aggregate summary metrics in SQLite without constructing message or part graphs. */
   readSummary(dbPath: string, providerSessionId: string): OpencodeSummaryRead {
-    return this.withDb(dbPath, (db) => {
-      this.assertSchema(db);
+    return withOpencodeDb(dbPath, this.connection, (db) => {
+      assertV1Schema(db);
       const sessionRow = db
         .prepare(
           `SELECT id, model, time_created, time_updated
@@ -297,18 +333,21 @@ export class OpencodeSqliteReader {
       const models = [...new Set(modelRows.map((row) => row.model).filter(Boolean))];
       const primaryModel = models[0] ?? parseSessionModelId(sessionRow.model);
 
+      // The newest message with a non-zero total: one still streaming has none, and the bar must not drop to 0.
       const contextRow = db
         .prepare(
-          `SELECT
-             COALESCE(json_extract(data, '$.tokens.input'), 0) AS inputTokens,
-             COALESCE(json_extract(data, '$.tokens.output'), 0)
-               + COALESCE(json_extract(data, '$.tokens.reasoning'), 0) AS outputTokens,
-             COALESCE(json_extract(data, '$.tokens.cache.read'), 0) AS cacheReadTokens,
-             COALESCE(json_extract(data, '$.tokens.cache.write'), 0) AS cacheCreationTokens
-           FROM message
-           WHERE session_id = ? AND json_valid(data)
-             AND json_extract(data, '$.role') = 'assistant'
-             AND json_type(data, '$.tokens') = 'object'
+          `SELECT inputTokens, outputTokens, cacheReadTokens, cacheCreationTokens FROM (
+             SELECT time_created, id,
+               COALESCE(json_extract(data, '$.tokens.input'), 0) AS inputTokens,
+               COALESCE(json_extract(data, '$.tokens.output'), 0)
+                 + COALESCE(json_extract(data, '$.tokens.reasoning'), 0) AS outputTokens,
+               COALESCE(json_extract(data, '$.tokens.cache.read'), 0) AS cacheReadTokens,
+               COALESCE(json_extract(data, '$.tokens.cache.write'), 0) AS cacheCreationTokens
+             FROM message
+             WHERE session_id = ? AND json_valid(data)
+               AND json_extract(data, '$.role') = 'assistant'
+               AND json_type(data, '$.tokens') = 'object')
+           WHERE inputTokens + outputTokens + cacheReadTokens + cacheCreationTokens > 0
            ORDER BY time_created DESC, id DESC LIMIT 1`,
         )
         .get(providerSessionId) as
@@ -319,6 +358,19 @@ export class OpencodeSqliteReader {
             cacheCreationTokens: number;
           }
         | undefined;
+
+      const lastModel = db
+        .prepare(
+          `SELECT json_extract(data, '$.providerID') AS providerId,
+                  json_extract(data, '$.modelID') AS modelId
+           FROM message
+           WHERE session_id = ? AND json_valid(data)
+             AND json_extract(data, '$.role') = 'assistant'
+             AND json_type(data, '$.providerID') = 'text'
+             AND json_type(data, '$.modelID') = 'text'
+           ORDER BY time_created DESC, id DESC LIMIT 1`,
+        )
+        .get(providerSessionId) as OpencodeModelRef | undefined;
 
       const totalTokens =
         tokenRow.inputTokens +
@@ -331,19 +383,34 @@ export class OpencodeSqliteReader {
           contextRow.cacheReadTokens +
           contextRow.cacheCreationTokens
         : 0;
-      const costUsd =
-        this.pricing && primaryModel
-          ? this.pricing.calculateMessageCost(
-              primaryModel,
-              tokenRow.inputTokens,
-              tokenRow.outputTokens,
-              tokenRow.cacheReadTokens,
-              tokenRow.cacheCreationTokens,
+      const costUsd = resolveCostUsd({
+        pricing: this.pricing,
+        primaryModel,
+        tokens: {
+          input: tokenRow.inputTokens,
+          output: tokenRow.outputTokens,
+          cacheRead: tokenRow.cacheReadTokens,
+          cacheWrite: tokenRow.cacheCreationTokens,
+        },
+        recordedCostUsd: () => {
+          // Summed in JS, in message order, so the total is bit-identical to the full read's.
+          const rows = db
+            .prepare(
+              `SELECT json_extract(data, '$.cost') AS cost FROM message
+               WHERE session_id = ? AND json_valid(data)
+                 AND json_extract(data, '$.role') = 'assistant'
+                 AND json_type(data, '$.cost') IN ('integer', 'real')
+               ORDER BY time_created, id`,
             )
-          : 0;
-      const contextWindowTokens =
-        (primaryModel && this.pricing?.getContextWindowSize(primaryModel)) ||
-        DEFAULT_CONTEXT_WINDOW_TOKENS;
+            .all(providerSessionId) as { cost: number }[];
+          return rows.reduce((sum, row) => sum + row.cost, 0);
+        },
+      });
+      const contextWindowTokens = resolveContextWindowTokens(
+        lastModel ? lookupCatalogContextWindow(this.modelsCatalogPath, lastModel) : null,
+        primaryModel,
+        this.pricing,
+      );
       const durationMs =
         shapeRow.firstTimestamp != null && shapeRow.lastTimestamp != null
           ? shapeRow.lastTimestamp - shapeRow.firstTimestamp
@@ -377,8 +444,8 @@ export class OpencodeSqliteReader {
    * Cheap freshness probe (no full parse) — for the cache/watcher staleness layer.
    */
   getFreshness(dbPath: string, providerSessionId: string): OpencodeFreshness {
-    return this.withDb(dbPath, (db) => {
-      this.assertSchema(db);
+    return withOpencodeDb(dbPath, this.connection, (db) => {
+      assertV1Schema(db);
       const row = db
         .prepare(
           `SELECT
@@ -402,10 +469,10 @@ export class OpencodeSqliteReader {
    */
   findSessionCandidates(
     dbPath: string,
-    params: { directory: string; startedAtMs: number; windowMs: number },
+    params: OpencodeCandidateQuery,
   ): OpencodeSessionCandidate[] {
-    return this.withDb(dbPath, (db) => {
-      this.assertSchema(db);
+    return withOpencodeDb(dbPath, this.connection, (db) => {
+      assertV1Schema(db);
       const rows = db
         .prepare(
           `SELECT s.id AS providerSessionId, s.directory AS directory,
@@ -424,104 +491,17 @@ export class OpencodeSqliteReader {
       return rows;
     });
   }
+}
 
-  // -------------------------------------------------------------------------
-  // Private: connection lifecycle + schema guard
-  // -------------------------------------------------------------------------
-
-  /**
-   * Open the container read-only (`fileMustExist`, NOT `immutable` — immutable
-   * ignores the WAL and would serve stale data), run `fn`, and always close.
-   * Retries briefly on a transient lock from a concurrent writer.
-   */
-  private withDb<T>(dbPath: string, fn: (db: DatabaseInstance) => T): T {
-    let lastError: unknown;
-    for (let attempt = 0; attempt <= this.openRetries; attempt++) {
-      let db: DatabaseInstance | undefined;
-      try {
-        db = new Database(dbPath, { readonly: true, fileMustExist: true });
-        db.pragma(`busy_timeout = ${this.busyTimeoutMs}`);
-        return fn(db);
-      } catch (error) {
-        lastError = error;
-        if (!this.isTransientLock(error) || attempt === this.openRetries) {
-          throw this.wrapOpenError(error, dbPath);
-        }
-        this.sleep(OPEN_RETRY_DELAY_MS * (attempt + 1));
-      } finally {
-        db?.close();
-      }
-    }
-    // Unreachable (loop either returns or throws), but satisfies the type checker.
-    throw this.wrapOpenError(lastError, dbPath);
-  }
-
-  private isTransientLock(error: unknown): boolean {
-    const code = (error as { code?: string } | null)?.code;
-    return code === 'SQLITE_BUSY' || code === 'SQLITE_LOCKED';
-  }
-
-  private wrapOpenError(error: unknown, dbPath: string): Error {
-    if (error instanceof NotFoundError || error instanceof ValidationError) {
-      return error;
-    }
-    return new ValidationError('Failed to open OpenCode SQLite container', {
-      category: 'opencode-db',
-      dbPath,
-      error: String((error as { message?: string } | null)?.message ?? error),
-    });
-  }
-
-  /** Busy-wait sleep (better-sqlite3 is synchronous; retries must be too). */
-  private sleep(ms: number): void {
-    const end = Date.now() + ms;
-    while (Date.now() < end) {
-      /* spin briefly */
-    }
-  }
-
-  /**
-   * Schema-shape guard: fail with a clear error (no crash) if the relational
-   * layout has drifted from opencode 1.15.x.
-   */
-  private assertSchema(db: DatabaseInstance): void {
-    const tables = new Set(
-      (
-        db
-          .prepare(
-            `SELECT name FROM sqlite_master
-             WHERE type = 'table' AND name IN ('session', 'message', 'part')`,
-          )
-          .all() as { name: string }[]
-      ).map((r) => r.name),
-    );
-    for (const required of ['session', 'message', 'part']) {
-      if (!tables.has(required)) {
-        throw new ValidationError('OpenCode DB schema drift: missing table', {
-          category: 'opencode-schema',
-          missingTable: required,
-        });
-      }
-    }
-    this.assertColumns(db, 'session', ['id', 'time_updated']);
-    this.assertColumns(db, 'message', ['id', 'session_id', 'data']);
-    this.assertColumns(db, 'part', ['id', 'message_id', 'session_id', 'data']);
-  }
-
-  private assertColumns(db: DatabaseInstance, table: string, required: string[]): void {
-    const cols = new Set(
-      (db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[]).map((c) => c.name),
-    );
-    for (const col of required) {
-      if (!cols.has(col)) {
-        throw new ValidationError('OpenCode DB schema drift: missing column', {
-          category: 'opencode-schema',
-          table,
-          missingColumn: col,
-        });
-      }
-    }
-  }
+/**
+ * Schema-shape guard: fail with a clear error (no crash) if the relational
+ * layout has drifted from opencode 1.15.x.
+ */
+function assertV1Schema(db: DatabaseInstance): void {
+  assertOpencodeTables(db, ['session', 'message', 'part']);
+  assertOpencodeColumns(db, 'session', ['id', 'time_updated']);
+  assertOpencodeColumns(db, 'message', ['id', 'session_id', 'data']);
+  assertOpencodeColumns(db, 'part', ['id', 'message_id', 'session_id', 'data']);
 }
 
 // ---------------------------------------------------------------------------
@@ -531,6 +511,8 @@ export class OpencodeSqliteReader {
 interface NormalizeOptions {
   pricing?: PricingServiceInterface;
   maxToolOutputChars?: number;
+  /** Catalog window of the last assistant model; omitted when no catalog is reachable. */
+  catalogContextWindow?: (ref: OpencodeModelRef) => number | null;
 }
 
 /**
@@ -538,7 +520,7 @@ interface NormalizeOptions {
  * Exported so the relational→unified mapping can be unit-tested independently of
  * the SQLite connection.
  */
-export function normalizeOpencodeSession(
+export function normalizeOpencodeV1Session(
   dbPath: string,
   sessionRow: SessionRow,
   messageRows: MessageRow[],
@@ -574,16 +556,24 @@ export function normalizeOpencodeSession(
   let compactionCount = 0;
   // "Current context" snapshot = the last assistant message's reported total.
   let lastAssistantContextTokens = 0;
+  let lastModel: OpencodeModelRef | undefined;
+  let recordedCostUsd = 0;
 
   for (const messageRow of messageRows) {
     if (messageRow.time_updated > maxUpdated) maxUpdated = messageRow.time_updated;
 
-    const data = safeParse<RawMessageData>(messageRow.data) ?? {};
+    const data = parseOpencodeJson<RawMessageData>(messageRow.data) ?? {};
     const role: UnifiedMessageRole = data.role === 'assistant' ? 'assistant' : 'user';
 
     if (data.modelID) {
       modelsSet.add(data.modelID);
       if (!primaryModel) primaryModel = data.modelID;
+    }
+    if (role === 'assistant') {
+      if (data.modelID && data.providerID) {
+        lastModel = { providerId: data.providerID, modelId: data.modelID };
+      }
+      if (typeof data.cost === 'number' && Number.isFinite(data.cost)) recordedCostUsd += data.cost;
     }
 
     const content: UnifiedContentBlock[] = [];
@@ -592,7 +582,7 @@ export function normalizeOpencodeSession(
     let isCompactSummary = false;
 
     for (const part of partsByMessage.get(messageRow.id) ?? []) {
-      const p = safeParse<RawPartData>(part.data);
+      const p = parseOpencodeJson<RawPartData>(part.data);
       if (!p?.type) continue;
 
       switch (p.type) {
@@ -651,8 +641,8 @@ export function normalizeOpencodeSession(
         cacheRead: data.tokens.cache?.read ?? 0,
         cacheCreation: data.tokens.cache?.write ?? 0,
       };
-      lastAssistantContextTokens =
-        usage.input + usage.output + usage.cacheRead + usage.cacheCreation;
+      const total = usage.input + usage.output + usage.cacheRead + usage.cacheCreation;
+      if (total > 0) lastAssistantContextTokens = total;
     }
 
     // Drop empty messages (e.g. pure step boundaries) — their step-finish tokens
@@ -684,19 +674,23 @@ export function normalizeOpencodeSession(
   if (!primaryModel) primaryModel = parseSessionModelId(sessionRow.model);
 
   const totalTokens = totalInput + totalOutput + totalCacheRead + totalCacheCreation;
-  const costUsd =
-    pricing && primaryModel
-      ? pricing.calculateMessageCost(
-          primaryModel,
-          totalInput,
-          totalOutput,
-          totalCacheRead,
-          totalCacheCreation,
-        )
-      : 0;
+  const costUsd = resolveCostUsd({
+    pricing,
+    primaryModel,
+    tokens: {
+      input: totalInput,
+      output: totalOutput,
+      cacheRead: totalCacheRead,
+      cacheWrite: totalCacheCreation,
+    },
+    recordedCostUsd: () => recordedCostUsd,
+  });
   const visibleContextTokens = estimateVisibleFromMessages(messages);
-  const contextWindowTokens =
-    (primaryModel && pricing?.getContextWindowSize(primaryModel)) || DEFAULT_CONTEXT_WINDOW_TOKENS;
+  const contextWindowTokens = resolveContextWindowTokens(
+    lastModel ? (options?.catalogContextWindow?.(lastModel) ?? null) : null,
+    primaryModel,
+    pricing,
+  );
 
   const durationMs =
     messages.length >= 2
@@ -729,7 +723,7 @@ export function normalizeOpencodeSession(
 
   const session: UnifiedSession = {
     id: sessionRow.id,
-    providerName: PROVIDER_NAME,
+    providerName: OPENCODE_PROVIDER_NAME,
     filePath: dbPath,
     messages,
     metrics,
@@ -779,52 +773,4 @@ function mapToolPart(
     isError,
     ...(isTruncated ? { isTruncated, fullLength } : {}),
   });
-}
-
-/**
- * Normalize a tool output to a string and cap it to bound memory/wire size.
- * Non-string outputs are JSON-stringified (best effort).
- */
-function capToolOutput(
-  rawOutput: unknown,
-  maxChars: number,
-): { content: string; isTruncated: boolean; fullLength?: number } {
-  let text: string;
-  if (typeof rawOutput === 'string') {
-    text = rawOutput;
-  } else if (rawOutput == null) {
-    text = '';
-  } else {
-    try {
-      text = JSON.stringify(rawOutput);
-    } catch {
-      text = String(rawOutput);
-    }
-  }
-
-  if (text.length > maxChars) {
-    return { content: text.slice(0, maxChars), isTruncated: true, fullLength: text.length };
-  }
-  return { content: text, isTruncated: false };
-}
-
-/**
- * Resolve a plain model id from the `session.model` column, which stores a JSON
- * object (`{ id, providerID, variant? }`) in opencode 1.15.x. Falls back to the
- * raw value if it isn't JSON (defensive against schema/value drift).
- */
-function parseSessionModelId(raw: string | null): string {
-  if (!raw) return '';
-  const parsed = safeParse<{ id?: string }>(raw);
-  if (parsed && typeof parsed.id === 'string') return parsed.id;
-  return raw;
-}
-
-function safeParse<T>(json: string): T | null {
-  try {
-    return JSON.parse(json) as T;
-  } catch {
-    logger.debug('Failed to parse OpenCode JSON blob — skipping');
-    return null;
-  }
 }

@@ -4,7 +4,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const { randomUUID } = require("node:crypto");
 const { USER_NAME, MIN_CLAIM_UID } = require("./validate");
-const { claimFile, SUDOERS_NAME } = require("./claim");
+const { claimFile } = require("./claim");
 
 const GRANT = "cap_chown,cap_fowner,cap_dac_override";
 
@@ -19,7 +19,7 @@ async function claimedAccount(sys) {
     stat = fs.lstatSync(file);
   } catch (error) {
     if (error.code !== "ENOENT") throw error;
-    file = path.join(sys.paths.sudoersDir, SUDOERS_NAME);
+    file = path.join(sys.paths.sudoersDir, sys.paths.sudoersName);
     stat = fs.lstatSync(file);
   }
   if (!stat.isFile()) throw new Error("account file must be a regular file");
@@ -38,6 +38,8 @@ async function claimedAccount(sys) {
         )?.[1];
   if (typeof userName !== "string" || !USER_NAME.test(userName))
     throw new Error("no valid claimed account found");
+  if (sys.paths.instanceUser && userName !== sys.paths.instanceUser)
+    throw new Error("account does not match the instance");
   const account = await sys.lookupUser(userName);
   if (
     !account ||

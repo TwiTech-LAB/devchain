@@ -60,6 +60,7 @@ const MCP_BINDING_FILES = [
   'session.bindings.ts',
   'skill.bindings.ts',
   'team.bindings.ts',
+  'worktree.bindings.ts',
 ] as const;
 
 type BoardViewBoundaryViolation = 'routing' | 'url-policy' | 'http-adapter' | 'storage';
@@ -642,8 +643,9 @@ describe('Phase 7 architecture invariants', () => {
   });
 
   it('terminal prompt protection never synthesizes editor preservation keys', () => {
+    const promptSaveFragment = ['st', 'ash'].join('');
     const forbiddenFragments = [
-      ['st', 'ash'].join(''),
+      promptSaveFragment,
       ['ya', 'nk'].join(''),
       ['prompt', 'clear'].join('-'),
       ['kill', 'ring'].join('-'),
@@ -652,9 +654,20 @@ describe('Phase 7 architecture invariants', () => {
       ['C', 'y'].join('-'),
       ['M', 'y'].join('-'),
     ];
+    // Lane merges turn off a Git merge option whose name contains promptSaveFragment.
+    // A Git option is not a terminal key, so these two files may contain that fragment.
+    const gitMergeOptionFiles = new Set(
+      ['worktrees.service.ts', 'worktrees.service.external.spec.ts'].map((name) =>
+        join(MODULES_ROOT, 'worktrees', name),
+      ),
+    );
     const offenders = listTypeScriptFiles(SRC_ROOT).flatMap((file) => {
       const content = readText(file);
-      const hits = forbiddenFragments.filter((fragment) => content.includes(fragment));
+      const hits = forbiddenFragments.filter(
+        (fragment) =>
+          content.includes(fragment) &&
+          !(fragment === promptSaveFragment && gitMergeOptionFiles.has(file)),
+      );
       return hits.length > 0 ? [`${relative(APP_ROOT, file)} contains ${hits.join(', ')}`] : [];
     });
 
@@ -833,7 +846,7 @@ describe('MCP binding ownership boundaries', () => {
     expect(allowed.filter(isForbiddenMcpServiceImport)).toEqual([]);
   });
 
-  it('keeps all ten binding groups free of double-cast escapes', () => {
+  it('keeps every binding group free of double-cast escapes', () => {
     const bindingRoot = join(MCP_ROOT, 'tool-descriptors');
     const discovered = readdirSync(bindingRoot)
       .filter((file) => file.endsWith('.bindings.ts'))
@@ -1152,14 +1165,18 @@ describe('Home-to-host contract imports', () => {
     expect(violations).toEqual([]);
   });
 
-  it('keeps the host client on host and file-sync DTO modules only', () => {
+  it('keeps the host client on host and file-sync DTOs and the shared-VM wire contract only', () => {
     const client = join(MODULES_ROOT, 'remotes', 'operations', 'remote-host.client.ts');
     const violations: string[] = [];
     for (const specifier of sourceImportSpecifiers(readText(client))) {
       const imported = resolveSourceImport(client, specifier);
       if (!imported) continue;
       const sourcePath = relative(MODULES_ROOT, imported).replaceAll('\\', '/');
-      if (/^(?:remotes\/host|file-sync)(?:\/|$)/.test(sourcePath) && !sourcePath.endsWith('.dto')) {
+      if (
+        /^(?:remotes\/host|file-sync)(?:\/|$)/.test(sourcePath) &&
+        !sourcePath.endsWith('.dto') &&
+        sourcePath !== 'remotes/host/shared-vm.contract'
+      ) {
         violations.push(`${relative(SRC_ROOT, client)} -> ${specifier}`);
       }
     }

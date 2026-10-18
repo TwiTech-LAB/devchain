@@ -237,3 +237,21 @@ export {
   type ProviderCliRuntimeReport,
   type HostProviderCliSettingsStatus,
 } from './schemas/host-provider-clis.js';
+
+export {
+  PROVIDER_USAGE_PROVIDERS,
+  PROVIDER_USAGE_SETTINGS_DEFAULTS,
+  PROVIDER_USAGE_INTERVAL_LIMITS,
+  STANDARD_WINDOW_LABELS,
+  UsageWindowSchema,
+  UsageSnapshotStateSchema,
+  UsageSnapshotSchema,
+  ProviderUsageSettingsSchema,
+  ProviderUsageResponseSchema,
+  type ProviderUsageProvider,
+  type UsageWindow,
+  type UsageSnapshotState,
+  type UsageSnapshot,
+  type ProviderUsageSettings,
+  type ProviderUsageResponse,
+} from './schemas/provider-usage.js';

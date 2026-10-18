@@ -26,14 +26,14 @@ export interface RemoteOperationStepDefinition {
    * start, possibly after some of its effects already happened.
    */
   run(context: RemoteOperationStepRun): Promise<void>;
-  /** Evaluated once, on the initial details, when the operation is created. */
+  /** Evaluated at creation; retry reconciliation may update unfinished skip decisions. */
   skip?(details: Record<string, unknown>): boolean;
 }
 
 export interface RemoteOperationDefinition {
   readonly kind: RemoteOperationKind;
   readonly steps: readonly RemoteOperationStepDefinition[];
-  /** Rebuilds a persisted operation's step definitions from its initial details. */
+  /** Builds the definitions used to create or execute the saved step plan. */
   stepsFor?(details: Record<string, unknown>): readonly RemoteOperationStepDefinition[];
   /** Throws `ConflictError` when the operation can no longer be cancelled. */
   assertCancellable(operation: RemoteOperation): void;
@@ -55,12 +55,16 @@ export interface RemoteOperationDefinition {
    * The step a retry restarts from, when it is earlier than the failed step;
    * that step and every later one run again. Null or absent: the failed step.
    */
-  retryFrom?(operation: RemoteOperation): string | null;
+  retryFrom?(operation: RemoteOperation): string | null | Promise<string | null>;
+  /** Reconciles unfinished steps and their recovery details before reopening a retry. */
+  reconcileRetry?(operation: RemoteOperation): Pick<RemoteOperation, 'steps' | 'details'> | null;
   /**
    * The step a startup resume of a `running` operation restarts from; that step
    * and every later one run again. Null or absent: the next unfinished step.
    */
   resumeFrom?(operation: RemoteOperation): string | null;
+  /** Durable cancellation intent, including after a home restart. */
+  cancellationRequested?(operation: RemoteOperation): boolean;
 }
 
 export function requireProjectId(operation: RemoteOperation): string {
@@ -81,7 +85,16 @@ export function stepStarted(operation: RemoteOperation, stepId: string): boolean
 }
 
 /** Operations that own a remote's VM or host install; one may be open per remote. */
-export const VM_LIFECYCLE_KINDS = ['create_vm', 'reset_vm', 'destroy_vm'] as const;
+export const VM_LIFECYCLE_KINDS = [
+  'create_vm',
+  'reset_vm',
+  'destroy_vm',
+  'disconnect_all',
+] as const;
+/** A failed create or reset that a Destroy may take over without its rollback. */
+export function isSupersedableVmKind(kind: string): boolean {
+  return kind === 'create_vm' || kind === 'reset_vm';
+}
 export const HOST_LIFECYCLE_KINDS = [
   'claim',
   'install_host',

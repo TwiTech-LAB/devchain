@@ -16,20 +16,27 @@ import type {
   ClaimRequestBody,
   InstallHostRequestBody,
   OperationAction,
+  DisconnectAllRequest,
   RemoteOperationDto,
   CreateRemoteInput,
   VmProviderConnectionView,
 } from '@/ui/pages/cloud/lib/remote-vm-contracts';
+import type {
+  SharedVmGuardContext,
+  SharedVmForceRequest,
+} from '@/ui/pages/cloud/lib/remote-vm-contracts';
+import { SharedVmGuardApiError } from '@/ui/pages/cloud/lib/remote-vm-errors';
 import { useSelectedProject } from './useProjectSelection';
 import { useRemoteReadiness } from './useRemoteReadiness';
 import { useRemoteOperations } from './useRemoteOperations';
+import { useRemoteNotices } from './useRemoteNotices';
 import { useRemotes } from './useRemotes';
 import { useSubNavSearchParam } from './useSubNavSearchParam';
 import { useVmPowerOn } from './useVmPowerOn';
 import { useVmProviderConnections } from './useVmProviderConnections';
 import { fetchRuntimeInfo } from '@/ui/lib/runtime';
 import { getErrorMessage, useToastHelpers } from '@/ui/lib/toast-helpers';
-import { useActivityView } from '@/ui/pages/cloud/ActivityDialog';
+import { openActivityInParams, useActivityView } from '@/ui/pages/cloud/ActivityDialog';
 import type { ConnectRequest } from '@/ui/pages/cloud/ConnectDialog';
 import type { CreateVmRequest } from '@/ui/pages/cloud/AddVmDialog';
 import { addressHost } from '@/ui/pages/cloud/own-vm-address';
@@ -55,14 +62,17 @@ import {
   type RemovePurpose,
   type VmMenuKey,
 } from '@/ui/pages/cloud/VmList';
+import type { LoginChoice } from '@/ui/pages/cloud/login-choices';
 import type {
   RemoteVmSectionPresentation,
   RemoteVmTab,
 } from '@/ui/pages/cloud/remote-vm-section-presentation';
+import { SHARED_VM_GUARD_CODE, isSharedVmGuardedKind } from '@/modules/remotes/dtos/shared-vm.dto';
 
 const TAB_KEYS: RemoteVmTab[] = ['overview', 'projects', 'vms', 'logins', 'proxmox'];
 
 export function useRemoteVmSectionController(): RemoteVmSectionPresentation {
+  const notices = useRemoteNotices();
   const {
     remotes,
     remotesLoading,
@@ -103,6 +113,8 @@ export function useRemoteVmSectionController(): RemoteVmSectionPresentation {
   const [tab, setTab] = useSubNavSearchParam([...TAB_KEYS], 'overview', 'tab');
   const [searchParams, setSearchParams] = useSearchParams();
   const viewedVmId = searchParams.get('vm');
+  const disconnectAllId = searchParams.get('disconnectAll');
+  const disconnectAllRemote = remotes.find((remote) => remote.id === disconnectAllId);
   const {
     connections: providerConnections,
     loading: providerConnectionsLoading,
@@ -111,17 +123,32 @@ export function useRemoteVmSectionController(): RemoteVmSectionPresentation {
 
   /** The refusal of the last start request; the open form shows it. */
   const [startError, setStartError] = useState<string | null>(null);
+  const [sharedVmRefusal, setSharedVmRefusal] = useState<SharedVmGuardContext | null>(null);
   /** The refusal of the last Retry or Cancel; the Activity detail shows it. */
   const [activityError, setActivityError] = useState<string | null>(null);
   /** Starts an operation: success opens its Activity detail, a refusal stays with the form. */
   const start = (input: OperationAction, onStarted: () => void = () => {}) => {
     setStartError(null);
+    setSharedVmRefusal(null);
     action.mutate(input, {
       onSuccess: (operation) => {
+        if (input.action === 'disconnectAll') {
+          setActivityError(null);
+          setSearchParams((current) => {
+            const next = new URLSearchParams(current);
+            next.delete('disconnectAll');
+            openActivityInParams(next, operation.id);
+            return next;
+          });
+          return;
+        }
         onStarted();
         openActivityDetail(operation.id);
       },
-      onError: (error) => setStartError(error.message),
+      onError: (error) => {
+        setStartError(error.message);
+        if (error instanceof SharedVmGuardApiError) setSharedVmRefusal(error.context);
+      },
     });
   };
   /** A start from a row button, which has no form to hold the error. */
@@ -137,6 +164,7 @@ export function useRemoteVmSectionController(): RemoteVmSectionPresentation {
   };
   const dismiss = (close: () => void) => () => {
     setStartError(null);
+    setSharedVmRefusal(null);
     close();
   };
 
@@ -180,6 +208,26 @@ export function useRemoteVmSectionController(): RemoteVmSectionPresentation {
   const disconnectRemote = remotes.find((remote) => remote.id === disconnectRemoteId);
   const closeConnect = dismiss(() => setConnectTarget(null));
   const closeDisconnect = dismiss(() => setDisconnectTarget(null));
+  const closeDisconnectAll = dismiss(() =>
+    setSearchParams((current) => {
+      const next = new URLSearchParams(current);
+      next.delete('disconnectAll');
+      return next;
+    }),
+  );
+  const openDisconnectAll = (remoteId: string) => {
+    setStartError(null);
+    setSharedVmRefusal(null);
+    setSearchParams((current) => {
+      const next = new URLSearchParams(current);
+      next.set('disconnectAll', remoteId);
+      return next;
+    });
+  };
+  const disconnectAll = (body: DisconnectAllRequest) => {
+    if (disconnectAllRemote)
+      start({ action: 'disconnectAll', remoteId: disconnectAllRemote.id, body });
+  };
   // The dialog passes no selection rather than an empty one.
   const connect = ({ projectId, remoteId, docker }: ConnectRequest) =>
     start({ action: 'attach', remoteId, projectId, ...(docker ? { docker } : {}) }, closeConnect);
@@ -201,6 +249,7 @@ export function useRemoteVmSectionController(): RemoteVmSectionPresentation {
     remote: RemoteListItemDto;
     purpose: RemovePurpose;
     initialDestroy?: boolean;
+    retryOperationId?: string;
   } | null>(null);
   const [apiKeyTarget, setApiKeyTarget] = useState<{
     remote: RemoteListItemDto;
@@ -214,10 +263,15 @@ export function useRemoteVmSectionController(): RemoteVmSectionPresentation {
     namePrefix: string;
   } | null>(null);
   const [resetTarget, setResetTarget] = useState<RemoteListItemDto | null>(null);
+  const [resetRetryOperationId, setResetRetryOperationId] = useState<string | null>(null);
   const [dockerTarget, setDockerTarget] = useState<RemoteListItemDto | null>(null);
   /** The open Add your own VM flow; `address` comes from a VM row that is not set up. */
   const [ownVmTarget, setOwnVmTarget] = useState<{ address?: string } | null>(null);
-  const [changeLoginsTarget, setChangeLoginsTarget] = useState<RemoteListItemDto | null>(null);
+  /** `initialChoices` holds the login that Assign on the Logins tab preselects. */
+  const [changeLoginsTarget, setChangeLoginsTarget] = useState<{
+    remote: RemoteListItemDto;
+    initialChoices?: Record<string, LoginChoice>;
+  } | null>(null);
   const [reauthTarget, setReauthTarget] = useState<{
     operationId: string;
     providers: string[];
@@ -277,16 +331,25 @@ export function useRemoteVmSectionController(): RemoteVmSectionPresentation {
       setCreateVmTarget(null),
     );
   };
-  const resetVm = (force: boolean) => {
+  const resetVm = (input: SharedVmForceRequest) => {
     if (!resetTarget) return;
-    start({ action: 'resetVm', remoteId: resetTarget.id, body: { force, providerAuth: {} } }, () =>
-      setResetTarget(null),
+    start(
+      resetRetryOperationId
+        ? { action: 'retry', operationId: resetRetryOperationId, vm: input }
+        : { action: 'resetVm', remoteId: resetTarget.id, body: { ...input, providerAuth: {} } },
+      () => {
+        setResetTarget(null);
+        setResetRetryOperationId(null);
+      },
     );
   };
-  const destroyVm = (force: boolean) => {
+  const destroyVm = (input: SharedVmForceRequest) => {
     if (!deleteTarget) return;
-    start({ action: 'destroyVm', remoteId: deleteTarget.remote.id, body: { force } }, () =>
-      setDeleteTarget(null),
+    start(
+      deleteTarget.retryOperationId
+        ? { action: 'retry', operationId: deleteTarget.retryOperationId, vm: input }
+        : { action: 'destroyVm', remoteId: deleteTarget.remote.id, body: input },
+      () => setDeleteTarget(null),
     );
   };
 
@@ -336,12 +399,16 @@ export function useRemoteVmSectionController(): RemoteVmSectionPresentation {
   );
   const attention = useMemo(
     () =>
-      attentionItems(statusContext, {
-        syncthing: readiness.readiness?.syncthing ?? null,
-        version: runtime.data?.version ?? null,
-        homePath: homeIdentity?.homePath ?? null,
-      }),
-    [statusContext, readiness.readiness, runtime.data, homeIdentity],
+      attentionItems(
+        statusContext,
+        {
+          syncthing: readiness.readiness?.syncthing ?? null,
+          version: runtime.data?.version ?? null,
+          homePath: homeIdentity?.homePath ?? null,
+        },
+        notices.notices,
+      ),
+    [statusContext, readiness.readiness, runtime.data, homeIdentity, notices.notices],
   );
   // An open failed create or reset reserves its VM, so no newer operation can hide it.
   const failedVmOperations = useMemo(
@@ -517,8 +584,10 @@ export function useRemoteVmSectionController(): RemoteVmSectionPresentation {
         return setApiKeyTarget({ remote, mode: 'reset' });
       case 'connect-project':
         return setConnectTarget({ remoteId: remote.id });
+      case 'disconnect-all':
+        return openDisconnectAll(remote.id);
       case 'change-logins':
-        return setChangeLoginsTarget(remote);
+        return setChangeLoginsTarget({ remote });
       // Installing Docker restarts DevChain on the VM, so it asks first.
       case 'install-docker':
         return setDockerTarget(remote);
@@ -540,6 +609,11 @@ export function useRemoteVmSectionController(): RemoteVmSectionPresentation {
   };
   const onAttentionAction = (attentionAction: AttentionAction) => {
     switch (attentionAction.kind) {
+      case 'disconnect-all':
+        return openDisconnectAll(attentionAction.remoteId);
+      case 'dismiss-notice':
+        notices.dismiss.mutate({ remoteId: attentionAction.remoteId, id: attentionAction.id });
+        return;
       case 'fix-file-sync':
         return setFixFileSyncProjectId(attentionAction.projectId);
       case 'enter-api-key': {
@@ -566,8 +640,37 @@ export function useRemoteVmSectionController(): RemoteVmSectionPresentation {
     });
   };
   const activityActions: ActivityActions = {
-    retry: (operation, ssh) =>
-      runInActivity({ action: 'retry', operationId: operation.id, ...(ssh ? { ssh } : {}) }),
+    retry: (operation, ssh) => {
+      const remote = remotes.find(({ id }) => id === operation.remoteId);
+      const refusal = operation.steps.some(({ error }) =>
+        [SHARED_VM_GUARD_CODE, 'REMOTE_OFFLINE', 'REMOTE_HOST_REQUEST_FAILED'].includes(
+          error?.code ?? '',
+        ),
+      );
+      if (remote && refusal && isSharedVmGuardedKind(operation.kind)) {
+        // A final login pull can fail before the next health poll updates the row.
+        const confirmationRemote = operation.steps.some(
+          ({ error }) => error?.code === 'REMOTE_OFFLINE',
+        )
+          ? { ...remote, online: false }
+          : remote;
+        activity.close();
+        setSharedVmRefusal(null);
+        setStartError(
+          operation.steps.find(({ state }) => state === 'failed')?.error?.message ?? null,
+        );
+        if (operation.kind === 'reset_vm') {
+          setResetRetryOperationId(operation.id);
+          setResetTarget(confirmationRemote);
+        } else
+          setDeleteTarget({
+            remote: confirmationRemote,
+            purpose: 'failed-vm',
+            initialDestroy: true,
+            retryOperationId: operation.id,
+          });
+      } else runInActivity({ action: 'retry', operationId: operation.id, ...(ssh ? { ssh } : {}) });
+    },
     cancel: (operation) => runInActivity({ action: 'cancel', operationId: operation.id }),
     reauth: (operation, providers) =>
       setReauthTarget({
@@ -656,7 +759,14 @@ export function useRemoteVmSectionController(): RemoteVmSectionPresentation {
             onConnect: () => setConnectTarget({}),
           }
         : null,
-      attention: { items: attention, onAction: onAttentionAction },
+      attention: {
+        items: attention,
+        onAction: onAttentionAction,
+        dismissPending: notices.dismiss.isPending,
+        dismissError: notices.dismiss.error
+          ? getErrorMessage(notices.dismiss.error, 'Could not dismiss the notice.')
+          : null,
+      },
       vmSummary:
         overviewLoaded && !showChecklist && remotes.length > 0
           ? {
@@ -709,7 +819,27 @@ export function useRemoteVmSectionController(): RemoteVmSectionPresentation {
       onOpenActivity: openActivityDetail,
       onView: (remote) => viewVm(remote.id),
     },
-    logins: { remotes },
+    logins: {
+      remotes,
+      // The same VMs whose menu offers Change logins.
+      assignTargets: remotes.filter((remote) => {
+        const status = statuses.get(remote.id);
+        return (
+          status !== undefined &&
+          vmMenuItems(
+            remote,
+            status,
+            failedVmOperations.has(remote.id),
+            projectCounts.get(remote.id) ?? 0,
+          ).some((item) => item.key === 'change-logins')
+        );
+      }),
+      onAssign: (remote, entry) =>
+        setChangeLoginsTarget({
+          remote,
+          initialChoices: { [entry.provider]: `reuse:${entry.id}` },
+        }),
+    },
     proxmox: {
       connections: providerConnections,
       loading: providerConnectionsLoading,
@@ -770,6 +900,38 @@ export function useRemoteVmSectionController(): RemoteVmSectionPresentation {
               onFixFileSync: () => setFixFileSyncProjectId(disconnectTarget.id),
             }
           : null,
+      disconnectAll: disconnectAllRemote
+        ? {
+            remoteId: disconnectAllRemote.id,
+            remoteName: disconnectAllRemote.name,
+            offline: !vmReachable(disconnectAllRemote),
+            loading: bindingsLoading || projectsLoading || operationsLoading,
+            blockedReason: operations.some(
+              (operation) =>
+                operation.remoteId === disconnectAllRemote.id &&
+                (operation.state === 'running' || operation.state === 'failed'),
+            )
+              ? 'Resolve the open operation on this VM before Disconnect all.'
+              : null,
+            projects: (statusContext.bindingsByRemote.get(disconnectAllRemote.id) ?? []).map(
+              (binding) => ({
+                id: binding.projectId,
+                name: projectNames.get(binding.projectId) ?? binding.projectId,
+                hostCursor: binding.hostCursor,
+                fileSyncWarning: binding.fileSyncWarning,
+                blockedReason:
+                  binding.state !== 'remote'
+                    ? 'Finish connecting or resolve the stopped operation first.'
+                    : null,
+              }),
+            ),
+            pending: action.isPending,
+            error: startError,
+            onClose: closeDisconnectAll,
+            onDisconnect: disconnectAll,
+            onFixFileSync: (projectId) => setFixFileSyncProjectId(projectId),
+          }
+        : null,
       fixFileSync: fixFileSyncProjectId
         ? {
             projectId: fixFileSyncProjectId,
@@ -821,13 +983,14 @@ export function useRemoteVmSectionController(): RemoteVmSectionPresentation {
         : null,
       changeLogins: changeLoginsTarget
         ? {
-            remote: changeLoginsTarget,
+            remote: changeLoginsTarget.remote,
             remoteNames: remoteNameById,
             pending: action.isPending,
             error: startError,
+            initialChoices: changeLoginsTarget.initialChoices,
             onClose: dismiss(() => setChangeLoginsTarget(null)),
             onChangeLogins: (providerAuth, force) =>
-              changeLogins(changeLoginsTarget.id, providerAuth, force),
+              changeLogins(changeLoginsTarget.remote.id, providerAuth, force),
           }
         : null,
       proxmoxConnect: proxmoxConnectOpen
@@ -853,8 +1016,12 @@ export function useRemoteVmSectionController(): RemoteVmSectionPresentation {
             projects: boundProjects(resetTarget.id),
             pending: action.isPending,
             error: startError,
-            onClose: dismiss(() => setResetTarget(null)),
+            onClose: dismiss(() => {
+              setResetTarget(null);
+              setResetRetryOperationId(null);
+            }),
             onReset: resetVm,
+            refusal: sharedVmRefusal,
           }
         : null,
       reauth: reauthTarget
@@ -878,7 +1045,7 @@ export function useRemoteVmSectionController(): RemoteVmSectionPresentation {
           }
         : null,
       vmDetails:
-        viewedRemote && viewedStatus
+        !disconnectAllRemote && viewedRemote && viewedStatus
           ? {
               remote: viewedRemote,
               status: viewedStatus,
@@ -887,6 +1054,7 @@ export function useRemoteVmSectionController(): RemoteVmSectionPresentation {
                 viewedRemote,
                 viewedStatus,
                 failedVmOperations.has(viewedRemote.id),
+                projectCounts.get(viewedRemote.id) ?? 0,
               ),
               projects: viewedProjects,
               operations,
@@ -943,6 +1111,11 @@ export function useRemoteVmSectionController(): RemoteVmSectionPresentation {
             error: startError,
             onClose: dismiss(() => setDeleteTarget(null)),
             onDestroy: destroyVm,
+            onDisconnectAll: () => {
+              setDeleteTarget(null);
+              openDisconnectAll(deleteTarget.remote.id);
+            },
+            refusal: sharedVmRefusal,
             onDelete: removeVm,
           }
         : null,

@@ -8,11 +8,21 @@ import type { ForceSyncSource } from '@/modules/remotes/operations/remote-operat
 import type { DockerSelection } from '@/modules/remotes/docker/docker-plan.dto';
 import type { DockerCopyBackRequest } from '@/modules/remotes/docker/docker-copy-back.dto';
 import type { ConnectProxmoxResult } from '@/modules/vm-providers/vm-providers.service';
+import type { SharedVmOccupancy } from '@/modules/remotes/dtos/shared-vm.dto';
+export type { SharedVmGuardContext, SharedVmOccupancy } from '@/modules/remotes/dtos/shared-vm.dto';
+export type { SharedVmNotifyResult } from '@/modules/remotes/host/shared-vm.contract';
+
+export interface SharedVmForceRequest {
+  force: boolean;
+  forceOccupied?: boolean;
+  confirmedOccupancy?: SharedVmOccupancy;
+}
 
 export type { RemoteListItemDto, RemoteStatsHistoryDto } from '@/modules/remotes/dtos/remote.dto';
 export type { ProbeResultDto, RemoteReadinessDto } from '@/modules/remotes/dtos/remote-probe.dto';
 export type { RemoteProjectBindingRow } from '@/ui/lib/backend-provider';
 export type { AvailableSshPublicKey } from '@/modules/remotes/host-install/ssh-key.service';
+export type { SyncDevice } from '@/modules/file-sync/file-sync.dto';
 
 export interface CreateRemoteInput {
   name: string;
@@ -36,6 +46,8 @@ export interface RemoteOperationDto {
     error: { message: string; code: string | null } | null;
   }[];
   details: Record<string, unknown>;
+  /** Complete child rows for a batch, including those outside recent history. */
+  children?: RemoteOperationDto[];
   createdAt: string;
   updatedAt: string;
 }
@@ -72,8 +84,7 @@ export interface InstallHostRequestBody {
   minDiskGib: number;
 }
 
-export interface ResetVmRequestBody {
-  force: boolean;
+export interface ResetVmRequestBody extends SharedVmForceRequest {
   providerAuth: Record<string, string>;
   installDocker?: boolean;
   sshPublicKeys?: string[];
@@ -85,15 +96,22 @@ export interface UpdateLoginsRequestBody {
   force: boolean;
 }
 
+export type DisconnectAllRequest =
+  import('@/modules/remotes/operations/remote-operation.dto').DisconnectAllData;
+export type RemoteProjectLanes = import('@/modules/remotes/contract/host-routes').HostRouteResult<
+  typeof import('@/modules/remotes/contract/host-routes').hostRoutes.worktrees
+>['body'];
+
 export type OperationAction =
   | ({ action: 'attach' | 'detach'; remoteId: string } & AttachProjectRequest &
       DetachProjectRequest)
   | ({ action: 'forceSync'; remoteId: string } & ForceSyncRequest)
+  | { action: 'disconnectAll'; remoteId: string; body: DisconnectAllRequest }
   | { action: 'updateHost'; remoteId: string; installDocker?: true }
   | { action: 'createVm'; connectionId: string; body: CreateVmRequestBody }
   | { action: 'installHost'; body: InstallHostRequestBody }
   | { action: 'resetVm'; remoteId: string; body: ResetVmRequestBody }
-  | { action: 'destroyVm'; remoteId: string; body: { force: boolean } }
+  | { action: 'destroyVm'; remoteId: string; body: SharedVmForceRequest }
   | { action: 'updateLogins'; remoteId: string; body: UpdateLoginsRequestBody }
   | { action: 'claim'; body: ClaimRequestBody }
   | ({ action: 'retry'; operationId: string } & RetryOperationRequest)
@@ -197,6 +215,7 @@ export interface ForceSyncRequest {
 }
 
 export interface RetryOperationRequest {
+  vm?: SharedVmForceRequest;
   providerAuth?: Record<string, string>;
   ssh?: SshCredentials;
 }
@@ -230,6 +249,7 @@ export type {
 } from '@/modules/remotes/docker/docker-plan.dto';
 export type { DockerSyncState } from '@/modules/remotes/docker/docker-copy-back.dto';
 export type { ConnectChoicesDto } from '@/modules/remotes/connect-choices.dto';
+export type { RemoteNoticeDto } from '@/modules/remotes/dtos/remote-notices.dto';
 
 export interface ProjectIgnores {
   ignores: string[];

@@ -247,7 +247,7 @@ describe('AddOwnVmDialog', () => {
   });
 
   describe('address check', () => {
-    it('adds a DevChain that is not listed yet, named after its host', async () => {
+    it('adds another user’s DevChain by address only after choosing the secondary action', async () => {
       probe.mockReturnValue({
         kind: 'devchain',
         baseUrl: 'https://192.168.1.20:3000',
@@ -263,7 +263,13 @@ describe('AddOwnVmDialog', () => {
       expect(probe).toHaveBeenCalledWith({ address: '192.168.1.20', checkSsh: true });
       expect(result).toHaveTextContent('DevChain 0.23.0 answers at 192.168.1.20:3000.');
       expect(result).toHaveTextContent("Its version differs from this PC's.");
-      expect(result).toHaveTextContent("Its home folder (/home/other) differs from this PC's");
+      expect(
+        within(result).getByRole('button', { name: 'Set up my DevChain on this VM' }),
+      ).toBeEnabled();
+      expect(within(result).queryByLabelText('API key')).not.toBeInTheDocument();
+      expect(within(result).queryByText(/devchain host api-key reset/)).not.toBeInTheDocument();
+      expect(onAddVm).not.toHaveBeenCalled();
+      await userEvent.click(within(result).getByRole('button', { name: 'Add by address' }));
       expect(within(result).getByLabelText('Name')).toHaveValue('192.168.1.20');
 
       expect(within(result).getByRole('button', { name: 'Add VM' })).toBeDisabled();
@@ -509,6 +515,59 @@ describe('AddOwnVmDialog', () => {
       );
       expect(probe).not.toHaveBeenCalled();
     });
+  });
+
+  describe('join another user’s VM', () => {
+    it.each([null, 'r1'])(
+      'starts the existing SSH API flow when the other instance is registered as %p',
+      async (remoteId) => {
+        probe.mockReturnValue({
+          kind: 'devchain',
+          baseUrl: 'https://192.168.1.20:3000',
+          version: '0.23.4',
+          versionMatches: true,
+          homePath: '/home/other',
+          homePathMatches: false,
+          remoteId,
+        });
+        entries = [entry({ id: 'e1', provider: 'claude', label: 'Main token' })];
+        // The other user's instance can already be listed under the bare host name.
+        const { onInstall, onClaim, onAddVm } = renderDialog({
+          remotes: remoteId ? [{ ...LAB_VM, name: '192.168.1.20' }] : [],
+        });
+        const user = userEvent.setup();
+        const result = await checkAddress('192.168.1.20', user);
+        await user.click(
+          within(result).getByRole('button', { name: 'Set up my DevChain on this VM' }),
+        );
+        await user.type(screen.getByLabelText('SSH user'), 'admin');
+        await user.type(screen.getByLabelText('SSH password'), 'ssh-secret');
+        await user.click(screen.getByRole('switch', { name: 'Install Docker' }));
+        await next(user);
+        await waitFor(() =>
+          expect(screen.getByRole('combobox', { name: 'claude login choice' })).toHaveTextContent(
+            'Main token',
+          ),
+        );
+        await next(user);
+        expect(screen.getByLabelText('Linux user')).toHaveTextContent('devchain');
+        expect(screen.getByLabelText('Home folder')).toHaveTextContent('/home/devchain');
+        expect(screen.getByLabelText('Port')).toHaveTextContent('Automatic');
+        await user.click(screen.getByRole('button', { name: 'Set up my DevChain' }));
+        expect(onInstall).toHaveBeenCalledWith({
+          address: 'https://192.168.1.20',
+          ssh: { user: 'admin', password: 'ssh-secret' },
+          name: '192.168.1.20 (devchain)',
+          providerAuth: { claude: 'reuse:e1' },
+          minDiskGib: 8,
+        });
+        expect(onInstall.mock.calls[0][0]).not.toHaveProperty('port');
+        expect(onInstall.mock.calls[0][0]).not.toHaveProperty('userName');
+        expect(onClaim).not.toHaveBeenCalled();
+        expect(onAddVm).not.toHaveBeenCalled();
+        expect(screen.getByRole('button', { name: 'Set up my DevChain' })).toBeDisabled();
+      },
+    );
   });
 
   describe('install block', () => {

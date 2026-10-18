@@ -1,3 +1,4 @@
+import { sharedVmGuardStub } from '../../../common/test/shared-vm.stub';
 import { X509Certificate } from 'node:crypto';
 import { DockerImportInventoryStore } from './docker-import-inventory.store';
 import type Database from 'better-sqlite3';
@@ -8,7 +9,7 @@ import { join } from 'node:path';
 import { createTestDatabase } from '../../../common/test/test-database.helper';
 import { resetEnvConfig } from '../../../common/config/env.config';
 import { fixtureTls, otherTls } from '../../../common/test/tls-fixture';
-import { ConflictError, NotFoundError } from '../../../common/errors/error-types';
+import { AppError, ConflictError, NotFoundError } from '../../../common/errors/error-types';
 import type { ProviderAuthVaultService } from '../../provider-auth/provider-auth-vault.service';
 import type { ProviderAuthWritebackService } from '../../provider-auth/provider-auth-writeback.service';
 import type { ProviderAdapterFactory } from '../../providers/adapters/provider-adapter.factory';
@@ -22,6 +23,7 @@ import { RemoteOperationRunner } from './remote-operation.runner';
 import type { RemoteOperationDefinition } from './remote-operation.types';
 import { RemoteOperationsService } from './remote-operations.service';
 import { ResetVmOperation } from './reset-vm.operation';
+import { DetachOperation, type DetachDetails } from './detach.operation';
 import { DestroyVmOperation } from './destroy-vm.operation';
 import { VmOperationsService } from './vm-operations.service';
 import { VmOperationsController } from './vm-operations.controller';
@@ -58,7 +60,9 @@ describe('VM operation composition with fake Proxmox and bootstrap', () => {
   let storage: LocalStorageService;
   let runner: RemoteOperationRunner;
   let operations: RemoteOperationsService;
+  let detach: RemoteOperationDefinition;
   let vmOperations: VmOperationsService;
+  let sharedVm: ReturnType<typeof sharedVmGuardStub>;
   let remotes: RemotesService;
   let connectionId: string;
   let nextVmid: number;
@@ -114,6 +118,7 @@ describe('VM operation composition with fake Proxmox and bootstrap', () => {
         machineIdentity: 'vm-operations-test:u',
       }),
     );
+    sharedVm = sharedVmGuardStub();
     const connection = await storage.createVmProviderConnection({
       kind: 'proxmox',
       name: 'Lab',
@@ -399,7 +404,7 @@ describe('VM operation composition with fake Proxmox and bootstrap', () => {
       interrupt: async () => undefined,
       forget: () => undefined,
     };
-    const detach: RemoteOperationDefinition = {
+    detach = {
       kind: 'detach',
       steps: [
         {
@@ -474,8 +479,21 @@ describe('VM operation composition with fake Proxmox and bootstrap', () => {
       create,
       attach as never,
       inventory,
+      {
+        assertRemoteEmpty: jest.fn().mockResolvedValue(null),
+        freezeRemoteEmpty: async (
+          _remoteId: string,
+          _projectId: string,
+          record: () => Promise<void>,
+        ) => {
+          await record();
+          return null;
+        },
+        thawRemoteAdmission: jest.fn().mockResolvedValue(true),
+      } as never,
+      sharedVm,
     );
-    const destroy = new DestroyVmOperation(storage, providers, writeback, lifecycle);
+    const destroy = new DestroyVmOperation(storage, providers, writeback, lifecycle, sharedVm);
     runner = new RemoteOperationRunner(
       storage,
       { broadcastEvent: jest.fn() } as never,
@@ -525,8 +543,7 @@ describe('VM operation composition with fake Proxmox and bootstrap', () => {
       { recordAttach: jest.fn() } as never,
       {} as never,
       {} as never,
-      {} as never,
-      {} as never,
+      { sharedVmNotify: jest.fn().mockResolvedValue({ results: [] }) } as never,
     );
     vmOperations = new VmOperationsService(
       storage,
@@ -536,6 +553,7 @@ describe('VM operation composition with fake Proxmox and bootstrap', () => {
       providers,
       {} as never,
       {} as never,
+      sharedVm,
     );
     remotes = new RemotesService(
       storage,
@@ -627,7 +645,7 @@ describe('VM operation composition with fake Proxmox and bootstrap', () => {
   it.each(['dev_box'])(
     'rejects invalid Proxmox create name %s before making a provider call',
     async (name) => {
-      const controller = new VmOperationsController(vmOperations);
+      const controller = new VmOperationsController(vmOperations, sharedVmGuardStub());
       await expect(
         controller.create(connectionId, { name, cores: 2, memory: 4096, disk: 30 }),
       ).rejects.toBeInstanceOf(ZodError);
@@ -959,6 +977,139 @@ describe('VM operation composition with fake Proxmox and bootstrap', () => {
     );
   });
 
+  // The real saved runner/Reset/Disconnect composition catches force changes that
+  // an isolated retry payload or a fake Disconnect step plan would miss.
+  it('recovers an offline Reset with forced Retry without replaying completed work or losing Disconnect checkpoints', async () => {
+    const created = await settle(await vmOperations.create(connectionId, input()));
+    const project = await storage.createProject({
+      name: 'recover',
+      description: null,
+      rootPath: join(directory, 'recover'),
+      isTemplate: false,
+    });
+    const hostCursor = '2026-09-24T09:00:00.000Z';
+    await storage.createRemoteProjectBinding({ projectId: project.id, remoteId: created.remoteId });
+    await storage.updateRemoteProjectBinding(project.id, { state: 'remote', hostCursor });
+    const hostFreeze = jest.fn(async () => {
+      throw new Error('The offline VM cannot freeze its project');
+    });
+    const flipToHome = jest.fn().mockRejectedValueOnce(new Error('Home handoff interrupted'));
+    const fileSync = { forcedLoss: jest.fn().mockResolvedValue('unknown'), flipToHome };
+    const realDetach = new DetachOperation(
+      { getState: () => ({ online: !hostOffline, versionMatches: true }) } as never,
+      {
+        get: (id: string) => storage.getRemoteProjectBinding(id),
+        update: (id: string, patch: Parameters<typeof storage.updateRemoteProjectBinding>[1]) =>
+          storage.updateRemoteProjectBinding(id, patch),
+        delete: (id: string) => storage.deleteRemoteProjectBinding(id),
+      } as never,
+      {} as never,
+      { freeze: hostFreeze } as never,
+      { thaw: async () => undefined } as never,
+      { stop: async () => undefined } as never,
+      fileSync as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      { clear: () => undefined } as never,
+      {
+        freezeRemoteEmpty: async () => 'Lanes on the VM are unknown and may be lost.',
+        thawRemoteAdmission: async () => false,
+      } as never,
+      {} as never,
+    );
+    jest.spyOn(detach, 'stepsFor').mockImplementation((details) => realDetach.stepsFor(details));
+    pullGate = gate();
+    const pulling = new Promise<void>((resolve) => {
+      pullEntered = resolve;
+    });
+    const started = await vmOperations.reset(created.remoteId, { force: false, providerAuth: {} });
+    await pulling;
+    hostOffline = true;
+    pullGate.release();
+    const failed = await settle(started);
+    expect(failed.steps.find((step) => step.id === 'pull_families')).toMatchObject({
+      state: 'failed',
+      error: { code: 'REMOTE_OFFLINE' },
+    });
+    const completedPreflight = failed.steps.find((step) => step.id === 'preflight');
+    const confirmation = {
+      force: true,
+      forceOccupied: true,
+      confirmedOccupancy: { unavailable: true, instances: [] },
+    };
+    const recovering = await settle(
+      await operations.retry(started.id, undefined, undefined, confirmation),
+    );
+    expect(recovering.steps.find((step) => step.state === 'failed')).toMatchObject({
+      id: `detach:${project.id}:file_sync_flip`,
+      error: { message: 'Home handoff interrupted' },
+    });
+    expect(hostFreeze).not.toHaveBeenCalled();
+    expect(recovering.steps.find((step) => step.id === 'preflight')).toEqual(completedPreflight);
+    expect(
+      recovering.steps.find((step) => step.id === `detach:${project.id}:freeze_host`),
+    ).toMatchObject({
+      state: 'skipped',
+      startedAt: null,
+    });
+    const nested = (recovering.details.detachDetails as Record<string, DetachDetails>)[project.id];
+    expect(nested).toMatchObject({
+      force: true,
+      hostCursor,
+      markedDetaching: true,
+      forcedLoss: { hostCursor, fileSync: 'unknown', teamLanes: 'unfinalized' },
+    });
+    // A saved non-forced Disconnect can already have completed preflight and
+    // handoff/lane state; forced recovery must preserve it and still record loss.
+    const { forcedLoss: _loss, ...checkpoint } = nested;
+    const legacyCheckpoint = {
+      ...checkpoint,
+      force: false,
+      lanesFrozen: true,
+      fileSyncPaused: true,
+      vmGuardInstalled: true,
+      finalCursor: hostCursor,
+    };
+    await storage.updateRemoteOperation(started.id, {
+      details: { ...recovering.details, detachDetails: { [project.id]: legacyCheckpoint } },
+    });
+    const resumed = await operations.retry(started.id, undefined, undefined, confirmation);
+    expect(resumed.details.detachDetails).toEqual({
+      [project.id]: { ...legacyCheckpoint, force: true },
+    });
+    const done = await settle(resumed);
+    expect(done.state).toBe('done');
+    expect(
+      done.steps.filter((step) => step.id.startsWith('detach:') && step.state === 'skipped'),
+    ).toHaveLength(8);
+    expect(
+      done.steps
+        .filter((step) => step.state !== 'skipped' && step.id.startsWith('detach:'))
+        .every((step) => step.state === 'done'),
+    ).toBe(true);
+    expect(done.steps.find((step) => step.id === `detach:${project.id}:preflight`)).toEqual(
+      recovering.steps.find((step) => step.id === `detach:${project.id}:preflight`),
+    );
+    expect(done.details.forcedLoss).toEqual([
+      {
+        projectId: project.id,
+        detach: expect.objectContaining({
+          hostCursor,
+          fileSync: 'unknown',
+          teamLanes: 'unfinalized',
+        }),
+        families: [family],
+      },
+    ]);
+    expect(calls.filter((call) => call === 'pull-families')).toHaveLength(2);
+    expect(calls.filter((call) => call.startsWith('destroy:'))).toEqual(['destroy:vm-101']);
+    expect(await storage.getRemoteProjectBinding(project.id)).toMatchObject({
+      state: 'remote',
+      remoteId: created.remoteId,
+    });
+  });
+
   it('resumes reset after the old VM was deleted but its response was lost', async () => {
     const created = await settle(await vmOperations.create(connectionId, input()));
     loseDestroyResponse = true;
@@ -1249,17 +1400,40 @@ describe('VM operation composition with fake Proxmox and bootstrap', () => {
     expect(calls).toEqual(callsBefore);
   });
 
-  it('keeps the VM, remote, and failed operation when the ownership guard refuses', async () => {
-    const created = await settle(await vmOperations.create(connectionId, input()));
-    rejectOwnership = true;
-    const failed = await settle(await vmOperations.destroy(created.remoteId, { force: false }));
+  it('preserves failed clone recovery when occupancy refuses a Destroy takeover', async () => {
+    failClaim = true;
+    const failed = await settle(await vmOperations.create(connectionId, input()));
     expect(failed.state).toBe('failed');
-    expect(failed.steps[0].id).toBe('preflight');
-    expect(failed.steps[0].state).toBe('failed');
     expect(fakeVms.has(101)).toBe(true);
-    expect(await storage.getRemote(created.remoteId)).toMatchObject({ vmIdentity: 'vm-101' });
-    expect(calls).not.toContain('destroy:vm-101');
+    sharedVm.assertAllowed = async () => {
+      throw new AppError('bob (1 projects)', 'VM_SHARED_PROJECTS_CONNECTED', 409);
+    };
+    await expect(vmOperations.destroy(failed.remoteId, { force: false })).rejects.toMatchObject({
+      code: 'VM_SHARED_PROJECTS_CONNECTED',
+    });
+    expect((await storage.getRemoteOperation(failed.id)).state).toBe('failed');
+    expect(fakeVms.has(101)).toBe(true);
+    expect(
+      (await storage.listRemoteOperations({ remoteId: failed.remoteId })).map(({ id }) => id),
+    ).toEqual([failed.id]);
   });
+
+  it.each([false, true])(
+    'keeps the VM and remote when ownership refuses (forceOccupied=%s)',
+    async (forceOccupied) => {
+      const created = await settle(await vmOperations.create(connectionId, input()));
+      rejectOwnership = true;
+      const failed = await settle(
+        await vmOperations.destroy(created.remoteId, { force: false, forceOccupied }),
+      );
+      expect(failed.state).toBe('failed');
+      expect(failed.steps[0].id).toBe('preflight');
+      expect(failed.steps[0].state).toBe('failed');
+      expect(fakeVms.has(101)).toBe(true);
+      expect(await storage.getRemote(created.remoteId)).toMatchObject({ vmIdentity: 'vm-101' });
+      expect(calls).not.toContain('destroy:vm-101');
+    },
+  );
 
   it('keeps the registration and tells the user to delete only it when the VM is missing', async () => {
     const created = await settle(await vmOperations.create(connectionId, input()));

@@ -247,6 +247,11 @@ describe('TunnelHandlerService', () => {
     }> = [
       { method: 'chat.listAgents', seam: 'chat', params: { projectId: PROJECT_ID } },
       { method: 'chat.listTeams', seam: 'chat', params: { projectId: PROJECT_ID } },
+      {
+        method: 'chat.getProviderUsage',
+        seam: 'chat',
+        params: { projectId: PROJECT_ID, maxAgeSec: 60 },
+      },
       { method: 'chat.listProfiles', seam: 'chat', params: { projectId: PROJECT_ID } },
       {
         method: 'chat.listProfileConfigs',
@@ -340,6 +345,16 @@ describe('TunnelHandlerService', () => {
     const results: Record<string, unknown> = {
       'chat.listAgents': [],
       'chat.listTeams': [],
+      'chat.getProviderUsage': {
+        accounts: [],
+        config: {
+          enabled: true,
+          runningMaxAgeMin: 5,
+          openProjectMaxAgeMin: 30,
+          hoverMaxAgeSec: 60,
+          tokenCheckMinutes: 10,
+        },
+      },
       'chat.listProfiles': [],
       'chat.listProfileConfigs': [],
       'chat.createTeamAgent': createdAgent,

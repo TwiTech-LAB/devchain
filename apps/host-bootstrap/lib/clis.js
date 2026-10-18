@@ -3,14 +3,18 @@
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
+const { replaceSymlink } = require("./system");
 
 const CLI_NAMES = ["claude", "codex", "copilot", "opencode"];
 const PACKAGES = {
   claude: "@anthropic-ai/claude-code",
   codex: "@openai/codex",
   copilot: "@github/copilot",
-  opencode: "opencode-ai",
+  opencode: "@opencode/cli",
 };
+// Managed installs run OpenCode 2 only. The v1 package owns the same `opencode`
+// bin, so npm refuses (EEXIST) to install the v2 package over it.
+const LEGACY_OPENCODE_PACKAGE = "opencode-ai";
 const AGY_INSTALLER = "https://antigravity.google/cli/install.sh";
 const CLI_INSTALL_TIMEOUT_MS = 30 * 60_000;
 // The provider packages are public; a manifest registry may mirror only
@@ -71,7 +75,22 @@ function packageVersion(name, sys) {
   }
 }
 
-async function agyVersion(sys, binary = path.join(sys.paths.binDir, "agy")) {
+function legacyOpencodeInstalled(sys) {
+  return fs.existsSync(
+    path.join(sys.paths.cliPrefix, "lib/node_modules", LEGACY_OPENCODE_PACKAGE),
+  );
+}
+
+function agyBinary(sys) {
+  return path.join(
+    sys.paths.instanceUser
+      ? path.join(sys.paths.cliPrefix, "bin")
+      : sys.paths.binDir,
+    "agy",
+  );
+}
+
+async function agyVersion(sys, binary = agyBinary(sys)) {
   if (!fs.existsSync(binary)) return null;
   const { stdout, stderr } = await sys.run(binary, ["--version"]);
   const version = `${stdout}\n${stderr}`.trim().split("\n")[0]?.trim();
@@ -88,7 +107,8 @@ async function installAgy(sys) {
   const installer = path.join(dir, "install.sh");
   const stagedDir = path.join(dir, "bin");
   const home = path.join(dir, "home");
-  const replacement = path.join(sys.paths.binDir, ".agy.new");
+  const binary = agyBinary(sys);
+  const replacement = path.join(path.dirname(binary), ".agy.new");
   try {
     fs.mkdirSync(stagedDir);
     fs.mkdirSync(home);
@@ -104,10 +124,11 @@ async function installAgy(sys) {
     if (!version) throw new Error("installer did not provide an agy binary.");
     // A broken installed agy counts as absent, so a working download replaces it.
     if (version !== (await installedAgyVersion(sys))) {
+      fs.mkdirSync(path.dirname(binary), { recursive: true, mode: 0o755 });
       fs.rmSync(replacement, { force: true });
       fs.copyFileSync(staged, replacement);
       fs.chmodSync(replacement, 0o755);
-      fs.renameSync(replacement, path.join(sys.paths.binDir, "agy"));
+      fs.renameSync(replacement, binary);
     }
     return version;
   } finally {
@@ -123,6 +144,18 @@ async function installClis(version, sys) {
     try {
       const pin = pins[name];
       if (packageVersion(name, sys) !== pin.version) {
+        if (name === "opencode" && legacyOpencodeInstalled(sys)) {
+          await sys.run(
+            "npm",
+            [
+              "uninstall",
+              "-g",
+              `--prefix=${sys.paths.cliPrefix}`,
+              LEGACY_OPENCODE_PACKAGE,
+            ],
+            { timeoutMs: CLI_INSTALL_TIMEOUT_MS },
+          );
+        }
         await sys.run(
           "npm",
           [
@@ -137,6 +170,13 @@ async function installClis(version, sys) {
             `${pin.package}@${pin.version}`,
           ],
           { timeoutMs: CLI_INSTALL_TIMEOUT_MS },
+        );
+      }
+      if (sys.paths.instanceUser) {
+        fs.mkdirSync(sys.paths.binDir, { recursive: true, mode: 0o755 });
+        replaceSymlink(
+          path.join(sys.paths.binDir, name),
+          path.join(sys.paths.cliPrefix, "bin", name),
         );
       }
       if (
@@ -165,6 +205,8 @@ async function installClis(version, sys) {
       `agy update skipped: ${error.message}; kept ${kept}\n`,
     );
   }
+  if (sys.paths.instanceUser)
+    replaceSymlink(path.join(sys.paths.binDir, "agy"), agyBinary(sys));
   return installed;
 }
 

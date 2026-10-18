@@ -18,6 +18,11 @@ describe('host install account check over SSH', () => {
   beforeEach(async () => {
     account = { code: 0, stdout: '' };
     server = await startFakeSsh(hostKey(), 0, '', undefined, (command, stream) => {
+      if (command.includes('__DEVCHAIN_HOST_STATE__')) {
+        stream.exit(0);
+        stream.end('__DEVCHAIN_HOST_STATE__unclaimed');
+        return true;
+      }
       if (!command.includes('getent passwd')) return false;
       stream.exit(account.code);
       stream.end(account.stdout);

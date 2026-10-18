@@ -62,6 +62,7 @@ describe('EventsService', () => {
     expect(transientEventNames).toEqual([
       'epic.relations.invalidated',
       'epic.time.scope.invalidated',
+      'provider-usage.updated',
       'session.transcript.updated',
     ]);
     expect(eventId).toBeNull();

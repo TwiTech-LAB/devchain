@@ -21,6 +21,7 @@ jest.mock('../../../../common/config/env.config', () => ({
 }));
 
 jest.mock('@devchain/shared', () => ({
+  ...jest.requireActual('@devchain/shared'),
   HostResolver: { buildInternalBaseUrl: () => 'http://127.0.0.1:3000' },
 }));
 

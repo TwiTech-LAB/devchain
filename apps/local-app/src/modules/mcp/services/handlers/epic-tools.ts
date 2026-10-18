@@ -322,8 +322,14 @@ export async function handleListAssignedEpicsTasks(
 
     const agentNameById = await resolveAgentNames(ctx.storage, agentIds);
 
+    const lanes = await ctx.storage.listWorktrees(project.id);
     const epicsWithStatus = result.items.map((epic) => {
-      const summary = mapEpicSummary(epic, agentNameById);
+      const summary: ListAssignedEpicsTasksResponse['epics'][number] = mapEpicSummary(
+        epic,
+        agentNameById,
+      );
+      const lane = lanes.find((row) => row.epicId === epic.id);
+      if (lane) summary.worktreePath = lane.path;
       const status = statusById.get(epic.statusId);
       if (status) {
         summary.status = status.label;
@@ -635,6 +641,21 @@ export async function handleGetEpicById(
 
   if (parentSummary) {
     response.parent = parentSummary;
+  }
+
+  const lanes = (await ctx.storage.listWorktrees(project.id)).filter(
+    (row) => row.epicId === epic.id,
+  );
+  if (lanes.length > 0) {
+    response.worktrees = lanes.map(({ name, path, branch, baseBranch }) => ({
+      name,
+      path,
+      branch,
+      baseBranch,
+      projectRootPath: project.rootPath,
+    }));
+    response.worktreeInstruction =
+      'This task has a worktree. Work in it by path: `cd <path> && …` for every command. It contains tracked files only; set it up from the project root.';
   }
 
   return { success: true, data: response };

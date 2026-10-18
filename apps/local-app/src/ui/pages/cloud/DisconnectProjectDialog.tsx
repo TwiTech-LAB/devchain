@@ -4,6 +4,7 @@ import type {
   DockerCopyBackChoice,
   DockerCopyBackRequest,
   DockerSyncGroup,
+  DockerSyncState,
 } from '@/modules/remotes/docker/docker-copy-back.dto';
 import type { DockerDataState } from '@/modules/remotes/docker/docker-plan.dto';
 import { useHomeQueryClient } from '@/ui/components/BackendBoundary';
@@ -63,8 +64,37 @@ function syncedByFileSync(group: DockerSyncGroup): boolean {
 }
 
 /** A group the copy can take: file sync does not own it and no ownership rule holds it on the VM. */
-function copyEligible(group: DockerSyncGroup): boolean {
+export function copyEligible(group: DockerSyncGroup): boolean {
   return !group.skipReason && !syncedByFileSync(group);
+}
+
+/** Data this PC does not have: changed on the VM, or created there and waiting for a choice. */
+export function changedOnVm(group: DockerSyncGroup): boolean {
+  return VM_CHANGED_STATES.has(group.state) || Boolean(group.createdOnVm && group.needsChoice);
+}
+
+/** The plan found Docker data, and the copy can reach it on the VM. */
+export function dockerCopyUsable(state: DockerSyncState): boolean {
+  return (
+    (state.imported || state.groups.length > 0) &&
+    (state.availability.available ||
+      (state.availability.side === 'remote' &&
+        state.availability.reason?.code !== 'vm-user-mismatch'))
+  );
+}
+
+/** The copy-back request with the choices the user made for these groups. */
+export function copyBackRequest(
+  groups: DockerSyncGroup[],
+  choices: Record<string, DockerCopyBackChoice>,
+): DockerCopyBackRequest {
+  return {
+    choices: Object.fromEntries(
+      groups
+        .filter((group) => group.needsChoice && choices[group.key])
+        .map((group) => [group.key, choices[group.key]]),
+    ),
+  };
 }
 
 /** Changed on the VM, or the user must choose: shown in yellow, and first. */
@@ -73,7 +103,7 @@ function marked(group: DockerSyncGroup): boolean {
 }
 
 /** "4 of 5 data groups copy home; 1 needs your choice". */
-function copySummary(
+export function copySummary(
   groups: DockerSyncGroup[],
   choices: Record<string, DockerCopyBackChoice>,
 ): string {
@@ -149,7 +179,7 @@ function DataAction({
  * One row per data group: its containers, each on its own line, and what Disconnect does with
  * its data. Without `onChoose`, the data stays on the VM and no choice is asked.
  */
-function DockerDataTable({
+export function DockerDataTable({
   label,
   groups,
   choices,
@@ -289,17 +319,9 @@ export function DisconnectProjectDialog({
   // Disconnect waits for the check, so a quick click cannot skip the copy offer.
   const checking = !forced && sync.isPending;
   const checkFailed = !forced && (sync.isError || state === null);
-  const homeDockerUsable =
-    !forced &&
-    state != null &&
-    (state.imported || state.groups.length > 0) &&
-    (state.availability.available ||
-      (state.availability.side === 'remote' &&
-        state.availability.reason?.code !== 'vm-user-mismatch'));
+  const homeDockerUsable = !forced && state != null && dockerCopyUsable(state);
   const eligible = state?.groups.filter(copyEligible) ?? [];
-  const vmChanged = eligible.filter(
-    (group) => VM_CHANGED_STATES.has(group.state) || (group.createdOnVm && group.needsChoice),
-  );
+  const vmChanged = eligible.filter(changedOnVm);
   const fileSynced = state?.groups.filter(syncedByFileSync) ?? [];
   const held = state?.groups.filter((group) => group.skipReason && !syncedByFileSync(group)) ?? [];
   const copyDocker = eligible.length > 0 && (copyChoice ?? vmChanged.length > 0);
@@ -317,18 +339,7 @@ export function DisconnectProjectDialog({
   );
   const age = hostCursor ? Math.max(0, Date.now() - Date.parse(hostCursor)) : null;
   const handleDisconnect = () =>
-    onDisconnect(
-      forced,
-      copying
-        ? {
-            choices: Object.fromEntries(
-              choiceGroups
-                .filter((group) => choices[group.key])
-                .map((group) => [group.key, choices[group.key]]),
-            ),
-          }
-        : undefined,
-    );
+    onDisconnect(forced, copying ? copyBackRequest(choiceGroups, choices) : undefined);
   const handleOpenChange = (open: boolean) => {
     if (!open && !pending) onClose();
   };

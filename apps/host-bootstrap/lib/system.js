@@ -1,7 +1,9 @@
 "use strict";
 
 const fs = require("node:fs");
+const path = require("node:path");
 const { execFile } = require("node:child_process");
+const { withFileLock } = require("./host-lock");
 
 /** Where the bootstrap reads and writes; tests point these at a temp directory. */
 const DEFAULT_PATHS = {
@@ -18,7 +20,24 @@ const DEFAULT_PATHS = {
   installRoot: "/opt/devchain-host",
   syncthingBinary: "/usr/bin/syncthing",
   unitTemplate: require.resolve("../systemd/devchain-host.service"),
+  unitName: "devchain-host.service",
+  sudoersName: "devchain-host",
+  updateUnitName: "devchain-host-update",
+  dockerUnitName: "devchain-host-docker",
 };
+
+/** The bootstrap package inside an npm global prefix. */
+function helperPackageDir(prefix) {
+  return path.join(prefix, "lib/node_modules/devchain-host-bootstrap");
+}
+
+/** Points `link` at `target` with one rename, so a reader never sees it missing. */
+function replaceSymlink(link, target) {
+  const tmp = `${link}.new`;
+  fs.rmSync(tmp, { force: true });
+  fs.symlinkSync(target, tmp);
+  fs.renameSync(tmp, link);
+}
 
 class CommandError extends Error {
   constructor(command, detail) {
@@ -102,8 +121,16 @@ async function listUsers() {
 }
 
 function createSystem(overrides = {}) {
+  const paths = { ...DEFAULT_PATHS, ...overrides.paths };
+  paths.registryDir ??= paths.etcDir;
+  paths.hostInstallRoot ??= paths.installRoot;
+  paths.helperPrefix ??= paths.cliPrefix;
   return {
-    paths: { ...DEFAULT_PATHS, ...overrides.paths },
+    paths,
+    withHostLock:
+      overrides.withHostLock ??
+      ((action) =>
+        withFileLock(path.join(paths.registryDir, "registry.lock"), action)),
     run: overrides.run ?? run,
     lookupUser: overrides.lookupUser ?? lookupUser,
     lookupUid: overrides.lookupUid ?? lookupUid,
@@ -119,4 +146,81 @@ function createSystem(overrides = {}) {
   };
 }
 
-module.exports = { createSystem, CommandError, parsePasswdLine };
+/** A joined instance never inherits a sibling's mutable paths. */
+function createInstanceSystem(sys, userName) {
+  const { USER_NAME, BootstrapError } = require("./validate");
+  if (typeof userName !== "string" || !USER_NAME.test(userName))
+    throw new BootstrapError(
+      400,
+      "INVALID_INSTANCE",
+      "Invalid instance user name.",
+    );
+  const installRoot = path.join(
+    sys.paths.hostInstallRoot,
+    "instances",
+    userName,
+  );
+  return {
+    ...sys,
+    paths: {
+      ...sys.paths,
+      instanceUser: userName,
+      etcDir: path.join(sys.paths.registryDir, "instances", userName),
+      installRoot,
+      helperPrefix: path.join(installRoot, "helper"),
+      cliPrefix: path.join(installRoot, "clis"),
+      binDir: path.join(installRoot, "bin"),
+      unitName: `devchain-user-${userName}.service`,
+      joinUnitName: `devchain-join-${userName}.service`,
+      sudoersName: `devchain-user-${userName}`,
+      updateUnitName: `devchain-update-${userName}`,
+      dockerUnitName: `devchain-docker-${userName}`,
+    },
+  };
+}
+
+/** Resolves helper identity from its real npm installation, never from environment variables. */
+function createInstalledSystem(
+  packageDir = path.resolve(__dirname, ".."),
+  sys = createSystem(),
+) {
+  const own =
+    packageDir === helperPackageDir(sys.paths.helperPrefix)
+      ? sys
+      : createInstanceSystem(sys, instanceOfPackage(packageDir, sys));
+  return {
+    ...own,
+    paths: {
+      ...own.paths,
+      unitTemplate: path.join(packageDir, "systemd/devchain-host.service"),
+    },
+  };
+}
+
+/** The user whose instance prefix holds `packageDir`. */
+function instanceOfPackage(packageDir, sys) {
+  const instances = path.join(sys.paths.hostInstallRoot, "instances");
+  const [userName] = path.relative(instances, packageDir).split(path.sep);
+  if (
+    packageDir !==
+    helperPackageDir(path.join(instances, userName ?? "", "helper"))
+  ) {
+    const { BootstrapError } = require("./validate");
+    throw new BootstrapError(
+      409,
+      "INSTANCE_MISMATCH",
+      "The helper is not installed in an instance prefix.",
+    );
+  }
+  return userName;
+}
+
+module.exports = {
+  createSystem,
+  createInstanceSystem,
+  createInstalledSystem,
+  helperPackageDir,
+  replaceSymlink,
+  CommandError,
+  parsePasswdLine,
+};

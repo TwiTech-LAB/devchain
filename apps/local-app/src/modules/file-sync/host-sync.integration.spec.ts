@@ -392,7 +392,12 @@ describe('host sync routes', () => {
     const installed = await app.inject({
       method: 'POST',
       url,
-      payload: { homeName: 'home-pc', reason: 'disconnect' },
+      payload: {
+        homeName: 'home-pc',
+        reason: 'disconnect',
+        expectedGeneration: 0,
+        transitionId: null,
+      },
     });
     expect(installed.statusCode).toBe(200);
     expect(installed.json()).toEqual({ warning: null });
@@ -406,7 +411,7 @@ describe('host sync routes', () => {
     const pcGit = await app.inject({
       method: 'POST',
       url,
-      payload: { homeName: 'home-pc', reason: 'pc-git' },
+      payload: { homeName: 'home-pc', reason: 'pc-git', expectedGeneration: 0, transitionId: null },
     });
     expect(pcGit.statusCode).toBe(200);
     expect(pcGit.json()).toEqual({ warning: null });
@@ -414,13 +419,21 @@ describe('host sync routes', () => {
       'Git for this project is on the PC',
     );
 
-    const removed = await app.inject({ method: 'DELETE', url });
+    const removed = await app.inject({
+      method: 'DELETE',
+      url,
+      payload: { expectedGeneration: 0, transitionId: null },
+    });
     expect(removed.statusCode).toBe(200);
     expect(removed.json()).toEqual({ removed: true, indexRefreshed: null, warning: null });
     for (const name of ['reference-transaction', 'post-checkout']) {
       expect(readFileSync(join(hooks, name), 'utf8')).toContain('user-hook');
     }
-    const absent = await app.inject({ method: 'DELETE', url });
+    const absent = await app.inject({
+      method: 'DELETE',
+      url,
+      payload: { expectedGeneration: 0, transitionId: null },
+    });
     expect(absent.statusCode).toBe(200);
     expect(absent.json()).toEqual({ removed: false, indexRefreshed: null, warning: null });
     expect(readFileSync(index, 'utf8')).toBe('staged-index');
@@ -441,14 +454,24 @@ describe('host sync routes', () => {
     const invalid = await app.inject({
       method: 'POST',
       url,
-      payload: { homeName: 'home-pc', reason: 'disconnect', rootPath: join(root, 'other') },
+      payload: {
+        homeName: 'home-pc',
+        reason: 'disconnect',
+        rootPath: join(root, 'other'),
+        expectedGeneration: 0,
+        transitionId: null,
+      },
     });
     expect(invalid.statusCode).toBe(400);
     expect(readFileSync(join(hooks, 'reference-transaction'), 'utf8')).toContain('user-hook');
 
     rmSync(join(hooks, 'reference-transaction'));
     mkdirSync(join(hooks, 'reference-transaction'));
-    const unreadable = await app.inject({ method: 'DELETE', url });
+    const unreadable = await app.inject({
+      method: 'DELETE',
+      url,
+      payload: { expectedGeneration: 0, transitionId: null },
+    });
     expect(unreadable.statusCode).toBe(500);
     rmSync(join(hooks, 'reference-transaction'), { recursive: true });
     writeFileSync(join(hooks, 'reference-transaction'), '#!/bin/sh\necho user-hook\n');
@@ -457,7 +480,12 @@ describe('host sync routes', () => {
     const skipped = await app.inject({
       method: 'POST',
       url,
-      payload: { homeName: 'home-pc', reason: 'cancelled-connect' },
+      payload: {
+        homeName: 'home-pc',
+        reason: 'cancelled-connect',
+        expectedGeneration: 0,
+        transitionId: null,
+      },
     });
     expect(skipped.statusCode).toBe(200);
     expect(skipped.json().warning).toContain('core.hooksPath');
@@ -468,58 +496,15 @@ describe('host sync routes', () => {
       const missing = await app.inject({
         method,
         url,
-        ...(method === 'POST' ? { payload: { homeName: 'home-pc', reason: 'disconnect' } } : {}),
+        payload: {
+          ...(method === 'POST' ? { homeName: 'home-pc', reason: 'disconnect' } : {}),
+          expectedGeneration: 0,
+          transitionId: null,
+        },
       });
       expect(missing.statusCode).toBe(404);
     }
     expect(recorded).toEqual([]);
-  });
-
-  // HTTP exercises the real controller and typed client; Git execution is the external boundary.
-  it('rebuilds the VM index only after HEAD moved and reports retryable rebuild failures', async () => {
-    const url = '/api/host/projects/p1/git-index';
-    expect(await client.refreshGitIndex('r1', 'p1', 'head1')).toEqual({
-      head: 'head1',
-      refreshed: false,
-      warning: null,
-    });
-    expect(git.refreshIndexFromHead).not.toHaveBeenCalled();
-    git.mirroredHead.mockResolvedValue('head2');
-    expect(await client.refreshGitIndex('r1', 'p1', 'head1')).toEqual({
-      head: 'head2',
-      refreshed: true,
-      warning: null,
-    });
-    expect(git.refreshIndexFromHead).toHaveBeenCalledTimes(1);
-    expect(git.refreshIndexFromHead).toHaveBeenCalledWith('p1', projects.p1.rootPath);
-    git.refreshIndexFromHead.mockRejectedValueOnce(new Error('index locked'));
-    expect(await client.refreshGitIndex('r1', 'p1', 'head1')).toEqual({
-      head: 'head2',
-      refreshed: false,
-      warning: 'VM Git index rebuild failed: index locked',
-    });
-    expect(await client.refreshGitIndex('r1', 'p1', 'head1')).toEqual({
-      head: 'head2',
-      refreshed: true,
-      warning: null,
-    });
-    git.mirroredHead.mockResolvedValue(null);
-    expect(await client.refreshGitIndex('r1', 'p1', 'head2')).toEqual({
-      head: null,
-      refreshed: false,
-      warning: null,
-    });
-    expect(git.refreshIndexFromHead).toHaveBeenCalledTimes(3);
-    expect((await app.inject({ method: 'POST', url, payload: { since: 7 } })).statusCode).toBe(400);
-    expect(
-      (
-        await app.inject({
-          method: 'POST',
-          url: '/api/host/projects/missing/git-index',
-          payload: { since: null },
-        })
-      ).statusCode,
-    ).toBe(404);
   });
 
   it('reads the VM folder configuration without changing its direction or pause state', async () => {

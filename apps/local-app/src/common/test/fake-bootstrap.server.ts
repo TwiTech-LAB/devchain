@@ -24,6 +24,12 @@ function pinnedCliVersions(): Record<string, string> {
  * Records what home sends.
  */
 export class FakeBootstrapServer {
+  constructor(
+    private readonly effects: {
+      claim?: (body: Record<string, unknown>) => Promise<void>;
+      update?: (version: string) => Promise<void>;
+    } = {},
+  ) {}
   /** The certificate this VM serves; home must hold it to reach the VM. */
   readonly certificate = fixtureTls.cert;
   version: string | null = null;
@@ -123,6 +129,7 @@ export class FakeBootstrapServer {
       this.claims.push(body);
       this.claimHeaders.push(req.headers.authorization);
       await this.claimGate;
+      await this.effects.claim?.(body);
       this.version = String(body.version);
       this.cliVersions = pinnedCliVersions();
       this.uid = this.legacyAllocatedIds?.uid ?? (typeof body.uid === 'number' ? body.uid : null);
@@ -179,10 +186,17 @@ export class FakeBootstrapServer {
       const previous = this.version;
       this.version = null;
       setTimeout(() => {
-        this.version = version;
-        this.update = { state: 'done', version };
+        void Promise.resolve(this.effects.update?.(version)).then(
+          () => {
+            this.version = version;
+            this.update = { state: 'done', version };
+          },
+          () => {
+            this.version = previous;
+            this.update = { state: 'failed', version };
+          },
+        );
       }, 150);
-      void previous;
       return { status: 202, body: { version, state: 'pending' } };
     }
     if (route === 'GET /api/host/update') return { status: 200, body: { status: this.update } };

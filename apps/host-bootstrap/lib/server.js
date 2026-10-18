@@ -6,6 +6,7 @@ const { BootstrapError, validateClaim } = require("./validate");
 const { performClaim, readClaim, readManifest } = require("./claim");
 const { createSystem } = require("./system");
 const { loadTls } = require("./tls");
+const { requireReservation, expireJoin } = require("./instances");
 
 const MAX_BODY_BYTES = 1024 * 1024;
 const HANDOVER_TIMEOUT_MS = 5 * 60_000;
@@ -105,10 +106,14 @@ function createBootstrap({
   claimFn = performClaim,
   handoverTimeoutMs = HANDOVER_TIMEOUT_MS,
   onDone,
+  onError,
 } = {}) {
   const { key, cert } = loadTls(sys);
   const bootId = randomUUID();
   let state = "unclaimed";
+  let expiryTimer;
+  let expiryCheck;
+  let expired = false;
   let imageVersion = null;
   try {
     imageVersion = readManifest(sys).imageVersion ?? null;
@@ -133,6 +138,51 @@ function createBootstrap({
       message: "Not found.",
     });
   });
+  server.once("close", () => clearTimeout(expiryTimer));
+
+  function checkExpiry() {
+    if (expiryCheck) return expiryCheck;
+    expiryCheck = runExpiryCheck().finally(() => {
+      expiryCheck = undefined;
+    });
+    return expiryCheck;
+  }
+
+  async function runExpiryCheck() {
+    if (!sys.paths.instanceUser || state !== "unclaimed" || expired) return;
+    clearTimeout(expiryTimer);
+    if (await expireJoin(sys)) {
+      expired = true;
+      server.close();
+      onDone?.();
+      return;
+    }
+    const join = await requireReservation(sys);
+    if (!join.claimStartedAt) {
+      expiryTimer = setTimeout(
+        () => checkExpiry().catch(expiryFailed),
+        Math.max(1, Date.parse(join.expiresAt) - sys.now().getTime()),
+      );
+      expiryTimer.unref();
+    }
+  }
+  function expiryFailed(error) {
+    log("error", "join expiry failed", { code: error.code });
+    expiryTimer = setTimeout(() => checkExpiry().catch(expiryFailed), 5_000);
+    expiryTimer.unref();
+  }
+  const ready = sys.paths.instanceUser
+    ? new Promise((resolve) => {
+        server.once("listening", () => {
+          checkExpiry().then(resolve, (error) => {
+            log("error", "join reservation unavailable", { code: error.code });
+            server.close();
+            onError?.(error);
+            resolve();
+          });
+        });
+      })
+    : Promise.resolve();
 
   async function handleClaim(req, res) {
     if (state !== "unclaimed" || readClaim(sys)) {
@@ -142,7 +192,11 @@ function createBootstrap({
         "This VM is already claimed or a claim is running.",
       );
     }
-    const claim = validateClaim(await readJson(req));
+    const body = await readJson(req);
+    const join = sys.paths.instanceUser
+      ? await requireReservation(sys)
+      : undefined;
+    const claim = validateClaim(body, { join });
     if (state !== "unclaimed") {
       throw new BootstrapError(
         409,
@@ -151,6 +205,7 @@ function createBootstrap({
       );
     }
     state = "claiming";
+    clearTimeout(expiryTimer);
     log("info", "claim started", {
       userName: claim.userName,
       homePath: claim.homePath,
@@ -174,11 +229,7 @@ function createBootstrap({
     // connection stays open until it is answered.
     server.close();
     try {
-      await sys.run("systemctl", [
-        "start",
-        "--no-block",
-        "devchain-host.service",
-      ]);
+      await sys.run("systemctl", ["start", "--no-block", sys.paths.unitName]);
       const up = await waitForDevChain(
         claim.port,
         claim.version,
@@ -196,7 +247,7 @@ function createBootstrap({
         send(res, 504, {
           statusCode: 504,
           code: "HOST_START_TIMEOUT",
-          message: `The claim is recorded but DevChain did not answer on port ${claim.port}; see journalctl -u devchain-host.`,
+          message: `The claim is recorded but DevChain did not answer on port ${claim.port}; see journalctl -u ${sys.paths.unitName}.`,
         });
       }
     } finally {
@@ -212,22 +263,33 @@ function createBootstrap({
 
   return {
     server,
+    ready,
+    checkExpiry,
     get state() {
       return state;
     },
   };
 }
 
-function main() {
-  const port = Number(process.env.DEVCHAIN_BOOTSTRAP_PORT ?? 3000);
-  const sys = createSystem();
+async function main({ sys = createSystem() } = {}) {
+  let port = Number(process.env.DEVCHAIN_BOOTSTRAP_PORT ?? 3000);
   if (readClaim(sys)) {
     log("info", "VM already claimed; bootstrap not needed");
     return;
   }
+  if (sys.paths.instanceUser) {
+    if (await expireJoin(sys)) return;
+    port = (await requireReservation(sys)).port;
+  }
   let bootstrap;
   try {
-    bootstrap = createBootstrap({ sys, onDone: () => process.exit(0) });
+    bootstrap = createBootstrap({
+      sys,
+      onDone: () => process.exit(0),
+      onError: () => {
+        process.exitCode = 1;
+      },
+    });
   } catch (error) {
     log("error", "bootstrap cannot start", { error: error.message });
     process.exitCode = 1;

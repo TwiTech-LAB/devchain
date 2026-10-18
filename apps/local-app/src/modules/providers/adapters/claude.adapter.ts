@@ -24,6 +24,8 @@ import type {
   ProjectProvisioningCapability,
   ProvisioningResult,
   ProviderPluginCapability,
+  ProviderPluginCatalogSource,
+  SessionCommandCapability,
 } from './capabilities';
 import type { ProviderPluginCatalogEntry } from '../dtos/provider-plugin.dto';
 import {
@@ -71,10 +73,12 @@ export class ClaudeAdapter
     TranscriptDiscoveryCapability,
     ProjectMcpSettingsCapability,
     ProjectProvisioningCapability,
-    ProviderPluginCapability
+    ProviderPluginCapability,
+    SessionCommandCapability
 {
   readonly providerName = 'claude';
   readonly traits = CLAUDE_TRAITS;
+  readonly sessionCommands = { compact: '/compact' } as const;
   // DevChain runs Claude as a line-streaming provider (alt-screen stripped, LF
   // normalized), so every launch forces the classic renderer. Claude checks this
   // env before the `tui` setting, CLAUDE_CODE_NO_FLICKER=1, and its fresh-install
@@ -115,8 +119,12 @@ export class ClaudeAdapter
   readonly hooksEnabled = true as const;
   readonly hooksProvideTranscriptPath = true;
 
-  listProviderPlugins(): string[] {
-    return ['plugin', 'list', '--available', '--json'];
+  providerPluginCatalog(): ProviderPluginCatalogSource {
+    return {
+      transport: 'cli',
+      args: ['plugin', 'list', '--available', '--json'],
+      parse: (stdout) => ({ entries: this.parseProviderPluginCatalog(stdout), warnings: [] }),
+    };
   }
 
   installProviderPlugin(pluginId: string): string[] {

@@ -47,6 +47,9 @@ const RESERVED_ENV_KEYS = new Set([
   "LD_LIBRARY_PATH",
   "XDG_RUNTIME_DIR",
   "DBUS_SESSION_BUS_ADDRESS",
+  "DEVCHAIN_HOST_ETC_DIR",
+  "DEVCHAIN_HOST_BIN_DIR",
+  "DEVCHAIN_HOST_SYNCTHING_BINARY",
   TLS_KEY_ENV,
   TLS_CERT_ENV,
 ]);
@@ -68,6 +71,18 @@ const MAX_CLAIM_GID = 60000;
 
 function isSemver(value) {
   return typeof value === "string" && SEMVER.test(value);
+}
+
+/** Throws unless `value` is an http or https URL; the message never echoes it (it may carry credentials). */
+function validateRegistry(value) {
+  const protocol = URL.parse(value)?.protocol;
+  if (protocol !== "http:" && protocol !== "https:")
+    throw new BootstrapError(
+      400,
+      "INVALID_REGISTRY",
+      "registry must be an http or https URL.",
+    );
+  return value;
 }
 
 /** An absolute path in normal form whose segments are plain names. */
@@ -177,7 +192,7 @@ function validateFiles(files, homePath) {
  * Checks a claim body and returns it normalized. Error messages name fields,
  * never values: the body carries provider credentials.
  */
-function validateClaim(body) {
+function validateClaim(body, { join } = {}) {
   if (body === null || typeof body !== "object" || Array.isArray(body)) {
     throw invalid("The claim body must be a JSON object.");
   }
@@ -221,6 +236,12 @@ function validateClaim(body) {
   ) {
     throw invalid("providerAuth must be an object.");
   }
+  if (join) {
+    require("./instances").validateBinding(
+      { userName, homePath, port, nonce: body.nonce },
+      join,
+    );
+  }
   return {
     userName,
     homePath,
@@ -228,6 +249,7 @@ function validateClaim(body) {
     ...(claimGid !== undefined ? { gid: claimGid } : {}),
     version,
     port,
+    ...(join ? { nonce: body.nonce } : {}),
     env: validateEnv(providerAuth.env),
     files: validateFiles(providerAuth.files, homePath),
   };
@@ -241,7 +263,9 @@ module.exports = {
   MAX_CLAIM_UID,
   REFUSED_HOME_FILES,
   validateClaim,
+  validateHomePath,
   isSemver,
+  validateRegistry,
   isPlainAbsolutePath,
   isInside,
 };

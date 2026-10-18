@@ -1,3 +1,4 @@
+import { sharedVmGuardStub } from '../../../common/test/shared-vm.stub';
 import { RemoteApiKeyService } from '../auth/remote-api-key.service';
 import { homedir } from 'node:os';
 import { RemoteHealthService } from './remote-health.service';
@@ -67,7 +68,9 @@ describe('RemoteHealthService', () => {
   let service: RemoteHealthService;
   let apiKeys: RemoteApiKeyService;
   let cliSettings: { pushIfChanged: jest.Mock; checkNow: jest.Mock };
+  let usageSettings: { pushIfChanged: jest.Mock };
   let cliVersions: { registerRemoteCheck: jest.Mock };
+  let sharedVm: ReturnType<typeof sharedVmGuardStub>;
 
   beforeEach(() => {
     jest.useFakeTimers();
@@ -90,6 +93,7 @@ describe('RemoteHealthService', () => {
       pushIfChanged: jest.fn().mockResolvedValue(undefined),
       checkNow: jest.fn().mockResolvedValue(undefined),
     };
+    usageSettings = { pushIfChanged: jest.fn().mockResolvedValue(undefined) };
     cliVersions = { registerRemoteCheck: jest.fn().mockReturnValue(jest.fn()) };
     let key = 'first';
     apiKeys = new RemoteApiKeyService({
@@ -101,6 +105,7 @@ describe('RemoteHealthService', () => {
     fetchMock = jest.fn();
     global.fetch = fetchMock as unknown as typeof fetch;
 
+    sharedVm = sharedVmGuardStub();
     service = new RemoteHealthService(
       storage as unknown as RemoteStorage,
       broadcaster as unknown as RealtimeBroadcaster,
@@ -108,9 +113,62 @@ describe('RemoteHealthService', () => {
       vmProviders as never,
       skillSettings as never,
       cliSettings as never,
+      usageSettings as never,
       cliVersions as never,
       apiKeys,
+      sharedVm,
+      { poll: async () => undefined, prune: () => undefined } as never,
     );
+  });
+
+  // Unit state-machine coverage is sufficient for poll admission; persistent
+  // roster serialization and HTTP guards have separate SQLite coverage.
+  it('refreshes the managed VM roster after key admission and retains it offline', async () => {
+    storage.getRemote.mockResolvedValue(makeRemote({ kind: 'proxmox', vmIdentity: 'vm-1' }));
+    const roster = {
+      ownUser: 'alice',
+      at: '2026-10-12T12:00:00Z',
+      vmIdentity: 'vm-1',
+      roster: {
+        instances: [
+          {
+            user: 'bob',
+            port: 3001,
+            version: null,
+            connectedCount: 2,
+            connectedProjectIds: ['b1', 'b2'],
+          },
+        ],
+      },
+    };
+    sharedVm.context = jest.fn().mockResolvedValue({
+      occupancy: { unavailable: false, instances: roster.roster.instances },
+      lastRoster: roster,
+    });
+    sharedVm.lastRoster = () => roster;
+    fetchMock.mockImplementation(async (url: string) =>
+      jsonResponse(url.endsWith('/api/runtime') ? { version: '1.2.3' } : HOST_STATS),
+    );
+    await service.refresh('remote-1');
+    expect(sharedVm.context).toHaveBeenCalledWith('remote-1');
+    expect(service.getState('remote-1')).toMatchObject({ online: true, sharedVmRoster: roster });
+    fetchMock.mockRejectedValue(new Error('offline'));
+    await service.refresh('remote-1');
+    expect(service.getState('remote-1')).toMatchObject({ online: false, sharedVmRoster: roster });
+    expect(sharedVm.context).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not refresh roster on a key-rejected managed VM poll', async () => {
+    storage.getRemote.mockResolvedValue(makeRemote({ kind: 'proxmox', vmIdentity: 'vm-1' }));
+    sharedVm.context = jest.fn();
+    fetchMock.mockImplementation(async (url: string) =>
+      url.endsWith('/api/runtime')
+        ? jsonResponse({ version: '1.2.3' })
+        : { ok: false, status: 401, json: async () => ({ code: 'HOST_API_KEY_REJECTED' }) },
+    );
+    await service.refresh('remote-1');
+    expect(service.getState('remote-1').apiKeyRejected).toBe(true);
+    expect(sharedVm.context).not.toHaveBeenCalled();
   });
 
   it('keeps runtime/version online on key rejection, skips side effects and clears on acceptance', async () => {
@@ -133,6 +191,7 @@ describe('RemoteHealthService', () => {
     expect(familyWriteback.pullIfChanged).not.toHaveBeenCalled();
     expect(skillSettings.pushIfChanged).not.toHaveBeenCalled();
     expect(cliSettings.pushIfChanged).not.toHaveBeenCalled();
+    expect(usageSettings.pushIfChanged).not.toHaveBeenCalled();
     rejected = false;
     await service.refresh('remote-1');
     expect(service.getState('remote-1')).toMatchObject({ online: true, apiKeyRejected: false });
@@ -276,7 +335,7 @@ describe('RemoteHealthService', () => {
     expect(service.getState('remote-1').online).toBe(true);
   });
 
-  it('pushes and checks CLI policy only for online version-matched VMs', async () => {
+  it('pushes CLI policy and usage settings, and checks CLIs, only for online version-matched VMs', async () => {
     storage.listRemotes.mockResolvedValue({
       items: [
         makeRemote(),
@@ -295,6 +354,7 @@ describe('RemoteHealthService', () => {
     service.onModuleInit();
     await jest.advanceTimersByTimeAsync(0);
     expect(cliSettings.pushIfChanged.mock.calls).toEqual([['remote-1']]);
+    expect(usageSettings.pushIfChanged.mock.calls).toEqual([['remote-1']]);
     await cliVersions.registerRemoteCheck.mock.calls[0][0]();
     expect(cliSettings.checkNow.mock.calls).toEqual([['remote-1']]);
     service.onModuleDestroy();

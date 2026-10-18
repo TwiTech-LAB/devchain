@@ -28,6 +28,7 @@ import { SkillsService } from '../../skills/services/skills.service';
 import { SkillCategoryService } from '../../skills/services/skill-category.service';
 import { SKILL_SOURCE_ADAPTERS } from '../../skills/adapters/skill-source.adapter';
 import { HostSkillSettingsService } from './host-skill-settings.service';
+import { GitCoordinatorService } from '../git-coordinator/git-coordinator.service';
 import { HostService } from './host.service';
 import { ProjectFreezeService } from './project-freeze.service';
 import { ProjectReplicaBuilder } from '../replica/project-replica.builder';
@@ -118,6 +119,7 @@ describe('Host skill settings Connect enablement', () => {
         },
         { provide: ProjectSessionsStopper, useValue: { stop: async () => undefined } },
         { provide: ProjectTimeSettler, useValue: { settle: async () => undefined } },
+        { provide: GitCoordinatorService, useValue: { forget: async () => undefined } },
       ],
     }).compile();
     module.get(ProjectWriteGate).bindStorage(storage);

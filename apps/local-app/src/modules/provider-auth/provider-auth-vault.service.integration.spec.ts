@@ -18,6 +18,13 @@ import { LocalStorageService } from '../storage/local/local-storage.service';
 import { IntegrationCredentialCipher } from '../storage/local/integration-credential-cipher';
 import { PROVIDER_AUTH_ADAPTERS, PROVIDER_AUTH_VERIFY } from './provider-auth-adapters';
 import { ProviderAuthVaultService } from './provider-auth-vault.service';
+import { OpencodePcLoginsReader } from './opencode-pc-logins.service';
+import type { ProviderCliVersionProbe } from '../providers/services/provider-cli-version-probe.service';
+import type {
+  ExecutorResult,
+  ProcessExecutor,
+  ProcessExecutorOptions,
+} from '../terminal/services/process-executor/process-executor.port';
 
 jest.mock('node:os', () => {
   const actual = jest.requireActual<typeof import('node:os')>('node:os');
@@ -35,6 +42,9 @@ describe('ProviderAuthVaultService', () => {
   let pcHome: string;
   let remoteA: string;
   let remoteB: string;
+  /** The PC's OpenCode binary: its `--version` and its `auth export` output. */
+  let pcOpencode: { version: string; exportOutput: string };
+  let pcCommands: string[][];
 
   beforeEach(async () => {
     const database = createTestDatabase();
@@ -50,7 +60,31 @@ describe('ProviderAuthVaultService', () => {
         machineIdentity: 'provider-auth-test:test-user',
       }),
     );
-    service = new ProviderAuthVaultService(storage, fakeAdapterFactory());
+    pcOpencode = { version: '1.18.32', exportOutput: '[]' };
+    pcCommands = [];
+    const result = (stdout: string): ExecutorResult => ({
+      success: true,
+      exitCode: 0,
+      stdout,
+      stderr: '',
+      timedOut: false,
+      truncated: false,
+    });
+    const executor = {
+      run: async ({ argv }: ProcessExecutorOptions) => {
+        pcCommands.push([...argv]);
+        // `which opencode` must name an executable file; this process's own binary is one.
+        return result(argv[0] === 'which' ? process.execPath : pcOpencode.exportOutput);
+      },
+    } as unknown as ProcessExecutor;
+    const probe = {
+      probe: async () => pcOpencode.version,
+    } as unknown as ProviderCliVersionProbe;
+    service = new ProviderAuthVaultService(
+      storage,
+      fakeAdapterFactory(),
+      new OpencodePcLoginsReader(probe, executor, storage),
+    );
 
     remoteA = (
       await storage.createRemote({
@@ -316,6 +350,67 @@ describe('ProviderAuthVaultService', () => {
     );
     await expect(service.opencodeProviderIds([group.id])).resolves.toEqual(ids);
     expect(await service.list()).toHaveLength(1);
+  });
+
+  it('lists and imports the same logins from auth export on an OpenCode 2 PC', async () => {
+    // The v1 file is left behind on an upgraded PC and must be ignored.
+    await writePcOpencodeAuth({ stale: { type: 'api', key: 'sk-stale-v1-file' } });
+    pcOpencode = {
+      version: 'opencode v2.0.31',
+      exportOutput: JSON.stringify([
+        {
+          id: 'cred_1',
+          integrationID: 'zai-coding-plan',
+          label: 'API key',
+          active: true,
+          value: { type: 'key', key: 'sk-zai-v2' },
+        },
+        {
+          id: 'cred_2',
+          integrationID: 'openai',
+          label: 'OAuth',
+          active: true,
+          value: {
+            type: 'oauth',
+            methodID: 'chatgpt-browser',
+            refresh: 'r',
+            access: 'a',
+            expires: 1,
+          },
+        },
+        {
+          id: 'cred_3',
+          integrationID: 'anthropic',
+          label: 'API key',
+          active: false,
+          value: { type: 'key', key: 'sk-inactive' },
+        },
+      ]),
+    };
+
+    await expect(service.listOpencodeLogins()).resolves.toEqual([
+      { providerId: 'zai-coding-plan', type: 'api', importable: true, imported: false },
+      { providerId: 'openai', type: 'oauth', importable: false, imported: false },
+    ]);
+    const results = await service.importOpencode([
+      'zai-coding-plan',
+      'openai',
+      'anthropic',
+      'stale',
+    ]);
+
+    const [group] = await service.list();
+    expect(results.map((result) => result.outcome)).toEqual([
+      'imported',
+      'refused',
+      'missing',
+      'missing',
+    ]);
+    await expect(storage.readProviderAuthPayload(group.id)).resolves.toEqual({
+      payloadKind: 'opencode-entries',
+      entries: { 'zai-coding-plan': { type: 'api', key: 'sk-zai-v2' } },
+    });
+    expect(pcCommands).toContainEqual([process.execPath, 'auth', 'export', '--standalone']);
   });
 
   it('answers not-found when the PC has no OpenCode auth file', async () => {

@@ -2,7 +2,7 @@ import Database from 'better-sqlite3';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { OpencodeSqliteReader } from './opencode-sqlite.reader';
+import { OpencodeSqliteV1Reader } from './opencode-sqlite.v1.reader';
 import { NotFoundError, ValidationError } from '../../../common/errors/error-types';
 import type { PricingServiceInterface } from '../services/pricing.interface';
 import { coalesceAssistantTurns } from '../adapters/utils/coalesce-turns';
@@ -128,8 +128,16 @@ function makePricing(): jest.Mocked<PricingServiceInterface> {
   };
 }
 
+// The reader's default model-catalog path is under the home dir; keep specs off the real one.
+let mockHome = '';
+jest.mock('node:os', () => ({
+  ...jest.requireActual('node:os'),
+  homedir: () => mockHome || jest.requireActual('node:os').homedir(),
+}));
+
 beforeAll(() => {
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'opencode-reader-'));
+  mockHome = tmpDir;
 });
 afterAll(() => {
   fs.rmSync(tmpDir, { recursive: true, force: true });
@@ -142,7 +150,115 @@ beforeEach(() => {
 // Tests
 // ---------------------------------------------------------------------------
 
-describe('OpencodeSqliteReader', () => {
+describe('OpencodeSqliteV1Reader', () => {
+  describe('model catalog, context usage and cost', () => {
+    /** A GLM session whose assistant rows carry OpenCode's recorded cost and (optionally) tokens. */
+    function glmMessages(
+      steps: { tokens?: Record<string, unknown>; cost?: number }[],
+    ): SeedMessage[] {
+      return steps.map((step, i) => ({
+        id: `msg_${i + 1}`,
+        timeCreated: 1_000 + i * 100,
+        data: { role: 'assistant', modelID: 'glm-5.3', providerID: 'zai-coding-plan', ...step },
+        parts: [{ data: { type: 'text', text: `step ${i + 1}` } }],
+      }));
+    }
+
+    function writeCatalog(catalog: unknown): string {
+      const file = newDbPath('models') + '.json';
+      fs.writeFileSync(file, JSON.stringify(catalog));
+      return file;
+    }
+
+    /** Full read and SQL summary must agree on every value a test asserts. */
+    function readBoth(
+      dbPath: string,
+      options: { modelsCatalogPath: string },
+      pricing?: PricingServiceInterface,
+    ) {
+      const reader = new OpencodeSqliteV1Reader(pricing, options);
+      const full = reader.readSession(dbPath, 'ses_test').session.metrics;
+      const summary = reader.readSummary(dbPath, 'ses_test').metrics;
+      expect(summary).toMatchObject({
+        contextWindowTokens: full.contextWindowTokens,
+        totalContextTokens: full.totalContextTokens,
+        costUsd: full.costUsd,
+      });
+      return full;
+    }
+
+    const catalogOf = (zai: number) => ({
+      'zai-coding-plan': { models: { 'glm-5.3': { limit: { context: zai, output: 131_072 } } } },
+      other: { models: { 'glm-5.3': { limit: { context: 128_000 } } } },
+    });
+
+    it('takes the context window from models.json by provider and model, and re-reads the file when it changes', () => {
+      const dbPath = seedDb(newDbPath(), { messages: glmMessages([{}]) });
+      const catalogPath = writeCatalog(catalogOf(1_000_000));
+      const pricing = {
+        ...makePricing(),
+        getContextWindowSize: jest.fn().mockReturnValue(300_000),
+      };
+
+      expect(
+        readBoth(dbPath, { modelsCatalogPath: catalogPath }, pricing).contextWindowTokens,
+      ).toBe(1_000_000);
+
+      fs.writeFileSync(catalogPath, JSON.stringify(catalogOf(2_000_000)));
+      fs.utimesSync(catalogPath, new Date(), new Date(Date.now() + 5_000));
+      expect(
+        readBoth(dbPath, { modelsCatalogPath: catalogPath }, pricing).contextWindowTokens,
+      ).toBe(2_000_000);
+    });
+
+    it.each([
+      { name: 'the file is missing', file: () => path.join(tmpDir, 'no-such-models.json') },
+      {
+        name: 'the model is not in the file',
+        file: () => writeCatalog({ 'zai-coding-plan': { models: {} } }),
+      },
+      {
+        name: 'the file is not JSON',
+        file: () => {
+          const file = newDbPath('models') + '.json';
+          fs.writeFileSync(file, 'not json');
+          return file;
+        },
+      },
+    ])('falls back to the pricing window, then 200,000, when $name', ({ file }) => {
+      const dbPath = seedDb(newDbPath(), { messages: glmMessages([{}]) });
+      const options = { modelsCatalogPath: file() };
+
+      expect(readBoth(dbPath, options, makePricing()).contextWindowTokens).toBe(256_000);
+      expect(readBoth(dbPath, options).contextWindowTokens).toBe(200_000);
+    });
+
+    it('reports the last non-zero assistant total as context usage, skipping streaming and zero-token rows', () => {
+      const tokens = (input: number, output = 0) => ({
+        tokens: { input, output, reasoning: 0, cache: { read: 0, write: 0 } },
+      });
+      const dbPath = seedDb(newDbPath(), {
+        messages: glmMessages([tokens(1_000, 200), tokens(0), {}]),
+      });
+
+      const full = readBoth(dbPath, { modelsCatalogPath: writeCatalog({}) });
+      expect(full.totalContextTokens).toBe(1_200);
+    });
+
+    it('uses the cost OpenCode recorded only when pricing.json lacks the model', () => {
+      const dbPath = seedDb(newDbPath(), {
+        messages: glmMessages([{ cost: 0.25 }, { cost: 0.5 }, {}]),
+      });
+      const options = { modelsCatalogPath: writeCatalog({}) };
+      const unpriced = { ...makePricing(), hasPricing: jest.fn().mockReturnValue(false) };
+      const priced = { ...makePricing(), hasPricing: jest.fn().mockReturnValue(true) };
+
+      expect(readBoth(dbPath, options, unpriced).costUsd).toBe(0.75);
+      expect(unpriced.calculateMessageCost).not.toHaveBeenCalled();
+      expect(readBoth(dbPath, options, priced).costUsd).toBe(0.4242);
+    });
+  });
+
   describe('readSummary — native aggregate parity', () => {
     it('matches every exact full-parse metric without constructing message graphs', () => {
       const pricing = makePricing();
@@ -174,7 +290,7 @@ describe('OpencodeSqliteReader', () => {
           },
         ],
       });
-      const reader = new OpencodeSqliteReader(pricing);
+      const reader = new OpencodeSqliteV1Reader(pricing);
 
       const full = reader.readSession(dbPath, 'ses_test').session.metrics;
       const summary = reader.readSummary(dbPath, 'ses_test').metrics;
@@ -243,7 +359,7 @@ describe('OpencodeSqliteReader', () => {
         ],
       });
 
-      const reader = new OpencodeSqliteReader(pricing);
+      const reader = new OpencodeSqliteV1Reader(pricing);
       const { session, sizeBytes, freshness } = reader.readSession(dbPath, 'ses_test');
 
       expect(session.id).toBe('ses_test');
@@ -323,7 +439,7 @@ describe('OpencodeSqliteReader', () => {
         ],
       });
 
-      const { session } = new OpencodeSqliteReader().readSession(dbPath, 'ses_test');
+      const { session } = new OpencodeSqliteV1Reader().readSession(dbPath, 'ses_test');
       const result = session.messages[0].toolResults[0];
       expect(result.isError).toBe(true);
       expect(result.content).toBe('File not found');
@@ -351,7 +467,7 @@ describe('OpencodeSqliteReader', () => {
         ],
       });
 
-      const reader = new OpencodeSqliteReader(undefined, { maxToolOutputChars: 1_000 });
+      const reader = new OpencodeSqliteV1Reader(undefined, { maxToolOutputChars: 1_000 });
       const { session } = reader.readSession(dbPath, 'ses_test');
       const result = session.messages[0].toolResults[0];
       expect((result.content as string).length).toBe(1_000);
@@ -466,7 +582,7 @@ describe('OpencodeSqliteReader', () => {
         ],
       });
 
-      const { session } = new OpencodeSqliteReader().readSession(dbPath, 'ses_test');
+      const { session } = new OpencodeSqliteV1Reader().readSession(dbPath, 'ses_test');
 
       // RAW reader output: one message per row — NO coalescing in the reader (the
       // shared coalescer runs centrally in getOrParse). 1 user + 3 assistant steps.
@@ -543,7 +659,7 @@ describe('OpencodeSqliteReader', () => {
             },
           ],
         });
-        const { session } = new OpencodeSqliteReader().readSession(dbPath, 'ses_test');
+        const { session } = new OpencodeSqliteV1Reader().readSession(dbPath, 'ses_test');
         expect(session.messages[1].stopReason).toBe('end_turn');
       }
     });
@@ -566,7 +682,7 @@ describe('OpencodeSqliteReader', () => {
         ],
       });
 
-      const { session } = new OpencodeSqliteReader().readSession(dbPath, 'ses_test');
+      const { session } = new OpencodeSqliteV1Reader().readSession(dbPath, 'ses_test');
       expect(session.metrics.compactionCount).toBe(1);
       expect(session.messages[0].isCompactSummary).toBe(true);
       const patchText = session.messages[1].content[0];
@@ -602,7 +718,7 @@ describe('OpencodeSqliteReader', () => {
         ],
       });
 
-      const { session } = new OpencodeSqliteReader().readSession(dbPath, 'ses_test');
+      const { session } = new OpencodeSqliteV1Reader().readSession(dbPath, 'ses_test');
       // Empty assistant message dropped → only the user message remains.
       expect(session.messages).toHaveLength(1);
       // But its step-finish tokens are still in the totals.
@@ -629,7 +745,7 @@ describe('OpencodeSqliteReader', () => {
         ],
       });
 
-      const { session } = new OpencodeSqliteReader().readSession(dbPath, 'ses_test');
+      const { session } = new OpencodeSqliteV1Reader().readSession(dbPath, 'ses_test');
       expect(session.metrics.primaryModel).toBe('glm-5.1'); // first observed
       expect(session.metrics.modelsUsed).toEqual(expect.arrayContaining(['glm-5.1', 'glm-4.6']));
     });
@@ -647,7 +763,7 @@ describe('OpencodeSqliteReader', () => {
         ],
       });
 
-      const { session } = new OpencodeSqliteReader().readSession(dbPath, 'ses_test');
+      const { session } = new OpencodeSqliteV1Reader().readSession(dbPath, 'ses_test');
       expect(session.metrics.primaryModel).toBe('claude-sonnet-4-6');
     });
   });
@@ -670,7 +786,7 @@ describe('OpencodeSqliteReader', () => {
         ],
       });
 
-      const fresh = new OpencodeSqliteReader().getFreshness(dbPath, 'ses_test');
+      const fresh = new OpencodeSqliteV1Reader().getFreshness(dbPath, 'ses_test');
       expect(fresh.count).toBe(2);
       expect(fresh.maxUpdated).toBe(800); // max across part/message/session time_updated
     });
@@ -699,7 +815,7 @@ describe('OpencodeSqliteReader', () => {
         seedCandidate(db, 'ses_out_of_window', '/home/me/proj', 999_999);
       });
 
-      const candidates = new OpencodeSqliteReader().findSessionCandidates(dbPath, {
+      const candidates = new OpencodeSqliteV1Reader().findSessionCandidates(dbPath, {
         directory: '/home/me/proj',
         startedAtMs: 10_100,
         windowMs: 2_000,
@@ -721,7 +837,7 @@ describe('OpencodeSqliteReader', () => {
         ).run();
       });
 
-      const candidates = new OpencodeSqliteReader().findSessionCandidates(dbPath, {
+      const candidates = new OpencodeSqliteV1Reader().findSessionCandidates(dbPath, {
         directory: '/home/me/wt',
         startedAtMs: 10_000,
         windowMs: 1_000,
@@ -742,14 +858,14 @@ describe('OpencodeSqliteReader', () => {
           },
         ],
       });
-      expect(() => new OpencodeSqliteReader().readSession(dbPath, 'ses_missing')).toThrow(
+      expect(() => new OpencodeSqliteV1Reader().readSession(dbPath, 'ses_missing')).toThrow(
         NotFoundError,
       );
     });
 
     it('throws ValidationError when the DB file does not exist (fileMustExist)', () => {
       const missing = newDbPath('does-not-exist');
-      expect(() => new OpencodeSqliteReader().readSession(missing, 'ses_test')).toThrow(
+      expect(() => new OpencodeSqliteV1Reader().readSession(missing, 'ses_test')).toThrow(
         ValidationError,
       );
     });
@@ -760,7 +876,7 @@ describe('OpencodeSqliteReader', () => {
         db.exec(`CREATE TABLE session (id TEXT PRIMARY KEY, time_updated INTEGER);`);
         // no message / part tables
       });
-      expect(() => new OpencodeSqliteReader().readSession(dbPath, 'ses_test')).toThrow(
+      expect(() => new OpencodeSqliteV1Reader().readSession(dbPath, 'ses_test')).toThrow(
         ValidationError,
       );
     });
@@ -774,7 +890,7 @@ describe('OpencodeSqliteReader', () => {
           CREATE TABLE part (id TEXT PRIMARY KEY, message_id TEXT, session_id TEXT, data TEXT);
         `);
       });
-      expect(() => new OpencodeSqliteReader().getFreshness(dbPath, 'ses_test')).toThrow(
+      expect(() => new OpencodeSqliteV1Reader().getFreshness(dbPath, 'ses_test')).toThrow(
         /schema drift/i,
       );
     });

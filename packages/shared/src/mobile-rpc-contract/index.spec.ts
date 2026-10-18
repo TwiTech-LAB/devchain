@@ -166,6 +166,7 @@ const PARAM_FIXTURES = {
   },
   'chat.listAgents': { projectId: PROJECT_ID },
   'chat.listTeams': { projectId: PROJECT_ID },
+  'chat.getProviderUsage': { projectId: PROJECT_ID, maxAgeSec: 60 },
   'chat.listProfiles': { projectId: PROJECT_ID, teamId: null },
   'chat.listProfileConfigs': { projectId: PROJECT_ID, profileId: PROFILE_ID },
   'chat.createTeamAgent': {
@@ -313,6 +314,29 @@ const RESULT_FIXTURES = {
       memberCount: 1,
     },
   ],
+  'chat.getProviderUsage': {
+    accounts: [
+      {
+        accountKey: 'claude:login',
+        provider: 'claude',
+        label: 'Claude',
+        windows: [{ id: '5h', label: '5-hour limit', kind: '5h', usedPercent: 42, resetsAt: 1_760_000_000 }],
+        extras: [],
+        plan: 'max',
+        source: 'cli',
+        fetchedAt: '2026-10-17T12:00:00.000Z',
+        state: 'ok',
+        error: null,
+      },
+    ],
+    config: {
+      enabled: true,
+      runningMaxAgeMin: 5,
+      openProjectMaxAgeMin: 30,
+      hoverMaxAgeSec: 60,
+      tokenCheckMinutes: 10,
+    },
+  },
   'chat.listProfiles': [{ id: PROFILE_ID, name: 'Coder', familySlug: null }],
   'chat.listProfileConfigs': [
     {
@@ -423,19 +447,41 @@ const RESULT_FIXTURES = {
 } satisfies Record<MobileRpcMethod, unknown>;
 
 describe('mobile RPC catalog', () => {
-  it('contains exactly 42 methods with the canonical domain counts', () => {
-    expect(MOBILE_RPC_METHODS).toHaveLength(42);
-    expect(new Set(MOBILE_RPC_METHODS).size).toBe(42);
+  it('contains exactly 43 methods with the canonical domain counts', () => {
+    expect(MOBILE_RPC_METHODS).toHaveLength(43);
+    expect(new Set(MOBILE_RPC_METHODS).size).toBe(43);
     expect(Object.keys(MOBILE_RPC_CATALOG)).toEqual(MOBILE_RPC_METHODS);
 
     const counts = Object.groupBy(MOBILE_RPC_METHODS, (method) => method.split('.')[0]);
     expect(counts.board).toHaveLength(12);
-    expect(counts.chat).toHaveLength(24);
+    expect(counts.chat).toHaveLength(25);
     expect(counts.terminal).toHaveLength(3);
     expect(counts.e2ee).toHaveLength(3);
   });
 
-  it('has four strict params schemas and 38 passthrough schemas', () => {
+  it('accepts unknown provider usage values and extra fields in chat.getProviderUsage results', () => {
+    const base = RESULT_FIXTURES['chat.getProviderUsage'];
+    const result = {
+      ...base,
+      futureField: true,
+      accounts: [
+        {
+          ...base.accounts[0],
+          provider: 'future-provider',
+          source: 'future-source',
+          state: 'future-state',
+          futureField: 1,
+          windows: [
+            { id: 'w', label: 'W', kind: 'future-kind', usedPercent: 130, resetsAt: null, extra: 1 },
+          ],
+        },
+      ],
+      config: { ...base.config, futureField: 1 },
+    };
+    expect(getMobileRpcResultSchema('chat.getProviderUsage').safeParse(result).success).toBe(true);
+  });
+
+  it('has four strict params schemas and 39 passthrough schemas', () => {
     const strictMethods = MOBILE_RPC_METHODS.filter(
       (method) => MOBILE_RPC_CATALOG[method].paramsMode === MOBILE_RPC_PARAMS_MODES.strict,
     );
@@ -455,12 +501,12 @@ describe('mobile RPC catalog', () => {
       expect(acceptsAdditiveField, method).toBe(!strictMethods.includes(method));
     }
 
-    expect(MOBILE_RPC_METHODS).toHaveLength(strictMethods.length + 38);
+    expect(MOBILE_RPC_METHODS).toHaveLength(strictMethods.length + 39);
   });
 
-  it('has crypto counts 39/1/2 and the exact exceptional methods', () => {
+  it('has crypto counts 40/1/2 and the exact exceptional methods', () => {
     const byMode = Object.groupBy(MOBILE_RPC_METHODS, getMobileRpcCryptoMode);
-    expect(byMode[MOBILE_RPC_CRYPTO_MODES.conditionalSeal]).toHaveLength(39);
+    expect(byMode[MOBILE_RPC_CRYPTO_MODES.conditionalSeal]).toHaveLength(40);
     expect(byMode[MOBILE_RPC_CRYPTO_MODES.plaintextBootstrap]).toEqual(['e2ee.adoptDeviceKey']);
     expect(byMode[MOBILE_RPC_CRYPTO_MODES.sealedOnly]).toEqual([
       'e2ee.revokeDeviceKey',

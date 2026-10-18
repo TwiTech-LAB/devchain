@@ -8,7 +8,6 @@ const { installedPackages, runWhenUnlocked } = require("./packages");
 
 const { randomUUID } = require("node:crypto");
 
-const UNIT = "devchain-host-docker";
 const PACKAGES = [
   "docker-ce",
   "docker-ce-cli",
@@ -38,7 +37,7 @@ async function requestDocker(sys) {
     await sys.run(
       "systemd-run",
       [
-        `--unit=${UNIT}`,
+        `--unit=${sys.paths.dockerUnitName}`,
         "--collect",
         "--no-block",
         "--quiet",
@@ -52,7 +51,12 @@ async function requestDocker(sys) {
   } catch {
     const { stdout } = await sys.run(
       "systemctl",
-      ["show", `${UNIT}.service`, "--property=ActiveState", "--value"],
+      [
+        "show",
+        `${sys.paths.dockerUnitName}.service`,
+        "--property=ActiveState",
+        "--value",
+      ],
       { timeoutMs: 5_000 },
     );
     if (["active", "activating"].includes(stdout.trim())) {
@@ -190,10 +194,10 @@ async function runDocker(sys, jobId = randomUUID()) {
   const claim = requireClaim(sys);
   try {
     writeStatus(sys, { jobId, state: "installing" });
-    await install(sys);
+    await sys.withHostLock(() => install(sys));
     await sys.run("usermod", ["-aG", "docker", claim.userName]);
     writeStatus(sys, { jobId, state: "restarting" });
-    await sys.run("systemctl", ["restart", "devchain-host.service"], {
+    await sys.run("systemctl", ["restart", sys.paths.unitName], {
       timeoutMs: 120_000,
     });
     writeStatus(sys, { jobId, state: "done" });

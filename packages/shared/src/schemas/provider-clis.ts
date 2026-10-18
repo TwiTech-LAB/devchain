@@ -13,7 +13,7 @@ export const PROVIDER_CLI_NPM_PACKAGES: Readonly<Record<ProviderCliName, string>
   claude: '@anthropic-ai/claude-code',
   codex: '@openai/codex',
   copilot: '@github/copilot',
-  opencode: 'opencode-ai',
+  opencode: '@opencode/cli',
 };
 
 /**

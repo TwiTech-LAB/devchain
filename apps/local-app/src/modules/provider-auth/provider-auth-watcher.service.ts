@@ -4,7 +4,12 @@ import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { Injectable, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import { createLogger } from '../../common/logging/logger';
-import { OPENCODE_AUTH_FILE_PATH, PROVIDER_AUTH_ADAPTERS } from './provider-auth-adapters';
+import {
+  OPENCODE_AUTH_FILE_PATH,
+  OPENCODE_DB_FILE_PATH,
+  PROVIDER_AUTH_ADAPTERS,
+} from './provider-auth-adapters';
+import { readOpencodeCredentialFamilyV2 } from './opencode-credential-family.v2';
 
 const logger = createLogger('ProviderAuthWatcher');
 
@@ -49,6 +54,8 @@ export class ProviderAuthWatcherService implements OnModuleInit, OnModuleDestroy
   private readonly watchers = new Map<string, FSWatcher>();
   private readonly snapshot = new Map<string, { contentBase64: string; mtimeMs: number }>();
   private refreshTimer: NodeJS.Timeout | null = null;
+  /** The last OpenCode 2 credential content reported, and the mtime it was reported with. */
+  private opencodeV2Reported: { content: string; mtime: number } | null = null;
 
   onModuleInit(): void {
     this.ensureWatchers();
@@ -63,11 +70,34 @@ export class ProviderAuthWatcherService implements OnModuleInit, OnModuleDestroy
     this.watchers.clear();
   }
 
-  /** Only files changed after `sinceMs`, with content; an empty answer is the cheap path. */
-  async getFamilies(sinceMs: number): Promise<ProviderAuthFamilyReport[]> {
+  /**
+   * Only files changed after `sinceMs`, with content; an empty answer is the cheap path.
+   * With `opencodeV2`, the OpenCode file is built from DevChain's credentials in
+   * `opencode.db`, because OpenCode 2 keeps no `auth.json`.
+   */
+  async getFamilies(
+    sinceMs: number,
+    options: { opencodeV2?: boolean } = {},
+  ): Promise<ProviderAuthFamilyReport[]> {
     this.ensureWatchers();
     const reports: ProviderAuthFamilyReport[] = [];
     for (const { provider, path } of familyFilePaths()) {
+      if (options.opencodeV2 && path === OPENCODE_AUTH_FILE_PATH) {
+        const family = this.opencodeV2Family();
+        if (family && family.mtime > sinceMs) {
+          reports.push({
+            provider,
+            files: [
+              {
+                path,
+                contentBase64: Buffer.from(family.content).toString('base64'),
+                mtime: family.mtime,
+              },
+            ],
+          });
+        }
+        continue;
+      }
       const absolute = this.absolute(path);
       let mtimeMs: number;
       try {
@@ -86,6 +116,23 @@ export class ProviderAuthWatcherService implements OnModuleInit, OnModuleDestroy
       );
     }
     return reports;
+  }
+
+  /**
+   * The mtime is the newest `time_updated` and moves only when the built content
+   * changes: the DB directory sees WAL writes on every message, and a label-only
+   * update or a removed row must not look like a refreshed login.
+   */
+  private opencodeV2Family(): { content: string; mtime: number } | null {
+    const built = readOpencodeCredentialFamilyV2(this.absolute(OPENCODE_DB_FILE_PATH));
+    if (!built) return null;
+    const last = this.opencodeV2Reported;
+    if (last?.content === built.content) return last;
+    this.opencodeV2Reported = {
+      content: built.content,
+      mtime: Math.max(built.maxTimeUpdated, (last?.mtime ?? 0) + 1),
+    };
+    return this.opencodeV2Reported;
   }
 
   private async readSnapshotted(absolute: string, mtimeMs: number): Promise<string> {

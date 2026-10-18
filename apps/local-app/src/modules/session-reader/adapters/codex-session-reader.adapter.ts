@@ -85,6 +85,7 @@ export function extractCodexMetadataFromContent(content: string): CodexFileMetad
 export class CodexSessionReaderAdapter implements SessionReaderAdapter {
   readonly providerName = 'codex';
   readonly incrementalMode = 'delta' as const;
+  readonly reportsContextWindow = true as const;
   readonly allowedRoots: string[];
   private readonly logger = new Logger(CodexSessionReaderAdapter.name);
   private readonly homeDir: string;

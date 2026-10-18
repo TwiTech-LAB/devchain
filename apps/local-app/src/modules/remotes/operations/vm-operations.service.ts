@@ -15,11 +15,12 @@ import type { ResetVmDetails } from './reset-vm.operation';
 import type { DestroyVmDetails } from './destroy-vm.operation';
 import type { ClaimDetails, ClaimProviderState } from './claim.operation';
 import { VmProvidersService } from '../../vm-providers/vm-providers.service';
-import { stepStarted } from './remote-operation.types';
+import { isSupersedableVmKind, stepStarted, VM_LIFECYCLE_KINDS } from './remote-operation.types';
 import { CLAIM_IDENTITY_KINDS } from '../home-identity';
 import { ProxmoxVmLifecycleService } from '../../vm-providers/proxmox-vm-lifecycle.service';
 import { REMOTE_HEALTH_PORT, type RemoteHealthPort } from '../ports/remote-health.port';
 import { createLogger } from '../../../common/logging/logger';
+import { RemoteSharedVmService } from '../services/remote-shared-vm.service';
 
 const logger = createLogger('VmOperationsService');
 
@@ -33,6 +34,7 @@ export class VmOperationsService {
     private readonly providers: VmProvidersService,
     private readonly lifecycle: ProxmoxVmLifecycleService,
     @Inject(REMOTE_HEALTH_PORT) private readonly health: RemoteHealthPort,
+    private readonly sharedVm: RemoteSharedVmService,
   ) {}
 
   /**
@@ -131,6 +133,7 @@ export class VmOperationsService {
     if (openProjectOperations.some((items) => items.length > 0)) {
       throw new ConflictError('Finish or cancel the open project operation before reset.');
     }
+    const confirmedOccupancy = await this.sharedVm.assertAllowed(remoteId, input);
     const familyIds = new Map<string, string[]>();
     for (const family of families) {
       familyIds.set(family.provider, [...(familyIds.get(family.provider) ?? []), family.entryId]);
@@ -169,6 +172,8 @@ export class VmOperationsService {
       oldIdentity: remote.vmIdentity,
       projectIds,
       force: input.force,
+      forceOccupied: input.forceOccupied,
+      confirmedOccupancy,
     };
     return this.runner.start({
       kind: 'reset_vm',
@@ -220,6 +225,18 @@ export class VmOperationsService {
         remoteId,
       });
     }
+    // Confirm occupancy before taking over a failed setup: a refusal must keep
+    // its clone identity and recovery operation available for the next attempt.
+    const [open] = await this.storage.listRemoteOperations({
+      remoteId,
+      states: ['running', 'failed'],
+      kinds: VM_LIFECYCLE_KINDS,
+      limit: 1,
+    });
+    const preview = open?.state === 'failed' && isSupersedableVmKind(open.kind) ? open : null;
+    const previewTarget = destroyTarget(remote.vmIdentity, preview);
+    const hasTarget = !!previewTarget.vmIdentity || previewTarget.targetVmid !== undefined;
+    const confirmation = hasTarget ? await this.sharedVm.assertAllowed(remoteId, input) : undefined;
     const superseded = await this.runner.supersedeFailedVmOperation(remoteId);
     if (!remote.vmIdentity && !superseded) {
       throw new ConflictError('Only a registered managed VM can be destroyed.', {
@@ -228,28 +245,20 @@ export class VmOperationsService {
       });
     }
     await this.operations.assertNoOpenHostOperation(remoteId);
-    const failed = superseded?.details as unknown as CreateVmDetails | ResetVmDetails | undefined;
-    const staleOldIdentity =
-      superseded?.kind === 'reset_vm' &&
-      superseded.steps.some((step) => step.id === 'destroy' && step.state === 'done') &&
-      remote.vmIdentity === (failed as ResetVmDetails).oldIdentity;
-    const vmIdentity = staleOldIdentity ? null : remote.vmIdentity;
-    const cloneStep = superseded?.kind === 'create_vm' ? 'clone' : 'create_clone';
-    const targetVmid =
-      !vmIdentity &&
-      superseded &&
-      stepStarted(superseded, cloneStep) &&
-      Number.isInteger(failed?.vmid)
-        ? failed?.vmid
-        : undefined;
+    const { vmIdentity, targetVmid, targetVmName } = destroyTarget(remote.vmIdentity, superseded);
     const details: DestroyVmDetails = {
       connectionId: remote.vmProviderConnectionId,
       vmIdentity,
       expectedRemoteIdentity: remote.vmIdentity,
       targetVmid,
-      targetVmName: targetVmid === undefined ? undefined : failed?.vmName,
+      targetVmName,
       supersededOperationId: superseded?.id,
       force: input.force,
+      forceOccupied: input.forceOccupied,
+      confirmedOccupancy:
+        vmIdentity || targetVmid !== undefined
+          ? (confirmation ?? (await this.sharedVm.assertAllowed(remoteId, input)))
+          : undefined,
     };
     return this.runner.start({
       kind: 'destroy_vm',
@@ -258,4 +267,32 @@ export class VmOperationsService {
       details: details as unknown as Record<string, unknown>,
     });
   }
+}
+
+/**
+ * The VM a Destroy deletes, given the failed create or reset it takes over:
+ * the remote's VM unless that Reset already destroyed it, else a started clone.
+ */
+function destroyTarget(
+  remoteVmIdentity: string | null,
+  failedOperation: RemoteOperation | null,
+): { vmIdentity: string | null; targetVmid?: number; targetVmName?: string } {
+  const failed = failedOperation?.details as unknown as
+    | CreateVmDetails
+    | ResetVmDetails
+    | undefined;
+  const oldVmGone =
+    failedOperation?.kind === 'reset_vm' &&
+    failedOperation.steps.some((step) => step.id === 'destroy' && step.state === 'done') &&
+    remoteVmIdentity === (failed as ResetVmDetails).oldIdentity;
+  const vmIdentity = oldVmGone ? null : remoteVmIdentity;
+  const cloneStep = failedOperation?.kind === 'create_vm' ? 'clone' : 'create_clone';
+  if (
+    vmIdentity ||
+    !failedOperation ||
+    !stepStarted(failedOperation, cloneStep) ||
+    !Number.isInteger(failed?.vmid)
+  )
+    return { vmIdentity };
+  return { vmIdentity, targetVmid: failed?.vmid, targetVmName: failed?.vmName };
 }

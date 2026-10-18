@@ -110,6 +110,7 @@ function makeAgentCtx(): AgentSessionContext {
 
 function makeStorageMock() {
   return {
+    listWorktrees: jest.fn().mockResolvedValue([]),
     listAgents: jest.fn().mockResolvedValue({
       items: [
         {
@@ -421,6 +422,36 @@ describe('epic-tools handlers', () => {
       expect(dataOf<ListAssignedEpicsTasksResponse>(result).epics[0]).not.toHaveProperty(
         'descriptionPreview',
       );
+      expect(dataOf<ListAssignedEpicsTasksResponse>(result).epics[0]).not.toHaveProperty(
+        'worktreePath',
+      );
+    });
+
+    it('projects the linked path only on the matching assigned task', async () => {
+      const ctx = makeEpicCtx();
+      const fields = { title: 'Assigned', description: 'text', statusId: STATUS_ID, version: 1 };
+      (ctx.storage.listAssignedEpics as jest.Mock).mockResolvedValue({
+        items: [
+          { ...fields, id: EPIC_ID },
+          { ...fields, id: RELATED_ID },
+        ],
+        total: 2,
+        limit: 100,
+        offset: 0,
+      });
+      (ctx.storage.listWorktrees as jest.Mock).mockResolvedValue([
+        { name: 'task', epicId: EPIC_ID, path: '/lane/task' },
+        { name: 'unrelated', epicId: 'other', path: '/lane/other' },
+      ]);
+      const result = await handleListAssignedEpicsTasks(ctx, {
+        sessionId: SESSION_ID,
+        agentName: AGENT_NAME,
+      });
+      expect(result.success).toBe(true);
+      const tasks = dataOf<ListAssignedEpicsTasksResponse>(result).epics;
+      expect(tasks[0]).toMatchObject({ id: EPIC_ID, worktreePath: '/lane/task' });
+      expect(tasks[1]).not.toHaveProperty('worktreePath');
+      expect(ctx.storage.listWorktrees).toHaveBeenCalledWith(PROJECT_ID);
     });
   });
 
@@ -637,6 +668,8 @@ describe('epic-tools handlers', () => {
       expect(result.success).toBe(true);
       expect(dataOf<GetEpicByIdResponse>(result).epic.id).toBe(EPIC_ID);
       expect(dataOf<GetEpicByIdResponse>(result).epic.description).toBe('desc');
+      expect(result.data).not.toHaveProperty('worktrees');
+      expect(result.data).not.toHaveProperty('worktreeInstruction');
       expect(dataOf<GetEpicByIdResponse>(result).relations).toMatchObject({
         items: [],
         total: 51,
@@ -658,6 +691,37 @@ describe('epic-tools handlers', () => {
       const result = await handleGetEpicById(ctx, { sessionId: SESSION_ID, id: EPIC_ID });
       expect(result.success).toBe(false);
       expect(result.error?.code).toBe('EPIC_NOT_FOUND');
+    });
+
+    it('returns all linked lane summaries and the worker instruction without unrelated lanes', async () => {
+      const ctx = makeEpicCtx();
+      const first = {
+        name: 'one',
+        path: '/lane/one',
+        branch: 'devchain/one-123456',
+        baseBranch: 'main',
+      };
+      const second = {
+        name: 'two',
+        path: '/lane/two',
+        branch: 'devchain/two-123456',
+        baseBranch: 'main',
+      };
+      (ctx.storage.listWorktrees as jest.Mock).mockResolvedValue([
+        { ...first, epicId: EPIC_ID },
+        { ...second, epicId: EPIC_ID },
+        { name: 'other', epicId: RELATED_ID, path: '/lane/other' },
+      ]);
+      const result = await handleGetEpicById(ctx, { sessionId: SESSION_ID, id: EPIC_ID });
+      expect(result.success).toBe(true);
+      expect(dataOf<GetEpicByIdResponse>(result).worktrees).toEqual([
+        { ...first, projectRootPath: '/tmp/test' },
+        { ...second, projectRootPath: '/tmp/test' },
+      ]);
+      expect(dataOf<GetEpicByIdResponse>(result).worktreeInstruction).toBe(
+        'This task has a worktree. Work in it by path: `cd <path> && …` for every command. It contains tracked files only; set it up from the project root.',
+      );
+      expect(ctx.storage.listWorktrees).toHaveBeenCalledWith(PROJECT_ID);
     });
 
     it.each([

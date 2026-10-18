@@ -23,6 +23,7 @@ import { useTerminalWindows } from '@/ui/terminal-windows';
 import { cn } from '@/ui/lib/utils';
 import { ChevronRight, Copy, Loader2, Square, Terminal as TerminalIcon } from 'lucide-react';
 import { useFetchFactory } from '@/ui/hooks/useFetchFactory';
+import { ProviderUsageRings } from './ProviderUsageRings';
 
 export const TERMINAL_SESSIONS_QUERY_KEY = ['terminal-dock', 'sessions'] as const;
 export const OPEN_TERMINAL_DOCK_EVENT = 'devchain:terminal-dock:open';
@@ -345,6 +346,7 @@ export function TerminalDock({
         }}
       >
         <div className="flex min-w-0 flex-1 items-center gap-3">
+          <ProviderUsageRings projectId={selectedProjectId ?? null} />
           <button
             type="button"
             onClick={onToggle}

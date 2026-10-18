@@ -1,11 +1,15 @@
 import { RemoteApiKeyService } from '../auth/remote-api-key.service';
 import { RemoteProviderCliSettingsService } from './remote-provider-cli-settings.service';
+import { RemoteProviderUsageSettingsService } from './remote-provider-usage-settings.service';
 import { ProviderCliVersionsService } from '../../providers/services/provider-cli-versions.service';
 import { getAppVersion } from '../../../common/app-version';
 import { REALTIME_BROADCASTER } from '../../realtime/ports/realtime-broadcaster.port';
 import { ProviderAuthWritebackService } from '../../provider-auth/provider-auth-writeback.service';
 import { VmProvidersService } from '../../vm-providers/vm-providers.service';
 import { RemoteHealthService } from './remote-health.service';
+import { RemoteSharedVmService } from './remote-shared-vm.service';
+import { sharedVmGuardStub } from '../../../common/test/shared-vm.stub';
+import { HomeSharedVmNoticesService } from './home-shared-vm-notices.service';
 /** Integration layer uses real SQLite, fingerprints, tar and HTTP; a fake host controls applied/pending state and failures. */
 import { Test } from '@nestjs/testing';
 import { EventEmitter2 } from '@nestjs/event-emitter';
@@ -123,8 +127,17 @@ describe('home skill settings push', () => {
         RemoteHostClient,
         RemoteSkillSettingsService,
         RemoteHealthService,
+        { provide: RemoteSharedVmService, useValue: sharedVmGuardStub() },
+        {
+          provide: HomeSharedVmNoticesService,
+          useValue: { poll: async () => undefined, prune: () => undefined },
+        },
         {
           provide: RemoteProviderCliSettingsService,
+          useValue: { pushIfChanged: async () => undefined },
+        },
+        {
+          provide: RemoteProviderUsageSettingsService,
           useValue: { pushIfChanged: async () => undefined },
         },
         {

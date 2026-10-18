@@ -53,6 +53,23 @@ test("an update request starts the update outside the DevChain service and retur
   assert.equal(readStatus(sys).state, "pending");
 });
 
+test("a registry that is not an http or https URL is refused before anything starts", async (t) => {
+  const { sys, calls, cleanup } = fakeSystem();
+  t.after(cleanup);
+  claimed(sys);
+  for (const registry of ["file:///etc", "r.example", "", "ftp://r.example/"]) {
+    await assert.rejects(requestUpdate("0.25.0", sys, registry), {
+      status: 400,
+      code: "INVALID_REGISTRY",
+    });
+    await assert.rejects(runUpdate("0.25.0", sys, registry), {
+      code: "INVALID_REGISTRY",
+    });
+  }
+  assert.deepEqual(calls, []);
+  assert.equal(readStatus(sys), null);
+});
+
 test("the update waits longer than the host stop timeout and records done", async (t) => {
   const { sys, calls, callDetails, cleanup } = fakeSystem();
   t.after(cleanup);
@@ -69,7 +86,7 @@ test("the update waits longer than the host stop timeout and records done", asyn
       `@anthropic-ai/claude-code@${pins.claude.version}`,
       `@openai/codex@${pins.codex.version}`,
       `@github/copilot@${pins.copilot.version}`,
-      `opencode-ai@${pins.opencode.version}`,
+      `@opencode/cli@${pins.opencode.version}`,
     ],
   );
   assert.ok(
@@ -180,6 +197,21 @@ test("a failed install records the failure and keeps the claimed version", async
     "0.24.0",
   );
   assert.ok(!calls.some(([command]) => command === "systemctl"));
+});
+
+test("a failed DevChain install names the registry without its credentials", async (t) => {
+  const { sys, cleanup } = fakeSystem({
+    failOn: (command) => command === "npm",
+  });
+  t.after(cleanup);
+  claimed(sys);
+  await assert.rejects(
+    runUpdate("0.25.0", sys, "https://user:secret@r.example/npm/"),
+    (error) =>
+      error.message.includes("registry: https://r.example/npm/") &&
+      !error.message.includes("secret"),
+  );
+  assert.match(readStatus(sys).error, /registry: https:\/\/r\.example\/npm\//);
 });
 
 test("an update without CLI pins fails before switching versions", async (t) => {

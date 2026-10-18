@@ -81,6 +81,7 @@ export type VmMenuKey =
   | 'enter-api-key'
   | 'reset-api-key'
   | 'connect-project'
+  | 'disconnect-all'
   | 'change-logins'
   | 'install-docker'
   | 'update'
@@ -106,6 +107,7 @@ export function vmMenuItems(
   remote: RemoteListItemDto,
   status: VmStatus,
   failedVmOperation: boolean,
+  projectCount = 0,
 ): VmMenuItem[] {
   const items: VmMenuItem[] = [];
   const add = (key: VmMenuKey, label: string, danger = false) => items.push({ key, label, danger });
@@ -117,6 +119,7 @@ export function vmMenuItems(
   if (remote.apiKeyRejected) add('enter-api-key', 'Enter API key');
   if (hostFree && reachable && !removed) add('reset-api-key', 'Reset API key');
   if (status.state === 'ready') add('connect-project', 'Connect a project');
+  if (hostFree && !removed && projectCount > 0) add('disconnect-all', 'Disconnect all');
   // Change logins cancels a failed login change itself before it sends the new one.
   const loginChangeStopped =
     status.state === 'stopped' && status.operation?.kind === 'update_logins';
@@ -388,7 +391,12 @@ export function VmList({
                   key={remote.id}
                   remote={remote}
                   status={status}
-                  menu={vmMenuItems(remote, status, failedVmOperations.has(remote.id))}
+                  menu={vmMenuItems(
+                    remote,
+                    status,
+                    failedVmOperations.has(remote.id),
+                    projectCounts.get(remote.id) ?? 0,
+                  )}
                   where={vmWhere(remote, connectionNames)}
                   projectCount={projectCounts.get(remote.id) ?? 0}
                   highlighted={highlightedId === remote.id}

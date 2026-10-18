@@ -1,6 +1,6 @@
 {
   "name": "devchain-cli",
-  "version": "0.25.0",
+  "version": "0.26.0",
   "description": "AI driven development platform",
   "homepage": "https://devchain.cc/",
   "repository": {
@@ -8,6 +8,15 @@
     "url": "https://github.com/twitech-lab/devchain.git"
   },
   "changelog": {
+    "0.26.0": [
+      "Usage: plan usage rings in the bottom bar and in mobile chat",
+      "Remote VMs: several people can share one VM, each with their own DevChain",
+      "Teams: leads can restart, compact or stop a team member",
+      "Providers: OpenCode 2 support, and Codex plugins on the Plugins page",
+      "Dev Template: shorter plan reviews, and the lead replies to every review",
+      "Mobile app 1.12.0: provider usage in chat, and smoother loading and keyboard on Android",
+      "Host image 1.5.0: support for VMs that several users share, and OpenCode 2"
+    ],
     "0.25.0": [
       "https://devchain.cc/releases/0.25.0/",
       "",
@@ -16,7 +25,9 @@
       "Remote VMs: Docker moves work on more VMs, files of any owner sync, and custom VM sizes use sliders",
       "Terminal: messages no longer reach the shell after an agent's CLI exits",
       "Projects: a reminder when a project uses an older template, and custom prompts can be previewed and deleted from chat",
-      "Stability: a recovery screen instead of a blank page when something fails"
+      "Stability: a recovery screen instead of a blank page when something fails",
+      "Breaking changes: if you open DevChain through a custom hostname, add it to ALLOWED_HOSTS unless it is already the configured HOST.",
+      "Breaking changes: the mobile app connection now requires end-to-end encryption by default. Update clients that send unencrypted requests. E2EE_REQUIRED=false restores the previous setting but permits unencrypted traffic."
     ],
     "0.24.2": [
       "Remote VMs: smoother and more reliable Connect, Disconnect and file sync, with better Docker support and a new Projects tab",
@@ -72,16 +83,6 @@
       "Stability: fewer Claude startup trust prompts, correct context limits for new Claude models, and fixes for model-selection crashes",
       "Dev Template: improved code reviews and planning prompts",
       "Mobile app 1.9.0: clearer transcript updates when reopening cached chats and fixes for missing-transcript errors"
-    ],
-    "0.22.1": [
-      "[Impr] Dev Template: tasks now go to a Coder matching the task's tier instead of staying with an overqualified worker"
-    ],
-    "0.22.0": [
-      "ClickUp and Jira Integration — assigned work appears on the Board, import tasks as Epics, subtasks, time logging",
-      "Board: Estimated agent time totals for Epics and their sub-epics, more compact cards",
-      "Terminal: agent messages wait while you have an unsent draft, and Ctrl+C with a selection copies instead of interrupting the agent",
-      "Notifications: phone alerts now work in multi-workspace mode and follow each device's workspace access",
-      "Mobile app 1.8.0: unified workspace/project switcher, more stable reconnections"
     ]
   },
   "publishConfig": {
@@ -103,8 +104,12 @@
     "templates:build": "node scripts/templates/index.js build",
     "templates:extract": "node scripts/templates/index.js extract",
     "check:templates": "node scripts/templates/index.js build --check",
-    "prepack": "npm run build && npm run verify:packed-cli-runtime",
+    "prepack": "npm run shrinkwrap:check && npm run build && npm run verify:packed-cli-runtime",
     "verify:packed-cli-runtime": "node scripts/verify-packed-cli-runtime.js",
+    "verify:installed-cli-runtime": "node scripts/verify-packed-cli-runtime.js --install",
+    "shrinkwrap:reconcile": "node scripts/npm-shrinkwrap.js reconcile",
+    "shrinkwrap:refresh": "node scripts/npm-shrinkwrap.js refresh",
+    "shrinkwrap:check": "node scripts/npm-shrinkwrap.js check",
     "postinstall": "node scripts/postinstall.js",
     "lint": "pnpm --recursive --if-present lint",
     "format": "pnpm --filter local-app format",
@@ -125,6 +130,7 @@
     "dist/**",
     "prebuilds/**",
     "scripts/postinstall.js",
+    "npm-shrinkwrap.json",
     "README.md",
     "LICENSE"
   ],

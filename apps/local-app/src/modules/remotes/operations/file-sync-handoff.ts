@@ -19,6 +19,7 @@ import {
   FileSyncService,
   FileSyncTimeoutError,
   codeFolderId,
+  gitFolderProjectId,
   projectFolderId,
   projectFolderList,
   senderIndexReached,
@@ -34,6 +35,7 @@ import { SyncthingRestError } from '../../file-sync/syncthing-rest.client';
 import { ProcessExecutor } from '../../terminal/services/process-executor/process-executor.port';
 import { RemoteHostClient, RemoteHostRequestError } from './remote-host.client';
 import type { RemoteOperationStepRun } from './remote-operation.types';
+import type { GitFence } from '../git-coordinator/git-coordinator.dto';
 import { deleteSyncthingTempFiles } from './syncthing-temp-cleanup';
 
 const logger = createLogger('FileSyncHandoff');
@@ -42,6 +44,7 @@ const logger = createLogger('FileSyncHandoff');
 const SYNC_TIMEOUT_MS = 30 * 60_000;
 const CONNECT_TIMEOUT_MS = 60_000;
 const POLL_MS = 500;
+const GIT_SETTLE_TIMEOUT_MS = 2 * 60_000;
 
 /** What the file-sync steps keep in `operation.details.fileSync`. */
 export interface FileSyncDetails {
@@ -119,7 +122,12 @@ export class FileSyncHandoff {
       const ignores = this.syncIgnores(projectId);
       // The persisted step-start marker owns cancellation cleanup even when
       // this request changes hooks but loses its response.
-      const { removed } = await this.host.removeGitGuard(remoteId, projectId);
+      const { removed } = await this.host.removeGitGuard(
+        remoteId,
+        projectId,
+        {},
+        this.gitOwner.fence(projectId),
+      );
       if (removed) await run.progress({ vmGuardRemoved: true });
       controller.signal.throwIfAborted();
       const codeId = codeFolderId(projectId);
@@ -262,50 +270,19 @@ export class FileSyncHandoff {
     }
   }
 
-  /** Settles the guarded sender before a Git ownership flip. */
-  async settleGit(run: RemoteOperationStepRun, projectId: string, owner: GitOwner): Promise<void> {
-    const controller = new AbortController();
-    const { remoteId, id } = run.operation;
-    this.active.set(id, controller);
-    try {
-      const devices = await this.pair(remoteId, controller.signal);
-      const folders = projectFolderList(projectId, ['git']);
-      const config =
-        owner === 'vm'
-          ? await this.fileSync.folderConfiguration(folders[0].id)
-          : await this.host.syncFolderConfiguration(remoteId, folders[0].id);
-      controller.signal.throwIfAborted();
-      if (config.type !== 'receiveonly' || config.paused)
-        throw new AppError(
-          'The receiving Git folder is not ready. Retry the switch.',
-          'GIT_SWITCH_RECEIVER_NOT_READY',
-          409,
-        );
-      await this.waitAll(run, folders, {
-        sender: owner === 'vm' ? 'host' : 'home',
-        devices,
-        requireNoReceiveOnlyChanges: true,
-        revertAfterComplete: true,
-        signal: controller.signal,
-      });
-    } finally {
-      if (this.active.get(id) === controller) this.active.delete(id);
-    }
-  }
-
   async flipGit(run: RemoteOperationStepRun, projectId: string, owner: GitOwner): Promise<void> {
     const { remoteId } = run.operation;
     const folderId = projectFolderId(projectId, 'git');
     const ignores = gitIgnores(true);
     if (owner === 'home') {
-      await this.host.syncFolderType(remoteId, folderId, { type: 'receiveonly', ignores });
+      await this.update('host', remoteId, folderId, { type: 'receiveonly', ignores });
       await this.fileSync.updateFolder(folderId, { type: 'sendonly', ignores });
     } else {
       await this.fileSync.updateFolder(folderId, { type: 'receiveonly', ignores });
-      await this.host.syncFolderType(remoteId, folderId, { type: 'sendonly', ignores });
+      await this.update('host', remoteId, folderId, { type: 'sendonly', ignores });
     }
     this.gitOwner.set(projectId, owner);
-    await this.host.syncFolderType(remoteId, folderId, { paused: false });
+    await this.update('host', remoteId, folderId, { paused: false });
     await this.fileSync.updateFolder(folderId, { paused: false });
   }
 
@@ -330,13 +307,14 @@ export class FileSyncHandoff {
       backups.push({ side: receiver === 'home' ? 'home' : 'vm', kind: folder.kind, path });
     }
     await this.forceProgress(run, { backups, verified: false });
+    await this.followVmGit(remoteId, projectId);
     await this.guard.remove(projectId, { refreshIndex: false });
-    await this.host.removeGitGuard(remoteId, projectId);
+    await this.host.removeGitGuard(remoteId, projectId, {}, this.gitOwner.fence(projectId));
     for (const folder of folders) {
       for (const side of ['home', 'host'] as const) {
         try {
           if (side === 'home') await this.fileSync.removeFolder(folder.id);
-          else await this.host.syncRemoveFolder(remoteId, folder.id);
+          else await this.host.syncRemoveFolder(remoteId, folder.id, ...this.gitFence(folder.id));
         } catch (error) {
           if (
             !(
@@ -363,12 +341,16 @@ export class FileSyncHandoff {
         peerDeviceId: devices.host,
         ...(receiver === 'home' && { forceCopy: { operationId } }),
       });
-      await this.host.syncFolders(remoteId, {
-        ...request,
-        type: sender === 'host' ? 'sendonly' : 'receiveonly',
-        peerDeviceId: devices.home,
-        ...(receiver === 'host' && { forceCopy: { operationId } }),
-      });
+      await this.host.syncFolders(
+        remoteId,
+        {
+          ...request,
+          type: sender === 'host' ? 'sendonly' : 'receiveonly',
+          peerDeviceId: devices.home,
+          ...(receiver === 'host' && { forceCopy: { operationId } }),
+        },
+        ...this.gitFence(folder.id),
+      );
     }
     await this.unpauseAll(remoteId, folders);
     for (const folder of folders) {
@@ -380,7 +362,7 @@ export class FileSyncHandoff {
     for (const folder of folders) {
       await this.waitBarrier(remoteId, folder.id, sender);
       if (sender === 'home') await this.fileSync.override(folder.id);
-      else await this.host.syncOverride(remoteId, folder.id);
+      else await this.host.syncOverride(remoteId, folder.id, ...this.gitFence(folder.id));
     }
     const replaced = { count: 0, sample: [] as string[] };
     for (const folder of folders) {
@@ -431,7 +413,7 @@ export class FileSyncHandoff {
     if (this.forceDetails(run).verified !== true)
       throw new AppError('Force sync has not verified the copy.', 'FORCE_SYNC_NOT_VERIFIED', 409);
     const { remoteId } = run.operation;
-    const owner = this.gitOwner.get(projectId);
+    const owner = await this.followVmGit(remoteId, projectId);
     const devices = await this.pair(remoteId);
     const folders = projectFolderList(projectId, kinds);
     const ignores = this.syncIgnores(projectId);
@@ -450,12 +432,16 @@ export class FileSyncHandoff {
           peerDeviceId: devices.host,
         });
       const ensureHost = () =>
-        this.host.syncFolders(remoteId, {
-          ...request,
-          type:
-            folder.kind === 'code' ? 'sendreceive' : owner === 'vm' ? 'sendonly' : 'receiveonly',
-          peerDeviceId: devices.home,
-        });
+        this.host.syncFolders(
+          remoteId,
+          {
+            ...request,
+            type:
+              folder.kind === 'code' ? 'sendreceive' : owner === 'vm' ? 'sendonly' : 'receiveonly',
+            peerDeviceId: devices.home,
+          },
+          ...this.gitFence(folder.id),
+        );
       if (folder.kind === 'git' && owner === 'home') {
         await ensureHost();
         await ensureHome();
@@ -470,10 +456,12 @@ export class FileSyncHandoff {
         const guardWarning = await this.guard.install(projectId, remoteId);
         if (guardWarning) await run.progress({ guardWarning });
       } else {
-        const { warning } = await this.host.installGitGuard(remoteId, projectId, {
-          homeName: hostname(),
-          reason: 'pc-git',
-        });
+        const { warning } = await this.host.installGitGuard(
+          remoteId,
+          projectId,
+          { homeName: hostname(), reason: 'pc-git' },
+          this.gitOwner.fence(projectId),
+        );
         await run.progress({ vmGuardWarning: warning });
       }
     }
@@ -556,10 +544,12 @@ export class FileSyncHandoff {
   /** Disconnect preserves both code copies; only receive-only git changes may be reverted. */
   async final(run: RemoteOperationStepRun, projectId: string): Promise<void> {
     const { remoteId } = run.operation;
-    const owner = this.gitOwner.get(projectId);
+    const folders = await this.fileSync.projectFolders(projectId);
+    const owner = folders.some((folder) => folder.kind === 'git')
+      ? await this.settleVmGit(run, projectId)
+      : this.gitOwner.get(projectId);
     const ignores = this.syncIgnores(projectId);
     const devices = await this.pair(remoteId);
-    const folders = await this.fileSync.projectFolders(projectId);
     // Recorded before any folder is paused, so a cancel knows to unpause them.
     await run.progress({ fileSyncPaused: true });
     for (const folder of folders) {
@@ -570,12 +560,16 @@ export class FileSyncHandoff {
         paused: true,
       };
       const ensureHost = () =>
-        this.host.syncFolders(remoteId, {
-          ...request,
-          type:
-            folder.kind === 'code' ? 'sendreceive' : owner === 'vm' ? 'sendonly' : 'receiveonly',
-          peerDeviceId: devices.home,
-        });
+        this.host.syncFolders(
+          remoteId,
+          {
+            ...request,
+            type:
+              folder.kind === 'code' ? 'sendreceive' : owner === 'vm' ? 'sendonly' : 'receiveonly',
+            peerDeviceId: devices.home,
+          },
+          ...this.gitFence(folder.id),
+        );
       const ensureHome = () =>
         this.fileSync.ensureFolder({
           ...request,
@@ -606,7 +600,10 @@ export class FileSyncHandoff {
    */
   async flipToHome(run: RemoteOperationStepRun, projectId: string, force: boolean): Promise<void> {
     const { remoteId } = run.operation;
-    for (const folder of await this.fileSync.projectFolders(projectId)) {
+    const folders = await this.fileSync.projectFolders(projectId);
+    if (!force && folders.some((folder) => folder.kind === 'git'))
+      await this.followVmGit(remoteId, projectId);
+    for (const folder of folders) {
       if (!force) {
         await this.update('host', remoteId, folder.id, { type: 'receiveonly', paused: true });
       }
@@ -619,10 +616,12 @@ export class FileSyncHandoff {
     } else {
       // A lost answer, a partial hook write or a restart before the step ends still requires cleanup on cancel.
       await run.progress({ vmGuardInstalled: true }, { durable: true });
-      const { warning } = await this.host.installGitGuard(remoteId, projectId, {
-        homeName: hostname(),
-        reason: 'disconnect',
-      });
+      const { warning } = await this.host.installGitGuard(
+        remoteId,
+        projectId,
+        { homeName: hostname(), reason: 'disconnect' },
+        this.gitOwner.fence(projectId),
+      );
       await run.progress({ vmGuardWarning: warning, vmGuardInstalled: warning === null });
     }
     await this.deleteHomeTempFiles(projectId);
@@ -645,7 +644,7 @@ export class FileSyncHandoff {
     }
     try {
       for (const folder of folders) {
-        await this.host.syncRemoveFolder(remoteId, folder.id);
+        await this.host.syncRemoveFolder(remoteId, folder.id, ...this.gitFence(folder.id));
       }
       return null;
     } catch (error) {
@@ -656,21 +655,24 @@ export class FileSyncHandoff {
 
   /** Cancelled disconnect restores the connected layout and its ownership guard. */
   async flipBackToHost(remoteId: string, projectId: string, force: boolean): Promise<void> {
-    const owner = this.gitOwner.get(projectId);
     const folders = await this.fileSync.projectFolders(projectId);
+    const owner =
+      force || !folders.some((folder) => folder.kind === 'git')
+        ? this.gitOwner.get(projectId)
+        : await this.followVmGit(remoteId, projectId);
     await this.hostDirections(remoteId, folders, owner, force, false);
     if (folders.some((folder) => folder.kind === 'git')) {
-      const guardWarning =
-        owner === 'vm'
-          ? await this.guard.reinstall(projectId, remoteId)
-          : force
-            ? null
-            : (
-                await this.host.installGitGuard(remoteId, projectId, {
-                  homeName: hostname(),
-                  reason: 'pc-git',
-                })
-              ).warning;
+      let guardWarning: string | null = null;
+      if (owner === 'vm') guardWarning = await this.guard.reinstall(projectId, remoteId);
+      else if (!force)
+        guardWarning = (
+          await this.host.installGitGuard(
+            remoteId,
+            projectId,
+            { homeName: hostname(), reason: 'pc-git' },
+            this.gitOwner.fence(projectId),
+          )
+        ).warning;
       if (guardWarning) {
         logger.warn({ projectId, remoteId, guardWarning }, 'Remote git guard not reinstalled');
       }
@@ -783,7 +785,6 @@ export class FileSyncHandoff {
       devices: { home: string; host: string };
       symmetricCode?: boolean;
       requireNoReceiveOnlyChanges?: boolean;
-      revertAfterComplete?: boolean;
       signal?: AbortSignal;
     },
   ): Promise<void> {
@@ -823,22 +824,10 @@ export class FileSyncHandoff {
               );
               if (!symmetric && status.receiveOnlyChangedFiles > 0) {
                 signal.throwIfAborted();
-                const source = await this.status(
-                  sender,
-                  remoteId,
-                  folder.id,
-                  options.revertAfterComplete ? receiverDevice : undefined,
-                );
+                const source = await this.status(sender, remoteId, folder.id);
                 signal.throwIfAborted();
                 // Reverting before the source index arrives would delete every local file.
-                // Receiver-only additions do not count against the owner's advertised transfer.
-                const transferred =
-                  senderIndexReached(source, status) &&
-                  source.peer?.completion === 100 &&
-                  source.peer.needItems === 0 &&
-                  source.peer.remoteState === 'valid' &&
-                  status.needTotalItems === 0;
-                if (options.revertAfterComplete ? transferred : senderIndexReached(source, status))
+                if (senderIndexReached(source, status))
                   await this.revert(receiver, remoteId, folder.id);
               }
               return status;
@@ -869,7 +858,7 @@ export class FileSyncHandoff {
   ): Promise<void> {
     try {
       if (side === 'home') await this.fileSync.updateFolder(folderId, patch);
-      else await this.host.syncFolderType(remoteId, folderId, patch);
+      else await this.host.syncFolderType(remoteId, folderId, patch, ...this.gitFence(folderId));
     } catch (error) {
       if (
         (error instanceof SyncthingRestError || error instanceof RemoteHostRequestError) &&
@@ -905,13 +894,61 @@ export class FileSyncHandoff {
   ): Promise<void> {
     return side === 'home'
       ? this.fileSync.rescan(folderId, signal)
-      : this.host.syncScan(remoteId, folderId);
+      : this.host.syncScan(remoteId, folderId, ...this.gitFence(folderId));
   }
 
   private revert(side: Side, remoteId: string, folderId: string): Promise<void> {
     return side === 'home'
       ? this.fileSync.revertLocalChanges(folderId)
-      : this.host.syncRevert(remoteId, folderId);
+      : this.host.syncRevert(remoteId, folderId, ...this.gitFence(folderId));
+  }
+
+  /** VM Git-folder calls carry the cached generation, so a VM that moved on refuses them. */
+  private gitFence(folderId: string): [] | [GitFence] {
+    const projectId = gitFolderProjectId(folderId);
+    return projectId === null ? [] : [this.gitOwner.fence(projectId)];
+  }
+
+  /** Takes the owner from the VM record, which must not be mid-transition. */
+  private async followVmGit(remoteId: string, projectId: string): Promise<GitOwner> {
+    const record = await this.host.gitCoordinatorStatus(remoteId, projectId);
+    if (record.transition)
+      throw new AppError(
+        'Git is moving between this PC and the VM. Retry after the move finishes.',
+        'GIT_TRANSITION_PENDING',
+        409,
+      );
+    this.gitOwner.remember(projectId, record);
+    return record.owner;
+  }
+
+  /**
+   * Disconnect closes VM Git admission, then waits until no home write, transition or VM Git
+   * process remains, so the owner it reads can no longer change.
+   */
+  private async settleVmGit(run: RemoteOperationStepRun, projectId: string): Promise<GitOwner> {
+    const { remoteId } = run.operation;
+    await run.progress({ gitAdmissionClosed: true }, { durable: true });
+    let record = await this.host.gitCoordinatorClose(remoteId, projectId);
+    const deadline = Date.now() + GIT_SETTLE_TIMEOUT_MS;
+    for (;;) {
+      const busy = [
+        Object.keys(record.homeWrites).length && 'a Git write on this PC is not confirmed',
+        record.transition && 'Git is moving between this PC and the VM',
+        Object.keys(record.vmHolds).length && 'Git commands are running on the VM',
+      ].filter(Boolean);
+      if (busy.length === 0) break;
+      if (Date.now() >= deadline)
+        throw new AppError(
+          `Git is still busy: ${busy.join('; ')}. Retry the Disconnect after it finishes.`,
+          'GIT_STILL_BUSY',
+          409,
+        );
+      await sleep(POLL_MS);
+      record = await this.host.gitCoordinatorStatus(remoteId, projectId);
+    }
+    this.gitOwner.remember(projectId, record);
+    return record.owner;
   }
 }
 

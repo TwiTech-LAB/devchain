@@ -746,7 +746,7 @@ export interface ListEpicsResponse {
 
 /** devchain_list_assigned_epics_tasks keeps full descriptions per item. */
 export interface ListAssignedEpicsTasksResponse {
-  epics: EpicSummary[];
+  epics: Array<EpicSummary & { worktreePath?: string }>;
   total: number;
   limit: number;
   offset: number;
@@ -789,7 +789,66 @@ export interface GetEpicByIdResponse {
   subEpics: EpicChildSummary[];
   parent?: EpicParentSummary;
   relations: EpicRelationsPageResponse & { truncated: boolean };
+  worktrees?: Array<{
+    name: string;
+    path: string;
+    branch: string;
+    baseBranch: string;
+    projectRootPath: string;
+  }>;
+  worktreeInstruction?: string;
 }
+
+const WorktreeNameSchema = z
+  .string()
+  .trim()
+  .regex(/^[a-zA-Z0-9-]{1,40}$/);
+
+export const WorktreesCreateParamsSchema = z
+  .object({
+    sessionId: z.string().min(8),
+    name: z
+      .string()
+      .regex(/^[a-z0-9-]{1,40}$/)
+      .optional(),
+    baseRef: z.string().trim().min(1).optional(),
+    epicId: z.string().uuid().optional(),
+  })
+  .strict();
+
+export type WorktreesCreateParams = z.infer<typeof WorktreesCreateParamsSchema>;
+
+export const WorktreesListParamsSchema = z
+  .object({ sessionId: z.string().min(8), name: WorktreeNameSchema.optional() })
+  .strict();
+
+export type WorktreesListParams = z.infer<typeof WorktreesListParamsSchema>;
+
+export const WorktreesCommitParamsSchema = z
+  .object({
+    sessionId: z.string().min(8),
+    name: WorktreeNameSchema,
+    message: z.string().trim().min(1),
+  })
+  .strict();
+
+export type WorktreesCommitParams = z.infer<typeof WorktreesCommitParamsSchema>;
+
+export const WorktreesMergeParamsSchema = z
+  .object({
+    sessionId: z.string().min(8),
+    name: WorktreeNameSchema,
+    expectedHead: z.string().regex(/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/),
+  })
+  .strict();
+
+export type WorktreesMergeParams = z.infer<typeof WorktreesMergeParamsSchema>;
+
+export const WorktreesRemoveParamsSchema = z
+  .object({ sessionId: z.string().min(8), name: WorktreeNameSchema })
+  .strict();
+
+export type WorktreesRemoveParams = z.infer<typeof WorktreesRemoveParamsSchema>;
 
 export interface CreateEpicResponse {
   id: string;
@@ -1183,6 +1242,17 @@ export const TeamsDeleteAgentParamsSchema = z
   .strict();
 
 export type TeamsDeleteAgentParams = z.infer<typeof TeamsDeleteAgentParamsSchema>;
+
+export const TeamsSessionControlParamsSchema = z
+  .object({
+    sessionId: z.string().min(8),
+    name: z.string().trim().min(1, 'Name is required and must not be whitespace-only'),
+    action: z.enum(['restart', 'compact', 'stop']),
+    teamName: z.string().trim().min(1, 'teamName must not be whitespace-only').optional(),
+  })
+  .strict();
+
+export type TeamsSessionControlParams = z.infer<typeof TeamsSessionControlParamsSchema>;
 
 export interface TeamsDeleteAgentResponse {
   deletedAgentId: string;

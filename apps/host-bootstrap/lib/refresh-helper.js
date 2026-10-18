@@ -3,7 +3,12 @@
 const fs = require("node:fs");
 const path = require("node:path");
 const { createHash } = require("node:crypto");
-const { hostInstallDir, readHostInstallPins } = require("./host-install-pins");
+const {
+  hostInstallDir,
+  readHostInstallPins,
+  assertSharedVmTarget,
+} = require("./host-install-pins");
+const { replaceSymlink } = require("./system");
 
 const NPM_INSTALL_TIMEOUT_MS = 15 * 60_000;
 const CLIS_HELPER_TIMEOUT_MS = 45 * 60_000;
@@ -14,6 +19,7 @@ async function refreshHelper(version, sys) {
     "devchain-host-bootstrap.tgz",
   );
   const pins = readHostInstallPins(version, sys);
+  if (sys.paths.instanceUser) assertSharedVmTarget(version, pins);
   let contents;
   try {
     contents = fs.readFileSync(archive);
@@ -33,7 +39,7 @@ async function refreshHelper(version, sys) {
     [
       "install",
       "-g",
-      `--prefix=${sys.paths.cliPrefix}`,
+      `--prefix=${sys.paths.helperPrefix}`,
       "--omit=dev",
       "--no-fund",
       "--no-audit",
@@ -42,6 +48,18 @@ async function refreshHelper(version, sys) {
     ],
     { timeoutMs: NPM_INSTALL_TIMEOUT_MS },
   );
+  if (sys.paths.instanceUser) {
+    fs.mkdirSync(sys.paths.binDir, { recursive: true, mode: 0o755 });
+    for (const name of [
+      "devchain-bootstrap",
+      "devchain-host-update",
+      "devchain-host-project-root",
+    ])
+      replaceSymlink(
+        path.join(sys.paths.binDir, name),
+        path.join(sys.paths.helperPrefix, "bin", name),
+      );
+  }
 }
 
 async function runClisHelper(version, sys) {

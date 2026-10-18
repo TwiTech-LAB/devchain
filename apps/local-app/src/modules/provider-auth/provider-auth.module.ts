@@ -10,6 +10,8 @@ import { ProviderAuthWritebackService } from './provider-auth-writeback.service'
 import { ProviderAuthReleaseService } from './provider-auth-release.service';
 import { TerminalModule } from '../terminal/terminal.module';
 import { ProcessExecutorModule } from '../terminal/services/process-executor/process-executor.module';
+import { ProviderCliVersionProbeModule } from '../providers/services/provider-cli-version-probe.module';
+import { OpencodePcLoginsReader } from './opencode-pc-logins.service';
 
 @Module({
   imports: [
@@ -18,6 +20,7 @@ import { ProcessExecutorModule } from '../terminal/services/process-executor/pro
     ProviderAdaptersModule,
     TerminalModule,
     ProcessExecutorModule,
+    ProviderCliVersionProbeModule,
   ],
   controllers: [ProviderAuthController],
   providers: [
@@ -26,6 +29,7 @@ import { ProcessExecutorModule } from '../terminal/services/process-executor/pro
     ProviderAuthWatcherService,
     ProviderAuthWritebackService,
     ProviderAuthReleaseService,
+    OpencodePcLoginsReader,
   ],
   exports: [
     ProviderAuthVaultService,

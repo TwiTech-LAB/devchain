@@ -38,15 +38,23 @@ const RETAINED_ACCESS: readonly AccessEntry[] = [
   { path: 'modules/file-sync/file-sync-managed-exclusions.store.ts', category: 'feature-store' },
   { path: 'modules/file-sync/syncthing-settings.store.ts', category: 'feature-store' },
   { path: 'modules/remotes/connect-choices.store.ts', category: 'feature-store' },
+  { path: 'modules/remotes/git-coordinator/git-coordinator.store.ts', category: 'feature-store' },
   { path: 'modules/remotes/git-owner.store.ts', category: 'feature-store' },
+  { path: 'modules/remotes/git-writes/home-git-write.store.ts', category: 'feature-store' },
   {
     path: 'modules/remotes/host/host-docker-volume-associations.store.ts',
     category: 'feature-store',
   },
+  { path: 'modules/remotes/host/host-shared-vm.store.ts', category: 'feature-store' },
   {
     path: 'modules/remotes/operations/docker-import-inventory.store.ts',
     category: 'feature-store',
   },
+  {
+    path: 'modules/remotes/services/remote-forced-detach.store.ts',
+    category: 'feature-store',
+  },
+  { path: 'modules/remotes/services/remote-shared-vm.store.ts', category: 'feature-store' },
   { path: 'modules/remotes/transcripts/transcript-files.service.ts', category: 'main-db-reader' },
   {
     path: 'modules/runtime-context-capture/runtime-context-capture.service.ts',

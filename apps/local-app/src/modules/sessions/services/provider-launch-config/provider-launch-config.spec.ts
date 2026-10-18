@@ -81,6 +81,24 @@ describe('ProviderLaunchConfig.resolve', () => {
       }
     });
     it.each([
+      ['Claude', new ClaudeAdapter()],
+      ['Codex', new CodexAdapter()],
+      ['OpenCode', new OpencodeAdapter()],
+    ] as const)('puts the git shim first on the %s session PATH', (_, adapter) => {
+      const shim = '/home/u/.devchain/git-shim/bin';
+      for (const mode of ['new', 'restore'] as const) {
+        const input = makeInput({ adapter, mode, providerSessionId: 'session' });
+        expect(resolve(input).env?.PATH).toBeUndefined();
+        expect(resolve({ ...input, gitShimBin: shim }).env?.PATH).toBe(
+          `${shim}:${process.env.PATH}`,
+        );
+        const configured = { ...input, gitShimBin: shim, configEnv: { PATH: '/opt/bin' } };
+        expect(resolve(configured).commandArgs).toContain(`PATH=${shim}:/opt/bin`);
+        const first = { ...configured, configEnv: { PATH: `${shim}:/opt/bin` } };
+        expect(resolve(first).env?.PATH).toBe(`${shim}:/opt/bin`);
+      }
+    });
+    it.each([
       [new ClaudeAdapter(), 'DISABLE_AUTOUPDATER', '1'],
       [new CopilotAdapter(undefined as never, undefined as never), 'COPILOT_AUTO_UPDATE', 'false'],
       [new OpencodeAdapter(), 'OPENCODE_DISABLE_AUTOUPDATE', 'true'],
@@ -300,6 +318,26 @@ describe('ProviderLaunchConfig.resolve', () => {
           anthropic: { models: { 'claude-x': { options: { reasoningEffort: 'high' } } } },
         },
       });
+    });
+
+    it('OpenCode 2: the model joins the effort overlay in the command env, not argv', () => {
+      const result = resolve(
+        makeInput({
+          adapter: new OpencodeAdapter(),
+          modelOverride: 'anthropic/claude-x',
+          effortOverride: 'high',
+          cliVersion: 'opencode v2.0.31',
+        }),
+      );
+      expect(result.argv).toEqual(['--standalone']);
+      const overlay = {
+        model: 'anthropic/claude-x',
+        provider: {
+          anthropic: { models: { 'claude-x': { options: { reasoningEffort: 'high' } } } },
+        },
+      };
+      expect(JSON.parse(result.env![OVERLAY])).toEqual(overlay);
+      expect(result.commandArgs).toContain(`${OVERLAY}=${result.env![OVERLAY]}`);
     });
 
     it('deep-merges onto configEnv OPENCODE_CONFIG_CONTENT (configEnv wins over providerEnv)', () => {

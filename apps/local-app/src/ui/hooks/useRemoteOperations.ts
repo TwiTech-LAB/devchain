@@ -73,7 +73,13 @@ export function useRemoteOperations() {
           LIST_LIMITS.map(([state, limit]) => api.listOperations(state, limit, signal)),
         );
         return Array.from(
-          new Map(lists.flat().map((operation) => [operation.id, operation])).values(),
+          new Map(
+            lists
+              .flatMap((list) =>
+                list.flatMap((operation) => [operation, ...(operation.children ?? [])]),
+              )
+              .map((operation) => [operation.id, operation]),
+          ).values(),
         );
       },
       refetchInterval: 10_000,
@@ -161,6 +167,7 @@ export function useRemoteOperations() {
             const body = {
               ...(input.providerAuth ? { providerAuth: input.providerAuth } : {}),
               ...(input.ssh ? { ssh: { ...input.ssh } } : {}),
+              ...(input.vm ? { vm: input.vm } : {}),
             };
             scrubOperationCredentials(input);
             return api.retryOperation(input.operationId, body);
@@ -178,6 +185,8 @@ export function useRemoteOperations() {
               force: input.force,
               dockerCopyBack: input.dockerCopyBack,
             });
+          case 'disconnectAll':
+            return api.disconnectAll(input.remoteId, input.body);
           case 'updateHost':
             return api.updateHost(
               input.remoteId,

@@ -46,6 +46,7 @@ import { integrationConnectionUpdatedEvent } from './integration.connection.upda
 import { integrationConnectionDeletedEvent } from './integration.connection.deleted';
 import { remoteProjectSyncedEvent } from './remote.project.synced';
 import { remoteBindingChangedEvent } from './remote.binding.changed';
+import { providerUsageUpdatedEvent } from './provider-usage.updated';
 
 // Re-export individual event definitions for direct import
 export { settingsTerminalChangedEvent } from './settings.terminal.changed';
@@ -118,6 +119,7 @@ export const eventCatalog = {
   [integrationConnectionDeletedEvent.name]: integrationConnectionDeletedEvent.schema,
   [remoteProjectSyncedEvent.name]: remoteProjectSyncedEvent.schema,
   [remoteBindingChangedEvent.name]: remoteBindingChangedEvent.schema,
+  [providerUsageUpdatedEvent.name]: providerUsageUpdatedEvent.schema,
 } as const;
 
 export type EventName = keyof typeof eventCatalog;
@@ -130,6 +132,7 @@ export const eventNames = Object.keys(eventCatalog) as EventName[];
 export const transientEventNames = [
   'epic.relations.invalidated',
   'epic.time.scope.invalidated',
+  'provider-usage.updated',
   'session.transcript.updated',
 ] as const satisfies readonly EventName[];
 

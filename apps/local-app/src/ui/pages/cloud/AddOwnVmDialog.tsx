@@ -57,6 +57,7 @@ type InstallerResult = Extract<ProbeResultDto, { kind: 'installer' }>;
 type Plan =
   | { kind: 'claim'; bootstrapUrl: string; remoteId: string | null; viaBlock: boolean }
   | { kind: 'ssh'; remoteId: string | null }
+  | { kind: 'join'; remoteId: null }
   | { kind: 'block'; remoteId: string | null };
 
 type Step = 'address' | 'ssh' | 'block' | 'logins' | 'review';
@@ -69,9 +70,27 @@ const STEP_LABELS: Record<Step, string> = {
   review: 'Review',
 };
 
+/** An SSH install and a join both take SSH credentials and run over SSH. */
+function usesSsh(plan: Plan | null): plan is Extract<Plan, { kind: 'ssh' | 'join' }> {
+  return plan?.kind === 'ssh' || plan?.kind === 'join';
+}
+
+function setupMethod(plan: Plan, sshUser: string): string {
+  if (plan.kind === 'claim') return `Set up the installer at ${hostPort(plan.bootstrapUrl)}`;
+  if (plan.kind === 'join') return `Join over SSH as ${sshUser}`;
+  return `Install over SSH as ${sshUser}, then set up`;
+}
+
+function startLabel(plan: Plan | null, pending: boolean): string {
+  if (pending) return 'Starting…';
+  if (plan?.kind === 'join') return 'Set up my DevChain';
+  if (plan?.kind === 'claim') return 'Set up VM';
+  return 'Install and set up';
+}
+
 function planSteps(plan: Plan | null): Step[] {
   if (!plan) return ['address'];
-  if (plan.kind === 'ssh') return ['address', 'ssh', 'logins', 'review'];
+  if (usesSsh(plan)) return ['address', 'ssh', 'logins', 'review'];
   if (plan.kind === 'block' || plan.viaBlock) return ['address', 'block', 'logins', 'review'];
   return ['address', 'logins', 'review'];
 }
@@ -146,9 +165,12 @@ export function AddOwnVmDialog({
   const rowAtHost = remotes.find(
     (remote) => remote.baseUrl !== null && host !== null && addressHost(remote.baseUrl) === host,
   );
-  const knownRemoteId = plan?.remoteId ?? rowAtHost?.id;
+  const joining = plan?.kind === 'join';
+  const knownRemoteId = joining ? null : (plan?.remoteId ?? rowAtHost?.id);
+  // A join adds a second row at this host; the user-qualified default keeps it apart.
+  const defaultName = joining && host && identity?.user ? `${host} (${identity.user})` : host;
   const name =
-    nameInput ?? (knownRemoteId ? remoteNames.get(knownRemoteId) : undefined) ?? host ?? '';
+    nameInput ?? (knownRemoteId ? remoteNames.get(knownRemoteId) : undefined) ?? defaultName ?? '';
   const openOperationOf = (remoteId: string | null | undefined) =>
     remoteId ? openHostOperation(operations, remoteId) : undefined;
   /** The VM row an installer belongs to: the one it names, else the row at its host. */
@@ -259,7 +281,7 @@ export function AddOwnVmDialog({
     claimable &&
     keyValid &&
     plan !== null &&
-    (plan.kind !== 'ssh' || sshReady) &&
+    (!usesSsh(plan) || sshReady) &&
     (plan.kind !== 'claim' || parsedFingerprint !== null);
   const providerAuth = setupProviderAuth(choices);
   const loginSummary = Object.entries(providerAuth).map(([provider, choice]) => ({
@@ -317,10 +339,10 @@ export function AddOwnVmDialog({
     <Dialog open onOpenChange={(open) => !open && !pending && onClose()}>
       <DialogContent className="max-h-[90vh] w-[calc(100vw-2rem)] overflow-y-auto sm:w-full sm:max-w-3xl">
         <DialogHeader>
-          <DialogTitle>Add your own VM</DialogTitle>
+          <DialogTitle>{joining ? 'Set up my DevChain on this VM' : 'Add your own VM'}</DialogTitle>
           <DialogDescription>
             {steps.length > 1
-              ? `Step ${stepIndex + 1} of ${steps.length}: ${STEP_LABELS[step]}`
+              ? `Step ${stepIndex + 1} of ${steps.length}: ${joining && step === 'ssh' ? 'SSH sign-in' : STEP_LABELS[step]}`
               : 'Enter the VM’s address. DevChain checks what answers there.'}
           </DialogDescription>
         </DialogHeader>
@@ -339,6 +361,7 @@ export function AddOwnVmDialog({
                   spellCheck={false}
                   disabled={pending}
                 />
+                <p className="text-xs text-muted-foreground">Already joined? Enter host:P.</p>
               </div>
               <Button
                 type="submit"
@@ -383,6 +406,10 @@ export function AddOwnVmDialog({
                   setPlan({ kind: 'ssh', remoteId: rowAtHost?.id ?? null });
                   setStep('ssh');
                 }}
+                onJoinOverSsh={() => {
+                  setPlan({ kind: 'join', remoteId: null });
+                  setStep('ssh');
+                }}
                 onRunBlock={() => {
                   setBlockAnswer(null);
                   setBlockReady(null);
@@ -399,9 +426,18 @@ export function AddOwnVmDialog({
           <div className="space-y-4">
             <section aria-label="SSH sign-in" className="space-y-2">
               <p className="text-sm text-muted-foreground">
-                The SSH user needs sudo on the VM. If it matches this PC&apos;s user name, the setup
-                reuses that account and grants it passwordless sudo. Credentials are used only for
-                this install.
+                {joining ? (
+                  <>
+                    Use any SSH account with sudo on this VM. DevChain creates or reuses this
+                    PC&apos;s user and home folder. Credentials are used only for this setup.
+                  </>
+                ) : (
+                  <>
+                    The SSH user needs sudo on the VM. If it matches this PC&apos;s user name, the
+                    setup reuses that account and grants it passwordless sudo. Credentials are used
+                    only for this install.
+                  </>
+                )}
               </p>
               <SshCredentialFields
                 draft={ssh}
@@ -459,11 +495,7 @@ export function AddOwnVmDialog({
         {step === 'review' && plan && (
           <OwnVmReview
             vm={host ?? address}
-            how={
-              plan.kind === 'claim'
-                ? `Set up the installer at ${hostPort(plan.bootstrapUrl)}`
-                : `Install over SSH as ${ssh.user.trim()}, then set up`
-            }
+            how={setupMethod(plan, ssh.user.trim())}
             logins={loginSummary}
             hasSshPublicKey={sshPublicKey.trim().length > 0}
             name={name}
@@ -471,15 +503,16 @@ export function AddOwnVmDialog({
             installDocker={installDocker}
             onInstallDockerChange={plan.kind === 'claim' ? setInstallDocker : undefined}
             freeDisk={
-              plan.kind === 'ssh' && estimate.requiredDisk !== null
+              usesSsh(plan) && estimate.requiredDisk !== null
                 ? `${estimate.requiredDisk} GiB`
                 : undefined
             }
             disabled={pending}
+            automaticPort={joining}
           />
         )}
 
-        {plan?.kind === 'ssh' && step === 'review' && !credentialsAreValid(ssh) && (
+        {usesSsh(plan) && step === 'review' && !credentialsAreValid(ssh) && (
           <p role="alert" className="text-sm text-destructive">
             Go back and enter the SSH credentials again.
           </p>
@@ -514,7 +547,7 @@ export function AddOwnVmDialog({
               pending={pending}
               data-testid="own-vm-start"
             >
-              {pending ? 'Starting…' : plan?.kind === 'claim' ? 'Set up VM' : 'Install and set up'}
+              {startLabel(plan, pending)}
             </Button>
           )}
         </DialogFooter>

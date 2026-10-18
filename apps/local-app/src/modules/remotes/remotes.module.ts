@@ -1,3 +1,4 @@
+import { RemoteWorktreeGuard } from './operations/remote-worktree-guard';
 import { RemoteApiKeyManagementService } from './auth/remote-api-key-management.service';
 import { RemoteApiKeyController } from './controllers/remote-api-key.controller';
 import { RemoteApiKeyModule } from './auth/remote-api-key.module';
@@ -7,6 +8,9 @@ import { ProviderCliStateModule } from '../providers/services/provider-cli-state
 import { HostProviderCliSettingsController } from './host/host-provider-cli-settings.controller';
 import { HostProviderCliSettingsService } from './host/host-provider-cli-settings.service';
 import { RemoteProviderCliSettingsService } from './services/remote-provider-cli-settings.service';
+import { HostProviderUsageSettingsController } from './host/host-provider-usage-settings.controller';
+import { HostProviderUsageSettingsService } from './host/host-provider-usage-settings.service';
+import { RemoteProviderUsageSettingsService } from './services/remote-provider-usage-settings.service';
 import { RemoteSkillSettingsService } from './services/remote-skill-settings.service';
 import { SkillsModule } from '../skills/skills.module';
 import { SettingsModule } from '../settings/settings.module';
@@ -70,8 +74,8 @@ import { RemoteLiveSyncService } from './sync/remote-live-sync.service';
 import { RemoteHostClient } from './operations/remote-host.client';
 import { AttachOperation } from './operations/attach.operation';
 import { DetachOperation } from './operations/detach.operation';
+import { DisconnectAllOperation } from './operations/disconnect-all.operation';
 import { ForceSyncOperation } from './operations/force-sync.operation';
-import { GitOwnerOperation } from './operations/git-owner.operation';
 import { DockerImportInventoryStore } from './operations/docker-import-inventory.store';
 import { RemoteOperationRunner } from './operations/remote-operation.runner';
 import { RemoteOperationsService } from './operations/remote-operations.service';
@@ -101,6 +105,37 @@ import { InstallHostOperation } from './operations/install-host.operation';
 import { SshKeyService } from './host-install/ssh-key.service';
 import { HostSshKeysController } from './host/host-ssh-keys.controller';
 import { HostSshKeysService } from './host/host-ssh-keys.service';
+import { HostSharedVmController } from './host/host-shared-vm.controller';
+import { HostSharedVmService } from './host/host-shared-vm.service';
+import { HostSharedVmStore } from './host/host-shared-vm.store';
+import { RemoteSharedVmService } from './services/remote-shared-vm.service';
+import { RemoteSharedVmStore } from './services/remote-shared-vm.store';
+import { HomeSharedVmNoticesService } from './services/home-shared-vm-notices.service';
+import { HomeSharedVmNoticesController } from './controllers/home-shared-vm-notices.controller';
+import { RemoteForcedDetachService } from './services/remote-forced-detach.service';
+import { RemoteForcedDetachStore } from './services/remote-forced-detach.store';
+import {
+  GitShimRegistryService,
+  GIT_SHIM_HOME,
+  GIT_SHIM_ON_VM,
+  GIT_SHIM_REFRESH_MS,
+} from './git-shim/git-shim-registry.service';
+import { gitShimHome } from '../../common/git-shim-paths';
+import { getEnvConfig } from '../../common/config/env.config';
+import { isClaimedHost } from './host-api-key';
+import { HomeGitWriteController } from './git-writes/home-git-write.controller';
+import {
+  HomeGitWriteService,
+  HOME_GIT_WRITE_TIMINGS,
+  DEFAULT_HOME_GIT_WRITE_TIMINGS,
+} from './git-writes/home-git-write.service';
+import { HomeGitWriteStore } from './git-writes/home-git-write.store';
+import { HomeGitTransitions } from './git-writes/home-git-transitions';
+import {
+  HomeGitHandoverService,
+  HOME_GIT_HANDOVER_TIMINGS,
+  DEFAULT_HOME_GIT_HANDOVER_TIMINGS,
+} from './git-writes/home-git-handover.service';
 
 @Module({
   imports: [
@@ -126,10 +161,12 @@ import { HostSshKeysService } from './host/host-ssh-keys.service';
     VmProvidersModule,
   ],
   controllers: [
+    HomeGitWriteController,
     ConnectChoicesController,
     ProjectFileSyncController,
     RemoteApiKeyController,
     HostProviderCliSettingsController,
+    HostProviderUsageSettingsController,
     HostSkillSettingsController,
     RemotesController,
     RemoteProbeController,
@@ -143,12 +180,33 @@ import { HostSshKeysService } from './host/host-ssh-keys.service';
     HostProviderAuthController,
     HostInstallController,
     HostSshKeysController,
+    HostSharedVmController,
+    HomeSharedVmNoticesController,
   ],
   providers: [
+    GitShimRegistryService,
+    { provide: GIT_SHIM_HOME, useFactory: () => gitShimHome() },
+    {
+      provide: GIT_SHIM_ON_VM,
+      useValue: () => isClaimedHost(getEnvConfig().DEVCHAIN_HOST_ETC_DIR),
+    },
+    // Tests never touch the developer's own shim files unless they provide a home.
+    {
+      provide: GIT_SHIM_REFRESH_MS,
+      useFactory: () => (process.env.NODE_ENV === 'test' ? 0 : 2_000),
+    },
+    HomeGitWriteService,
+    HomeGitWriteStore,
+    { provide: HomeGitTransitions, useClass: HomeGitHandoverService },
+    { provide: HOME_GIT_HANDOVER_TIMINGS, useValue: DEFAULT_HOME_GIT_HANDOVER_TIMINGS },
+    { provide: HOME_GIT_WRITE_TIMINGS, useValue: DEFAULT_HOME_GIT_WRITE_TIMINGS },
+    RemoteWorktreeGuard,
     ConnectChoicesStore,
     RemoteApiKeyManagementService,
     HostProviderCliSettingsService,
     RemoteProviderCliSettingsService,
+    HostProviderUsageSettingsService,
+    RemoteProviderUsageSettingsService,
     HostSkillSettingsService,
     RemotesService,
     RemoteProbeService,
@@ -156,6 +214,13 @@ import { HostSshKeysService } from './host/host-ssh-keys.service';
     RemoteSkillSettingsService,
     RemoteProxyService,
     HostService,
+    HostSharedVmService,
+    HostSharedVmStore,
+    RemoteSharedVmService,
+    RemoteSharedVmStore,
+    HomeSharedVmNoticesService,
+    RemoteForcedDetachService,
+    RemoteForcedDetachStore,
     ProviderBaselineService,
     HostProviderAuthService,
     HostReplicaBodyParser,
@@ -187,8 +252,8 @@ import { HostSshKeysService } from './host/host-ssh-keys.service';
     DockerCopyBackExclusions,
     AttachOperation,
     DetachOperation,
+    DisconnectAllOperation,
     ForceSyncOperation,
-    GitOwnerOperation,
     ClaimOperation,
     UpdateLoginsOperation,
     UpdateHostOperation,

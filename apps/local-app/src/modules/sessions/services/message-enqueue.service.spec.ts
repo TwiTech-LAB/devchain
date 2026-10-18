@@ -67,9 +67,10 @@ describe('MessageEnqueueService', () => {
         },
         {
           agentId: 'agent-2',
-          text: 'world',
+          text: '/compact',
           source: 'test',
           immediate: true,
+          commandGuard: { sessionId: 'session-2' },
         },
       ]),
     ).resolves.toEqual([
@@ -92,7 +93,7 @@ describe('MessageEnqueueService', () => {
       deferWhileHumanTyping: true,
       humanPromptSubmit: false,
     });
-    expect(pool.enqueue).toHaveBeenNthCalledWith(2, 'agent-2', 'world', {
+    expect(pool.enqueue).toHaveBeenNthCalledWith(2, 'agent-2', '/compact', {
       source: 'test',
       submitKeys: undefined,
       preKeys: undefined,
@@ -100,6 +101,7 @@ describe('MessageEnqueueService', () => {
       senderAgentId: undefined,
       deliveryMode: undefined,
       immediate: true,
+      commandGuard: { sessionId: 'session-2' },
       projectId: undefined,
       agentName: undefined,
       failureDisclosure: undefined,

@@ -103,6 +103,8 @@ describe('mobile push topic allowlist', () => {
     expect(isAllowlistedTunnelPushTopic('session/abc', 'ask_user_question.resolved')).toBe(true);
     expect(isAllowlistedTunnelPushTopic('session/abc', 'activity')).toBe(true);
     expect(isAllowlistedTunnelPushTopic('agent/xyz', 'presence')).toBe(true);
+    expect(isAllowlistedTunnelPushTopic('project/p1/state', 'agent.created')).toBe(true);
+    expect(isAllowlistedTunnelPushTopic('project/p1/state', 'agent.deleted')).toBe(true);
   });
 
   it('rejects a syntactically-valid but unknown topic', () => {
@@ -115,6 +117,7 @@ describe('mobile push topic allowlist', () => {
     expect(isAllowlistedTunnelPushTopic('session/abc/transcript', 'presence')).toBe(false);
     expect(isAllowlistedTunnelPushTopic('session/abc', 'updated')).toBe(false);
     expect(isAllowlistedTunnelPushTopic('agent/xyz', 'updated')).toBe(false);
+    expect(isAllowlistedTunnelPushTopic('project/p1/state', 'agent.updated')).toBe(false);
   });
 
   it('rejects an empty id segment or wrong arity', () => {
@@ -130,14 +133,23 @@ describe('mobile push topic allowlist', () => {
     expect(isAllowlistedTunnelPushTopic(null, null)).toBe(false);
   });
 
-  it('uses :id as the variable-segment sentinel in the exported allowlist', () => {
+  it('defines the exact mobile push topic and event pairs', () => {
     expect(MOBILE_PUSH_TOPIC_ID_SEGMENT).toBe(':id');
-    // 4 rules: 3 Phase-2 (session transcript, session/AUQ+activity, agent presence) +
-    // 1 Phase-1/Task-3 addition (project/<id>/state agent lifecycle).
     expect(MOBILE_PUSH_TOPIC_ALLOWLIST.length).toBe(4);
-    expect(
-      MOBILE_PUSH_TOPIC_ALLOWLIST.some((r) => r.segments.includes(MOBILE_PUSH_TOPIC_ID_SEGMENT)),
-    ).toBe(true);
+    const pairs = MOBILE_PUSH_TOPIC_ALLOWLIST.flatMap((rule) =>
+      rule.eventTypes.map((eventType) => `${rule.segments.join('/')} [${eventType}]`),
+    );
+    expect(pairs.sort()).toEqual(
+      [
+        'session/:id/transcript [updated]',
+        'session/:id [ask_user_question.pending]',
+        'session/:id [ask_user_question.resolved]',
+        'session/:id [activity]',
+        'agent/:id [presence]',
+        'project/:id/state [agent.created]',
+        'project/:id/state [agent.deleted]',
+      ].sort(),
+    );
   });
 });
 

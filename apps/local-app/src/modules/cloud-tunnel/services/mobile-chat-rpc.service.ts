@@ -1,4 +1,5 @@
 import { Inject, Injectable } from '@nestjs/common';
+import type { ProviderUsageResponse } from '@devchain/shared';
 import {
   StorageService,
   STORAGE_SERVICE,
@@ -34,6 +35,7 @@ import { TeamsService } from '../../teams/services/teams.service';
 import { PendingAskUserQuestionService } from '../../hooks/services/pending-ask-user-question.service';
 import type { NormalizedAskUserQuestion } from '../../events/catalog/claude.hooks.ask_user_question.pending';
 import { E2eeTrustService } from '../../e2ee/services/e2ee-trust.service';
+import { ProviderUsageService } from '../../provider-usage/services/provider-usage.service';
 import { LifecycleOperationTracker, type LifecycleOperation } from './lifecycle-operation-tracker';
 import type { RpcCryptoContext } from './tunnel-rpc-crypto.service';
 import { projectMobileChunksPage, projectMobileTail } from './mobile-transcript-projection';
@@ -245,6 +247,7 @@ export class MobileChatRpcService {
     private readonly teamsService: TeamsService,
     private readonly pendingAskUserQuestion: PendingAskUserQuestionService,
     private readonly e2eeTrust: E2eeTrustService,
+    private readonly providerUsage: ProviderUsageService,
   ) {}
 
   /**
@@ -355,6 +358,17 @@ export class MobileChatRpcService {
       memberAgentIds: team.memberAgentIds,
       memberCount: team.memberAgentIds.length,
     }));
+  }
+
+  /**
+   * `chat.getProviderUsage({ projectId, maxAgeSec? })` — the same payload as
+   * `GET /api/provider-usage`. Returns cached data at once; `maxAgeSec` only starts
+   * background checks, and token accounts are never checked on a request.
+   */
+  async getProviderUsage(params: Record<string, unknown>): Promise<ProviderUsageResponse> {
+    const projectId = params['projectId'] as string;
+    const maxAgeSec = params['maxAgeSec'] as number | undefined;
+    return this.providerUsage.getProjectUsage(projectId, maxAgeSec);
   }
 
   /**

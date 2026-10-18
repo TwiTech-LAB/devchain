@@ -8,11 +8,13 @@ import { logger, createLogger } from './common/logging/logger';
 import { writeRuntimeContextEndpointDiscovery } from './modules/runtime-context-capture/runtime-context-capture-files';
 import { configureSwagger } from './common/http/swagger';
 import { normalizeFastifyFrameworkError } from './common/http/runtime-route-classification';
+import { removeGitShimFromPath } from './common/git-shim-paths';
 import { hasUiBuild, resolveUiRoot } from './modules/ui/ui-root';
 import { registerHostApiKeyBoundary } from './modules/remotes/host/host-api-key.setup';
 import { registerHostTls } from './modules/remotes/host/host-tls.setup';
 
 async function bootstrap() {
+  removeGitShimFromPath();
   const config = getEnvConfig();
   const appLogger = createLogger('Bootstrap');
 

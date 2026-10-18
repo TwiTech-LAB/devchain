@@ -1,5 +1,3 @@
-import { homedir } from 'node:os';
-import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { Inject, Injectable } from '@nestjs/common';
 import { NotFoundError, ValidationError } from '../../common/errors/error-types';
@@ -30,13 +28,9 @@ import {
   type ProviderAuthEntryDto,
 } from './provider-auth.dto';
 import type { ProviderAuthFamilyReport } from './provider-auth-watcher.service';
+import { OpencodePcLoginsReader } from './opencode-pc-logins.service';
 
 const logger = createLogger('ProviderAuthVaultService');
-
-interface OpenCodeAuthFileEntry {
-  type?: unknown;
-  [key: string]: unknown;
-}
 
 @Injectable()
 export class ProviderAuthVaultService {
@@ -44,6 +38,7 @@ export class ProviderAuthVaultService {
     @Inject(STORAGE_SERVICE)
     private readonly storage: ProviderAuthStorage & RemoteStorage,
     private readonly adapters: ProviderAdapterFactory,
+    private readonly pcOpencodeLogins: OpencodePcLoginsReader,
   ) {}
 
   /** Metadata only: the ciphertext column never crosses this method. */
@@ -98,7 +93,7 @@ export class ProviderAuthVaultService {
     if (spec.payloadKind !== 'opencode-entry') {
       throw new ValidationError('OpenCode entries are not importable on this instance.');
     }
-    const authFile = await this.readPcOpenCodeAuthFile();
+    const authFile = await this.pcOpencodeLogins.read();
     if (!authFile) {
       throw new NotFoundError('OpenCode auth file', opencodePcAuthFilePath('<home>'));
     }
@@ -154,7 +149,7 @@ export class ProviderAuthVaultService {
    * without the file.
    */
   async listOpencodeLogins(): Promise<OpencodeLoginDto[]> {
-    const authFile = await this.readPcOpenCodeAuthFile();
+    const authFile = await this.pcOpencodeLogins.read();
     if (!authFile) return [];
     const staticOpencodeEntryIds = (await this.storage.listProviderAuthEntries())
       .filter((entry) => entry.provider === 'opencode' && entry.kind === 'static')
@@ -442,28 +437,6 @@ export class ProviderAuthVaultService {
       });
     }
     return spec;
-  }
-
-  /**
-   * Reads the PC's OpenCode auth file; null when it is missing, unreadable, or
-   * its content is anything but a plain JSON object. Import and login listing
-   * share this read so the two never disagree about what the file holds.
-   */
-  private async readPcOpenCodeAuthFile(): Promise<Record<string, OpenCodeAuthFileEntry> | null> {
-    let content: string;
-    try {
-      content = await readFile(opencodePcAuthFilePath(homedir()), 'utf8');
-    } catch {
-      return null;
-    }
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(content);
-    } catch {
-      return null;
-    }
-    if (!isPlainRecord(parsed)) return null;
-    return parsed as Record<string, OpenCodeAuthFileEntry>;
   }
 
   /** Only `api`, `wellknown`, and `oauth` are known login types; everything else maps to `other`. */

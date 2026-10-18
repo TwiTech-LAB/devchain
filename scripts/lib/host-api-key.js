@@ -1,5 +1,6 @@
 const fs = require("node:fs");
-const { join } = require("node:path");
+const { basename, dirname, isAbsolute, join } = require("node:path");
+const { userInfo } = require("node:os");
 const { randomBytes, createHash } = require("node:crypto");
 
 const CLAIM_FILE = "claim.json";
@@ -7,24 +8,61 @@ const KEY_DIR_NAME = ".devchain";
 const KEY_FILE_NAME = "host-api-key";
 const KEY_PREFIX = "dck_";
 
-// The home path comes from the claim record, never from the runner's own ~,
-// because this command is also valid as root or another account.
-function readClaimRecord(env) {
-  const etcDir = env.DEVCHAIN_HOST_ETC_DIR || "/etc/devchain-host";
-  const claimFile = join(etcDir, CLAIM_FILE);
-  if (!fs.existsSync(claimFile)) return null;
-  const claim = JSON.parse(fs.readFileSync(claimFile, "utf8"));
-  if (!claim || typeof claim !== "object") {
+function readClaimRecord(claimFile, expectedUser) {
+  let raw;
+  try {
+    raw = fs.readFileSync(claimFile, "utf8");
+  } catch (error) {
+    if (error.code === "ENOENT") return null;
+    throw error;
+  }
+  const claim = JSON.parse(raw);
+  if (!claim || typeof claim !== "object" || Array.isArray(claim)) {
     throw new Error(`${claimFile} is not a valid claim record.`);
   }
   const { userName, homePath } = claim;
   if (typeof userName !== "string" || userName.length === 0) {
     throw new Error(`${claimFile} has no userName.`);
   }
-  if (typeof homePath !== "string" || homePath.length === 0) {
+  if (expectedUser && userName !== expectedUser) {
+    throw new Error(
+      `${claimFile} does not match instance user "${expectedUser}".`,
+    );
+  }
+  if (typeof homePath !== "string" || !isAbsolute(homePath)) {
     throw new Error(`${claimFile} has no homePath.`);
   }
   return { userName, homePath };
+}
+
+function readInstanceClaims(env) {
+  const etcDir = env.DEVCHAIN_HOST_ETC_DIR || "/etc/devchain-host";
+  const registryDir =
+    basename(dirname(etcDir)) === "instances"
+      ? dirname(dirname(etcDir))
+      : etcDir;
+  const legacy = readClaimRecord(join(registryDir, CLAIM_FILE));
+  const claims = legacy ? [legacy] : [];
+  let dirs;
+  try {
+    dirs = fs.readdirSync(join(registryDir, "instances"), {
+      withFileTypes: true,
+    });
+  } catch (error) {
+    if (error.code === "ENOENT") return claims;
+    throw error;
+  }
+  for (const dir of dirs) {
+    if (!dir.isDirectory() || !/^[a-z_][a-z0-9_-]{0,31}$/.test(dir.name)) {
+      throw new Error("Invalid instance registry directory.");
+    }
+    const claim = readClaimRecord(
+      join(registryDir, "instances", dir.name, CLAIM_FILE),
+      dir.name,
+    );
+    if (claim) claims.push(claim);
+  }
+  return claims;
 }
 
 function lookupUnixAccount(userName) {
@@ -61,20 +99,41 @@ function isSymbolicLink(filePath) {
 function runHostApiKeyReset({
   env = process.env,
   getuid = process.getuid,
+  getUserInfo = userInfo,
   lookupAccount = lookupUnixAccount,
   chownSync = fs.chownSync,
   log = console.log,
   error = console.error,
 } = {}) {
-  let claim;
+  if (typeof getuid !== "function") {
+    error("This command requires a Unix-like system.");
+    return 1;
+  }
+  const uid = getuid();
+  let caller;
+  let claims;
   try {
-    claim = readClaimRecord(env);
+    // sudo changes the process user; the SSH caller still selects the instance.
+    caller =
+      uid === 0 && env.SUDO_USER ? env.SUDO_USER : getUserInfo().username;
+    claims = readInstanceClaims(env);
   } catch (err) {
     error(`Cannot read the claim record: ${err.message}`);
     return 1;
   }
-  if (!claim) {
+  if (claims.length === 0) {
     error("This machine is not a claimed DevChain VM.");
+    return 1;
+  }
+  const claim = claims.find((record) => record.userName === caller);
+  if (!claim) {
+    const instanceUsers = claims
+      .map((record) => record.userName)
+      .sort()
+      .join(", ");
+    error(
+      `No DevChain instance belongs to "${caller}". Instance users: ${instanceUsers}. Run this command as an instance user, with sudo if needed.`,
+    );
     return 1;
   }
   const { userName, homePath } = claim;
@@ -85,13 +144,10 @@ function runHostApiKeyReset({
     return 1;
   }
 
-  if (typeof getuid !== "function") {
-    error("This command requires a Unix-like system.");
-    return 1;
-  }
-  const uid = getuid();
   if (uid !== account.uid && uid !== 0) {
-    error(`This command must run as ${userName} (the claimed user) or as root.`);
+    error(
+      `This command must run as ${userName} (the claimed user) or as root.`,
+    );
     return 1;
   }
 

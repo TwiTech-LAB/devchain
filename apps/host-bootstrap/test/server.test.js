@@ -6,9 +6,13 @@ const http = require("node:http");
 const https = require("node:https");
 const path = require("node:path");
 const fs = require("node:fs");
+const os = require("node:os");
 const { createBootstrap } = require("../lib/server");
+const { performClaim, readClaim } = require("../lib/claim");
+const { createInstanceSystem } = require("../lib/system");
+const { reserveJoin, readReservation } = require("../lib/instances");
 const { CERT_NAME } = require("../lib/tls");
-const { fakeSystem, fixtureTls, OTHER_TLS } = require("./helpers");
+const { fakeSystem, fixtureTls, OTHER_TLS, snapshot } = require("./helpers");
 
 const CLAIM = {
   userName: "alice",
@@ -71,6 +75,7 @@ async function start(t, options) {
   await new Promise((resolve) =>
     bootstrap.server.listen(0, "127.0.0.1", resolve),
   );
+  await bootstrap.ready;
   const { port } = bootstrap.server.address();
   t.after(() => bootstrap.server.close());
   const call = (method, urlPath, body) =>
@@ -272,4 +277,227 @@ test("the bootstrap does not start without the VM certificate", (t) => {
       error.code === "TLS_UNAVAILABLE" &&
       /has no certificate/.test(error.message),
   );
+});
+
+// The HTTPS seam exercises validation and handover with real claim filesystem work;
+// only OS commands are faked, so sibling file changes remain observable.
+test("a second HTTPS claim creates an independent instance and leaves the legacy instance unchanged", async (t) => {
+  const homeParent = /^\/(home|Users|var\/home)\//.test(os.homedir())
+    ? os.homedir()
+    : "/home";
+  const { sys, root, calls, cleanup } = fakeSystem({ rootParent: homeParent });
+  t.after(cleanup);
+  const legacyClaim = {
+    ...CLAIM,
+    homePath: path.join(root, "Users/alice"),
+    env: {},
+    files: [],
+  };
+  await performClaim(legacyClaim, sys, () => {});
+  const legacyPaths = [
+    path.join(sys.paths.etcDir, "claim.json"),
+    path.join(sys.paths.systemdDir, "devchain-host.service"),
+    path.join(sys.paths.sudoersDir, "devchain-host"),
+    path.join(sys.paths.installRoot, "versions"),
+    path.join(sys.paths.installRoot, "current"),
+    sys.paths.binDir,
+    sys.paths.cliPrefix,
+    sys.paths.tlsDir,
+  ];
+  const before = legacyPaths.map(snapshot);
+  const homePath = path.join(root, "Users/bob");
+  const reservation = await reserveJoin(
+    {
+      userName: "bob",
+      homePath,
+      port: legacyClaim.port,
+      requestId: "join-bob",
+    },
+    sys,
+  );
+  const own = createInstanceSystem(sys, "bob");
+  own.fetch = async (url) => {
+    assert.equal(url, `http://127.0.0.1:${reservation.port}/api/runtime`);
+    return { ok: true, json: async () => ({ version: "0.25.0" }) };
+  };
+  const { call, done } = await start(t, { sys: own });
+  const result = await call("POST", "/api/host/claim", {
+    userName: "bob",
+    homePath,
+    version: "0.25.0",
+    port: reservation.port,
+    nonce: reservation.nonce,
+  });
+  assert.equal(result.status, 200);
+  assert.equal(result.body.claimed, true);
+  assert.equal(readClaim(own).port, reservation.port);
+  assert.equal(await readReservation(own), null);
+  assert.equal(fs.existsSync(path.join(own.paths.etcDir, "join.nonce")), false);
+  assert.equal(
+    fs.readFileSync(path.join(own.paths.binDir, "devchain"), "utf8"),
+    "0.25.0",
+  );
+  assert.equal(
+    fs.readlinkSync(path.join(own.paths.installRoot, "current")),
+    "versions/0.25.0",
+  );
+  assert.equal(
+    fs.readFileSync(path.join(own.paths.binDir, "syncthing"), "utf8"),
+    "syncthing v2",
+  );
+  for (const name of ["claude", "codex", "copilot", "opencode", "agy"])
+    assert.equal(
+      fs.readlinkSync(path.join(own.paths.binDir, name)),
+      path.join(own.paths.cliPrefix, "bin", name),
+    );
+  for (const name of [
+    "devchain-bootstrap",
+    "devchain-host-update",
+    "devchain-host-project-root",
+  ])
+    assert.equal(
+      fs.readlinkSync(path.join(own.paths.binDir, name)),
+      path.join(own.paths.helperPrefix, "bin", name),
+    );
+  const unit = fs.readFileSync(
+    path.join(sys.paths.systemdDir, "devchain-user-bob.service"),
+    "utf8",
+  );
+  assert.match(unit, /^User=bob$/m);
+  assert.match(unit, /^Group=bob$/m);
+  assert.ok(unit.includes(`WorkingDirectory=${homePath}`));
+  assert.ok(unit.includes(`--port ${reservation.port}`));
+  assert.ok(
+    unit.includes(`ConditionPathExists=${own.paths.etcDir}/claim.json`),
+  );
+  assert.ok(
+    unit.includes(`Environment=DEVCHAIN_HOST_ETC_DIR=${own.paths.etcDir}`),
+  );
+  assert.ok(
+    unit.includes(`Environment=DEVCHAIN_HOST_BIN_DIR=${own.paths.binDir}`),
+  );
+  assert.ok(
+    unit.includes(
+      `Environment=DEVCHAIN_HOST_SYNCTHING_BINARY=${own.paths.binDir}/syncthing`,
+    ),
+  );
+  assert.ok(unit.includes(`Environment=PATH=${own.paths.binDir}:`));
+  assert.ok(
+    unit.includes(
+      `Environment=DEVCHAIN_HOST_TLS_KEY_FILE=${homePath}/.devchain/tls/key.pem`,
+    ),
+  );
+  assert.ok(
+    unit.includes(
+      `Environment=DEVCHAIN_HOST_TLS_CERT_FILE=${homePath}/.devchain/tls/cert.pem`,
+    ),
+  );
+  assert.doesNotMatch(unit, /^Conflicts=/m);
+  assert.deepEqual(
+    fs.readFileSync(path.join(homePath, ".devchain/tls/cert.pem")),
+    fixtureTls.cert,
+  );
+  const sudoers = fs.readFileSync(
+    path.join(sys.paths.sudoersDir, "devchain-user-bob"),
+    "utf8",
+  );
+  assert.match(sudoers, /^bob ALL=\(ALL\) NOPASSWD:ALL$/m);
+  assert.ok(sudoers.includes(`${own.paths.binDir}/devchain-host-update`));
+  assert.ok(sudoers.includes(`${own.paths.binDir}/devchain-host-project-root`));
+  assert.ok(
+    calls.some(
+      (call) =>
+        call[0] === "visudo" &&
+        call[2] === path.join(sys.paths.sudoersDir, "devchain-user-bob.new"),
+    ),
+  );
+  assert.ok(
+    calls.some(
+      (call) =>
+        call.join(" ") ===
+        "systemctl start --no-block devchain-user-bob.service",
+    ),
+  );
+  assert.deepEqual(legacyPaths.map(snapshot), before);
+  const profile = fs.readFileSync(
+    path.join(sys.paths.profileDir, "devchain-instance-path.sh"),
+    "utf8",
+  );
+  assert.ok(
+    profile.includes(`${sys.paths.installRoot}/instances/$(id -un)/bin`),
+  );
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(done, [true]);
+});
+
+test("join HTTPS validation refuses a wrong nonce, user, home or port before claiming", async (t) => {
+  const { sys, cleanup } = fakeSystem();
+  t.after(cleanup);
+  fs.writeFileSync(
+    path.join(sys.paths.etcDir, "claim.json"),
+    JSON.stringify({ ...CLAIM }),
+  );
+  const reservation = await reserveJoin(
+    {
+      userName: "bob",
+      homePath: "/Users/bob",
+      port: 3100,
+      requestId: "join-bob",
+    },
+    sys,
+  );
+  const own = createInstanceSystem(sys, "bob");
+  const { call } = await start(t, {
+    sys: own,
+    claimFn: async () => assert.fail("must not claim"),
+  });
+  for (const patch of [
+    { nonce: "a".repeat(64) },
+    { userName: "carol" },
+    { homePath: "/home/bob" },
+    { port: 3999 },
+  ]) {
+    const result = await call("POST", "/api/host/claim", {
+      ...reservation,
+      version: "0.25.0",
+      ...patch,
+    });
+    assert.equal(result.status, 403);
+    assert.equal(
+      result.body.code,
+      patch.nonce ? "INVALID_JOIN_NONCE" : "JOIN_BINDING_MISMATCH",
+    );
+    assert.equal(
+      JSON.stringify(result.body).includes(reservation.nonce),
+      false,
+    );
+  }
+  assert.equal((await call("GET", "/api/runtime")).body.state, "unclaimed");
+  assert.equal((await readReservation(own)).claimStartedAt, undefined);
+});
+
+test("the join bootstrap closes and exits when its unused reservation expires", async (t) => {
+  const { sys, cleanup } = fakeSystem();
+  t.after(cleanup);
+  fs.writeFileSync(
+    path.join(sys.paths.etcDir, "claim.json"),
+    JSON.stringify({ ...CLAIM }),
+  );
+  const reservation = await reserveJoin(
+    {
+      userName: "bob",
+      homePath: "/Users/bob",
+      port: 3100,
+      requestId: "join-bob",
+    },
+    sys,
+  );
+  const own = createInstanceSystem(sys, "bob");
+  const { bootstrap, done } = await start(t, { sys: own });
+  await bootstrap.checkExpiry();
+  own.now = () => new Date(reservation.expiresAt);
+  await bootstrap.checkExpiry();
+  assert.equal(bootstrap.server.listening, false);
+  assert.equal(await readReservation(own), null);
+  assert.deepEqual(done, [true]);
 });

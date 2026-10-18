@@ -16,6 +16,8 @@ export interface PricingServiceInterface {
   ): number;
   getCatalogContextWindowSize(model: string): number | null;
   getContextWindowSize(model: string): number;
+  /** Whether pricing data exists for the model. Absent means "treat as priced". */
+  hasPricing?(model: string): boolean;
 }
 
 /**

@@ -3,13 +3,17 @@ import { Button } from '@/ui/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/ui/components/ui/card';
 import type { AttentionAction, AttentionItem } from './remote-status';
 
-/** What needs the user first: errors, then warnings, each with at most one button. */
+/** What needs the user first: errors, then warnings and received VM notices. */
 export function NeedsAttention({
   items,
   onAction,
+  dismissPending = false,
+  dismissError = null,
 }: {
   items: AttentionItem[];
   onAction: (action: AttentionAction) => void;
+  dismissPending?: boolean;
+  dismissError?: string | null;
 }) {
   return (
     <Card>
@@ -42,15 +46,32 @@ export function NeedsAttention({
                     />
                     <span className="break-words">{item.text}</span>
                   </p>
-                  {item.action && (
-                    <Button size="sm" variant="outline" onClick={() => onAction(item.action!)}>
-                      {item.action.label}
-                    </Button>
-                  )}
+                  <div className="flex flex-wrap gap-2">
+                    {item.action && (
+                      <Button size="sm" variant="outline" onClick={() => onAction(item.action!)}>
+                        {item.action.label}
+                      </Button>
+                    )}
+                    {item.secondaryAction && (
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        disabled={dismissPending}
+                        onClick={() => onAction(item.secondaryAction!)}
+                      >
+                        {item.secondaryAction.label}
+                      </Button>
+                    )}
+                  </div>
                 </li>
               );
             })}
           </ul>
+        )}
+        {dismissError && (
+          <p role="alert" className="mt-2 text-sm text-destructive">
+            {dismissError}
+          </p>
         )}
       </CardContent>
     </Card>

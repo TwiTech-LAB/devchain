@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { ProviderUsageSettingsSchema } from '@devchain/shared';
 import {
   MIN_TERMINAL_SCROLLBACK,
   MAX_TERMINAL_SCROLLBACK,
@@ -152,6 +153,7 @@ export const SettingsSchema = z.object({
   autoClean: AutoCleanSettingsSchema.optional(),
   messagePool: MessagePoolSettingsSchema.optional(),
   messaging: MessagingSettingsSchema.optional(),
+  providerUsage: ProviderUsageSettingsSchema.partial().optional(),
   // Registry configuration
   registry: RegistryConfigSchema.optional(),
   // Skills configuration

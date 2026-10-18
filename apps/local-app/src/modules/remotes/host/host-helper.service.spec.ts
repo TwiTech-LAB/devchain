@@ -63,16 +63,22 @@ describe('HostHelperService', () => {
     expect(run).not.toHaveBeenCalled();
   });
 
-  it('runs the update helper through sudo without a password prompt', async () => {
-    claim();
-    helperAnswers('{"requested":"1.2.3"}\n');
-    await service.requestUpdate('1.2.3');
-    expect(run).toHaveBeenCalledWith({
-      argv: ['sudo', '-n', '/opt/helpers/devchain-host-update', '1.2.3'],
-      mode: 'pipe',
-      timeout: expect.any(Number),
-    });
-  });
+  it.each([
+    { registry: undefined, registryArgs: [] },
+    { registry: 'http://lan.test:4873/', registryArgs: ['--registry', 'http://lan.test:4873/'] },
+  ])(
+    'runs the update helper through sudo without a password prompt (registry $registry)',
+    async ({ registry, registryArgs }) => {
+      claim();
+      helperAnswers('{"requested":"1.2.3"}\n');
+      await service.requestUpdate('1.2.3', registry);
+      expect(run).toHaveBeenCalledWith({
+        argv: ['sudo', '-n', '/opt/helpers/devchain-host-update', '1.2.3', ...registryArgs],
+        mode: 'pipe',
+        timeout: expect.any(Number),
+      });
+    },
+  );
 
   it('returns the project root the helper created', async () => {
     claim();
@@ -138,7 +144,18 @@ describe('HostHelperService', () => {
     expect(service.readDockerStatus()).toBeNull();
   });
 
-  it('names the manual migration when an older helper rejects --docker as a version', async () => {
+  it.each([
+    [
+      '/usr/local/bin',
+      'sudo npm install -g /opt/devchain-host/current/lib/node_modules/devchain-cli/dist/host-install/devchain-host-bootstrap.tgz',
+    ],
+    [
+      '/opt/devchain-host/instances/alice/bin',
+      "sudo npm install -g --prefix '/opt/devchain-host/instances/alice/helper' '/opt/devchain-host/instances/alice/current/lib/node_modules/devchain-cli/dist/host-install/devchain-host-bootstrap.tgz'",
+    ],
+  ])('names the own helper migration for %s', async (binDir, migration) => {
+    process.env.DEVCHAIN_HOST_BIN_DIR = binDir;
+    resetEnvConfig();
     claim();
     helperAnswers('', {
       code: 2,
@@ -146,9 +163,7 @@ describe('HostHelperService', () => {
     });
     await expect(service.requestDocker()).rejects.toMatchObject({
       details: { code: 'HOST_HELPER_OUTDATED' },
-      message: expect.stringContaining(
-        'sudo npm install -g /opt/devchain-host/current/lib/node_modules/devchain-cli/dist/host-install/devchain-host-bootstrap.tgz',
-      ),
+      message: `The host helper needs one manual migration: ${migration}`,
     });
   });
 });

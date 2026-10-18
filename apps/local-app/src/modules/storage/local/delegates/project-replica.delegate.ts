@@ -23,6 +23,8 @@ import { createLogger } from '../../../../common/logging/logger';
 import { normalizeEnvForStorage } from '../helpers/storage-helpers';
 import type { PreparedEvent } from '../../../events/services/durable-event-registry.service';
 import { BaseStorageDelegate, type StorageDelegateContext } from './base-storage.delegate';
+import { assertVmImportAllowed } from '../../../../common/config/vm-destroy-fence';
+import { clearAbandonedProjects } from '../helpers/host-abandoned-projects';
 
 const logger = createLogger('ProjectReplicaStorageDelegate');
 
@@ -65,8 +67,15 @@ export class ProjectReplicaStorageDelegate
       throw new ReplicaApplyError('payload', issue?.path.join('.') ?? '', 'invalid payload');
     }
     return this.txRunner.runImmediateQueued(() => {
+      if (options.frozenAt !== undefined) assertVmImportAllowed();
       if (options.requireNewProjects) this.assertProjectsAreNew(parsed.data);
       const summaries = new ReplicaApplyRun(this.rawClient, parsed.data, mode, options).execute();
+      if (options.frozenAt !== undefined) {
+        clearAbandonedProjects(
+          this.rawClient,
+          parsed.data.tables.projects.map(({ id }) => id),
+        );
+      }
       for (const summary of summaries) {
         this.dependencies.appendEvent(eventFactory(summary));
       }

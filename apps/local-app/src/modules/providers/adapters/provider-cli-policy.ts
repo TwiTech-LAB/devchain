@@ -1,3 +1,5 @@
+import type { OpencodeCliVersion } from './opencode-cli-version';
+
 export interface ProviderCliNoUpdateOptions {
   env: Record<string, string>;
   args: string[];
@@ -48,4 +50,21 @@ export function applyProviderCliNoUpdate(
 ): ProviderCliNoUpdateCommand {
   const policy = getProviderCliNoUpdateOptions(providerName, baseEnv);
   return { argv: [argv[0], ...policy.args, ...argv.slice(1)], env: policy.env };
+}
+
+/**
+ * The single place that adds the OpenCode 2 `--standalone` flag: without it every
+ * v2 command starts a per-user daemon that outlives the CLI. `argv` includes the
+ * executable.
+ */
+export function opencodeV2CommandArgs(argv: readonly string[]): string[] {
+  return [...argv, '--standalone'];
+}
+
+/** `argv` for the probed version; v1 rejects `--standalone`, so its argv is returned unchanged. */
+export function opencodeCommandArgs(
+  version: Pick<OpencodeCliVersion, 'major'>,
+  argv: readonly string[],
+): string[] {
+  return version.major >= 2 ? opencodeV2CommandArgs(argv) : [...argv];
 }

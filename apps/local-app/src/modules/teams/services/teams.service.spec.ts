@@ -4,6 +4,7 @@ import {
   NotFoundError,
   ConflictError,
   ForbiddenError,
+  ProjectFrozenError,
 } from '../../../common/errors/error-types';
 import { STORAGE_SERVICE } from '../../storage/interfaces/storage.interface';
 import type { Agent, AgentProfile, Team, TeamMember } from '../../storage/models/domain.models';
@@ -11,9 +12,14 @@ import { TeamsStore } from '../storage/teams.store';
 import { TeamsService } from './teams.service';
 import { EventsService } from '../../events/services/events.service';
 import { SessionsService } from '../../sessions/services/sessions.service';
+import { SessionLifecycleFacade } from '../../sessions/services/session-lifecycle-facade.service';
+import { ActiveSessionLookup } from '../../sessions/services/active-session-lookup.service';
+import { MessageEnqueueService } from '../../sessions/services/message-enqueue.service';
+import { ProviderAdapterFactory } from '../../providers/adapters/provider-adapter.factory';
 import { SettingsService } from '../../settings/services/settings.service';
 import { ProjectWriteGate } from '../../storage/write-gate/project-write-gate';
 import { createProjectWriteGateStub } from '../../storage/write-gate/testing/project-write-gate.stub';
+import type { ActiveSessionInfo } from '../../session-terminal-runtime/dtos/active-session-info.dto';
 
 const PROJECT_ID = 'project-1';
 const AGENT_A = 'agent-a';
@@ -115,6 +121,13 @@ describe('TeamsService', () => {
   let settingsService: {
     removeAgentFromProjectPresets: jest.Mock;
   };
+  let sessionLifecycle: jest.Mocked<Pick<SessionLifecycleFacade, 'restart' | 'terminate'>>;
+  let activeSessionLookup: jest.Mocked<Pick<ActiveSessionLookup, 'getActiveSession'>>;
+  let messageEnqueue: jest.Mocked<Pick<MessageEnqueueService, 'enqueue'>>;
+  let providerAdapterFactory: jest.Mocked<
+    Pick<ProviderAdapterFactory, 'isSupported' | 'getAdapter'>
+  >;
+  let gate: ReturnType<typeof createProjectWriteGateStub>;
 
   beforeEach(async () => {
     teamsStore = {
@@ -178,19 +191,41 @@ describe('TeamsService', () => {
       terminateSession: jest.fn().mockResolvedValue(undefined),
     };
 
+    sessionLifecycle = {
+      restart: jest.fn().mockResolvedValue({ id: 'new-session' }),
+      terminate: jest.fn().mockResolvedValue(undefined),
+    };
+    activeSessionLookup = { getActiveSession: jest.fn().mockResolvedValue(null) };
+    messageEnqueue = {
+      enqueue: jest.fn().mockResolvedValue([{ agentId: AGENT_B, status: 'delivered' }]),
+    };
+    providerAdapterFactory = {
+      isSupported: jest.fn().mockReturnValue(true),
+      getAdapter: jest.fn().mockReturnValue({
+        providerName: 'claude',
+        buildLaunchArgs: () => ({ argv: [] }),
+        sessionCommands: { compact: '/compact' },
+      }),
+    };
+    gate = createProjectWriteGateStub();
+
     settingsService = {
       removeAgentFromProjectPresets: jest.fn().mockResolvedValue(undefined),
     };
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
-        { provide: ProjectWriteGate, useValue: createProjectWriteGateStub() },
+        { provide: ProjectWriteGate, useValue: gate },
         TeamsService,
         { provide: TeamsStore, useValue: teamsStore },
         { provide: STORAGE_SERVICE, useValue: storageService },
         { provide: EventsService, useValue: eventsService },
         { provide: SessionsService, useValue: sessionsService },
         { provide: SettingsService, useValue: settingsService },
+        { provide: SessionLifecycleFacade, useValue: sessionLifecycle },
+        { provide: ActiveSessionLookup, useValue: activeSessionLookup },
+        { provide: MessageEnqueueService, useValue: messageEnqueue },
+        { provide: ProviderAdapterFactory, useValue: providerAdapterFactory },
       ],
     }).compile();
 
@@ -1611,6 +1646,271 @@ describe('TeamsService', () => {
           teamLeadAgentName: `Agent-${AGENT_A}`,
         }),
       );
+    });
+  });
+
+  // Module-unit: mocked lifecycle and delivery boundaries expose authorization and action contracts without I/O.
+  describe('controlTeamMemberSession', () => {
+    const team = makeTeam();
+    const input = {
+      leadAgentId: AGENT_A,
+      projectId: PROJECT_ID,
+      name: `Agent-${AGENT_B}`,
+    };
+    const activeSession: ActiveSessionInfo = {
+      sessionId: 'old-session',
+      agentId: AGENT_B,
+      projectId: PROJECT_ID,
+      status: 'running',
+      tmuxSessionId: 'tmux-old',
+      startedAt: '2026-01-01T00:00:00.000Z',
+      lastActivityAt: null,
+      activityState: 'busy',
+      providerNameAtLaunch: 'claude',
+    };
+
+    beforeEach(() => {
+      teamsStore.getTeamLeadTeams.mockResolvedValue([team]);
+      teamsStore.getTeam.mockResolvedValue(
+        makeTeamWithMembers({}, [makeMember(team.id, AGENT_A), makeMember(team.id, AGENT_B)]),
+      );
+      teamsStore.listTeamsByAgent.mockResolvedValue([team]);
+      activeSessionLookup.getActiveSession.mockResolvedValue(activeSession);
+    });
+
+    // deleteTeamAgent covers the shared led-team and name-match guards; these rows cover control wording.
+    it.each([
+      {
+        guard: 'team-disappeared',
+        code: 'TEAM_NOT_FOUND_OR_NOT_LED',
+        message: 'Team no longer exists',
+      },
+      {
+        guard: 'self',
+        code: 'CANNOT_CONTROL_TEAM_LEAD',
+        message: 'Cannot control "Agent-agent-a" — they are the team lead of "Test Team"',
+      },
+      {
+        guard: 'other-lead',
+        code: 'TARGET_LEADS_OTHER_TEAM',
+        message: 'Cannot control "Agent-agent-b" — they lead team "Other Team"',
+      },
+      {
+        guard: 'other-member',
+        code: 'TARGET_BELONGS_TO_OTHER_TEAM',
+        message:
+          'Cannot control "Agent-agent-b" — they also belong to team "Other Team". Remove them from that team first.',
+      },
+    ])('refuses $guard with $code before any session change', async ({ guard, code, message }) => {
+      const request: Parameters<TeamsService['controlTeamMemberSession']>[0] = {
+        ...input,
+        action: 'stop',
+      };
+      if (guard === 'team-disappeared') teamsStore.getTeam.mockResolvedValue(null);
+      else if (guard === 'self') request.name = `Agent-${AGENT_A}`;
+      else {
+        teamsStore.listTeamsByAgent.mockResolvedValue([
+          team,
+          makeTeam({
+            id: 'other-team',
+            name: 'Other Team',
+            teamLeadAgentId: guard === 'other-lead' ? AGENT_B : AGENT_C,
+          }),
+        ]);
+      }
+
+      expect(await service.controlTeamMemberSession(request)).toEqual({
+        error: { code, message },
+      });
+      expect(activeSessionLookup.getActiveSession).not.toHaveBeenCalled();
+      expect(sessionLifecycle.terminate).not.toHaveBeenCalled();
+      expect(sessionLifecycle.restart).not.toHaveBeenCalled();
+      expect(messageEnqueue.enqueue).not.toHaveBeenCalled();
+    });
+
+    it('refuses a non-writable project before resolving or changing a session', async () => {
+      const error = new ProjectFrozenError(PROJECT_ID);
+      gate.assertWritable.mockImplementation(() => {
+        throw error;
+      });
+
+      await expect(service.controlTeamMemberSession({ ...input, action: 'compact' })).rejects.toBe(
+        error,
+      );
+      expect(gate.assertWritable).toHaveBeenCalledWith(PROJECT_ID);
+      expect(teamsStore.getTeamLeadTeams).not.toHaveBeenCalled();
+      expect(sessionLifecycle.terminate).not.toHaveBeenCalled();
+      expect(sessionLifecycle.restart).not.toHaveBeenCalled();
+      expect(messageEnqueue.enqueue).not.toHaveBeenCalled();
+    });
+
+    it('stops a busy member after trimmed, case-insensitive team and agent matching', async () => {
+      teamsStore.getTeamLeadTeams.mockResolvedValue([
+        { ...team, allowTeamLeadCreateAgents: false },
+        makeTeam({ id: 'other-team', name: 'Other Team' }),
+      ]);
+      teamsStore.getTeam.mockResolvedValue(
+        makeTeamWithMembers({ allowTeamLeadCreateAgents: false }, [
+          makeMember(team.id, AGENT_A),
+          makeMember(team.id, AGENT_B),
+        ]),
+      );
+      const result = await service.controlTeamMemberSession({
+        ...input,
+        name: '  aGeNt-aGeNt-B  ',
+        teamName: '  tEsT TeAm  ',
+        action: 'stop',
+      });
+
+      expect(result).toEqual({
+        result: {
+          agentId: AGENT_B,
+          action: 'stop',
+          performedAs: 'stop',
+          previousSessionId: 'old-session',
+        },
+      });
+      expect(sessionLifecycle.terminate).toHaveBeenCalledWith('old-session', {
+        source: 'team-management',
+      });
+      expect(sessionLifecycle.restart).not.toHaveBeenCalled();
+      expect(messageEnqueue.enqueue).not.toHaveBeenCalled();
+    });
+
+    it.each(['stop', 'compact'] as const)(
+      'returns NO_ACTIVE_SESSION for %s without a session',
+      async (action) => {
+        activeSessionLookup.getActiveSession.mockResolvedValue(null);
+
+        expect(await service.controlTeamMemberSession({ ...input, action })).toEqual({
+          error: { code: 'NO_ACTIVE_SESSION', message: 'No active session for "Agent-agent-b"' },
+        });
+        expect(sessionLifecycle.terminate).not.toHaveBeenCalled();
+        expect(sessionLifecycle.restart).not.toHaveBeenCalled();
+        expect(messageEnqueue.enqueue).not.toHaveBeenCalled();
+      },
+    );
+
+    it.each([true, false])(
+      'restarts the member with existingSession=%s',
+      async (existingSession) => {
+        if (!existingSession) activeSessionLookup.getActiveSession.mockResolvedValue(null);
+
+        expect(await service.controlTeamMemberSession({ ...input, action: 'restart' })).toEqual({
+          result: {
+            agentId: AGENT_B,
+            action: 'restart',
+            performedAs: 'restart',
+            sessionId: 'new-session',
+            ...(existingSession ? { previousSessionId: 'old-session' } : {}),
+          },
+        });
+        expect(sessionLifecycle.restart).toHaveBeenCalledWith(AGENT_B, PROJECT_ID, {
+          source: 'team-management',
+        });
+        expect(sessionLifecycle.terminate).not.toHaveBeenCalled();
+        expect(messageEnqueue.enqueue).not.toHaveBeenCalled();
+      },
+    );
+
+    it('returns RESTART_FAILED when restart leaves the previous session running', async () => {
+      sessionLifecycle.restart.mockResolvedValue({ id: 'old-session' } as Awaited<
+        ReturnType<SessionLifecycleFacade['restart']>
+      >);
+
+      expect(await service.controlTeamMemberSession({ ...input, action: 'restart' })).toEqual({
+        error: {
+          code: 'RESTART_FAILED',
+          message: 'Could not restart "Agent-agent-b" — the previous session is still active',
+        },
+      });
+    });
+
+    it('compacts using the running provider command and the exact-session guard', async () => {
+      activeSessionLookup.getActiveSession.mockResolvedValue({
+        ...activeSession,
+        providerNameAtLaunch: 'codex',
+      });
+      storageService.getProfileProviderConfig.mockResolvedValue({ providerName: 'copilot' });
+      const adapter = {
+        providerName: 'codex',
+        buildLaunchArgs: () => ({ argv: [] }),
+        sessionCommands: { compact: '/provider-compact' },
+      };
+      providerAdapterFactory.getAdapter.mockReturnValue(adapter);
+
+      expect(await service.controlTeamMemberSession({ ...input, action: 'compact' })).toEqual({
+        result: {
+          agentId: AGENT_B,
+          action: 'compact',
+          performedAs: 'command',
+          sessionId: 'old-session',
+          deliveryStatus: 'delivered',
+        },
+      });
+      expect(providerAdapterFactory.getAdapter).toHaveBeenCalledWith('codex');
+      expect(storageService.getProfileProviderConfig).not.toHaveBeenCalled();
+      expect(messageEnqueue.enqueue).toHaveBeenCalledWith([
+        {
+          agentId: AGENT_B,
+          text: '/provider-compact',
+          source: 'team.session_control',
+          submitKeys: ['Enter'],
+          deliveryMode: 'immediate',
+          projectId: PROJECT_ID,
+          senderAgentId: AGENT_A,
+          commandGuard: { sessionId: 'old-session' },
+        },
+      ]);
+      expect(sessionLifecycle.restart).not.toHaveBeenCalled();
+      expect(sessionLifecycle.terminate).not.toHaveBeenCalled();
+    });
+
+    it.each(['null-provider', 'undeclared', 'missing-command', 'unknown-provider'])(
+      'returns COMPACT_UNSUPPORTED for %s without restarting',
+      async (scenario) => {
+        if (scenario === 'null-provider') {
+          activeSessionLookup.getActiveSession.mockResolvedValue({
+            ...activeSession,
+            providerNameAtLaunch: null,
+          });
+        } else if (scenario === 'unknown-provider') {
+          providerAdapterFactory.isSupported.mockReturnValue(false);
+        } else {
+          const adapter = {
+            providerName: 'copilot',
+            buildLaunchArgs: () => ({ argv: [] }),
+            ...(scenario === 'missing-command' ? { sessionCommands: {} } : {}),
+          };
+          providerAdapterFactory.getAdapter.mockReturnValue(adapter);
+        }
+
+        expect(await service.controlTeamMemberSession({ ...input, action: 'compact' })).toEqual({
+          error: {
+            code: 'COMPACT_UNSUPPORTED',
+            message: 'The provider for "Agent-agent-b" does not support compaction',
+          },
+        });
+        expect(messageEnqueue.enqueue).not.toHaveBeenCalled();
+        expect(sessionLifecycle.restart).not.toHaveBeenCalled();
+        expect(sessionLifecycle.terminate).not.toHaveBeenCalled();
+      },
+    );
+
+    it.each([
+      { error: 'SESSION_CHANGED', code: 'SESSION_CHANGED' },
+      { error: 'AGENT_BUSY', code: 'AGENT_BUSY' },
+      { error: 'HUMAN_TYPING', code: 'HUMAN_TYPING' },
+      { error: 'tmux error with internal provider details', code: 'DELIVERY_FAILED' },
+      { error: undefined, code: 'DELIVERY_FAILED' },
+    ])('maps compact failure $error to $code without restarting', async ({ error, code }) => {
+      messageEnqueue.enqueue.mockResolvedValue([{ agentId: AGENT_B, status: 'failed', error }]);
+
+      expect(await service.controlTeamMemberSession({ ...input, action: 'compact' })).toEqual({
+        error: { code, message: 'Could not deliver the compact command to "Agent-agent-b"' },
+      });
+      expect(sessionLifecycle.restart).not.toHaveBeenCalled();
+      expect(sessionLifecycle.terminate).not.toHaveBeenCalled();
     });
   });
 

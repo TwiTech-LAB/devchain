@@ -1,3 +1,4 @@
+import { sharedVmGuardStub } from '../../../common/test/shared-vm.stub';
 import { VmOperationsService } from './vm-operations.service';
 
 jest.mock('../../../common/logging/logger', () => ({
@@ -22,6 +23,7 @@ function service(refresh: jest.Mock) {
     { forConnection: jest.fn().mockResolvedValue(provider) } as never,
     lifecycle as never,
     { refresh } as never,
+    sharedVmGuardStub(),
   );
   return { vmOperations, lifecycle };
 }

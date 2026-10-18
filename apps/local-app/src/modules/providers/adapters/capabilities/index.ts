@@ -14,7 +14,10 @@ export type {
   ProvisioningWarningItem,
   ProjectMcpSettingsCapability,
   ProviderPluginCapability,
+  ProviderPluginCatalogResult,
+  ProviderPluginCatalogSource,
   TranscriptDiscoveryCapability,
+  SessionCommandCapability,
   GlobalMcpConfigCapability,
 } from './type-guards';
 export {
@@ -28,5 +31,6 @@ export {
   isProjectProvisioningCapable,
   isProjectMcpSettingsCapable,
   isTranscriptDiscoveryCapable,
+  isSessionCommandCapable,
   isProviderPluginCapable,
 } from './type-guards';

@@ -4,6 +4,7 @@ import {
   TeamsConfigsListParamsSchema,
   TeamsCreateAgentParamsSchema,
   TeamsDeleteAgentParamsSchema,
+  TeamsSessionControlParamsSchema,
   DevchainTeamParamsSchema,
 } from '../dtos/mcp.dto';
 import type { ToolMetadataEntry } from './types';
@@ -127,6 +128,40 @@ export const teamMetadata: ToolMetadataEntry[] = [
       additionalProperties: false,
     },
     paramsSchema: TeamsDeleteAgentParamsSchema,
+  },
+  {
+    name: 'devchain_teams_session_control',
+    description:
+      'Control the session of a member of a team that you lead. Restricted to team leads. Actions:\n' +
+      "- `restart`: end the member's session and start a new one. The new session has a fresh context, the same as a clear command. Use `restart` when you need to clear the member's context. If no session runs, `restart` starts one.\n" +
+      "- `compact`: type the compact command of the member's CLI. The member must be idle. Returns `AGENT_BUSY` if the member is busy, and `COMPACT_UNSUPPORTED` if the member's CLI has no supported compact command. Compact can fail at a hard context limit. Use `restart` then.\n" +
+      "- `stop`: end the member's session. This is not permanent: a later message to the member starts it again.\n\n" +
+      'You cannot control yourself or another team lead.',
+    inputSchema: {
+      type: 'object',
+      required: ['sessionId', 'name', 'action'],
+      properties: {
+        sessionId: {
+          type: 'string',
+          description: 'Session ID (full UUID or 8+ char prefix)',
+        },
+        name: {
+          type: 'string',
+          description: 'Name of the team member (trimmed, case-insensitive)',
+        },
+        action: {
+          type: 'string',
+          enum: ['restart', 'compact', 'stop'],
+          description: 'restart (fresh context; use it to clear), compact, or stop',
+        },
+        teamName: {
+          type: 'string',
+          description: 'Team name — required if you lead multiple teams',
+        },
+      },
+      additionalProperties: false,
+    },
+    paramsSchema: TeamsSessionControlParamsSchema,
   },
   {
     name: 'devchain_team',

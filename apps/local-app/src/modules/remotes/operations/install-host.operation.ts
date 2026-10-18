@@ -11,6 +11,7 @@ import {
   SshRunner,
   type SshCredentials,
   type SshSession,
+  type SshCommandResult,
 } from '../host-install/ssh-runner';
 import { ClaimOperation, type ClaimDetails } from './claim.operation';
 import { MIN_HOST_IMAGE_VERSION, isSupportedHostImage } from '../host-image';
@@ -27,9 +28,6 @@ import {
 import type { RemoteOperation } from '../../storage/models/domain.models';
 
 const logger = createLogger('InstallHostOperation');
-const INSTALL_LOG = '/var/log/devchain-host-install.log';
-const INSTALL_EXIT = '/run/devchain-host-install.exit';
-const INSTALL_UNIT = 'devchain-host-install';
 const PEM_CERTIFICATE =
   /^-----BEGIN CERTIFICATE-----\r?\n[A-Za-z0-9+/=\r\n]+-----END CERTIFICATE-----$/;
 // sudo's password and authentication failures; anything else (not a sudoer, no sudo) is shown as is.
@@ -51,6 +49,10 @@ const DEFAULT_TIMING: InstallHostTiming = {
 };
 
 export interface InstallHostDetails extends ClaimDetails {
+  mode?: 'install' | 'join';
+  joinExpiresAt?: string;
+  joinInstallStarted?: boolean;
+  requestedPort?: number;
   address: string;
   sshUser: string;
   sshAuthKind: 'password' | 'key';
@@ -121,11 +123,25 @@ export class InstallHostOperation implements RemoteOperationDefinition {
     this.forget(operation.id);
   }
 
-  retryFrom(operation: RemoteOperation): string | null {
+  async retryFrom(operation: RemoteOperation): Promise<string | null> {
     // A failed cancel leaves its controller aborted; a retry starts clean.
     this.cancellations.delete(operation.id);
+    const details = operation.details as unknown as InstallHostDetails;
+    if (details.mode === 'join' && !details.claimed) {
+      if (stepStarted(operation, 'claim_claim') || !this.claim.hasJoinNonce(operation.id))
+        return 'install';
+      const runtime = details.tlsCertificate
+        ? await this.host.runtimeAt(details.bootstrapUrl, details.tlsCertificate).catch(() => null)
+        : null;
+      if (!runtime) return 'install';
+    }
     const retry = this.claim.retryFrom(claimOperation(operation));
     return retry ? `claim_${retry}` : null;
+  }
+
+  resumeFrom(operation: RemoteOperation): string | null {
+    const details = operation.details as unknown as InstallHostDetails;
+    return details.mode === 'join' && !details.claimed ? 'install' : null;
   }
 
   async rollback(operation: RemoteOperation): Promise<void> {
@@ -134,7 +150,34 @@ export class InstallHostOperation implements RemoteOperationDefinition {
       const credentials = this.requireCredentials(operation.id);
       await this.ssh.withSession(
         { host: details.address, credentials, expectedFingerprint: requireFingerprint(details) },
-        (session) => this.stopInstall(session, credentials, details),
+        (session) => this.stopInstall(session, credentials, details, operation.id),
+      );
+    }
+    if (details.mode === 'join' && details.joinRequestId && details.joinInstallStarted) {
+      const credentials = this.requireCredentials(operation.id);
+      await this.ssh.withSession(
+        { host: details.address, credentials, expectedFingerprint: requireFingerprint(details) },
+        async (session) => {
+          const ownClaim = await session.exec(
+            privilegedCommand(
+              credentials,
+              `test ! -f ${shellQuote(joinedInstancePaths(details.userName).claim)}`,
+            ),
+            sudoInput(credentials),
+          );
+          if (ownClaim.code !== 0)
+            throw new RemoteOperationStepRefusedError(
+              'CLAIM_STARTED',
+              'The joined instance is already claimed; cancelling it is refused.',
+            );
+          const result = await this.joinCommand(session, credentials, details, '--cancel-join');
+          if (result.code !== 0)
+            throw joinRefusal(
+              result,
+              'HOST_JOIN_CANCEL_FAILED',
+              'Could not cancel the VM join; restore SSH access and cancel again.',
+            );
+        },
       );
     }
     await this.claim.rollback(claimOperation(operation));
@@ -157,7 +200,6 @@ export class InstallHostOperation implements RemoteOperationDefinition {
     signal.throwIfAborted();
     install.checkWarnings = [];
     const credentials = this.requireCredentials(operation.id);
-    const block = await this.renderBlock(install, true);
     const collidingHome = await this.ssh.withSession(
       {
         host: install.address,
@@ -166,17 +208,57 @@ export class InstallHostOperation implements RemoteOperationDefinition {
       },
       async (session) => {
         await this.probeSudo(session, credentials, signal);
+        const state = await session.exec(
+          privilegedCommand(
+            credentials,
+            "sh -c 'if test -f /etc/devchain-host/claim.json; then printf __DEVCHAIN_HOST_STATE__claimed; else printf __DEVCHAIN_HOST_STATE__unclaimed; fi'",
+          ),
+          sudoInput(credentials),
+          { signal, capture: 'private' },
+        );
+        if (
+          state.code !== 0 ||
+          !['__DEVCHAIN_HOST_STATE__claimed', '__DEVCHAIN_HOST_STATE__unclaimed'].includes(
+            state.stdout.trim(),
+          )
+        )
+          throw new RemoteOperationStepRefusedError(
+            'HOST_INSTALL_CHECK_FAILED',
+            'Could not inspect the VM claim state.',
+          );
+        install.mode =
+          state.stdout.trim() === '__DEVCHAIN_HOST_STATE__claimed' ? 'join' : 'install';
+        if (install.mode === 'join') {
+          install.joinRequestId = operation.id;
+          install.requestedPort ??= install.port;
+        }
+        const block = await this.renderBlock(install, true);
         const path = await session.uploadTemp(block, { signal });
         const result = await session.exec(
           privilegedCommand(credentials, `bash ${shellQuote(path)} --check`),
           sudoInput(credentials),
-          { timeoutMs: HOST_INSTALL_PREFLIGHT_TIMEOUT_MS, signal },
+          {
+            timeoutMs: HOST_INSTALL_PREFLIGHT_TIMEOUT_MS,
+            signal,
+            ...(install.mode === 'join' ? { capture: 'private' as const } : {}),
+          },
         );
         install.checkWarnings = `${result.stdout}\n${result.stderr}`
           .split(/\r?\n/)
           .filter((line) => line.startsWith('WARNING: '))
           .map((line) => line.slice('WARNING: '.length));
         if (result.code !== 0) {
+          if (install.mode === 'join') {
+            const refusal = parseJoinError(result);
+            if (refusal?.code === 'HOST_INSTALL_ACCOUNT_COLLISION')
+              return refusal.accountHome ?? 'another folder';
+            return {
+              joinError: refusal ?? {
+                code: 'HOST_JOIN_CHECK_FAILED',
+                message: 'The VM refused the join check.',
+              },
+            };
+          }
           const refusal = tail(`${result.stdout}\n${result.stderr}`.trim(), 2_000);
           throw new RemoteOperationStepRefusedError(
             'HOST_INSTALL_CHECK_FAILED',
@@ -207,6 +289,11 @@ export class InstallHostOperation implements RemoteOperationDefinition {
     );
     // Thrown outside withSession: its error scrubbing would redact this PC's user name and
     // home whenever they equal an SSH or sudo password.
+    if (collidingHome && typeof collidingHome === 'object')
+      throw new RemoteOperationStepRefusedError(
+        collidingHome.joinError.code,
+        collidingHome.joinError.message,
+      );
     if (collidingHome !== undefined) {
       throw new RemoteOperationStepRefusedError(
         'HOST_INSTALL_ACCOUNT_COLLISION',
@@ -255,6 +342,10 @@ export class InstallHostOperation implements RemoteOperationDefinition {
   private async install({ operation, details, progress }: RemoteOperationStepRun): Promise<void> {
     const install = details as unknown as InstallHostDetails;
     const credentials = this.requireCredentials(operation.id);
+    if (install.mode === 'join') {
+      await this.installJoin({ operation, details, progress }, credentials);
+      return;
+    }
     const block = await this.renderBlock(install, false);
     const { signal } = this.cancellation(operation.id);
     signal.throwIfAborted();
@@ -267,12 +358,18 @@ export class InstallHostOperation implements RemoteOperationDefinition {
       },
       async (session) => {
         try {
-          const status = await this.installStatus(session, credentials, deadline, signal);
+          const status = await this.installStatus(
+            session,
+            credentials,
+            deadline,
+            signal,
+            operation.id,
+          );
           if (status === 'absent') {
             const path = await session.uploadTemp(block, { deadlineAt: deadline, signal });
             signal.throwIfAborted();
             const start = await session.exec(
-              privilegedCommand(credentials, detachedInstallCommand(path)),
+              privilegedCommand(credentials, detachedInstallCommand(path, operation.id)),
               sudoInput(credentials),
               { deadlineAt: deadline, timeoutMs: 5_000 },
             );
@@ -284,13 +381,13 @@ export class InstallHostOperation implements RemoteOperationDefinition {
               );
             }
           }
-          await this.waitForInstall(session, credentials, progress, deadline, signal);
+          await this.waitForInstall(session, credentials, progress, deadline, signal, operation.id);
           signal.throwIfAborted();
           return await this.readCertificate(session, credentials, signal);
         } catch (error) {
           if (signal.aborted) {
             install.installStopRequired = true;
-            await this.stopInstall(session, credentials, install);
+            await this.stopInstall(session, credentials, install, operation.id);
           }
           throw error;
         }
@@ -299,6 +396,231 @@ export class InstallHostOperation implements RemoteOperationDefinition {
     // The row is what the claim and later calls pin to; details keep it for retries.
     await this.storage.updateRemoteTlsCertificate(operation.remoteId, certificate);
     install.tlsCertificate = certificate;
+  }
+
+  private async installJoin(
+    run: RemoteOperationStepRun,
+    credentials: SshCredentials,
+    deadline = Date.now() + this.timing.installTimeoutMs,
+  ): Promise<void> {
+    const { operation, progress } = run;
+    const details = run.details as unknown as InstallHostDetails;
+    const { signal } = this.cancellation(operation.id);
+    signal.throwIfAborted();
+    await this.ssh.withSession(
+      { host: details.address, credentials, expectedFingerprint: requireFingerprint(details) },
+      async (session) => {
+        try {
+          if (stepStarted(operation, 'claim_claim')) {
+            const claimFile = joinedInstancePaths(details.userName).claim;
+            for (;;) {
+              signal.throwIfAborted();
+              const recorded = await session.exec(
+                privilegedCommand(
+                  credentials,
+                  `sh -c ${shellQuote(`if test -f ${shellQuote(claimFile)}; then cat ${shellQuote(claimFile)}; fi`)}`,
+                ),
+                sudoInput(credentials),
+                { signal, deadlineAt: deadline, capture: 'private' },
+              );
+              if (recorded.code !== 0)
+                throw new RemoteOperationStepRefusedError(
+                  'HOST_JOIN_STATE_FAILED',
+                  'Could not inspect this instance after the earlier claim.',
+                );
+              if (recorded.stdout.trim()) {
+                const record: unknown = JSON.parse(recorded.stdout);
+                if (
+                  !isJoinRecord(record, details) ||
+                  record.port !== details.port ||
+                  record.version !== details.version
+                )
+                  throw new RemoteOperationStepRefusedError(
+                    'INSTANCE_EXISTS',
+                    'The existing instance does not match this join attempt.',
+                  );
+                const started = await session.exec(
+                  privilegedCommand(
+                    credentials,
+                    `systemctl start --no-block ${shellQuote(joinedInstancePaths(details.userName).unit)}`,
+                  ),
+                  sudoInput(credentials),
+                  { signal },
+                );
+                if (started.code !== 0)
+                  throw new RemoteOperationStepRefusedError(
+                    'HOST_JOIN_START_FAILED',
+                    'Could not start the recorded instance service.',
+                  );
+                await this.saveJoinedAddress(
+                  operation.remoteId,
+                  details,
+                  session,
+                  credentials,
+                  signal,
+                );
+                details.claimed = true;
+                return;
+              }
+              const certificate =
+                details.tlsCertificate ?? (await this.host.certificateOf(operation.remoteId));
+              const runtime = await this.host
+                .runtimeAt(details.bootstrapUrl, certificate)
+                .catch(() => null);
+              if (!claimInFlight(runtime)) break;
+              if (Date.now() >= deadline)
+                throw new RemoteOperationStepRefusedError(
+                  'HOST_JOIN_CLAIM_TIMEOUT',
+                  'The earlier claim did not record this instance within the installation timeout.',
+                );
+              await abortableSleep(
+                Math.min(this.timing.pollIntervalMs, deadline - Date.now()),
+                undefined,
+                { signal },
+              );
+            }
+          }
+          details.joinInstallStarted = true;
+          await progress({ joinInstallStarted: true }, { durable: true });
+          const status = await this.installStatus(
+            session,
+            credentials,
+            deadline,
+            signal,
+            operation.id,
+          );
+          if (status === 'absent') {
+            const file = await session.uploadTemp(await this.renderBlock(details, false), {
+              signal,
+              deadlineAt: deadline,
+            });
+            const result = await session.exec(
+              privilegedCommand(credentials, detachedInstallCommand(file, operation.id)),
+              sudoInput(credentials),
+              { deadlineAt: deadline, timeoutMs: 5_000 },
+            );
+            if (result.code !== 0)
+              throw new RemoteOperationStepRefusedError(
+                'HOST_JOIN_START_FAILED',
+                'Could not start the detached VM join.',
+              );
+          }
+          await this.waitForInstall(
+            session,
+            credentials,
+            progress,
+            deadline,
+            signal,
+            operation.id,
+            true,
+          );
+          signal.throwIfAborted();
+          const result = await this.joinCommand(
+            session,
+            credentials,
+            details,
+            '--reserve-join',
+            signal,
+          );
+          if (result.code !== 0)
+            throw joinRefusal(
+              result,
+              'HOST_JOIN_RESERVE_FAILED',
+              'Could not resume the join reservation.',
+            );
+          let reservation: unknown;
+          try {
+            reservation = JSON.parse(result.stdout);
+          } catch {
+            throw new RemoteOperationStepRefusedError(
+              'HOST_JOIN_RESERVATION_INVALID',
+              'The VM returned an invalid join reservation.',
+            );
+          }
+          if (
+            !isJoinRecord(reservation, details) ||
+            typeof reservation.nonce !== 'string' ||
+            !/^[a-f0-9]{64}$/.test(reservation.nonce) ||
+            reservation.requestId !== details.joinRequestId ||
+            typeof reservation.expiresAt !== 'string' ||
+            !Number.isFinite(Date.parse(reservation.expiresAt))
+          )
+            throw new RemoteOperationStepRefusedError(
+              'HOST_JOIN_RESERVATION_INVALID',
+              'The VM returned a mismatched join reservation.',
+            );
+          this.claim.seedJoinNonce(operation.id, reservation.nonce);
+          details.port = reservation.port;
+          details.joinExpiresAt = reservation.expiresAt;
+          const url = new URL(details.bootstrapUrl);
+          url.port = String(reservation.port);
+          url.protocol = 'https:';
+          details.bootstrapUrl = url.origin;
+          await progress(
+            {
+              port: details.port,
+              bootstrapUrl: details.bootstrapUrl,
+              joinExpiresAt: details.joinExpiresAt,
+            },
+            { durable: true },
+          );
+          await this.saveJoinedAddress(operation.remoteId, details, session, credentials, signal);
+        } catch (error) {
+          if (signal.aborted) {
+            details.installStopRequired = true;
+            await this.stopInstall(session, credentials, details, operation.id);
+          }
+          throw error;
+        }
+      },
+    );
+  }
+
+  private async saveJoinedAddress(
+    remoteId: string,
+    details: InstallHostDetails,
+    session: SshSession,
+    credentials: SshCredentials,
+    signal: AbortSignal,
+  ): Promise<void> {
+    const certificate = await this.readCertificate(session, credentials, signal);
+    await this.storage.updateRemoteBaseUrl(remoteId, details.bootstrapUrl);
+    await this.storage.updateRemoteTlsCertificate(remoteId, certificate);
+    details.tlsCertificate = certificate;
+  }
+
+  private async joinCommand(
+    session: SshSession,
+    credentials: SshCredentials,
+    details: InstallHostDetails,
+    mode: '--reserve-join' | '--cancel-join',
+    signal?: AbortSignal,
+  ): Promise<SshCommandResult> {
+    const input = {
+      userName: details.userName,
+      homePath: details.homePath,
+      port: details.requestedPort ?? details.port,
+      requestId: details.joinRequestId,
+      uid: details.uid,
+      gid: details.gid,
+    };
+    const file = await session.uploadTemp(JSON.stringify(input), { signal });
+    const own = joinedInstancePaths(details.userName);
+    const helper = own.bootstrap;
+    const cleanup = `test ! -f ${shellQuote(own.claim)} && test ! -f ${shellQuote(own.join)} || exit 3; rm -rf ${shellQuote(own.prefix)}`;
+    const command =
+      mode === '--cancel-join'
+        ? `if test -x ${shellQuote(helper)}; then ${shellQuote(helper)} ${mode} <${shellQuote(file)} || exit $?; else printf '{"cancelled":true}\\n'; fi; flock --exclusive /etc/devchain-host/registry.lock sh -c ${shellQuote(cleanup)}`
+        : `${shellQuote(helper)} ${mode} <${shellQuote(file)}`;
+    try {
+      return await session.exec(
+        privilegedCommand(credentials, `sh -c ${shellQuote(command)}`),
+        sudoInput(credentials),
+        { signal, timeoutMs: SSH_COMMAND_TIMEOUT_MS, capture: 'private' },
+      );
+    } finally {
+      await session.exec(`rm -f ${shellQuote(file)}`).catch(() => undefined);
+    }
   }
 
   /**
@@ -314,13 +636,12 @@ export class InstallHostOperation implements RemoteOperationDefinition {
     const result = await session.exec(
       privilegedCommand(credentials, `cat ${shellQuote(HOST_CERTIFICATE_PATH)}`),
       sudoInput(credentials),
-      { timeoutMs: SSH_COMMAND_TIMEOUT_MS, signal },
+      { timeoutMs: SSH_COMMAND_TIMEOUT_MS, signal, capture: 'private' },
     );
     if (result.code !== 0) {
       throw new RemoteOperationStepRefusedError(
         'HOST_TLS_CERTIFICATE_UNREADABLE',
-        `Could not read the VM certificate ${HOST_CERTIFICATE_PATH} over SSH` +
-          (result.stderr.trim() ? `: ${tail(result.stderr.trim(), 300)}` : '.'),
+        `Could not read the VM certificate ${HOST_CERTIFICATE_PATH} over SSH.`,
       );
     }
     return parseVmCertificate(result.stdout);
@@ -331,8 +652,10 @@ export class InstallHostOperation implements RemoteOperationDefinition {
     credentials: SshCredentials,
     deadline: number,
     signal: AbortSignal,
+    operationId: string,
   ): Promise<'active' | 'finished' | 'absent'> {
-    const command = `if test -f ${shellQuote(INSTALL_EXIT)}; then printf finished; elif systemctl is-active --quiet ${shellQuote(INSTALL_UNIT)}; then printf active; else printf absent; fi`;
+    const job = installJobPaths(operationId);
+    const command = `if test -f ${shellQuote(job.exit)}; then printf finished; elif systemctl is-active --quiet ${shellQuote(job.unit)}; then printf active; else printf absent; fi`;
     const result = await session.exec(
       privilegedCommand(credentials, `sh -c ${shellQuote(command)}`),
       sudoInput(credentials),
@@ -354,10 +677,13 @@ export class InstallHostOperation implements RemoteOperationDefinition {
     progress: RemoteOperationStepRun['progress'],
     deadline: number,
     signal: AbortSignal,
+    operationId: string,
+    join = false,
   ): Promise<void> {
     for (;;) {
       signal.throwIfAborted();
-      const command = `tail -n 80 ${shellQuote(INSTALL_LOG)} 2>/dev/null || true; printf '\\n__DEVCHAIN_EXIT__'; test ! -f ${shellQuote(INSTALL_EXIT)} || cat ${shellQuote(INSTALL_EXIT)}`;
+      const job = installJobPaths(operationId);
+      const command = `tail -n 80 ${shellQuote(job.log)} 2>/dev/null || true; printf '\\n__DEVCHAIN_EXIT__'; test ! -f ${shellQuote(job.exit)} || cat ${shellQuote(job.exit)}`;
       const result = await session.exec(
         privilegedCommand(credentials, `sh -c ${shellQuote(command)}`),
         sudoInput(credentials),
@@ -377,9 +703,15 @@ export class InstallHostOperation implements RemoteOperationDefinition {
       if (exitCode !== null) {
         if (exitCode !== 0) {
           await session.exec(
-            privilegedCommand(credentials, `rm -f ${shellQuote(INSTALL_EXIT)}`),
+            privilegedCommand(credentials, `rm -f ${shellQuote(job.exit)}`),
             sudoInput(credentials),
           );
+          if (join)
+            throw joinRefusal(
+              { code: exitCode, stdout: logTail, stderr: '' },
+              'HOST_JOIN_FAILED',
+              'The detached VM join failed.',
+            );
           throw new RemoteOperationStepRefusedError(
             'HOST_INSTALL_FAILED',
             logTail || `The detached installer failed with code ${exitCode}.`,
@@ -399,12 +731,17 @@ export class InstallHostOperation implements RemoteOperationDefinition {
     }
   }
 
-  private async waitBootstrap({ operation, details }: RemoteOperationStepRun): Promise<void> {
+  private async waitBootstrap(run: RemoteOperationStepRun): Promise<void> {
+    const { operation, details } = run;
     const install = details as unknown as InstallHostDetails;
     const { signal } = this.cancellation(operation.id);
     const certificate =
       install.tlsCertificate ?? (await this.host.certificateOf(operation.remoteId));
-    const deadline = Date.now() + this.timing.bootstrapTimeoutMs;
+    const recoveringClaim =
+      install.mode === 'join' && !install.claimed && stepStarted(operation, 'claim_claim');
+    let deadline =
+      Date.now() +
+      (recoveringClaim ? this.timing.installTimeoutMs : this.timing.bootstrapTimeoutMs);
     for (;;) {
       signal.throwIfAborted();
       const runtime = await this.host
@@ -413,6 +750,18 @@ export class InstallHostOperation implements RemoteOperationDefinition {
       if (runtime?.state === 'unclaimed' && isSupportedHostImage(runtime.imageVersion)) {
         return;
       }
+      if (recoveringClaim && !install.claimed && Date.now() >= deadline)
+        throw new RemoteOperationStepRefusedError(
+          'HOST_JOIN_CLAIM_TIMEOUT',
+          'The earlier claim did not record this instance within the installation timeout.',
+        );
+      if (recoveringClaim && !install.claimed && claimInFlight(runtime)) {
+        await this.installJoin(run, this.requireCredentials(operation.id), deadline);
+        if (install.claimed) deadline = Date.now() + this.timing.bootstrapTimeoutMs;
+        continue;
+      }
+      if (install.mode === 'join' && install.claimed && runtime?.version === install.version)
+        return;
       if (Date.now() >= deadline) {
         throw new RemoteOperationStepRefusedError(
           'HOST_BOOTSTRAP_TIMEOUT',
@@ -438,10 +787,12 @@ export class InstallHostOperation implements RemoteOperationDefinition {
     session: SshSession,
     credentials: SshCredentials,
     details: InstallHostDetails,
+    operationId: string,
   ): Promise<void> {
     // Kill the whole unit before stopping it: existing units may have a 90-second stop timeout.
-    const unit = shellQuote(INSTALL_UNIT);
-    const command = `systemctl kill --signal=SIGKILL ${unit}; systemctl stop ${unit} || { test "$(systemctl show ${unit} --property=LoadState --value)" = not-found || exit 1; }; rm -f ${shellQuote(INSTALL_EXIT)}`;
+    const job = installJobPaths(operationId);
+    const unit = shellQuote(job.unit);
+    const command = `systemctl kill --signal=SIGKILL ${unit}; systemctl stop ${unit} || { test "$(systemctl show ${unit} --property=LoadState --value)" = not-found || exit 1; }; rm -f ${shellQuote(job.exit)}`;
     const stopped = await session.exec(
       privilegedCommand(credentials, `sh -c ${shellQuote(command)}`),
       sudoInput(credentials),
@@ -468,6 +819,17 @@ export class InstallHostOperation implements RemoteOperationDefinition {
   }
 
   private renderBlock(details: InstallHostDetails, checkOnly: boolean): Promise<string> {
+    if (details.mode === 'join')
+      return this.hostInstall.renderJoin({
+        minDiskGib: details.minDiskGib,
+        homePort: details.requestedPort ?? details.port,
+        homeUser: details.userName,
+        homePath: details.homePath,
+        uid: details.uid,
+        gid: details.gid,
+        requestId: details.joinRequestId ?? '',
+        checkOnly,
+      });
     return this.hostInstall.render({
       minDiskGib: details.minDiskGib,
       homePort: details.port,
@@ -493,9 +855,36 @@ export function accountHomeCheckCommand(userName: string, homePath: string): str
   return `sh -c ${shellQuote(script)}`;
 }
 
-function detachedInstallCommand(path: string): string {
-  const run = `bash "$1"; code=$?; printf '%s\\n' "$code" > ${shellQuote(INSTALL_EXIT)}; exit "$code"`;
-  return `systemd-run --unit=${shellQuote(INSTALL_UNIT)} --collect --no-block --property=${shellQuote(`StandardOutput=append:${INSTALL_LOG}`)} --property=${shellQuote(`StandardError=append:${INSTALL_LOG}`)} bash -c ${shellQuote(run)} _ ${shellQuote(path)}`;
+function detachedInstallCommand(path: string, operationId: string): string {
+  const job = installJobPaths(operationId);
+  const run = `bash "$1"; code=$?; printf '%s\\n' "$code" > ${shellQuote(job.exit)}; exit "$code"`;
+  return `systemd-run --unit=${shellQuote(job.unit)} --collect --no-block --property=${shellQuote(`StandardOutput=append:${job.log}`)} --property=${shellQuote(`StandardError=append:${job.log}`)} bash -c ${shellQuote(run)} _ ${shellQuote(path)}`;
+}
+
+/** Whether a join bootstrap still runs an earlier claim, or DevChain already answers in its place. */
+function claimInFlight(runtime: { state?: string; version?: string | null } | null): boolean {
+  return (
+    runtime?.state === 'claiming' || runtime?.state === 'handover' || Boolean(runtime?.version)
+  );
+}
+
+/** A joined instance's VM paths; apps/host-bootstrap/lib/system.js owns the same layout. */
+export function joinedInstancePaths(userName: string) {
+  const etc = `/etc/devchain-host/instances/${userName}`;
+  const prefix = `/opt/devchain-host/instances/${userName}`;
+  return {
+    claim: `${etc}/claim.json`,
+    join: `${etc}/join.json`,
+    prefix,
+    bootstrap: `${prefix}/helper/bin/devchain-bootstrap`,
+    unit: `devchain-user-${userName}.service`,
+  };
+}
+
+export function installJobPaths(operationId: string): { unit: string; log: string; exit: string } {
+  if (!/^[A-Za-z0-9_-]+$/.test(operationId)) throw new Error('Invalid SSH operation id.');
+  const unit = `devchain-host-install-${operationId}`;
+  return { unit, log: `/var/log/${unit}.log`, exit: `/run/${unit}.exit` };
 }
 
 function privilegedCommand(credentials: SshCredentials, command: string): string {
@@ -540,4 +929,59 @@ function tail(value: string, max: number): string {
 
 function claimOperation(operation: RemoteOperation): RemoteOperation {
   return withStepPrefix(operation, 'claim_');
+}
+
+interface JoinRecord {
+  userName: string;
+  homePath: string;
+  port: number;
+  version?: unknown;
+  nonce?: unknown;
+  requestId?: unknown;
+  expiresAt?: unknown;
+}
+
+function isJoinRecord(value: unknown, details: ClaimDetails): value is JoinRecord {
+  if (!value || typeof value !== 'object') return false;
+  const record = value as Record<string, unknown>;
+  return (
+    record.userName === details.userName &&
+    record.homePath === details.homePath &&
+    typeof record.port === 'number' &&
+    Number.isInteger(record.port) &&
+    record.port >= 1024 &&
+    record.port <= 65535
+  );
+}
+
+interface JoinError {
+  code: string;
+  message: string;
+  accountHome?: string;
+}
+
+function parseJoinError(result: SshCommandResult): JoinError | null {
+  for (const line of `${result.stdout}\n${result.stderr}`.split(/\r?\n/).reverse()) {
+    try {
+      const parsed: unknown = JSON.parse(line);
+      if (!parsed || typeof parsed !== 'object') continue;
+      const error = parsed as Record<string, unknown>;
+      if (typeof error.code === 'string' && typeof error.message === 'string')
+        return {
+          code: error.code,
+          message: error.message.replace(/\b[a-f0-9]{64}\b/gi, '[REDACTED]'),
+          ...(typeof error.accountHome === 'string' ? { accountHome: error.accountHome } : {}),
+        };
+    } catch {}
+  }
+  return null;
+}
+
+function joinRefusal(
+  result: SshCommandResult,
+  code: string,
+  message: string,
+): RemoteOperationStepRefusedError {
+  const error = parseJoinError(result);
+  return new RemoteOperationStepRefusedError(error?.code ?? code, error?.message ?? message);
 }

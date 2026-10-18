@@ -3,10 +3,12 @@ import { randomUUID } from 'node:crypto';
 import { chmod, lstat, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, isAbsolute, join, normalize, relative, sep } from 'node:path';
-import { Inject, Injectable } from '@nestjs/common';
+import { Inject, Injectable, OnModuleInit } from '@nestjs/common';
 import { ValidationError } from '../../../common/errors/error-types';
 import { createLogger } from '../../../common/logging/logger';
+import { isOpencodeV2 } from '../../providers/adapters/opencode-cli-version';
 import {
+  OPENCODE_AUTH_FILE_PATH,
   PROVIDER_AUTH_ENV_KEY_PATTERN,
   PROVIDER_AUTH_VERIFY,
   RESERVED_PROVIDER_AUTH_ENV_KEYS,
@@ -23,16 +25,23 @@ import {
   type ProviderAuthFamilyReport,
 } from '../../provider-auth/provider-auth-watcher.service';
 import { STORAGE_SERVICE, type ProviderStorage } from '../../storage/interfaces/storage.interface';
+import { ProviderCliVersionProbe } from '../../providers/services/provider-cli-version-probe.service';
 import { ProcessExecutor } from '../../terminal/services/process-executor/process-executor.port';
 import { HostHelperService } from './host-helper.service';
 import type { HostProviderApplyInput, HostProviderAuthRemoveSpec } from './host-provider-auth.dto';
+import {
+  logoutDevchainOpencodeCredentialsV2,
+  replaceOpencodeCredentialsV2,
+  type OpencodeCliRunner,
+} from './host-opencode-credentials.v2';
 
 const logger = createLogger('HostProviderAuthService');
 
 const VERIFY_TIMEOUT_MS = 90_000;
+const OPENCODE_COMMAND_TIMEOUT_MS = 60_000;
 const SUMMARY_LIMIT = 1_000;
 const MAX_FILES = 32;
-const MAX_FILE_BYTES = 256 * 1024;
+export const MAX_FILE_BYTES = 256 * 1024;
 const MAX_REMOVE_ENV_KEYS = 64;
 /**
  * Stored Claude credentials win over `CLAUDE_CODE_OAUTH_TOKEN`, and the TLS
@@ -101,13 +110,85 @@ export function renderHostEnvFile(env: Record<string, string>): string {
  * env values reach new sessions through this process and the tmux server.
  */
 @Injectable()
-export class HostProviderAuthService {
+export class HostProviderAuthService implements OnModuleInit {
   constructor(
     private readonly helper: HostHelperService,
     private readonly executor: ProcessExecutor,
     private readonly familyWatcher: ProviderAuthWatcherService,
     @Inject(STORAGE_SERVICE) private readonly storage: Pick<ProviderStorage, 'listProviders'>,
+    private readonly versionProbe: ProviderCliVersionProbe,
   ) {}
+
+  /**
+   * Imports an OpenCode file the claim bootstrap wrote before this process started.
+   * Nest finishes this before it listens, so claim's provider verify sees the result.
+   */
+  async onModuleInit(): Promise<void> {
+    if (!this.helper.isClaimedHost()) return;
+    await this.syncOpencodeCredentialsFromAuthFile().catch((error: unknown) =>
+      logger.error({ error: String(error) }, 'Could not import the OpenCode logins'),
+    );
+  }
+
+  /**
+   * OpenCode 2 ignores `auth.json`: on a v2 host its logins replace the CLI's
+   * credentials and the file is deleted. On a v1 host the file stays as written.
+   */
+  async syncOpencodeCredentialsFromAuthFile(): Promise<void> {
+    const authPath = join(this.home, OPENCODE_AUTH_FILE_PATH);
+    const content = await readFile(authPath, 'utf8').catch(() => null);
+    if (content === null) return;
+    const run = await this.opencodeV2Runner();
+    if (!run) return;
+    const providers = await replaceOpencodeCredentialsV2(run, content);
+    await rm(authPath, { force: true });
+    logger.info({ providers }, 'Imported the OpenCode logins into OpenCode 2');
+  }
+
+  /** This host's OpenCode binary when it is 2.x; null on 1.x or without a readable CLI. */
+  private async opencodeV2BinPath(): Promise<string | null> {
+    const binPath = await this.binPath('opencode');
+    const version = await this.versionProbe.probe('opencode', binPath).catch(() => null);
+    return version !== null && isOpencodeV2(version) ? binPath : null;
+  }
+
+  /** Runs this host's OpenCode when it is 2.x; null on 1.x or without a readable CLI. */
+  private async opencodeV2Runner(): Promise<OpencodeCliRunner | null> {
+    const binPath = await this.opencodeV2BinPath();
+    if (!binPath) return null;
+    const hostEnv = await this.readHostEnv();
+    return async (args, input) => {
+      const result = await this.runHostCli('opencode', [binPath, ...args], hostEnv, {
+        timeout: OPENCODE_COMMAND_TIMEOUT_MS,
+        maxBytes: 1024 * 1024,
+        input,
+      });
+      return {
+        ok: result.exitCode === 0,
+        stdout: result.stdout,
+        output: [result.stdout, result.stderr].filter(Boolean).join('\n'),
+      };
+    };
+  }
+
+  /** Runs one provider CLI command under the no-update policy, in this host's home with `host.env`. */
+  private runHostCli(
+    provider: string,
+    argv: string[],
+    hostEnv: Record<string, string>,
+    options: { timeout: number; maxBytes: number; input?: string },
+  ) {
+    const command = applyProviderCliNoUpdate(provider, argv);
+    return this.executor.run({
+      argv: command.argv,
+      mode: 'pipe',
+      cwd: this.home,
+      env: buildLoginEnv(process.env, { set: { ...hostEnv, ...command.env }, unset: [] }),
+      timeout: options.timeout,
+      outputLimits: { maxBytes: options.maxBytes },
+      ...(options.input !== undefined && { input: options.input }),
+    });
+  }
 
   /** systemd sets `HOME` for devchain-host.service. */
   private get home(): string {
@@ -128,15 +209,22 @@ export class HostProviderAuthService {
     }
     const hostEnv = await this.readHostEnv();
     const binPath = await this.binPath(provider);
-    const argv = check.argv((cli) => (cli === provider ? binPath : cli));
-    const command = applyProviderCliNoUpdate(provider, argv);
-    const result = await this.executor.run({
-      argv: command.argv,
-      mode: 'pipe',
-      cwd: this.home,
-      env: buildLoginEnv(process.env, { set: { ...hostEnv, ...command.env }, unset: [] }),
+    let argv: string[];
+    try {
+      const cliVersion = check.requiresCliVersion
+        ? await this.versionProbe.probe(provider, binPath)
+        : undefined;
+      argv = check.argv((cli) => (cli === provider ? binPath : cli), cliVersion);
+    } catch (error) {
+      return {
+        ok: false,
+        summary: '',
+        hint: error instanceof Error ? error.message : String(error),
+      };
+    }
+    const result = await this.runHostCli(provider, argv, hostEnv, {
       timeout: VERIFY_TIMEOUT_MS,
-      outputLimits: { maxBytes: 64 * 1024 },
+      maxBytes: 64 * 1024,
     });
     const output = [result.stdout, result.stderr].filter(Boolean).join('\n');
     const summary = redactSecrets(output.trim(), Object.values(hostEnv)).slice(-SUMMARY_LIMIT);
@@ -160,7 +248,8 @@ export class HostProviderAuthService {
    */
   async families(sinceMs: number): Promise<ProviderAuthFamilyReport[]> {
     this.helper.assertClaimedHost();
-    return this.familyWatcher.getFamilies(sinceMs);
+    const opencodeV2 = (await this.opencodeV2BinPath()) !== null;
+    return this.familyWatcher.getFamilies(sinceMs, { opencodeV2 });
   }
 
   /** Writes the files and merges the env into `host.env`; returns what changed, never values. */
@@ -197,6 +286,10 @@ export class HostProviderAuthService {
           mode: 'pipe',
         });
       }
+    }
+    // Only a sent OpenCode file replaces the OpenCode credentials.
+    if (files.some((file) => file.path === join(this.home, OPENCODE_AUTH_FILE_PATH))) {
+      await this.syncOpencodeCredentialsFromAuthFile();
     }
     logger.info(
       { envKeys, files: files.map((file) => file.path), removed },
@@ -320,6 +413,14 @@ export class HostProviderAuthService {
       if (!stat) continue; // A login file that is already gone needs no work.
       await rm(path, { force: true });
       removedFiles.push(path);
+    }
+    const opencodePath = join(this.home, OPENCODE_AUTH_FILE_PATH);
+    if (remove.files.includes(opencodePath)) {
+      // On OpenCode 2 the logins live in its DB, not in the file.
+      const run = await this.opencodeV2Runner();
+      if (run && (await logoutDevchainOpencodeCredentialsV2(run)).length > 0) {
+        if (!removedFiles.includes(opencodePath)) removedFiles.push(opencodePath);
+      }
     }
     return { envKeys: removedEnvKeys, files: removedFiles };
   }

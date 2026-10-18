@@ -1,20 +1,37 @@
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { OpenCodeSessionReaderAdapter } from './opencode-session-reader.adapter';
-import { OpencodeSqliteReader } from '../readers/opencode-sqlite.reader';
+import { OpencodeSqliteV1Reader } from '../readers/opencode-sqlite.v1.reader';
+import { OpencodeSqliteV2Reader } from '../readers/opencode-sqlite.v2.reader';
+import { inspectOpencodeDb } from '../readers/opencode-sqlite.db';
 import { ValidationError } from '../../../common/errors/error-types';
 import type { PricingServiceInterface } from '../services/pricing.interface';
 import type { SessionSourceRef } from './session-reader-adapter.interface';
 import type { UnifiedSession } from '../dtos/unified-session.types';
 
-jest.mock('../readers/opencode-sqlite.reader', () => ({
-  OpencodeSqliteReader: jest.fn().mockImplementation(() => ({
+function mockReaderClass(): jest.Mock {
+  return jest.fn().mockImplementation(() => ({
     findSessionCandidates: jest.fn(),
     getFreshness: jest.fn(),
     readSession: jest.fn(),
     readSummary: jest.fn(),
-  })),
+  }));
+}
+jest.mock('../readers/opencode-sqlite.v1.reader', () => ({
+  OpencodeSqliteV1Reader: mockReaderClass(),
 }));
+jest.mock('../readers/opencode-sqlite.v2.reader', () => ({
+  OpencodeSqliteV2Reader: mockReaderClass(),
+}));
+jest.mock('../readers/opencode-sqlite.db', () => ({ inspectOpencodeDb: jest.fn() }));
+
+type ReaderMock = {
+  findSessionCandidates: jest.Mock;
+  getFreshness: jest.Mock;
+  readSession: jest.Mock;
+  readSummary: jest.Mock;
+};
+const inspectMock = inspectOpencodeDb as jest.Mock;
 
 const DB_PATH = path.join(os.homedir(), '.local/share/opencode', 'opencode.db');
 
@@ -44,31 +61,47 @@ function ref(overrides: Partial<SessionSourceRef> = {}): SessionSourceRef {
 
 describe('OpenCodeSessionReaderAdapter', () => {
   let adapter: OpenCodeSessionReaderAdapter;
-  let reader: {
-    findSessionCandidates: jest.Mock;
-    getFreshness: jest.Mock;
-    readSession: jest.Mock;
-    readSummary: jest.Mock;
-  };
+  let v1: ReaderMock;
+  let reader: ReaderMock;
 
   beforeEach(() => {
-    (OpencodeSqliteReader as unknown as jest.Mock).mockClear();
+    (OpencodeSqliteV1Reader as unknown as jest.Mock).mockClear();
+    (OpencodeSqliteV2Reader as unknown as jest.Mock).mockClear();
+    inspectMock.mockReset();
+    inspectMock.mockReturnValue({ layouts: new Set(['v2']), holder: 'v2' });
     adapter = new OpenCodeSessionReaderAdapter(makePricing());
-    reader = (OpencodeSqliteReader as unknown as jest.Mock).mock.results[0].value;
+    v1 = (OpencodeSqliteV1Reader as unknown as jest.Mock).mock.results[0].value;
+    reader = (OpencodeSqliteV2Reader as unknown as jest.Mock).mock.results[0].value;
   });
 
   it('declares DB-backed snapshot identity', () => {
     expect(adapter.providerName).toBe('opencode');
     expect(adapter.incrementalMode).toBe('snapshot');
     expect(adapter.sourceKind).toBe('db');
+    expect(adapter.reportsContextWindow).toBe(true);
     expect(adapter.allowedRoots).toEqual([path.join(os.homedir(), '.local/share/opencode')]);
   });
 
   describe('discoverSessionFile', () => {
-    it('SQL-matches candidates and maps them to SessionFileInfo (one per ses_)', async () => {
+    it('merges candidates of both layouts into one SessionFileInfo per ses_, closest launch first', async () => {
+      inspectMock.mockReturnValue({ layouts: new Set(['v1', 'v2']), holder: null });
+      v1.findSessionCandidates.mockReturnValue([
+        {
+          providerSessionId: 'ses_migrated',
+          directory: '/proj',
+          timeCreated: 100,
+          timeUpdated: 900,
+        },
+        { providerSessionId: 'ses_legacy', directory: '/proj', timeCreated: 50, timeUpdated: 60 },
+      ]);
       reader.findSessionCandidates.mockReturnValue([
-        { providerSessionId: 'ses_1', directory: '/proj', timeCreated: 100, timeUpdated: 200 },
-        { providerSessionId: 'ses_2', directory: '/proj', timeCreated: 150, timeUpdated: 250 },
+        {
+          providerSessionId: 'ses_migrated',
+          directory: '/proj',
+          timeCreated: 100,
+          timeUpdated: 300,
+        },
+        { providerSessionId: 'ses_new', directory: '/proj', timeCreated: 125, timeUpdated: 250 },
       ]);
 
       const result = await adapter.discoverSessionFile({
@@ -77,18 +110,22 @@ describe('OpenCodeSessionReaderAdapter', () => {
         sessionId: 'dc-1',
       });
 
-      expect(reader.findSessionCandidates).toHaveBeenCalledWith(DB_PATH, {
-        directory: path.resolve('/proj'),
-        startedAtMs: 120,
-        windowMs: 120_000,
-      });
+      const query = { directory: path.resolve('/proj'), startedAtMs: 120, windowMs: 120_000 };
+      expect(v1.findSessionCandidates).toHaveBeenCalledWith(DB_PATH, query);
+      expect(reader.findSessionCandidates).toHaveBeenCalledWith(DB_PATH, query);
       expect(result).toEqual([
-        expect.objectContaining({
+        {
           filePath: DB_PATH,
           providerName: 'opencode',
-          providerSessionId: 'ses_1',
+          providerSessionId: 'ses_new',
+          sizeBytes: 0,
+          lastModified: new Date(250).toISOString(),
+        },
+        expect.objectContaining({
+          providerSessionId: 'ses_migrated',
+          lastModified: new Date(900).toISOString(),
         }),
-        expect.objectContaining({ providerSessionId: 'ses_2' }),
+        expect.objectContaining({ providerSessionId: 'ses_legacy' }),
       ]);
     });
 
@@ -98,8 +135,8 @@ describe('OpenCodeSessionReaderAdapter', () => {
       expect(reader.findSessionCandidates).not.toHaveBeenCalled();
     });
 
-    it('returns [] (retryable) when the candidate query throws (e.g. DB absent)', async () => {
-      reader.findSessionCandidates.mockImplementation(() => {
+    it('returns [] (retryable) when the container cannot be opened (e.g. DB absent)', async () => {
+      inspectMock.mockImplementation(() => {
         throw new Error('SQLITE_CANTOPEN');
       });
       const result = await adapter.discoverSessionFile({
@@ -174,7 +211,6 @@ describe('OpenCodeSessionReaderAdapter', () => {
   describe('calculateCost', () => {
     it('sums token-only cost over entries with usage', () => {
       const pricing = makePricing();
-      (OpencodeSqliteReader as unknown as jest.Mock).mockClear();
       const a = new OpenCodeSessionReaderAdapter(pricing);
       const entries = [
         { usage: { input: 10, output: 5, cacheRead: 1, cacheCreation: 0 } },

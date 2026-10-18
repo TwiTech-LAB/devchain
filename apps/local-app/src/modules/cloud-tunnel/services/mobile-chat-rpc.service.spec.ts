@@ -9,6 +9,7 @@ import type { SessionLifecycleFacade } from '../../sessions/services/session-lif
 import type { TeamsService } from '../../teams/services/teams.service';
 import type { PendingAskUserQuestionService } from '../../hooks/services/pending-ask-user-question.service';
 import type { E2eeTrustService } from '../../e2ee/services/e2ee-trust.service';
+import type { ProviderUsageService } from '../../provider-usage/services/provider-usage.service';
 import { LifecycleOperationTracker } from './lifecycle-operation-tracker';
 import {
   AppError,
@@ -69,6 +70,7 @@ function build(overrides: {
   teamsService?: Partial<TeamsService>;
   pendingAskUserQuestion?: Partial<PendingAskUserQuestionService>;
   e2eeTrust?: Partial<E2eeTrustService>;
+  providerUsage?: Partial<ProviderUsageService>;
 }) {
   const storage = {
     listAgents: jest.fn(),
@@ -126,6 +128,10 @@ function build(overrides: {
     resolveEffectiveDeviceName: jest.fn().mockReturnValue(undefined),
     ...overrides.e2eeTrust,
   } as unknown as E2eeTrustService;
+  const providerUsage = {
+    getProjectUsage: jest.fn(),
+    ...overrides.providerUsage,
+  } as unknown as ProviderUsageService;
   const operationTracker = new LifecycleOperationTracker();
   const service = new MobileChatRpcService(
     storage,
@@ -139,6 +145,7 @@ function build(overrides: {
     teamsService,
     pendingAskUserQuestion,
     e2eeTrust,
+    providerUsage,
   );
   return {
     service,
@@ -153,6 +160,7 @@ function build(overrides: {
     teamsService,
     pendingAskUserQuestion,
     e2eeTrust,
+    providerUsage,
   };
 }
 
@@ -1515,6 +1523,20 @@ describe('MobileChatRpcService lifecycle RPCs', () => {
       expect((err as ForbiddenError).details).toMatchObject({ code: 'AGENT_PROJECT_MISMATCH' });
       expect((storage.getAgent as jest.Mock).mock.calls).toHaveLength(1);
     });
+  });
+});
+
+describe('MobileChatRpcService.getProviderUsage', () => {
+  it('returns ProviderUsageService.getProjectUsage(projectId, maxAgeSec)', async () => {
+    const usage = { accounts: [], config: { enabled: true } };
+    const { service, providerUsage } = build({
+      providerUsage: { getProjectUsage: jest.fn().mockResolvedValue(usage) },
+    });
+
+    const result = await service.getProviderUsage({ projectId: PROJECT_ID, maxAgeSec: 60 });
+
+    expect(providerUsage.getProjectUsage).toHaveBeenCalledWith(PROJECT_ID, 60);
+    expect(result).toBe(usage);
   });
 });
 

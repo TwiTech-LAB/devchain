@@ -263,6 +263,12 @@ export interface SessionReaderAdapter {
    */
   readonly sourceKind?: 'file' | 'db';
 
+  /**
+   * Opt-in: the adapter's `metrics.contextWindowTokens` is the provider's own window (a runtime
+   * report or the provider's model catalog), so the service ranks it above the pricing catalog.
+   */
+  readonly reportsContextWindow?: true;
+
   /** Allowed root directories for session file access (security boundary) */
   readonly allowedRoots: string[];
 

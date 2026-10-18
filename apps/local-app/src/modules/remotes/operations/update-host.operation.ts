@@ -31,6 +31,10 @@ export interface UpdateHostDetails {
   version: string;
   /** Projects the remote owns, frozen on the host for the update. */
   frozenProjectIds?: string[];
+  /** HOST_NPM_REGISTRY when this home set it; fixed at start so a retry uses the same registry. */
+  npmRegistry?: string;
+  /** The host answered the update request without applying `npmRegistry`. */
+  npmRegistryIgnored?: boolean;
 }
 
 /**
@@ -131,24 +135,36 @@ export class UpdateHostOperation implements RemoteOperationDefinition {
   }
 
   private async update({ operation, details }: RemoteOperationStepRun): Promise<void> {
-    const { version } = details as unknown as UpdateHostDetails;
+    const updateDetails = details as unknown as UpdateHostDetails;
+    const { version, npmRegistry } = updateDetails;
     const remote = await this.hostRuntime(operation);
     if (remote === version) return;
-    const outcome = await this.host.requestHostUpdate(operation.remoteId, version);
-    logger.info({ operationId: operation.id, version, outcome }, 'Host update requested');
+    const { outcome, registryIgnored } = await this.host.requestHostUpdate(
+      operation.remoteId,
+      version,
+      npmRegistry,
+    );
+    if (registryIgnored) updateDetails.npmRegistryIgnored = true;
+    logger.info(
+      { operationId: operation.id, version, outcome, registryIgnored },
+      'Host update requested',
+    );
   }
 
   /** The host restarts during the update, so failed polls are expected until it is back. */
   private async waitHealthy({ operation, details }: RemoteOperationStepRun): Promise<void> {
-    const { version } = details as unknown as UpdateHostDetails;
+    const { version, npmRegistryIgnored } = details as unknown as UpdateHostDetails;
     const deadline = Date.now() + this.timing.hostUpdateTimeoutMs;
     for (;;) {
       if ((await this.hostRuntime(operation)) === version) break;
       const status = await this.host.hostUpdateStatus(operation.remoteId).catch(() => null);
       if (status?.state === 'failed' && status.version === version) {
+        const registryNote = npmRegistryIgnored
+          ? " This VM's version ignores HOST_NPM_REGISTRY and installed from its image's registry."
+          : '';
         throw new RemoteOperationStepRefusedError(
           'HOST_UPDATE_FAILED',
-          `The host could not install ${version}: ${status.error ?? 'unknown error'}.`,
+          `The host could not install ${version}: ${status.error ?? 'unknown error'}.${registryNote}`,
         );
       }
       if (Date.now() >= deadline) {

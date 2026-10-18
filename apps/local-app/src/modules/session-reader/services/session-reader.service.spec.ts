@@ -1776,8 +1776,13 @@ describe('SessionReaderService', () => {
       providerNameAtLaunch: string,
       providerSessionId: string | null,
       metrics: UnifiedMetrics,
+      reportsContextWindow?: true,
     ): void {
       setupResolveChain();
+      (mockAdapterFactory.getAdapter as jest.Mock).mockReturnValue({
+        ...mockAdapter,
+        reportsContextWindow,
+      });
       mockSessionsService.getSession.mockReturnValue({
         id: 'sess-1',
         agentId: 'agent-1',
@@ -1798,6 +1803,8 @@ describe('SessionReaderService', () => {
       catalog: number | null;
       expected: number;
       transcriptWindow?: number;
+      /** The provider adapter's `reportsContextWindow` opt-in. */
+      reportsContextWindow?: true;
       runtimeContext?: Parameters<typeof createResolvedService>[0];
       catalogEntries?: Record<string, number>;
     }>([
@@ -1828,6 +1835,7 @@ describe('SessionReaderService', () => {
         catalog: null,
         expected: 258_400,
         transcriptWindow: 258_400,
+        reportsContextWindow: true,
         runtimeContext: {
           configuredOverride: null,
           claudeCapture: null,
@@ -1912,20 +1920,35 @@ describe('SessionReaderService', () => {
         expected: 900_000,
       },
       {
-        name: 'non-Claude provider',
+        name: 'non-Claude provider that reports its window',
         provider: 'codex',
         providerSessionId: 'claude-runtime-1',
         model: 'gpt-5.4',
         captureModel: 'gpt-5.4',
         catalog: 400_000,
         expected: 123_000,
+        reportsContextWindow: true,
+      },
+      {
+        name: 'non-Claude provider that does not report its window',
+        provider: 'agy',
+        providerSessionId: 'claude-runtime-1',
+        model: 'gemini-3',
+        captureModel: 'gemini-3',
+        catalog: 400_000,
+        expected: 400_000,
       },
     ])('resolves $name capture through its eligible source', async (testCase) => {
       const metrics = makeMetrics({
         primaryModel: testCase.model,
         contextWindowTokens: testCase.transcriptWindow ?? 123_000,
       });
-      setSummarySession(testCase.provider, testCase.providerSessionId, metrics);
+      setSummarySession(
+        testCase.provider,
+        testCase.providerSessionId,
+        metrics,
+        testCase.reportsContextWindow,
+      );
       const catalog =
         testCase.catalogEntries ??
         (testCase.catalog === null ? {} : { [testCase.model]: testCase.catalog });
@@ -1981,7 +2004,7 @@ describe('SessionReaderService', () => {
   // The mocked-cache tests above prove the tail BRANCHING; this block proves the
   // integrated cache→adapter→tail path actually surfaces an in-place part edit.
   // It exercises the real SessionCacheService and the real
-  // OpenCodeSessionReaderAdapter (real OpencodeSqliteReader) over a fixture
+  // OpenCodeSessionReaderAdapter (real OpenCode SQLite readers) over a fixture
   // `opencode.db`. The `resolveAdapter` seam is stubbed only to supply a
   // SessionSourceRef carrying `providerSessionId` (read-path providerSessionId
   // threading is the adapter-wiring task's concern, not tail semantics).
@@ -2160,7 +2183,7 @@ describe('SessionReaderService', () => {
   // stubbing `resolveAdapter`: the session row's `providerSessionId` must thread
   // resolveAdapter → SessionSourceRef → adapter, or `parseFullSession` throws
   // `requireSessionId(...)`. Real SessionCacheService + real
-  // OpenCodeSessionReaderAdapter + real OpencodeSqliteReader over a fixture DB.
+  // OpenCodeSessionReaderAdapter + real OpenCode SQLite readers over a fixture DB.
   // ---------------------------------------------------------------------------
   describe('DB-backed end-to-end via the real resolveAdapter (no seam stub)', () => {
     const SCHEMA_SQL = `

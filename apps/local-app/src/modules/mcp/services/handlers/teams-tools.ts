@@ -14,6 +14,7 @@ import {
   type TeamsConfigsListParams,
   type TeamsCreateAgentParams,
   type TeamsDeleteAgentParams,
+  type TeamsSessionControlParams,
   type DevchainTeamParams,
 } from '../../dtos/mcp.dto';
 import type { TeamsToolContext } from './teams-context';
@@ -347,6 +348,62 @@ export async function handleTeamsDeleteAgent(
       success: true,
       data: { deletedAgentId: result.result.deletedAgentId, deleted: true },
     };
+  } catch (error) {
+    return catchTeamsUnavailable(error);
+  }
+}
+
+export async function handleTeamsSessionControl(
+  ctx: TeamsToolContext,
+  params: unknown,
+): Promise<McpResponse> {
+  const parsed = params as TeamsSessionControlParams;
+
+  const sessionResult = await resolveSessionContext(ctx, parsed.sessionId);
+  if (!sessionResult.success) return sessionResult;
+  const sessionCtx = sessionResult.data as SessionContext;
+
+  if (sessionCtx.type === 'guest') {
+    return {
+      success: false,
+      error: {
+        code: 'AGENT_CONTEXT_REQUIRED',
+        message: 'This tool requires an agent session context',
+      },
+    };
+  }
+
+  const agentCtx = sessionCtx as AgentSessionContext;
+  if (!agentCtx.agent) {
+    return {
+      success: false,
+      error: {
+        code: 'AGENT_REQUIRED',
+        message: 'No agent associated with this session',
+      },
+    };
+  }
+
+  if (!agentCtx.project) {
+    return {
+      success: false,
+      error: {
+        code: 'PROJECT_NOT_FOUND',
+        message: 'No project associated with this session',
+      },
+    };
+  }
+
+  try {
+    const result = await ctx.teamsService.controlTeamMemberSession({
+      leadAgentId: agentCtx.agent.id,
+      projectId: agentCtx.project.id,
+      name: parsed.name,
+      teamName: parsed.teamName,
+      action: parsed.action,
+    });
+    if ('error' in result) return { success: false, error: result.error };
+    return { success: true, data: result.result };
   } catch (error) {
     return catchTeamsUnavailable(error);
   }

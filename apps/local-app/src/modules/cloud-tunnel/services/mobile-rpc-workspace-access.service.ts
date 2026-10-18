@@ -46,6 +46,7 @@ export const MOBILE_RPC_WORKSPACE_SCOPES = {
   'board.deleteEpicComment': 'projectId',
   'chat.listAgents': 'projectId',
   'chat.listTeams': 'projectId',
+  'chat.getProviderUsage': 'projectId',
   'chat.listProfiles': 'projectId',
   'chat.listProfileConfigs': 'projectId',
   'chat.createTeamAgent': 'projectId',

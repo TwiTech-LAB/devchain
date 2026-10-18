@@ -1,6 +1,7 @@
 import { render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { apiFetch } from '@/ui/lib/api-transport';
 import type { RemoteOperationDto } from './lib/remote-vm-contracts';
 import {
   OperationDetail,
@@ -277,6 +278,23 @@ it('shows the reported Docker uid warning for a finished claim', () => {
 });
 
 describe('OperationDetail check warnings', () => {
+  it.each([undefined, '2026-10-12T13:00:00Z'])(
+    'shows the join port only once reserved, without reading an unclaimed instance: %p',
+    (joinExpiresAt) => {
+      jest.mocked(apiFetch).mockClear();
+      renderDetail(
+        operation({
+          kind: 'install_host',
+          projectId: null,
+          details: { mode: 'join', port: 3001, joinExpiresAt },
+        }),
+      );
+      expect(screen.getByLabelText('DevChain port')).toHaveTextContent(
+        joinExpiresAt ? '3001' : 'Unknown',
+      );
+      expect(apiFetch).not.toHaveBeenCalled();
+    },
+  );
   const install = operation({
     id: 'install-1',
     kind: 'install_host',
@@ -331,6 +349,20 @@ describe('OperationDetail git settings copy', () => {
   it('shows nothing extra when the settings were sent', () => {
     renderDetail(operation({ state: 'done', details: { gitConfig: 'sent' } }));
     expect(screen.queryByRole('note')).not.toBeInTheDocument();
+  });
+});
+
+describe('OperationDetail Claude instructions copy', () => {
+  it('shows the failure message and that the VM keeps its own copy', () => {
+    renderDetail(
+      operation({
+        state: 'done',
+        details: { claudeInstructions: 'failed', claudeInstructionsError: 'The VM refused.' },
+      }),
+    );
+    const note = screen.getByRole('note', { name: 'Claude instructions' });
+    expect(within(note).getByText('The copy failed: The VM refused.')).toBeInTheDocument();
+    expect(within(note).getByText('The VM keeps its own copy.')).toBeInTheDocument();
   });
 });
 
@@ -474,6 +506,24 @@ describe('OperationDetail notes', () => {
       'Claude transcripts: 100% (0 items, 0 B left)',
     ]);
   });
+
+  it.each(['detach', 'reset_vm'] as const)(
+    'reports the unknown VM lane warning on forced %s',
+    (kind) => {
+      const warning = 'Lanes on the VM are unknown and may be lost.';
+      renderDetail(
+        operation({
+          kind,
+          state: 'done',
+          details:
+            kind === 'detach'
+              ? { laneWarning: warning }
+              : { laneWarnings: [{ projectId: 'p1', warning }] },
+        }),
+      );
+      expect(screen.getByText(warning)).toBeInTheDocument();
+    },
+  );
 
   it('lists forced-disconnect losses on a done Disconnect', () => {
     renderDetail(
@@ -929,10 +979,7 @@ it.each(
       copyState: 'pending' as const,
       startedAt: '2026-09-28T10:03:00.000Z',
     },
-  ].flatMap((entry) => [
-    { ...entry, kind: 'force_sync', stepId: 'force_copy' },
-    { ...entry, kind: 'git_owner', stepId: 'git_flip' },
-  ]),
+  ].flatMap((entry) => [{ ...entry, kind: 'force_sync', stepId: 'force_copy' }]),
 )(
   'keeps the persisted $kind cancellation cutoff ($operationState/$copyState, startedAt=$startedAt)',
   async ({ operationState, copyState, startedAt, kind, stepId }) => {
@@ -958,5 +1005,22 @@ it.each(
           screen.getByText('Retry, or force a disconnect from the project row.'),
         ).toBeInTheDocument();
     }
+  },
+);
+
+it.each(['running', 'failed', 'cancelled', 'done'] as const)(
+  'shows a %s manual Git switch from history without Retry or Cancel',
+  (state) => {
+    renderDetail(
+      operation({
+        kind: 'git_owner',
+        state,
+        details: { owner: 'home', force: false },
+        steps: [step('git_flip', state === 'done' ? 'done' : 'failed', 'Move Git control')],
+      }),
+    );
+    expect(screen.getByRole('progressbar', { name: 'Progress' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Retry' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Cancel' })).not.toBeInTheDocument();
   },
 );

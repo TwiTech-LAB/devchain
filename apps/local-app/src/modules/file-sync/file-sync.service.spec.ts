@@ -316,6 +316,34 @@ describe('FileSyncService.status', () => {
   });
 });
 
+describe('FileSyncService.remoteNeedThrough', () => {
+  // Unit: the sequence filter and paging over plain REST pages; field meanings were checked
+  // against Syncthing v2.1.5 and are recorded on the method.
+  it('names only items changed up to the sequence, across every page', async () => {
+    const page = (from: number, count: number) =>
+      Array.from({ length: count }, (_, index) => ({
+        name: `f${from + index}`,
+        sequence: from + index,
+      }));
+    const request = jest.fn(async (_method: string, path: string) => ({
+      files: path.includes('page=1&') ? page(1, 1000) : page(1001, 5),
+    }));
+    const service = new FileSyncService(
+      { getConnection: () => ({ client: { request } }) } as never,
+      {} as never,
+      {} as never,
+      {} as never,
+    );
+    const names = await service.remoteNeedThrough('git:p1', 'VM', 1002);
+    expect(names).toHaveLength(1002);
+    expect(names.at(-1)).toBe('f1002');
+    expect(request).toHaveBeenLastCalledWith(
+      'GET',
+      '/rest/db/remoteneed?folder=git%3Ap1&device=VM&page=2&perpage=1000',
+    );
+  });
+});
+
 describe('FileSyncService.waitForComplete', () => {
   const service = new FileSyncService({} as never, {} as never, {} as never, {} as never);
 

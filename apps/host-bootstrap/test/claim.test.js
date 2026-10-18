@@ -307,7 +307,7 @@ test("a claim installs all five CLIs between DevChain install and activation", a
       `@anthropic-ai/claude-code@${pins.claude.version}`,
       `@openai/codex@${pins.codex.version}`,
       `@github/copilot@${pins.copilot.version}`,
-      `opencode-ai@${pins.opencode.version}`,
+      `@opencode/cli@${pins.opencode.version}`,
     ],
   );
   for (const call of installs.slice(2)) {

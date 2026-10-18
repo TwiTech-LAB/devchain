@@ -10,6 +10,7 @@ import type { ProjectProvisioningCapability } from './project-provisioning.capab
 import type { ProjectMcpSettingsCapability } from './project-mcp-settings.capability';
 import type { ProviderPluginCapability } from './provider-plugin.capability';
 import type { TranscriptDiscoveryCapability } from './transcript-discovery.capability';
+import type { SessionCommandCapability } from './session-command.capability';
 export type { AutoCompactCapability, AutoCompactProviderState } from './auto-compact.capability';
 export type { EffortCapability } from './effort.capability';
 export type { HookCapability, HookEnvContext } from './hook.capability';
@@ -20,8 +21,13 @@ export type {
   ProvisioningWarningItem,
 } from './project-provisioning.capability';
 export type { ProjectMcpSettingsCapability } from './project-mcp-settings.capability';
-export type { ProviderPluginCapability } from './provider-plugin.capability';
+export type {
+  ProviderPluginCapability,
+  ProviderPluginCatalogResult,
+  ProviderPluginCatalogSource,
+} from './provider-plugin.capability';
 export type { TranscriptDiscoveryCapability } from './transcript-discovery.capability';
+export type { SessionCommandCapability } from './session-command.capability';
 
 /**
  * Result of a best-effort, non-blocking authentication probe. `authenticated`
@@ -140,14 +146,16 @@ export function isTranscriptDiscoveryCapable(
   return 'transcriptDiscoveryStrategy' in adapter;
 }
 
+export function isSessionCommandCapable(
+  adapter: ProviderAdapter,
+): adapter is ProviderAdapter & SessionCommandCapability {
+  return 'sessionCommands' in adapter;
+}
+
 export function isProviderPluginCapable(
   adapter: ProviderAdapter,
 ): adapter is ProviderAdapter & ProviderPluginCapability {
-  return (
-    'listProviderPlugins' in adapter &&
-    'installProviderPlugin' in adapter &&
-    'parseProviderPluginCatalog' in adapter
-  );
+  return 'providerPluginCatalog' in adapter && 'installProviderPlugin' in adapter;
 }
 
 export function isProjectMcpSettingsCapable(

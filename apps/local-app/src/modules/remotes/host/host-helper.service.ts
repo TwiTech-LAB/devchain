@@ -12,11 +12,13 @@ import {
 import { createLogger } from '../../../common/logging/logger';
 import { ProcessExecutor } from '../../terminal/services/process-executor/process-executor.port';
 import {
-  HOST_HELPER_MIGRATION,
+  getHostHelperMigration,
   HostDockerStatusSchema,
   HostUpdateStatusSchema,
 } from './host-helper.dto';
 import type { HostDockerStatus, HostUpdateStatus } from './host-helper.dto';
+import { SharedVmFenceResultSchema } from './shared-vm.contract';
+import type { VmDestroyFence } from '../../../common/config/vm-destroy-fence';
 
 const logger = createLogger('HostHelperService');
 
@@ -54,9 +56,21 @@ export class HostHelperService {
     return existsSync(join(this.etcDir, 'claim.json'));
   }
 
-  async requestUpdate(version: string): Promise<void> {
+  async requestUpdate(version: string, npmRegistry?: string): Promise<void> {
     this.assertClaimedHost();
-    await this.runHelper('devchain-host-update', [version]);
+    await this.runHelper(
+      'devchain-host-update',
+      npmRegistry === undefined ? [version] : [version, '--registry', npmRegistry],
+    );
+  }
+
+  async destroyFence(
+    mode: 'set' | 'clear',
+    operationId: string,
+  ): Promise<{ fence: VmDestroyFence | null }> {
+    this.assertClaimedHost();
+    const stdout = await this.runHelper('devchain-host-update', ['--fence', mode, operationId]);
+    return SharedVmFenceResultSchema.parse(JSON.parse(stdout));
   }
 
   /** The last update's progress, or null before the first update. */
@@ -80,7 +94,7 @@ export class HostHelperService {
     } catch (error) {
       if (error instanceof AppError && error.details?.code === 'INVALID_VERSION') {
         throw new ConflictError(
-          `The host helper needs one manual migration: ${HOST_HELPER_MIGRATION}`,
+          `The host helper needs one manual migration: ${getHostHelperMigration(getEnvConfig().DEVCHAIN_HOST_BIN_DIR)}`,
           { code: 'HOST_HELPER_OUTDATED' },
         );
       }

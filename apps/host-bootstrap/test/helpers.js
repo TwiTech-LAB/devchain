@@ -8,7 +8,7 @@ const { createHash } = require("node:crypto");
 const { execFileSync } = require("node:child_process");
 const { installClis } = require("../lib/clis");
 const { installPrivilegedSyncthing } = require("../lib/syncthing");
-const { createSystem } = require("../lib/system");
+const { createSystem, createInstanceSystem } = require("../lib/system");
 const defaultPins = require("../../../scripts/host-cli-pins.json");
 
 /**
@@ -90,9 +90,11 @@ function fakeSystem({
   failOn,
   pinsByVersion = {},
   missingPins = false,
+  preSharedVersions = [],
   registryCatalog = null,
+  rootParent = os.tmpdir(),
 } = {}) {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "host-bootstrap-"));
+  const root = fs.mkdtempSync(path.join(rootParent, "host-bootstrap-"));
   const paths = {
     etcDir: path.join(root, "etc/devchain-host"),
     profileDir: path.join(root, "etc/profile.d"),
@@ -179,7 +181,16 @@ function fakeSystem({
       fs.mkdirSync(home);
       accounts.set(name, { name, uid, gid, home });
     }
-    if (command === "npm") {
+    if (command === "npm" && args[0] === "uninstall") {
+      const prefix = args
+        .find((arg) => arg.startsWith("--prefix="))
+        .slice("--prefix=".length);
+      const pkg = args.at(-1);
+      fs.rmSync(path.join(prefix, "lib/node_modules", pkg), {
+        recursive: true,
+        force: true,
+      });
+    } else if (command === "npm") {
       const spec = args.at(-1);
       const version = spec.split("@").at(-1);
       const prefix = args
@@ -209,6 +220,11 @@ function fakeSystem({
         fs.writeFileSync(
           path.join(helperDir, "pins.json"),
           JSON.stringify({
+            ...(preSharedVersions.includes(version)
+              ? {}
+              : { sharedVmProtocol: 1 }),
+            aptPackages: ["tmux"],
+            toolPackages: [],
             bootstrap: {
               sha256: createHash("sha256")
                 .update("helper archive")
@@ -227,7 +243,24 @@ function fakeSystem({
             JSON.stringify(pinsByVersion[version] ?? defaultPins),
           );
         }
-      } else if (!spec.endsWith(".tgz")) {
+      } else if (spec.endsWith(".tgz")) {
+        const pkg = path.join(
+          prefix,
+          "lib/node_modules/devchain-host-bootstrap",
+        );
+        fs.mkdirSync(path.join(pkg, "systemd"), { recursive: true });
+        fs.copyFileSync(
+          sys.paths.unitTemplate,
+          path.join(pkg, "systemd/devchain-host.service"),
+        );
+        fs.mkdirSync(path.join(prefix, "bin"), { recursive: true });
+        for (const name of [
+          "devchain-bootstrap",
+          "devchain-host-update",
+          "devchain-host-project-root",
+        ])
+          fs.writeFileSync(path.join(prefix, "bin", name), "helper");
+      } else {
         const pkg = spec.slice(0, spec.lastIndexOf("@"));
         const name = Object.keys(defaultPins).find(
           (key) => defaultPins[key].package === pkg,
@@ -235,7 +268,10 @@ function fakeSystem({
         const file = path.join(prefix, "lib/node_modules", pkg, "package.json");
         fs.mkdirSync(path.dirname(file), { recursive: true });
         fs.writeFileSync(file, JSON.stringify({ version }));
-        fs.writeFileSync(path.join(paths.binDir, name), version);
+        const binDir =
+          prefix === paths.cliPrefix ? paths.binDir : path.join(prefix, "bin");
+        fs.mkdirSync(binDir, { recursive: true });
+        fs.writeFileSync(path.join(binDir, name), version);
       }
     }
     if (command === "bash")
@@ -243,12 +279,16 @@ function fakeSystem({
         path.join(args[args.indexOf("--dir") + 1], "agy"),
         "1.0.0",
       );
-    if (
-      command === path.join(paths.binDir, "devchain-host-update") &&
-      args[0] === "--clis"
-    ) {
-      const cliVersions = await installClis(args[1], sys);
-      await installPrivilegedSyncthing(sys);
+    if (command.endsWith("/devchain-host-update") && args[0] === "--clis") {
+      const relative = path
+        .relative(path.join(sys.paths.hostInstallRoot, "instances"), command)
+        .split(path.sep);
+      const own =
+        command === path.join(paths.binDir, "devchain-host-update")
+          ? sys
+          : createInstanceSystem(sys, relative[0]);
+      const cliVersions = await installClis(args[1], own);
+      await installPrivilegedSyncthing(own);
       return { stdout: JSON.stringify({ cliVersions }) + "\n", stderr: "" };
     }
     if (command === "stat")
@@ -306,6 +346,24 @@ function mode(file) {
   return fs.statSync(file).mode & 0o777;
 }
 
+function snapshot(file) {
+  const stat = fs.lstatSync(file);
+  if (stat.isSymbolicLink())
+    return { ino: stat.ino, link: fs.readlinkSync(file) };
+  if (stat.isDirectory())
+    return Object.fromEntries(
+      fs
+        .readdirSync(file)
+        .sort()
+        .map((name) => [name, snapshot(path.join(file, name))]),
+    );
+  return {
+    ino: stat.ino,
+    mode: stat.mode & 0o777,
+    contents: fs.readFileSync(file).toString("base64"),
+  };
+}
+
 /** The CLI versions a claim or update records when the fake installs every pin. */
 function pinnedCliVersions() {
   return {
@@ -325,7 +383,7 @@ const manifestOnlyDevchainCatalog = {
     "@anthropic-ai/claude-code",
     "@openai/codex",
     "@github/copilot",
-    "opencode-ai",
+    "@opencode/cli",
   ],
 };
 
@@ -371,6 +429,7 @@ module.exports = {
   FIXTURE_TLS,
   OTHER_TLS,
   mode,
+  snapshot,
   pins: defaultPins,
   pinnedCliVersions,
   manifestOnlyDevchainCatalog,

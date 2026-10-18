@@ -166,11 +166,12 @@ describe('0086 retire worktrees migration', () => {
     }
   });
 
-  it('creates a fresh database through the full migration chain without the retired tables', () => {
+  it('creates a fresh database through the retirement migration without the retired tables', async () => {
+    const throughFolder = await createRetirementFolder('through');
     const sqlite = new Database(':memory:');
     sqlite.pragma('foreign_keys = ON');
     try {
-      migrate(drizzle(sqlite), { migrationsFolder: MIGRATIONS_FOLDER });
+      migrate(drizzle(sqlite), { migrationsFolder: throughFolder });
 
       const tables = tableNames(sqlite);
       for (const table of RETIRED_TABLES) {
@@ -183,7 +184,9 @@ describe('0086 retire worktrees migration', () => {
         .get() as {
         n: number;
       };
-      expect(appliedCount.n).toBe(readJournal().entries.length);
+      expect(appliedCount.n).toBe(
+        readJournal().entries.findIndex((entry) => entry.tag === MIGRATION_TAG) + 1,
+      );
 
       const migrationSql = readFileSync(join(MIGRATIONS_FOLDER, `${MIGRATION_TAG}.sql`), 'utf8');
       expect(migrationSql.replace(/--> statement-breakpoint/g, '').trim()).toBe(
@@ -191,6 +194,7 @@ describe('0086 retire worktrees migration', () => {
       );
     } finally {
       sqlite.close();
+      await rm(throughFolder, { recursive: true, force: true });
     }
   });
 

@@ -125,6 +125,28 @@ const cases = {
     fallback: 'Failed to load remote bindings (503)',
     serverMessage: true,
   },
+  listNotices: {
+    invoke: (api, signal) => api.listNotices(signal),
+    url: '/api/remotes/notices',
+    init: get,
+    backend: HOME_BACKEND,
+    response: {
+      notices: [{ id: 'notice', remoteId: 'vm', fromUser: 'owner', action: 'reset', at: 'now' }],
+    },
+    result: [{ id: 'notice', remoteId: 'vm', fromUser: 'owner', action: 'reset', at: 'now' }],
+    fallback: 'Could not read VM notices.',
+    serverMessage: true,
+  },
+  dismissNotice: {
+    invoke: (api) => api.dismissNotice('vm', 'notice'),
+    url: '/api/remotes/vm/notices/dismiss',
+    init: () => post({ id: 'notice' }),
+    backend: HOME_BACKEND,
+    response: null,
+    result: undefined,
+    fallback: 'Could not dismiss the notice.',
+    serverMessage: true,
+  },
   createRemote: {
     invoke: (api) => api.createRemote(registration),
     url: '/api/remotes',
@@ -177,6 +199,17 @@ const cases = {
     response: { intervalMs: 1000, samples: [{ timestamp: 'sample' }] },
     result: { intervalMs: 1000, samples: [{ timestamp: 'sample' }] },
     fallback: 'Failed to load remote stats history (503)',
+    serverMessage: false,
+  },
+  readSyncthingDevice: {
+    invoke: (api, signal) => api.readSyncthingDevice('vm', signal),
+    url: '/api/host/sync/device',
+    init: get,
+    backend: 'vm',
+    response: { deviceId: 'device', address: 'tcp://0.0.0.0:24001' },
+    result: { deviceId: 'device', address: 'tcp://0.0.0.0:24001' },
+    fallback: null,
+    failureResult: null,
     serverMessage: false,
   },
   powerOn: {
@@ -281,6 +314,40 @@ const cases = {
     fallback: operationFailure,
     serverMessage: true,
   },
+  disconnectAll: {
+    invoke: (api) =>
+      api.disconnectAll('vm', {
+        force: false,
+        projects: [
+          { projectId: 'p1', dockerCopyBack: { choices: { group: 'copy-home' } } },
+          { projectId: 'p2' },
+        ],
+      }),
+    url: '/api/remotes/vm/disconnect-all',
+    init: () =>
+      post({
+        force: false,
+        projects: [
+          { projectId: 'p1', dockerCopyBack: { choices: { group: 'copy-home' } } },
+          { projectId: 'p2' },
+        ],
+      }),
+    backend: HOME_BACKEND,
+    response: operation,
+    result: operation,
+    fallback: operationFailure,
+    serverMessage: true,
+  },
+  readRemoteProjectLanes: {
+    invoke: (api, signal) => api.readRemoteProjectLanes('vm /?#', 'project /?#', signal),
+    url: '/r/vm%20%2F%3F%23/api/host/projects/project%20%2F%3F%23/worktrees',
+    init: get,
+    backend: HOME_BACKEND,
+    response: { lanes: [] },
+    result: { lanes: [] },
+    fallback: 'Could not check lanes on the VM.',
+    serverMessage: true,
+  },
   updateHost: {
     invoke: (api) => api.updateHost('vm', { installDocker: true }),
     url: '/api/remotes/vm/update',
@@ -329,12 +396,22 @@ const cases = {
     invoke: (api) =>
       api.resetVm('vm', {
         force: false,
+        forceOccupied: true,
+        confirmedOccupancy: { unavailable: true, instances: [] },
         providerAuth: {},
         installDocker: false,
         sshPublicKeys: [],
       }),
     url: '/api/remotes/vm/reset',
-    init: () => post({ force: false, providerAuth: {}, installDocker: false, sshPublicKeys: [] }),
+    init: () =>
+      post({
+        force: false,
+        forceOccupied: true,
+        confirmedOccupancy: { unavailable: true, instances: [] },
+        providerAuth: {},
+        installDocker: false,
+        sshPublicKeys: [],
+      }),
     backend: HOME_BACKEND,
     response: operation,
     result: operation,
@@ -342,12 +419,42 @@ const cases = {
     serverMessage: true,
   },
   destroyVm: {
-    invoke: (api) => api.destroyVm('vm', { force: false }),
+    invoke: (api) =>
+      api.destroyVm('vm', {
+        force: false,
+        forceOccupied: true,
+        confirmedOccupancy: { unavailable: true, instances: [] },
+      }),
     url: '/api/remotes/vm/destroy-vm',
-    init: () => post({ force: false }),
+    init: () =>
+      post({
+        force: false,
+        forceOccupied: true,
+        confirmedOccupancy: { unavailable: true, instances: [] },
+      }),
     backend: HOME_BACKEND,
     response: operation,
     result: operation,
+    fallback: operationFailure,
+    serverMessage: true,
+  },
+  readSharedVm: {
+    invoke: (api, signal) => api.readSharedVm('vm', signal),
+    url: '/api/remotes/vm/shared-vm',
+    init: (signal) => ({ signal }),
+    backend: HOME_BACKEND,
+    response: { occupancy: { unavailable: true, instances: [] }, lastRoster: null },
+    result: { occupancy: { unavailable: true, instances: [] }, lastRoster: null },
+    fallback: operationFailure,
+    serverMessage: true,
+  },
+  notifySharedVm: {
+    invoke: (api) => api.notifySharedVm('vm', { action: 'reset', message: 'Please disconnect' }),
+    url: '/api/remotes/vm/shared-vm/notify',
+    init: () => post({ action: 'reset', message: 'Please disconnect' }),
+    backend: HOME_BACKEND,
+    response: { results: [{ user: 'bob', delivered: true }] },
+    result: { results: [{ user: 'bob', delivered: true }] },
     fallback: operationFailure,
     serverMessage: true,
   },
@@ -390,10 +497,23 @@ const cases = {
       api.retryOperation('operation', {
         providerAuth: { claude: 'generate' },
         ssh: { user: 'alice', password: 'password' },
+        vm: {
+          force: false,
+          forceOccupied: true,
+          confirmedOccupancy: { unavailable: true, instances: [] },
+        },
       }),
     url: '/api/remotes/operations/operation/retry',
     init: () =>
-      post({ providerAuth: { claude: 'generate' }, ssh: { user: 'alice', password: 'password' } }),
+      post({
+        providerAuth: { claude: 'generate' },
+        ssh: { user: 'alice', password: 'password' },
+        vm: {
+          force: false,
+          forceOccupied: true,
+          confirmedOccupancy: { unavailable: true, instances: [] },
+        },
+      }),
     backend: HOME_BACKEND,
     response: operation,
     result: operation,

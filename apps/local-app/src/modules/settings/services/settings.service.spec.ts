@@ -15,6 +15,8 @@ import {
   DEFAULT_MESSAGE_POOL_MAX_MESSAGES,
   DEFAULT_MESSAGE_POOL_SEPARATOR,
 } from './settings.service';
+import { SettingsSchema } from '../dtos/settings.dto';
+import { PROVIDER_USAGE_SETTINGS_DEFAULTS } from '@devchain/shared';
 
 // Helper to create mock EventEmitter2
 function createMockEventEmitter(): EventEmitter2 & { emit: jest.Mock } {
@@ -507,6 +509,47 @@ describe('SettingsService (messaging settings)', () => {
     expect(service.getSetting('messaging.followNote')).toBe('true');
     expect(service.getSettings().messaging?.followNote).toBe(true);
     expect(service.getFollowNoteEnabled()).toBe(true);
+  });
+});
+
+describe('SettingsService (provider usage settings)', () => {
+  let sqlite: Database.Database;
+  let service: SettingsService;
+
+  beforeEach(() => {
+    sqlite = createTestDb();
+    ({ service } = createTestService(sqlite));
+  });
+
+  afterEach(() => sqlite.close());
+
+  it('persists a PUT body and fills the missing keys with defaults', async () => {
+    // Layer note: the body goes through the controller's schema, which strips an
+    // unknown group, and then through a real SQLite round-trip.
+    const body = SettingsSchema.parse({
+      providerUsage: { enabled: false, runningMaxAgeMin: 7, tokenCheckMinutes: 0 },
+    });
+    await service.updateSettings(body);
+
+    const expected = {
+      ...PROVIDER_USAGE_SETTINGS_DEFAULTS,
+      enabled: false,
+      runningMaxAgeMin: 7,
+      tokenCheckMinutes: 0,
+    };
+    expect(service.getSettings().providerUsage).toEqual(expected);
+    expect(service.getProviderUsageConfig()).toEqual(expected);
+  });
+
+  it('falls back to the default for a stored value outside the bounds', () => {
+    sqlite
+      .prepare(
+        `INSERT INTO settings (id, key, value, created_at, updated_at)
+         VALUES ('pu-1', 'providerUsage.hoverMaxAgeSec', '5', 'now', 'now')`,
+      )
+      .run();
+
+    expect(service.getProviderUsageConfig()).toEqual(PROVIDER_USAGE_SETTINGS_DEFAULTS);
   });
 });
 
@@ -1303,6 +1346,7 @@ describe('SettingsService — API surface inventory', () => {
       'getSetting',
       'getScrollbackLines',
       'getFollowNoteEnabled',
+      'getProviderUsageConfig',
       'getSkillsSyncOnStartup',
       'getSkillsCompletedSyncs',
       'setSkillCompletedSync',

@@ -32,6 +32,90 @@ jest.mock('node:os', () => {
   };
 });
 
+describe('RemoteOperationsService.gitOwnerStatus', () => {
+  const record = {
+    owner: 'home',
+    generation: 7,
+    homeName: 'pc',
+    homeWrites: { w1: 1, w2: 2 },
+    checkpoint: { writeId: 'w0', generation: 6, refsDigest: 'abc', at: 1 },
+    vmHolds: { h1: { pid: 1, processStartTime: 't', startedAt: 1 } },
+    transition: { kind: 'reclaim', id: 't1', phase: 'sending', lease: null },
+  };
+
+  function serviceFor({
+    binding = { state: 'remote', remoteId: 'remote-1' } as {
+      state: string;
+      remoteId: string;
+    } | null,
+    status = jest.fn().mockResolvedValue(record),
+    warning = null as string | null,
+  } = {}) {
+    const storage = {
+      getProject: jest.fn(),
+      getRemoteProjectBinding: jest.fn().mockResolvedValue(binding),
+      getRemote: jest.fn().mockResolvedValue({ id: 'remote-1', name: 'vm-01' }),
+    };
+    const owners = { get: () => 'vm', generation: () => 3 };
+    const service = new RemoteOperationsService(
+      storage as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      noChoices,
+      { warning: () => warning } as never,
+      owners as never,
+      { gitCoordinatorStatus: status } as never,
+    );
+    return { service, storage, status };
+  }
+
+  it('reports the VM record: owner, generation, in-flight writes, checkpoint and transition', async () => {
+    const { service } = serviceFor({ warning: 'Git guard was not installed.' });
+
+    await expect(service.gitOwnerStatus('project-1')).resolves.toEqual({
+      connected: true,
+      remoteId: 'remote-1',
+      remoteName: 'vm-01',
+      owner: 'home',
+      generation: 7,
+      live: true,
+      homeWrites: 2,
+      vmHolds: 1,
+      transition: { kind: 'reclaim', phase: 'sending' },
+      checkpoint: record.checkpoint,
+      warnings: ['Git guard was not installed.'],
+    });
+  });
+
+  it("falls back to this PC's cached owner with a warning when the VM record cannot be read", async () => {
+    const { service } = serviceFor({ status: jest.fn().mockRejectedValue(new Error('offline')) });
+
+    await expect(service.gitOwnerStatus('project-1')).resolves.toMatchObject({
+      owner: 'vm',
+      generation: 3,
+      live: false,
+      homeWrites: 0,
+      checkpoint: null,
+      warnings: ["The VM could not be reached. Showing this PC's last known Git owner."],
+    });
+  });
+
+  it('does not ask the VM about a project that is not connected', async () => {
+    const { service, status } = serviceFor({ binding: null });
+
+    await expect(service.gitOwnerStatus('project-1')).resolves.toMatchObject({
+      connected: false,
+      owner: 'home',
+    });
+    expect(status).not.toHaveBeenCalled();
+  });
+});
+
 describe('SshCredentialsSchema', () => {
   it('accepts exactly one authentication source and permits key-name passphrases', () => {
     expect(
@@ -62,7 +146,6 @@ it('refuses to connect a provisioning remote without an address', async () => {
     {} as never,
     {} as never,
     noChoices,
-    {} as never,
     {} as never,
     {} as never,
     {} as never,
@@ -184,7 +267,6 @@ describe('RemoteOperationsService.detach', () => {
       {} as never,
       {} as never,
       {} as never,
-      {} as never,
     );
   });
 
@@ -247,7 +329,7 @@ describe('RemoteOperationsService.detach', () => {
     expect(rows.get('op-attach')?.state).toBe('failed');
   });
 
-  it.each(['detach', 'force_sync', 'git_owner'] as const)(
+  it.each(['detach', 'force_sync'] as const)(
     'replaces a failed %s only when forced and preserves recovery details',
     async (kind) => {
       const forceSync = {
@@ -298,7 +380,16 @@ describe('RemoteOperationsService.installHost credentials', () => {
   it('seeds credentials before launch and persists only the safe details allowlist', async () => {
     const calls: string[] = [];
     const storage = {
-      listRemotes: jest.fn().mockResolvedValue({ items: [] }),
+      listRemotes: jest.fn().mockResolvedValue({
+        items: [
+          {
+            id: 'another-user',
+            kind: 'proxmox',
+            baseUrl: 'https://192.168.1.20:3001',
+            name: 'Another user',
+          },
+        ],
+      }),
       listRemoteOperations: jest.fn().mockResolvedValue([]),
       createRemote: jest.fn().mockResolvedValue({
         id: 'remote-install',
@@ -336,7 +427,6 @@ describe('RemoteOperationsService.installHost credentials', () => {
       { resolve: jest.fn(async (input: never) => ({ credentials: input })) } as never,
       {} as never,
       noChoices,
-      {} as never,
       {} as never,
       {} as never,
       {} as never,
@@ -414,7 +504,6 @@ describe('RemoteOperationsService.installHost credentials', () => {
       {} as never,
       {} as never,
       {} as never,
-      {} as never,
     );
     const ssh = { user: 'vm-admin', keyName: 'id_rsa' };
 
@@ -477,7 +566,6 @@ describe('RemoteOperationsService.installHost account validation', () => {
       {} as never,
       {} as never,
       {} as never,
-      {} as never,
     );
     return { service, runner, storage, installOperation, sshKeys };
   }
@@ -527,7 +615,6 @@ describe('RemoteOperationsService.installHost account validation', () => {
       {} as never,
       {} as never,
       noChoices,
-      {} as never,
       {} as never,
       {} as never,
       {} as never,
@@ -596,7 +683,6 @@ describe('RemoteOperationsService updateLogins', () => {
         {} as never,
         {} as never,
         {} as never,
-        {} as never,
       );
       const result = await service.updateLogins('remote-1', {
         providerAuth: { claude: 'reuse:new' },
@@ -649,7 +735,6 @@ describe('RemoteOperationsService updateLogins', () => {
       {} as never,
       {} as never,
       {} as never,
-      {} as never,
     );
     await service.retry(current.id, { codex: 'reuse:new' });
     expect(storage.updateRemoteOperation).toHaveBeenCalledWith(current.id, {
@@ -683,7 +768,6 @@ it('persists public keys when claiming an own VM', async () => {
     {} as never,
     {} as never,
     noChoices,
-    {} as never,
     {} as never,
     {} as never,
     {} as never,
@@ -736,7 +820,6 @@ describe('RemoteOperationsService.claim by address', () => {
       {} as never,
       {} as never,
       noChoices,
-      {} as never,
       {} as never,
       {} as never,
       {} as never,
@@ -845,5 +928,50 @@ describe('RemoteOperationsService.claim by address', () => {
         providerAuth: {},
       }),
     ).toThrow('give certificateFingerprint only with baseUrl');
+  });
+});
+
+// Layer: unit. The registry is fixed in the details when the update starts.
+describe('RemoteOperationsService.updateHost registry', () => {
+  const originalEnv = process.env;
+
+  afterEach(() => {
+    process.env = originalEnv;
+    resetEnvConfig();
+  });
+
+  async function startUpdate(env: Record<string, string | undefined>) {
+    process.env = { ...originalEnv, ...env };
+    resetEnvConfig();
+    const storage = {
+      getRemote: jest.fn(async () => ({ id: 'remote-1' })),
+      listRemoteOperations: jest.fn(async () => []),
+    };
+    const runner = { start: jest.fn(async (request) => request) };
+    const service = new RemoteOperationsService(
+      storage as never,
+      runner as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      { refresh: async () => ({ version: '0.0.1' }) } as never,
+      noChoices,
+      {} as never,
+      {} as never,
+      {} as never,
+    );
+    return (await service.updateHost('remote-1')).details;
+  }
+
+  it('takes the registry from HOST_NPM_REGISTRY', async () => {
+    const details = await startUpdate({ HOST_NPM_REGISTRY: 'http://lan.test:4873/' });
+    expect(details.npmRegistry).toBe('http://lan.test:4873/');
+  });
+
+  it('leaves the registry out when HOST_NPM_REGISTRY is unset', async () => {
+    const details = await startUpdate({ HOST_NPM_REGISTRY: undefined });
+    expect(details).not.toHaveProperty('npmRegistry');
   });
 });

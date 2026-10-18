@@ -182,7 +182,7 @@ export class AntigravityMetricsReader {
   }
 
   // -------------------------------------------------------------------------
-  // Connection lifecycle (read-only, honors WAL — mirrors OpencodeSqliteReader)
+  // Connection lifecycle (read-only, honors WAL — mirrors withOpencodeDb)
   // -------------------------------------------------------------------------
 
   private withDb<T>(dbPath: string, fn: (db: Database.Database) => T): T {

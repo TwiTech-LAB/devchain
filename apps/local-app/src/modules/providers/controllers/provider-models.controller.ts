@@ -13,6 +13,9 @@ import { z } from 'zod';
 import { StorageService, STORAGE_SERVICE } from '../../storage/interfaces/storage.interface';
 import { McpProviderRegistrationService } from '../services/mcp-provider-registration.service';
 import { createLogger } from '../../../common/logging/logger';
+import { ProviderCliVersionProbe } from '../services/provider-cli-version-probe.service';
+import { applyProviderCliNoUpdate, opencodeCommandArgs } from '../adapters/provider-cli-policy';
+import { assertSupportedOpencodeVersion } from '../adapters/opencode-cli-version';
 import { ProcessExecutor } from '../../terminal/services/process-executor/process-executor.port';
 
 const logger = createLogger('ProviderModelsController');
@@ -57,6 +60,7 @@ export class ProviderModelsController {
     >,
     private readonly mcpRegistration: McpProviderRegistrationService,
     private readonly executor: ProcessExecutor,
+    private readonly versionProbe: ProviderCliVersionProbe,
   ) {}
 
   @Get()
@@ -132,8 +136,25 @@ export class ProviderModelsController {
       throw new BadRequestException(resolution.message ?? 'Unable to resolve provider binary');
     }
 
+    let argv = [resolution.binaryPath, 'models'];
+    let env: Record<string, string> | undefined;
+    if (providerName === 'opencode') {
+      const version = assertSupportedOpencodeVersion(
+        await this.versionProbe.probe(providerName, resolution.binaryPath),
+        resolution.binaryPath,
+      );
+      const command = applyProviderCliNoUpdate(
+        providerName,
+        opencodeCommandArgs(version, argv),
+        process.env,
+      );
+      argv = command.argv;
+      env = command.env;
+    }
+
     const execResult = await this.executor.run({
-      argv: [resolution.binaryPath, 'models'],
+      argv,
+      env,
       mode: 'pipe',
       timeout: 30_000,
       outputLimits: { maxBytes: 1024 * 1024 },

@@ -9,6 +9,7 @@ import type {
 } from '../../storage/models/domain.models';
 import type { HostStats } from '../../core/models/host-stats.model';
 import type { HostEnvOverrideEntry } from '../host/host-env-override-report';
+import type { SharedVmSavedRoster } from './shared-vm.dto';
 
 export const BASE_URL_MESSAGE = 'baseUrl must be https://host[:port] with no path';
 
@@ -103,6 +104,7 @@ export type UpdateRemoteNameData = z.infer<typeof UpdateRemoteNameSchema>;
 
 /** A stored remote enriched with its last-known `RemoteHealthService` poll state. */
 export interface RemoteListItemDto extends Remote {
+  sharedVmRoster?: SharedVmSavedRoster;
   cliVersions?: Record<string, string> | null;
   providerClis?: ProviderCliRuntimeReport | null;
   docker?: DockerRuntime;

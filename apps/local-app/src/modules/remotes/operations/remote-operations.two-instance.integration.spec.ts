@@ -246,6 +246,7 @@ describe('remote operations between two instances', () => {
       expect(done.steps.map((step) => step.id)).toEqual([
         'preflight',
         'git_config',
+        'claude_instructions',
         'docker_preflight',
         'stop_home_sessions',
         'docker_stop_home',
@@ -260,6 +261,7 @@ describe('remote operations between two instances', () => {
         'docker_create_host',
         'bind_remote',
         'thaw_host',
+        'thaw_lanes',
         'start_live_sync',
       ]);
       // A Connect without Docker items skips only the Docker steps.
@@ -870,6 +872,7 @@ describe('remote operations between two instances', () => {
         host_release: 'done',
         unbind: 'done',
         thaw_home: 'done',
+        thaw_lanes: 'done',
       });
       const { body: superseded } = await api(home(), 'GET', `/api/remotes/operations/${failed.id}`);
       expect(superseded).toMatchObject({
@@ -936,6 +939,7 @@ describe('remote operations between two instances', () => {
       host_release: 'skipped',
       unbind: 'done',
       thaw_home: 'done',
+      thaw_lanes: 'done',
     });
     expect(done.details.forcedLoss).toEqual({
       hostCursor: expect.any(String),

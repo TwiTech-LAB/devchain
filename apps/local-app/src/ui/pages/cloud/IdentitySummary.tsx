@@ -66,9 +66,9 @@ function Fact({ label, value }: { label: string; value: string }) {
 /**
  * What a VM always gets from this PC, read-only: the Linux user and home
  * folder (so stored absolute paths stay valid there), this DevChain's version
- * and port, and the global git settings.
+ * and the global git settings. A join reserves a free port on the VM.
  */
-export function IdentitySummary() {
+export function IdentitySummary({ automaticPort = false }: { automaticPort?: boolean } = {}) {
   const identity = useHomeIdentity();
   // The page reads the same entry, so the version is usually cached already.
   const runtime = useQuery(
@@ -82,12 +82,15 @@ export function IdentitySummary() {
         <Fact label="Linux user" value={identity?.user ?? '—'} />
         <Fact label="Home folder" value={identity?.homePath ?? '—'} />
         <Fact label="DevChain version" value={runtime.data?.version ?? '—'} />
-        <Fact label="Port" value={port} />
+        <Fact label="Port" value={automaticPort ? 'Automatic' : port} />
       </dl>
       <p className="text-xs text-muted-foreground">
         The VM always uses this PC&apos;s user and home folder, and gets this PC&apos;s global git
         settings at setup and at every Connect.
       </p>
+      {automaticPort && (
+        <p className="text-xs text-muted-foreground">DevChain picks a free port on the VM.</p>
+      )}
       <ClaimIdentityAlerts identity={identity} />
     </section>
   );

@@ -1,3 +1,4 @@
+import { sharedVmGuardStub } from '../../../common/test/shared-vm.stub';
 import { SessionRowStore } from '../../storage/sessions/session-row.store';
 import { RemoteApiKeyService } from '../auth/remote-api-key.service';
 import { Controller, Get, ForbiddenException } from '@nestjs/common';
@@ -183,8 +184,11 @@ describe('provider CLI policy across home and VM', () => {
         pushIfChanged: async () => undefined,
       } as never,
       push,
+      { pushIfChanged: async () => undefined } as never,
       versions,
       new RemoteApiKeyService(storage),
+      sharedVmGuardStub(),
+      { poll: async () => undefined, prune: () => undefined } as never,
     );
     const module = await Test.createTestingModule({
       controllers: [

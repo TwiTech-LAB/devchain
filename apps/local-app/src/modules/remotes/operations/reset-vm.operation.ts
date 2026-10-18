@@ -1,3 +1,4 @@
+import { RemoteWorktreeGuard } from './remote-worktree-guard';
 import { DockerImportInventoryStore } from './docker-import-inventory.store';
 import { Inject, Injectable } from '@nestjs/common';
 import { ConflictError } from '../../../common/errors/error-types';
@@ -12,8 +13,13 @@ import { AttachOperation } from './attach.operation';
 import { CreateVmOperation, type CreateVmDetails } from './create-vm.operation';
 import { DetachOperation, type DetachDetails } from './detach.operation';
 import { RemoteOperationStepRefusedError } from './remote-operation.errors';
-import { destroyGuardedVm } from './guarded-vm-destroy';
+import { confirmedVmGone, confirmedVmIdle, destroyGuardedVm } from './guarded-vm-destroy';
 import { MIN_VM_MEMORY_MIB } from './vm-operations.dto';
+import {
+  RemoteSharedVmService,
+  notifyForcedStep,
+  type SharedVmOperationDetails,
+} from '../services/remote-shared-vm.service';
 import {
   stepStarted,
   type RemoteOperationDefinition,
@@ -23,10 +29,12 @@ import {
   withStepPrefix,
 } from './remote-operation.types';
 
-export interface ResetVmDetails extends CreateVmDetails {
+export interface ResetVmDetails extends CreateVmDetails, SharedVmOperationDetails {
   oldIdentity: string;
   projectIds: string[];
   force: boolean;
+  laneWarnings?: Array<{ projectId: string; warning: string }>;
+  lanesFrozen?: string[];
   familyPull?: PullFamiliesResult;
   oldVmid?: number;
   oldDestroyAttempted?: boolean;
@@ -52,11 +60,13 @@ export class ResetVmOperation implements RemoteOperationDefinition {
     private readonly create: CreateVmOperation,
     private readonly attach: AttachOperation,
     private readonly inventory: DockerImportInventoryStore,
+    private readonly worktrees: RemoteWorktreeGuard,
+    private readonly sharedVm: RemoteSharedVmService,
   ) {}
 
   stepsFor(raw: Record<string, unknown>): readonly RemoteOperationStepDefinition[] {
     const details = raw as unknown as ResetVmDetails;
-    return [
+    const steps: RemoteOperationStepDefinition[] = [
       { id: 'preflight', label: 'Check the VM', run: (c) => this.preflight(c) },
       {
         id: 'pull_families',
@@ -66,6 +76,7 @@ export class ResetVmOperation implements RemoteOperationDefinition {
       ...details.projectIds.flatMap((projectId) =>
         this.detach
           .stepsFor({ force: details.force })
+          .filter((step) => step.id !== 'thaw_lanes')
           .map((step) => this.projectStep('detach', projectId, step, details.force)),
       ),
       {
@@ -73,12 +84,27 @@ export class ResetVmOperation implements RemoteOperationDefinition {
         label: 'Record what the forced reset loses',
         run: (c) => this.recordLoss(c),
       },
+      notifyForcedStep(() => this.sharedVm),
       { id: 'destroy', label: 'Destroy the old VM', run: (c) => this.destroy(c) },
       ...prefixSteps(this.create.steps, 'create_'),
       ...details.projectIds.flatMap((projectId) =>
         this.attach.steps.map((step) => this.projectStep('attach', projectId, step, false)),
       ),
     ];
+    return steps.map((step) => ({
+      ...step,
+      run: async (run) => {
+        try {
+          // Nested Disconnects may already be done when destruction is retried.
+          if (step.id === 'destroy' && (run.details as unknown as ResetVmDetails).force)
+            await this.protectLanes(run);
+          await step.run(run);
+        } catch (error) {
+          await this.thawLanes({ ...run.operation, details: run.details }, run.progress);
+          throw error;
+        }
+      },
+    }));
   }
 
   assertCancellable(operation: RemoteOperation): void {
@@ -112,11 +138,41 @@ export class ResetVmOperation implements RemoteOperationDefinition {
     const from = this.create.retryFrom(createOperation(operation));
     return from ? `create_${from}` : null;
   }
+  reconcileRetry(operation: RemoteOperation): Pick<RemoteOperation, 'steps' | 'details'> | null {
+    const reset = operation.details as unknown as ResetVmDetails;
+    if (!reset.force) return null;
+    const definitions = new Map(this.stepsFor(operation.details).map((step) => [step.id, step]));
+    const detachDetails = { ...reset.detachDetails };
+    for (const [projectId, nested] of Object.entries(detachDetails)) {
+      const prefix = `detach:${projectId}:`;
+      if (
+        operation.steps.some(
+          (step) => step.id.startsWith(prefix) && step.state !== 'done' && step.state !== 'skipped',
+        )
+      ) {
+        detachDetails[projectId] = { ...nested, force: true };
+      }
+    }
+    return {
+      details: { ...operation.details, ...(reset.detachDetails && { detachDetails }) },
+      steps: operation.steps.map((step) =>
+        (step.state === 'pending' || step.state === 'failed') &&
+        definitions.get(step.id)?.skip?.(operation.details)
+          ? { ...step, state: 'skipped', error: null }
+          : step,
+      ),
+    };
+  }
   async rollback(operation: RemoteOperation): Promise<void> {
-    await this.create.rollbackNewVm(createOperation(operation));
+    try {
+      await this.create.rollbackNewVm(createOperation(operation));
+    } finally {
+      await this.thawLanes(operation);
+    }
   }
 
-  private async preflight({ operation, details }: RemoteOperationStepRun): Promise<void> {
+  private async preflight(run: RemoteOperationStepRun): Promise<void> {
+    const { operation, details } = run;
     const reset = details as unknown as ResetVmDetails;
     const remote = await this.storage.getRemote(operation.remoteId);
     if (
@@ -136,6 +192,7 @@ export class ResetVmOperation implements RemoteOperationDefinition {
         'Reset needs 4096 MiB of memory for the claim/update install.',
       );
     }
+    await this.sharedVm.assertAllowed(operation.remoteId, reset);
     const current = (await this.storage.listRemoteProjectBindings()).filter(
       (binding) => binding.remoteId === operation.remoteId,
     );
@@ -150,6 +207,7 @@ export class ResetVmOperation implements RemoteOperationDefinition {
         'The connected projects changed after reset was requested.',
       );
     }
+    reset.laneWarnings = [];
     for (const projectId of reset.projectIds) {
       const open = await this.storage.listRemoteOperations({
         projectId,
@@ -161,6 +219,12 @@ export class ResetVmOperation implements RemoteOperationDefinition {
           'RESET_PROJECT_OPERATION_OPEN',
           'A project operation is still open; finish it before reset.',
         );
+      }
+      if (reset.force) {
+        const warning = await this.protectProjectLanes(run, projectId);
+        if (warning) reset.laneWarnings.push({ projectId, warning });
+      } else {
+        await this.worktrees.assertRemoteEmpty(operation.remoteId, projectId);
       }
     }
   }
@@ -186,16 +250,27 @@ export class ResetVmOperation implements RemoteOperationDefinition {
 
   private async destroy({ operation, details }: RemoteOperationStepRun): Promise<void> {
     const reset = details as unknown as ResetVmDetails;
-    await destroyGuardedVm({
-      storage: this.storage,
-      providers: this.providers,
+    await this.sharedVm.fencedDestroy({
       operation,
-      details,
-      connectionId: reset.connectionId,
-      vmIdentity: reset.oldIdentity,
-      vmidKey: 'oldVmid',
-      attemptKey: 'oldDestroyAttempted',
+      details: reset,
+      previouslyAttempted: reset.oldDestroyAttempted,
+      confirmedGone: () => confirmedVmGone(this.providers, reset.connectionId, reset.oldIdentity),
+      confirmedIdle: () => confirmedVmIdle(this.providers, reset.connectionId, reset.oldVmid),
+      destroy: () =>
+        destroyGuardedVm({
+          storage: this.storage,
+          providers: this.providers,
+          operation,
+          details,
+          connectionId: reset.connectionId,
+          vmIdentity: reset.oldIdentity,
+          vmidKey: 'oldVmid',
+          attemptKey: 'oldDestroyAttempted',
+        }),
     });
+    // The protected process no longer exists; never thaw a replacement VM at the same address.
+    reset.lanesFrozen = [];
+    for (const nested of Object.values(reset.detachDetails ?? {})) nested.lanesFrozen = false;
     this.inventory.deleteRemote(operation.remoteId);
     await this.storage.updateRemoteBaseUrl(operation.remoteId, null);
     await this.storage.updateRemoteVmIdentity(operation.remoteId, null);
@@ -228,18 +303,67 @@ export class ResetVmOperation implements RemoteOperationDefinition {
         await step.run({
           operation: synthetic,
           details: nested,
-          progress: (patch) => {
+          progress: (patch, options) => {
             Object.assign(nested, patch);
-            return run.progress({
-              [phase === 'detach' ? 'detachDetails' : 'attachDetails']: {
-                ...group,
-                [projectId]: nested,
+            return run.progress(
+              {
+                [phase === 'detach' ? 'detachDetails' : 'attachDetails']: {
+                  ...group,
+                  [projectId]: nested,
+                },
               },
-            });
+              options,
+            );
           },
         });
       },
     };
+  }
+
+  private async protectProjectLanes(
+    run: RemoteOperationStepRun,
+    projectId: string,
+  ): Promise<string | null> {
+    const reset = run.details as unknown as ResetVmDetails;
+    return this.worktrees.freezeRemoteEmpty(run.operation.remoteId, projectId, () =>
+      run.progress(
+        { lanesFrozen: [...new Set([...(reset.lanesFrozen ?? []), projectId])] },
+        { durable: true },
+      ),
+    );
+  }
+
+  private async protectLanes(run: RemoteOperationStepRun): Promise<void> {
+    const reset = run.details as unknown as ResetVmDetails;
+    for (const projectId of reset.projectIds) {
+      const warning = await this.protectProjectLanes(run, projectId);
+      if (warning && !reset.laneWarnings?.some((item) => item.projectId === projectId))
+        (reset.laneWarnings ??= []).push({ projectId, warning });
+    }
+  }
+
+  private async thawLanes(
+    operation: RemoteOperation,
+    progress?: RemoteOperationStepRun['progress'],
+  ): Promise<void> {
+    const reset = operation.details as unknown as ResetVmDetails;
+    const projects = new Set([
+      ...(reset.lanesFrozen ?? []),
+      ...Object.entries(reset.detachDetails ?? {})
+        .filter(([, nested]) => nested.lanesFrozen)
+        .map(([projectId]) => projectId),
+    ]);
+    for (const projectId of projects) {
+      if (await this.worktrees.thawRemoteAdmission(operation.remoteId, projectId)) {
+        reset.lanesFrozen = reset.lanesFrozen?.filter((id) => id !== projectId);
+        const nested = reset.detachDetails?.[projectId];
+        if (nested) nested.lanesFrozen = false;
+        await progress?.(
+          { lanesFrozen: reset.lanesFrozen, detachDetails: reset.detachDetails },
+          { durable: true },
+        );
+      }
+    }
   }
 }
 

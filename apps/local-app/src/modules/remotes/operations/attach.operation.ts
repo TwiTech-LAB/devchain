@@ -1,3 +1,4 @@
+import { RemoteWorktreeGuard } from './remote-worktree-guard';
 import { TranscriptHandoff } from './transcript-handoff';
 import { DockerHandoff, dockerSelection } from '../docker/docker-handoff';
 import { Inject, Injectable } from '@nestjs/common';
@@ -8,6 +9,7 @@ import type { ProjectReplicaOfScope } from '@devchain/shared';
 import { ConflictError, ReplicaPreflightError } from '../../../common/errors/error-types';
 import { createLogger } from '../../../common/logging/logger';
 import type { RemoteOperation } from '../../storage/models/domain.models';
+import type { ProviderAuthClaimFile } from '../../provider-auth/provider-auth-adapters';
 import { ProjectFreezeService } from '../host/project-freeze.service';
 import { REMOTE_HEALTH_PORT, type RemoteHealthPort } from '../ports/remote-health.port';
 import { FileSyncManagedExclusionsStore } from '../../file-sync/file-sync-managed-exclusions.store';
@@ -21,6 +23,7 @@ import {
 } from '../time/project-time-settler.service';
 import { ProcessExecutor } from '../../terminal/services/process-executor/process-executor.port';
 import { FileSyncHandoff } from './file-sync-handoff';
+import { buildClaudeUserInstructionsFile } from './claude-user-instructions';
 import { buildGlobalGitConfigClaimFile } from './git-global-config';
 import { RemoteHostClient } from './remote-host.client';
 import { HOST_API_KEY_REJECTED, HOST_API_KEY_REJECTED_MESSAGE } from '../host-api-key';
@@ -34,6 +37,8 @@ import {
 } from './remote-operation.types';
 
 const logger = createLogger('AttachOperation');
+
+type HomeFileCopyOutcome = 'sent' | 'not_set_on_pc' | 'failed';
 
 /** Values the attach steps keep in `operation.details`. */
 interface AttachDetails {
@@ -56,9 +61,13 @@ interface AttachDetails {
   /** The managed exclusions before this attempt changed them; a cancel puts them back. */
   managedExclusionsBefore?: string[];
   /** Outcome of copying this PC's global git config; `sent` shows nothing extra. */
-  gitConfig?: 'sent' | 'not_set_on_pc' | 'failed';
+  gitConfig?: HomeFileCopyOutcome;
   /** Why the git config copy failed; the host's message, never the file content. */
   gitConfigError?: string;
+  /** Outcome of copying this PC's `~/.claude/CLAUDE.md`; `sent` shows nothing extra. */
+  claudeInstructions?: HomeFileCopyOutcome;
+  /** Why the Claude instructions copy failed; the caught error's message, never the file content. */
+  claudeInstructionsError?: string;
   vmGuardRemoved?: boolean;
   vmGuardWarning?: string | null;
 }
@@ -89,6 +98,7 @@ export class AttachOperation implements RemoteOperationDefinition {
     private readonly docker: DockerHandoff,
     private readonly processExecutor: ProcessExecutor,
     private readonly gitOwner: GitOwnerStore,
+    private readonly worktrees: RemoteWorktreeGuard,
   ) {
     const noDocker = (details: Record<string, unknown>) => !dockerSelection(details);
     this.steps = [
@@ -97,6 +107,11 @@ export class AttachOperation implements RemoteOperationDefinition {
         id: 'git_config',
         label: "Copy this PC's git settings to the VM",
         run: (c) => this.gitConfig(c),
+      },
+      {
+        id: 'claude_instructions',
+        label: "Copy this PC's Claude instructions to the VM",
+        run: (c) => this.claudeInstructions(c),
       },
       {
         id: 'docker_preflight',
@@ -156,6 +171,12 @@ export class AttachOperation implements RemoteOperationDefinition {
       },
       { id: 'bind_remote', label: 'Make the VM the project owner', run: (c) => this.bindRemote(c) },
       { id: 'thaw_host', label: 'Unlock the project on the VM', run: (c) => this.thawHost(c) },
+      {
+        id: 'thaw_lanes',
+        label: 'Allow lane operations on the VM',
+        run: ({ operation }) =>
+          this.host.setLaneAdmission(operation.remoteId, requireProjectId(operation), false),
+      },
       { id: 'start_live_sync', label: 'Start live sync', run: (c) => this.startLiveSync(c) },
     ];
   }
@@ -257,6 +278,7 @@ export class AttachOperation implements RemoteOperationDefinition {
 
   private async preflight({ operation, details, progress }: RemoteOperationStepRun): Promise<void> {
     const projectId = requireProjectId(operation);
+    await this.worktrees.assertLocalEmpty(projectId);
     const { remoteId } = operation;
     const health = this.health.getState(remoteId);
     if (!health.online) {
@@ -347,30 +369,47 @@ export class AttachOperation implements RemoteOperationDefinition {
     await this.sessionsStopper.stop(requireProjectId(operation));
   }
 
-  /**
-   * Makes the VM's `~/.gitconfig` this PC's effective global config. The copy
-   * replaces whatever the VM had, so it never runs partially: any failure
-   * leaves the VM's own file untouched and Connect continues.
-   */
+  /** Makes the VM's `~/.gitconfig` this PC's effective global config. */
   private async gitConfig({ operation, details }: RemoteOperationStepRun): Promise<void> {
+    const copy = await this.copyHomeFile(operation, 'git settings', () =>
+      buildGlobalGitConfigClaimFile(this.processExecutor, homeIdentity().homePath),
+    );
     const attachDetails = details as AttachDetails;
+    attachDetails.gitConfig = copy.outcome;
+    if (copy.error !== undefined) attachDetails.gitConfigError = copy.error;
+  }
+
+  /** Makes the VM's `~/.claude/CLAUDE.md` this PC's file. */
+  private async claudeInstructions({ operation, details }: RemoteOperationStepRun): Promise<void> {
+    const copy = await this.copyHomeFile(operation, 'Claude instructions', () =>
+      buildClaudeUserInstructionsFile(homeIdentity().homePath),
+    );
+    const attachDetails = details as AttachDetails;
+    attachDetails.claudeInstructions = copy.outcome;
+    if (copy.error !== undefined) attachDetails.claudeInstructionsError = copy.error;
+  }
+
+  /**
+   * Replaces one VM file with this PC's file. Each file goes in a request of
+   * its own, because the VM checks every file of a request before writing
+   * any. The copy never runs partially: any failure leaves the VM's own file
+   * untouched and Connect continues.
+   */
+  private async copyHomeFile(
+    operation: RemoteOperation,
+    what: string,
+    build: () => Promise<ProviderAuthClaimFile | null>,
+  ): Promise<{ outcome: HomeFileCopyOutcome; error?: string }> {
     try {
-      const file = await buildGlobalGitConfigClaimFile(
-        this.processExecutor,
-        homeIdentity().homePath,
-      );
-      if (file === null) {
-        attachDetails.gitConfig = 'not_set_on_pc';
-        return;
-      }
+      const file = await build();
+      if (file === null) return { outcome: 'not_set_on_pc' };
       await this.host.applyProviderAuth(operation.remoteId, { env: {}, files: [file] });
-      attachDetails.gitConfig = 'sent';
+      return { outcome: 'sent' };
     } catch (error) {
-      // The file can hold secrets; only the host's message is kept, never content.
+      // The file can hold secrets; only the error's message is kept, never content.
       const message = error instanceof Error ? error.message : String(error);
-      attachDetails.gitConfig = 'failed';
-      attachDetails.gitConfigError = message;
-      logger.warn({ operationId: operation.id }, `The VM kept its own git settings: ${message}`);
+      logger.warn({ operationId: operation.id }, `The VM kept its own ${what}: ${message}`);
+      return { outcome: 'failed', error: message };
     }
   }
 
@@ -383,6 +422,8 @@ export class AttachOperation implements RemoteOperationDefinition {
 
   private async freezeHome({ operation }: RemoteOperationStepRun): Promise<void> {
     await this.freeze.freeze(requireProjectId(operation));
+    // Admission is now closed; catch a lane created after preflight.
+    await this.worktrees.assertLocalEmpty(requireProjectId(operation));
   }
 
   private async buildReplica({ operation }: RemoteOperationStepRun): Promise<void> {

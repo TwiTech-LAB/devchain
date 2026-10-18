@@ -535,6 +535,51 @@ const mobileChatTeamSchema = z
   })
   .passthrough();
 
+/** The `maxAgeSec` range `chat.getProviderUsage` accepts, the same as `GET /api/provider-usage`. */
+export const PROVIDER_USAGE_MAX_AGE_SEC = { min: 15, max: 14_400 } as const;
+
+// Loose on purpose: both ends validate against this schema, so a stricter enum or bound
+// would make a newer PC fail an older phone. Overage means `usedPercent` can exceed 100.
+const mobileProviderUsageWindowSchema = z
+  .object({
+    id: z.string(),
+    label: z.string(),
+    kind: z.string(),
+    usedPercent: z.number(),
+    resetsAt: z.number().nullable(),
+  })
+  .passthrough();
+
+const mobileProviderUsageSnapshotSchema = z
+  .object({
+    accountKey: z.string(),
+    provider: z.string(),
+    label: z.string(),
+    windows: z.array(mobileProviderUsageWindowSchema),
+    extras: z.array(mobileProviderUsageWindowSchema),
+    plan: z.string().nullable(),
+    source: z.string().nullable(),
+    fetchedAt: z.string().nullable(),
+    state: z.string(),
+    error: z.string().nullable(),
+  })
+  .passthrough();
+
+const mobileProviderUsageResultSchema = z
+  .object({
+    accounts: z.array(mobileProviderUsageSnapshotSchema),
+    config: z
+      .object({
+        enabled: z.boolean(),
+        runningMaxAgeMin: z.number(),
+        openProjectMaxAgeMin: z.number(),
+        hoverMaxAgeSec: z.number(),
+        tokenCheckMinutes: z.number(),
+      })
+      .passthrough(),
+  })
+  .passthrough();
+
 const mobileChatProfileSchema = z
   .object({
     id: uuidSchema,
@@ -858,6 +903,22 @@ const chatReadCatalog = {
   'chat.listTeams': {
     paramsSchema: z.object({ projectId: uuidSchema }).passthrough(),
     resultSchema: z.array(mobileChatTeamSchema),
+    paramsMode: passthrough,
+    cryptoMode: conditionalSeal,
+  },
+  'chat.getProviderUsage': {
+    paramsSchema: z
+      .object({
+        projectId: uuidSchema,
+        maxAgeSec: z
+          .number()
+          .int()
+          .min(PROVIDER_USAGE_MAX_AGE_SEC.min)
+          .max(PROVIDER_USAGE_MAX_AGE_SEC.max)
+          .optional(),
+      })
+      .passthrough(),
+    resultSchema: mobileProviderUsageResultSchema,
     paramsMode: passthrough,
     cryptoMode: conditionalSeal,
   },
@@ -1193,6 +1254,7 @@ export const MOBILE_RPC_METHODS = [
   'board.deleteEpicComment',
   'chat.listAgents',
   'chat.listTeams',
+  'chat.getProviderUsage',
   'chat.listProfiles',
   'chat.listProfileConfigs',
   'chat.createTeamAgent',

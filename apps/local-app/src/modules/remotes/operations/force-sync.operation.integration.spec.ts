@@ -155,7 +155,6 @@ describe('persisted Force sync', () => {
       upkeep as never,
       {} as never,
       {} as never,
-      {} as never,
     );
     const module = await Test.createTestingModule({
       controllers: [RemoteOperationsController],

@@ -43,6 +43,8 @@ class FakeSession implements SshSession {
     this.stdins.push(stdin);
     this.execOptions.push(options);
     if (command.includes("sudo -S -p '' true")) return this.sudoProbe;
+    if (command.includes('__DEVCHAIN_HOST_STATE__'))
+      return { code: 0, stdout: '__DEVCHAIN_HOST_STATE__unclaimed', stderr: '' };
     if (command.includes(' --check')) return this.check;
     if (command.includes('getent passwd')) return this.account;
     if (command.includes('/etc/devchain-host/tls/cert.pem')) return this.certificate;
@@ -393,6 +395,115 @@ describe('InstallHostOperation', () => {
     expect(install.hasCredentials(run.operation.id)).toBe(true);
   });
 
+  // Staged SSH/runtime replies reproduce recovery ordering without a VM or real claim install.
+  it('recovers a join when the earlier claim finishes after SSH recovery has checked its record', async () => {
+    Object.assign(details, {
+      mode: 'join',
+      joinRequestId: run.operation.id,
+      joinInstallStarted: true,
+      bootstrapUrl: 'https://192.168.1.20:3001',
+      tlsCertificate: fixtureTls.cert,
+    });
+    run.operation.steps.push({
+      id: 'claim_claim',
+      label: 'Claim',
+      state: 'running',
+      startedAt: 'now',
+      endedAt: null,
+      error: null,
+    });
+    const hasJoinNonce = jest.fn(() => false);
+    Object.assign(claim, {
+      hasJoinNonce,
+      seedJoinNonce: jest.fn(() => hasJoinNonce.mockReturnValue(true)),
+    });
+    const remote = Object.assign(storage, { updateRemoteBaseUrl: jest.fn() });
+    install.forget(run.operation.id);
+    expect(install.resumeFrom(run.operation)).toBe('install');
+    await expect(step('install').run(run)).rejects.toMatchObject({
+      code: 'SSH_CREDENTIALS_REQUIRED',
+    });
+    install.seedCredentials(run.operation.id, { user: 'vm-admin', password: 'ssh-secret' });
+    await connect();
+
+    let recorded = false;
+    let reserved = false;
+    let runtimeReads = 0;
+    const record = {
+      userName: details.userName,
+      homePath: details.homePath,
+      port: details.port,
+      version: details.version,
+    };
+    const exec = ssh.session.exec.bind(ssh.session);
+    const reads: boolean[] = [];
+    jest.spyOn(ssh.session, 'exec').mockImplementation(async (command, stdin, options) => {
+      const result = await exec(command, stdin, options);
+      if (command.includes('/instances/devchain/claim.json')) {
+        reads.push(recorded);
+        return { ...result, stdout: recorded ? JSON.stringify(record) : '' };
+      }
+      if (command.includes('--reserve-join')) {
+        reserved = true;
+        return {
+          ...result,
+          stdout: JSON.stringify({
+            ...record,
+            requestId: run.operation.id,
+            nonce: 'a'.repeat(64),
+            expiresAt: '2099-01-01T00:00:00Z',
+          }),
+        };
+      }
+      return result;
+    });
+    ssh.session.status = 'finished';
+    host.runtimeAt.mockImplementation(async () => {
+      expect(reads[0]).toBe(false);
+      if (!reserved) return null;
+      if (++runtimeReads === 1) return { state: 'claiming', version: null, imageVersion: '1.4.0' };
+      recorded = true;
+      return { version: details.version };
+    });
+
+    jest.useFakeTimers();
+    const sleep = jest
+      .spyOn(
+        jest.requireActual<typeof import('node:timers/promises')>('node:timers/promises'),
+        'setTimeout',
+      )
+      .mockImplementation(
+        (delay, value) => new Promise((resolve) => setTimeout(() => resolve(value), delay)),
+      );
+    try {
+      await Promise.all([step('install').run(run), jest.runAllTimersAsync()]);
+      await Promise.all([
+        expect(step('wait_bootstrap').run(run)).resolves.toBeUndefined(),
+        jest.runAllTimersAsync(),
+      ]);
+    } finally {
+      sleep.mockRestore();
+      jest.useRealTimers();
+    }
+    expect(reads).toContain(true);
+    expect(details.claimed).toBe(true);
+    expect(remote.updateRemoteBaseUrl).toHaveBeenCalledWith('remote-1', details.bootstrapUrl);
+    expect(
+      ssh.session.commands.some((command) => command.includes('devchain-user-devchain.service')),
+    ).toBe(true);
+    expect(ssh.session.commands.some((command) => command.includes('systemd-run'))).toBe(false);
+    expect(
+      ssh.session.commands.filter((command) => command.includes('--reserve-join')),
+    ).toHaveLength(1);
+    hasJoinNonce.mockReturnValue(true);
+    expect(
+      await install.retryFrom({
+        ...run.operation,
+        details: { ...run.details, claimed: false },
+      }),
+    ).toBe('install');
+  });
+
   it('reads the VM certificate over the install session after success and saves it before wait_bootstrap', async () => {
     await connect();
     ssh.session.exitCodes = [null, 0];
@@ -458,9 +569,7 @@ describe('InstallHostOperation', () => {
     await expect(step('install').run(run)).rejects.toMatchObject({
       constructor: RemoteOperationStepRefusedError,
       code: 'HOST_TLS_CERTIFICATE_UNREADABLE',
-      message:
-        'Could not read the VM certificate /etc/devchain-host/tls/cert.pem over SSH: ' +
-        'cat: /etc/devchain-host/tls/cert.pem: No such file or directory',
+      message: 'Could not read the VM certificate /etc/devchain-host/tls/cert.pem over SSH.',
     });
     expect(storage.updateRemoteTlsCertificate).not.toHaveBeenCalled();
     expect(details.tlsCertificate).toBeUndefined();

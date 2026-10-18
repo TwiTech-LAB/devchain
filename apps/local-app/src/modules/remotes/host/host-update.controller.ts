@@ -37,9 +37,10 @@ export class HostUpdateController {
   @ApiResponse({ status: 202, description: 'Update started; poll GET /api/host/update' })
   // The client ignores this body (contract status 'none'); add a schema when a caller reads it.
   async update(@Body() body: unknown): Promise<{ version: string; state: 'pending' }> {
-    const { version } = hostRoutes.requestHostUpdate.body.parse(body);
-    logger.info({ version }, 'POST /api/host/update');
-    await this.helper.requestUpdate(version);
+    const { version, npmRegistry } = hostRoutes.requestHostUpdate.body.parse(body);
+    // The registry URL can carry a token, so it is not logged.
+    logger.info({ version, registry: npmRegistry !== undefined }, 'POST /api/host/update');
+    await this.helper.requestUpdate(version, npmRegistry);
     return { version, state: 'pending' };
   }
 

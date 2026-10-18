@@ -10,6 +10,7 @@ const DIRECT_PROJECT_COLUMNS = {
   tag: 'tags',
   profile: 'agent_profiles',
   guest: 'guests',
+  worktree: 'worktrees',
   status: 'statuses',
   watcher: 'terminal_watchers',
   subscriber: 'automation_subscribers',

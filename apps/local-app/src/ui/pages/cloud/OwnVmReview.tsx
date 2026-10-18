@@ -31,6 +31,7 @@ export function OwnVmReview({
   freeDisk,
   hasSshPublicKey,
   disabled,
+  automaticPort = false,
 }: {
   vm: string;
   how: string;
@@ -43,6 +44,7 @@ export function OwnVmReview({
   freeDisk?: string;
   hasSshPublicKey?: boolean;
   disabled: boolean;
+  automaticPort?: boolean;
 }) {
   return (
     <div className="space-y-4 text-sm">
@@ -86,7 +88,7 @@ export function OwnVmReview({
           <Label htmlFor="own-vm-install-docker">Install Docker</Label>
         </div>
       )}
-      <IdentitySummary />
+      <IdentitySummary automaticPort={automaticPort} />
     </div>
   );
 }

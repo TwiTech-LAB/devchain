@@ -55,6 +55,10 @@ const RawRemoteNeedSchema = z.object({
   files: z.array(z.object({ name: z.string(), deleted: z.boolean(), type: z.string() })),
 });
 
+const RawNeedSequenceSchema = z.object({
+  files: z.array(z.object({ name: z.string(), sequence: z.number() })),
+});
+
 const RawStatusSchema = FolderSyncStatusSchema.omit({ folderId: true, peer: true });
 
 const FolderErrorsSchema = z.object({
@@ -135,6 +139,11 @@ export function projectFolderId(projectId: string, kind: ProjectFolder['kind']):
   return `${kind}:${projectId}`;
 }
 
+/** The project of a `.git` folder id; null for any other folder. */
+export function gitFolderProjectId(folderId: string): string | null {
+  return folderId.startsWith('git:') ? folderId.slice('git:'.length) : null;
+}
+
 /** A project's folders of the given kinds, in handoff order. */
 export function projectFolderList(
   projectId: string,
@@ -153,6 +162,21 @@ export function senderIndexReached(sender: FolderSyncStatus, receiver: FolderSyn
     receiver.state === 'idle' &&
     receiver.globalFiles === sender.localFiles &&
     receiver.globalDirectories === sender.localDirectories
+  );
+}
+
+/**
+ * The receiver holds the sender's whole index and the sender sees the receiver's copy complete
+ * and valid. Only then may a receive-only Revert run: before it, Revert deletes files the sender
+ * has not sent yet. Receiver-only additions do not count against the sender's transfer.
+ */
+export function senderTransferred(sender: FolderSyncStatus, receiver: FolderSyncStatus): boolean {
+  return (
+    senderIndexReached(sender, receiver) &&
+    sender.peer?.completion === 100 &&
+    sender.peer.needItems === 0 &&
+    sender.peer.remoteState === 'valid' &&
+    receiver.needTotalItems === 0
   );
 }
 
@@ -280,6 +304,17 @@ export class FileSyncService {
       .parse(await this.client().request('GET', '/rest/config/folders'));
     const ids = new Set(configured.map((folder) => folder.id));
     return projectFolderList(projectId).filter((folder) => ids.has(folder.id));
+  }
+
+  /** Projects with a folder of this kind configured on this side, in one Syncthing read. */
+  async projectsWithFolder(kind: ProjectFolder['kind']): Promise<string[]> {
+    const configured = z
+      .array(z.object({ id: z.string() }))
+      .parse(await this.client().request('GET', '/rest/config/folders'));
+    const prefix = `${kind}:`;
+    return configured
+      .filter((folder) => folder.id.startsWith(prefix))
+      .map((folder) => folder.id.slice(prefix.length));
   }
 
   /** New shares follow the home checkout; a worktree's .git file is not a git folder. */
@@ -496,6 +531,30 @@ export class FileSyncService {
         }
       }
       if (files.length < REMOTE_NEED_PAGE_SIZE) return result;
+    }
+  }
+
+  /**
+   * Items the peer still needs from this side whose change is at or below `sequence`. For each
+   * needed item Syncthing v2 returns the global FileInfo, whose `sequence` is this side's local
+   * sequence of the version the peer lacks: the counter that `sequence` in `/rest/db/status` ends.
+   * A later change to the same item carries a higher sequence and is left out.
+   */
+  async remoteNeedThrough(
+    folderId: string,
+    peerDeviceId: string,
+    sequence: number,
+  ): Promise<string[]> {
+    const names: string[] = [];
+    for (let page = 1; ; page += 1) {
+      const { files } = RawNeedSequenceSchema.parse(
+        await this.client().request(
+          'GET',
+          `/rest/db/remoteneed?folder=${enc(folderId)}&device=${enc(peerDeviceId)}&page=${page}&perpage=${REMOTE_NEED_PAGE_SIZE}`,
+        ),
+      );
+      for (const file of files) if (file.sequence <= sequence) names.push(file.name);
+      if (files.length < REMOTE_NEED_PAGE_SIZE) return names;
     }
   }
 

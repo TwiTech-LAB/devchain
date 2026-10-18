@@ -2,6 +2,28 @@
 
 Release notes for each published `devchain-cli` version, newest first. The `changelog` field in `package.json` keeps the newest 10 versions for the CLI update notice.
 
+## 0.26.0 — 2026-10-18
+
+- Usage: plan usage rings in the bottom bar and in mobile chat
+- Remote VMs: several people can share one VM, each with their own DevChain
+- Teams: leads can restart, compact or stop a team member
+- Providers: OpenCode 2 support, and Codex plugins on the Plugins page
+- Dev Template: shorter plan reviews, and the lead replies to every review
+- Mobile app 1.12.0: provider usage in chat, and smoother loading and keyboard on Android
+- Host image 1.5.0: support for VMs that several users share, and OpenCode 2
+
+## 0.25.0 — 2026-10-11
+
+- https://devchain.cc/releases/0.25.0/
+- Mobile app 1.11.0: out of beta and live on the App Store and Google Play
+- Security: stronger protection for phone pairing, cloud sign-in and browser requests
+- Remote VMs: Docker moves work on more VMs, files of any owner sync, and custom VM sizes use sliders
+- Terminal: messages no longer reach the shell after an agent's CLI exits
+- Projects: a reminder when a project uses an older template, and custom prompts can be previewed and deleted from chat
+- Stability: a recovery screen instead of a blank page when something fails
+- Breaking changes: if you open DevChain through a custom hostname, add it to ALLOWED_HOSTS unless it is already the configured HOST.
+- Breaking changes: the mobile app connection now requires end-to-end encryption by default. Update clients that send unencrypted requests. E2EE_REQUIRED=false restores the previous setting but permits unencrypted traffic.
+
 ## 0.24.2
 
 - Remote VMs: smoother and more reliable Connect, Disconnect and file sync, with better Docker support and a new Projects tab

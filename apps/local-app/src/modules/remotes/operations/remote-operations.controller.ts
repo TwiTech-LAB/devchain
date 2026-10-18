@@ -1,6 +1,5 @@
 import { UpdateHostSchema } from './remote-operation.dto';
-import { Body, Controller, Get, HttpCode, Param, Post, Query, Res } from '@nestjs/common';
-import type { FastifyReply } from 'fastify';
+import { Body, Controller, Get, HttpCode, Param, Post, Query } from '@nestjs/common';
 import { z } from 'zod';
 import { ApiOperation, ApiResponse, ApiTags } from '@nestjs/swagger';
 import { createLogger } from '../../../common/logging/logger';
@@ -10,18 +9,14 @@ import {
   AttachProjectSchema,
   ClaimRemoteSchema,
   DetachProjectSchema,
+  DisconnectAllSchema,
   RetryRemoteOperationSchema,
   ListRemoteOperationsQuerySchema,
   RemoteOperationIdSchema,
   ForceSyncProjectSchema,
 } from './remote-operation.dto';
 import { RemoteOperationsService } from './remote-operations.service';
-import {
-  GitOwnerProjectSchema,
-  GitOwnerStatusQuerySchema,
-  type GitOwnerStartResult,
-  type GitOwnerStatus,
-} from './git-owner.dto';
+import { GitOwnerStatusQuerySchema, type GitOwnerStatus } from './git-owner.dto';
 
 const logger = createLogger('RemoteOperationsController');
 
@@ -86,6 +81,16 @@ export class RemoteOperationsController {
     return this.operations.detach(remoteId, projectId, force, dockerCopyBack);
   }
 
+  @Post(':id/disconnect-all')
+  @HttpCode(202)
+  @ApiOperation({ summary: "Disconnect all of this PC's projects from one VM" })
+  @ApiResponse({ status: 202, description: 'Persisted batch with separate Disconnect children' })
+  @ApiResponse({ status: 400, description: 'Invalid remote or project choices' })
+  @ApiResponse({ status: 409, description: 'A VM or host operation is already open' })
+  disconnectAll(@Param('id') id: string, @Body() body: unknown): Promise<RemoteOperation> {
+    return this.operations.disconnectAll(RemoteIdSchema.parse(id), DisconnectAllSchema.parse(body));
+  }
+
   @Post(':id/force-sync')
   @HttpCode(202)
   @ApiOperation({ summary: "Rebuild project file sync from this PC's or the VM's files" })
@@ -100,31 +105,9 @@ export class RemoteOperationsController {
     return this.operations.forceSync(RemoteIdSchema.parse(id), projectId, source);
   }
 
-  @Post(':id/git-owner')
-  @HttpCode(202)
-  @ApiOperation({ summary: 'Move Git control between this PC and its connected VM' })
-  @ApiResponse({ status: 202, description: 'Persisted Git switch operation' })
-  @ApiResponse({ status: 200, description: 'Git already belongs to the requested side' })
-  @ApiResponse({ status: 409, description: 'Switch refused before saving an operation' })
-  async gitOwner(
-    @Param('id') id: string,
-    @Body() body: unknown,
-    @Res({ passthrough: true }) reply: FastifyReply,
-  ): Promise<GitOwnerStartResult> {
-    const { projectId, owner, force } = GitOwnerProjectSchema.parse(body);
-    const result = await this.operations.gitOwner(
-      RemoteIdSchema.parse(id),
-      projectId,
-      owner,
-      force,
-    );
-    if ('changed' in result) reply.code(200);
-    return result;
-  }
-
   @Get('git-owner')
-  @ApiOperation({ summary: 'Read current Git control and any unfinished switch' })
-  @ApiResponse({ status: 200, description: 'Current Git owner and recovery status' })
+  @ApiOperation({ summary: 'Read the Git owner, generation, in-flight writes and checkpoint' })
+  @ApiResponse({ status: 200, description: 'Git coordinator status for the project' })
   gitOwnerStatus(@Query() query: unknown): Promise<GitOwnerStatus> {
     return this.operations.gitOwnerStatus(GitOwnerStatusQuerySchema.parse(query).projectId);
   }
@@ -147,9 +130,9 @@ export class RemoteOperationsController {
     @Body() body: unknown,
   ): Promise<RemoteOperation> {
     const id = RemoteOperationIdSchema.parse(operationId);
-    const { providerAuth, ssh } = RetryRemoteOperationSchema.parse(body ?? {});
+    const { providerAuth, ssh, vm } = RetryRemoteOperationSchema.parse(body ?? {});
     logger.info({ operationId: id }, 'POST /api/remotes/operations/:id/retry');
-    return this.operations.retry(id, providerAuth, ssh);
+    return this.operations.retry(id, providerAuth, ssh, vm);
   }
 
   @Post('operations/:operationId/cancel')

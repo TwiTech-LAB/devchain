@@ -32,6 +32,8 @@ export interface SshCommandResult {
 }
 
 export interface SshExecOptions {
+  /** Private structured replies stay in memory; callers must never log the raw result. */
+  capture?: 'private';
   timeoutMs?: number;
   deadlineAt?: number;
   signal?: AbortSignal;
@@ -252,8 +254,8 @@ class ClientSshSession implements SshSession {
           return;
         }
         channelToClose = channel;
-        const stdout = new StreamingCapture(this.secrets);
-        const stderr = new StreamingCapture(this.secrets);
+        const stdout = new StreamingCapture(options.capture === 'private' ? [] : this.secrets);
+        const stderr = new StreamingCapture(options.capture === 'private' ? [] : this.secrets);
         channel.on('data', (chunk: Buffer | string) => stdout.push(chunk));
         channel.stderr.on('data', (chunk: Buffer | string) => stderr.push(chunk));
         channel.once('error', (streamError: Error) => {

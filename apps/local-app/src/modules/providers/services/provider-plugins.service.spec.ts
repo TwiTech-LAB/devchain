@@ -8,7 +8,18 @@ import { ClaudeAdapter } from '../adapters/claude.adapter';
 import { CodexAdapter } from '../adapters/codex.adapter';
 import type { ProviderAdapter } from '../adapters/provider-adapter.interface';
 import { ProviderAdapterFactory } from '../adapters/provider-adapter.factory';
+import { CodexAppServerClient } from './codex-app-server.client';
 import { ProviderPluginsService } from './provider-plugins.service';
+
+const mockWarn = jest.fn();
+jest.mock('../../../common/logging/logger', () => ({
+  createLogger: () => ({
+    debug: jest.fn(),
+    info: jest.fn(),
+    warn: (...args: unknown[]) => mockWarn(...args),
+    error: jest.fn(),
+  }),
+}));
 
 jest.mock('../../../common/resolve-binary');
 const mockResolveBinary = resolveBinaryModule.resolveBinary as jest.MockedFunction<
@@ -34,25 +45,32 @@ const CLAUDE_CATALOG = JSON.stringify({
   ],
 });
 
-const CODEX_CATALOG = JSON.stringify({
-  installed: [],
-  available: [
+const CODEX_PLUGIN_LIST = {
+  marketplaces: [
     {
-      pluginId: 'available@codex-market',
-      name: 'available',
-      marketplaceName: 'codex-market',
-      version: '1.0.0',
-      installed: false,
-      enabled: false,
-      installPolicy: 'AVAILABLE',
-      authPolicy: 'ON_INSTALL',
+      name: 'codex-market',
+      plugins: [
+        {
+          id: 'available@codex-market',
+          name: 'available',
+          version: '1.0.0',
+          installed: false,
+          enabled: false,
+          installPolicy: 'AVAILABLE',
+          authPolicy: 'ON_INSTALL',
+          availability: 'AVAILABLE',
+          interface: { displayName: 'Available', shortDescription: 'Codex plugin' },
+        },
+      ],
     },
   ],
-});
+  marketplaceLoadErrors: [],
+};
 
 describe('ProviderPluginsService (module unit: mocked storage/binary resolution/process I/O)', () => {
   let service: ProviderPluginsService;
   let executor: FakeProcessExecutor;
+  let appServer: { request: jest.Mock };
   let storage: {
     listProviders: jest.Mock;
     getProvider: jest.Mock;
@@ -81,6 +99,7 @@ describe('ProviderPluginsService (module unit: mocked storage/binary resolution/
     savedAutoUpdater = process.env.DISABLE_AUTOUPDATER;
     process.env.DISABLE_AUTOUPDATER = '0';
     executor = new FakeProcessExecutor();
+    appServer = { request: jest.fn().mockResolvedValue(CODEX_PLUGIN_LIST) };
     storage = {
       listProviders: jest.fn().mockResolvedValue({
         items: [claudeProvider, codexProvider, unsupportedProvider],
@@ -112,6 +131,7 @@ describe('ProviderPluginsService (module unit: mocked storage/binary resolution/
         { provide: STORAGE_SERVICE, useValue: storage },
         { provide: ProviderAdapterFactory, useValue: adapterFactory },
         { provide: ProcessExecutor, useValue: executor },
+        { provide: CodexAppServerClient, useValue: appServer },
       ],
     }).compile();
 
@@ -126,10 +146,7 @@ describe('ProviderPluginsService (module unit: mocked storage/binary resolution/
   });
 
   it('normalizes catalogs for capable providers and skips unsupported providers', async () => {
-    executor.enqueueResponse(
-      { type: 'success', stdout: CLAUDE_CATALOG },
-      { type: 'success', stdout: CODEX_CATALOG },
-    );
+    executor.enqueueResponse({ type: 'success', stdout: CLAUDE_CATALOG });
 
     const result = await service.listCatalog();
 
@@ -150,6 +167,8 @@ describe('ProviderPluginsService (module unit: mocked storage/binary resolution/
           providerId: 'provider-codex',
           providerName: 'codex',
           pluginId: 'available@codex-market',
+          name: 'Available',
+          description: 'Codex plugin',
           installed: false,
           available: true,
           providerEnabled: false,
@@ -159,16 +178,59 @@ describe('ProviderPluginsService (module unit: mocked storage/binary resolution/
     );
     expect(executor.calls.map((call) => call.argv)).toEqual([
       ['/usr/local/bin/claude', 'plugin', 'list', '--available', '--json'],
-      [
-        '/usr/local/bin/codex',
-        '-c',
-        'check_for_update_on_startup=false',
-        'plugin',
-        'list',
-        '--available',
-        '--json',
-      ],
     ]);
+    expect(appServer.request).toHaveBeenCalledWith({
+      argv: ['/usr/local/bin/codex', '-c', 'check_for_update_on_startup=false', 'app-server'],
+      env: expect.any(Object),
+      method: 'plugin/list',
+      params: {},
+      timeoutMs: 60_000,
+      maxOutputBytes: 64 * 1024 * 1024,
+    });
+  });
+
+  it('logs Codex marketplace load errors as warnings and still serves the catalog', async () => {
+    storage.listProviders.mockResolvedValue({
+      items: [codexProvider],
+      total: 1,
+      limit: 1_000,
+      offset: 0,
+    });
+    const loadError = { marketplacePath: '/broken', message: 'invalid manifest' };
+    appServer.request.mockResolvedValue({
+      ...CODEX_PLUGIN_LIST,
+      marketplaceLoadErrors: [loadError],
+    });
+
+    const result = await service.listCatalog();
+
+    expect(result.total).toBe(1);
+    expect(mockWarn).toHaveBeenCalledWith(
+      { providerId: 'provider-codex', warnings: [loadError] },
+      'codex plugin catalog loaded with warnings',
+    );
+  });
+
+  it('loads a Claude catalog larger than 2 MB', async () => {
+    storage.listProviders.mockResolvedValue({
+      items: [claudeProvider],
+      total: 1,
+      limit: 1_000,
+      offset: 0,
+    });
+    const available = Array.from({ length: 3_000 }, (_, index) => ({
+      pluginId: `plugin-${index}@anthropic-plugin-directory`,
+      name: `plugin-${index}`,
+      description: 'd'.repeat(800),
+      marketplaceName: 'anthropic-plugin-directory',
+    }));
+    const stdout = JSON.stringify({ installed: [], available });
+    expect(stdout.length).toBeGreaterThan(2 * 1024 * 1024);
+    executor.enqueueResponse({ type: 'success', stdout });
+
+    const result = await service.listCatalog();
+
+    expect(result.total).toBe(3_000);
   });
 
   it('serves repeated reads from the short TTL cache', async () => {

@@ -5,13 +5,12 @@ const path = require("node:path");
 const { BootstrapError, MIN_CLAIM_UID, MAX_CLAIM_UID } = require("./validate");
 const { renderEnvFile, renderHostUnit, renderSudoers } = require("./render");
 const { loadTls, userTlsFiles, TLS_KEY_ENV, TLS_CERT_ENV } = require("./tls");
+const { replaceSymlink, helperPackageDir } = require("./system");
 const {
   refreshHelper,
   runClisHelper,
   NPM_INSTALL_TIMEOUT_MS,
 } = require("./refresh-helper");
-
-const SUDOERS_NAME = "devchain-host";
 
 function claimFile(sys) {
   return path.join(sys.paths.etcDir, "claim.json");
@@ -19,7 +18,14 @@ function claimFile(sys) {
 
 function readClaim(sys) {
   try {
-    return JSON.parse(fs.readFileSync(claimFile(sys), "utf8"));
+    const record = JSON.parse(fs.readFileSync(claimFile(sys), "utf8"));
+    if (sys.paths.instanceUser && record.userName !== sys.paths.instanceUser)
+      throw new BootstrapError(
+        409,
+        "INSTANCE_MISMATCH",
+        "The claim does not match this instance.",
+      );
+    return record;
   } catch (error) {
     if (error.code === "ENOENT") return null;
     throw error;
@@ -75,9 +81,9 @@ function writeUserFile(file, content, mode, account, sys) {
   writeFileAtomic(file, content, mode, account, sys);
 }
 
-function ensureIdsProfile(sys) {
-  const file = path.join(sys.paths.profileDir, "devchain-ids.sh");
-  const content = 'export DEVCHAIN_UID="$(id -u)" DEVCHAIN_GID="$(id -g)"\n';
+/** Writes a root-owned 0644 profile script; false when it already matches. */
+function ensureProfileScript(sys, name, content) {
+  const file = path.join(sys.paths.profileDir, name);
   fs.mkdirSync(sys.paths.profileDir, { recursive: true, mode: 0o755 });
   refuseSymlink(file);
   try {
@@ -92,6 +98,14 @@ function ensureIdsProfile(sys) {
   }
   writeFileAtomic(file, content, 0o644, null, sys);
   return true;
+}
+
+function ensureIdsProfile(sys) {
+  return ensureProfileScript(
+    sys,
+    "devchain-ids.sh",
+    'export DEVCHAIN_UID="$(id -u)" DEVCHAIN_GID="$(id -g)"\n',
+  );
 }
 
 async function ensureUser(claim, sys) {
@@ -201,7 +215,7 @@ async function accountIdentity(account, claim, requestedUid, holder, sys) {
 }
 
 async function writeSudoers(userName, sys) {
-  const file = path.join(sys.paths.sudoersDir, SUDOERS_NAME);
+  const file = path.join(sys.paths.sudoersDir, sys.paths.sudoersName);
   const tmp = `${file}.new`;
   fs.writeFileSync(tmp, renderSudoers(userName, sys.paths.binDir), {
     mode: 0o440,
@@ -246,6 +260,15 @@ function versionsDir(sys) {
   return path.join(sys.paths.installRoot, "versions");
 }
 
+/** The registry URL without user info, safe to put in an error message. */
+function redactCredentials(registry) {
+  const url = URL.parse(registry);
+  if (url === null) return String(registry);
+  url.username = "";
+  url.password = "";
+  return url.href;
+}
+
 /**
  * Installs `devchain-cli@<version>` into its own prefix and checks the CLI
  * reports it. The active version is untouched until `activateVersion`, so an
@@ -255,19 +278,27 @@ async function installVersion(version, registry, sys) {
   const prefix = path.join(versionsDir(sys), version);
   fs.rmSync(prefix, { recursive: true, force: true });
   fs.mkdirSync(prefix, { recursive: true, mode: 0o755 });
-  await sys.run(
-    "npm",
-    [
-      "install",
-      "-g",
-      "--no-fund",
-      "--no-audit",
-      `--prefix=${prefix}`,
-      `--registry=${registry}`,
-      `devchain-cli@${version}`,
-    ],
-    { timeoutMs: NPM_INSTALL_TIMEOUT_MS },
-  );
+  try {
+    await sys.run(
+      "npm",
+      [
+        "install",
+        "-g",
+        "--no-fund",
+        "--no-audit",
+        `--prefix=${prefix}`,
+        `--registry=${registry}`,
+        `devchain-cli@${version}`,
+      ],
+      { timeoutMs: NPM_INSTALL_TIMEOUT_MS },
+    );
+  } catch (error) {
+    // npm's stderr tail often omits the registry (ETARGET), so name it here.
+    throw new Error(
+      `${error.message} (registry: ${redactCredentials(registry)})`,
+      { cause: error },
+    );
+  }
   const { stdout } = await sys.run(path.join(prefix, "bin", "devchain"), [
     "--version",
   ]);
@@ -276,13 +307,6 @@ async function installVersion(version, registry, sys) {
       `devchain --version reports ${stdout.trim()}, expected ${version}`,
     );
   }
-}
-
-function replaceSymlink(link, target) {
-  const tmp = `${link}.new`;
-  fs.rmSync(tmp, { force: true });
-  fs.symlinkSync(target, tmp);
-  fs.renameSync(tmp, link);
 }
 
 /**
@@ -318,20 +342,26 @@ async function writeHostUnit(claim, account, sys, unitTemplate) {
     homePath: account.home,
     port: claim.port,
     binDir: sys.paths.binDir,
+    ...(sys.paths.instanceUser
+      ? {
+          etcDir: sys.paths.etcDir,
+          syncthingPath: path.join(sys.paths.installRoot, "bin", "syncthing"),
+        }
+      : {}),
   });
   writeFileAtomic(
-    path.join(sys.paths.systemdDir, "devchain-host.service"),
+    path.join(sys.paths.systemdDir, sys.paths.unitName),
     unit,
     0o644,
     null,
     sys,
   );
   await sys.run("systemctl", ["daemon-reload"]);
-  await sys.run("systemctl", ["enable", "devchain-host.service"]);
+  await sys.run("systemctl", ["enable", sys.paths.unitName]);
 }
 
 /**
- * Re-writes devchain-host.service from the current helper's template so a
+ * Re-writes the instance service from the current helper's template so a
  * version-changing Update VM picks up template changes. The record is the
  * source of user, home, and port; without one (a claim, or its retry before
  * the record step) the claim's own `service` step owns the write, so this
@@ -376,6 +406,11 @@ function writeClaimRecord(claim, account, cliVersions, sys) {
  * failed part way can be sent again. The claim record is written last.
  */
 async function performClaim(claim, sys, log) {
+  if (sys.paths.instanceUser) {
+    const { beginJoinClaim } = require("./instances");
+    await beginJoinClaim(claim, sys);
+    fs.mkdirSync(sys.paths.binDir, { recursive: true, mode: 0o755 });
+  }
   if (readClaim(sys)) {
     throw new BootstrapError(
       409,
@@ -389,15 +424,48 @@ async function performClaim(claim, sys, log) {
   const steps = [
     ["user", () => ensureUser(claim, sys)],
     ["sudoers", () => writeSudoers(claim.userName, sys)],
-    ["profile", () => ensureIdsProfile(sys)],
+    [
+      "profile",
+      () => {
+        ensureIdsProfile(sys);
+        if (sys.paths.instanceUser) ensureInstanceProfile(sys);
+      },
+    ],
     ["tls", (account) => copyTls(claim, account, sys)],
     ["provider-auth", (account) => writeProviderAuth(claim, account, sys)],
     ["install", () => installVersion(claim.version, npmRegistry, sys)],
     ["helper", () => refreshHelper(claim.version, sys)],
     ["clis", () => runClisHelper(claim.version, sys)],
     ["activate", () => activateVersion(claim.version, sys)],
-    ["service", (account) => writeHostUnit(claim, account, sys, unitTemplate)],
-    ["record", (account) => writeClaimRecord(claim, account, cliVersions, sys)],
+    [
+      "service",
+      (account) =>
+        writeHostUnit(
+          claim,
+          account,
+          sys,
+          sys.paths.instanceUser
+            ? fs.readFileSync(
+                path.join(
+                  helperPackageDir(sys.paths.helperPrefix),
+                  "systemd/devchain-host.service",
+                ),
+                "utf8",
+              )
+            : unitTemplate,
+        ),
+    ],
+    [
+      "record",
+      (account) =>
+        sys.withHostLock(async () => {
+          if (sys.paths.instanceUser) await require("./fence").assertJoinAllowed(sys);
+          const result = writeClaimRecord(claim, account, cliVersions, sys);
+          if (sys.paths.instanceUser)
+            await require("./instances").completeJoin(sys);
+          return result;
+        }),
+    ],
   ];
   let account = null;
   let record = null;
@@ -420,6 +488,14 @@ async function performClaim(claim, sys, log) {
     }
   }
   return record;
+}
+
+function ensureInstanceProfile(sys) {
+  ensureProfileScript(
+    sys,
+    "devchain-instance-path.sh",
+    `devchain_instance_bin="${sys.paths.hostInstallRoot}/instances/$(id -un)/bin"\nif [ -d "$devchain_instance_bin" ]; then\n  export PATH="$devchain_instance_bin:$PATH"\nfi\nunset devchain_instance_bin\n`,
+  );
 }
 
 /** The claim, or 409 NOT_CLAIMED when this VM has none. */
@@ -457,6 +533,7 @@ function jobStatus(sys, fileName) {
 module.exports = {
   performClaim,
   ensureIdsProfile,
+  ensureInstanceProfile,
   readClaim,
   requireClaim,
   refreshHostUnit,
@@ -467,5 +544,4 @@ module.exports = {
   removeOtherVersions,
   writeFileAtomic,
   claimFile,
-  SUDOERS_NAME,
 };

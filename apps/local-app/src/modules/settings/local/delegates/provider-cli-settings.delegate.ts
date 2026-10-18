@@ -22,6 +22,15 @@ export function defaultProviderCliEntry(): ProviderCliVersionEntry {
   return { version: 'latest', homeManaged: false };
 }
 
+/**
+ * Managed OpenCode installs are 2.x only (`@opencode/cli` has no 1.x releases),
+ * so a stored exact 1.x pin would fail at install time; it reads as `latest`.
+ */
+function normalizeStoredEntry(provider: string, entry: ProviderCliVersionEntry) {
+  if (provider !== 'opencode' || entry.version === 'latest') return entry;
+  return Number(entry.version.split('.')[0]) < 2 ? { ...entry, version: 'latest' } : entry;
+}
+
 export interface ProviderCliDelegateContext {
   sqlite: Database.Database;
 }
@@ -95,7 +104,7 @@ export class ProviderCliSettingsDelegate {
     for (const [key, value] of Object.entries(parsed as Record<string, unknown>)) {
       if (!this.isKnownProvider(key)) continue;
       const entry = ProviderCliVersionEntrySchema.safeParse(value);
-      if (entry.success) result[key as ProviderCliName] = entry.data;
+      if (entry.success) result[key as ProviderCliName] = normalizeStoredEntry(key, entry.data);
     }
     return result;
   }

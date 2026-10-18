@@ -385,6 +385,13 @@ describe('tool-descriptors', () => {
         'devchain_remove_tags',
       ],
       chat: ['devchain_send_message'],
+      worktree: [
+        'devchain_worktrees_create',
+        'devchain_worktrees_list',
+        'devchain_worktrees_commit',
+        'devchain_worktrees_merge',
+        'devchain_worktrees_remove',
+      ],
       projects: ['devchain_projects_list'],
       team: [
         'devchain_teams_list',
@@ -392,6 +399,7 @@ describe('tool-descriptors', () => {
         'devchain_teams_configs_list',
         'devchain_teams_create_agent',
         'devchain_teams_delete_agent',
+        'devchain_teams_session_control',
         'devchain_team',
       ],
       review: [

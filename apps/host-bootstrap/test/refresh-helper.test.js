@@ -8,7 +8,11 @@ const fs = require("node:fs");
 const path = require("node:path");
 const vm = require("node:vm");
 const { fakeSystem } = require("./helpers");
-const { installVersion, ensureIdsProfile } = require("../lib/claim");
+const {
+  installVersion,
+  ensureIdsProfile,
+  ensureInstanceProfile,
+} = require("../lib/claim");
 const {
   refreshHelper,
   runClisHelper,
@@ -89,7 +93,7 @@ async function executeBin(
   install,
   packages = async () => ({ skippedTools: [] }),
   claim = { refreshHostUnit: async () => false },
-  system = { marker: true },
+  system = { marker: true, paths: { unitName: "devchain-host.service" } },
   syncthing = async () => {},
 ) {
   let stdout = "";
@@ -106,17 +110,28 @@ async function executeBin(
     ),
     {
       require: (name) => {
-        if (name === "../lib/system") return { createSystem: () => system };
+        if (name === "../lib/system")
+          return {
+            createSystem: () => system,
+            createInstalledSystem: () => system,
+          };
+        if (name === "../lib/helper-instance")
+          return { requireHelperInstance: async () => {} };
         if (name === "../lib/clis") return { installClis: install };
         if (name === "../lib/syncthing")
           return { installPrivilegedSyncthing: syncthing };
         if (name === "../lib/packages") return { ensureBasePackages: packages };
         if (name === "../lib/update") return {};
         if (name === "../lib/claim")
-          return { ensureIdsProfile: () => {}, ...claim };
+          return {
+            ensureIdsProfile: () => {},
+            ensureInstanceProfile: () => {},
+            ...claim,
+          };
         return require(name);
       },
       process: {
+        env: {},
         argv: ["node", "devchain-host-update", ...argv],
         getuid: () => 0,
         stdout: {
@@ -255,7 +270,11 @@ test("--clis installs the login ids profile and a second run preserves it", asyn
       ["--clis", "0.25.0"],
       async () => ({}),
       async () => ({ skippedTools: [] }),
-      { ensureIdsProfile, refreshHostUnit: async () => false },
+      {
+        ensureIdsProfile,
+        ensureInstanceProfile,
+        refreshHostUnit: async () => false,
+      },
       sys,
     );
   assert.equal((await run()).exitCode, 0);

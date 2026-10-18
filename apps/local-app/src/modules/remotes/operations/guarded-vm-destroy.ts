@@ -3,6 +3,31 @@ import type { RemoteStorage } from '../../storage/interfaces/storage.interface';
 import type { RemoteOperation } from '../../storage/models/domain.models';
 import type { VmProvidersService } from '../../vm-providers/vm-providers.service';
 
+/** Whether the provider no longer has the VM, so an earlier delete finished. */
+export async function confirmedVmGone(
+  providers: VmProvidersService,
+  connectionId: string,
+  vmIdentity: string,
+): Promise<boolean> {
+  try {
+    await (await providers.forConnection(connectionId)).assertOwnedVmIdentity(vmIdentity);
+  } catch (error) {
+    return error instanceof NotFoundError;
+  }
+  return false;
+}
+
+/** Whether the provider proves that no task runs on the VM; false without a known vmid. */
+export async function confirmedVmIdle(
+  providers: VmProvidersService,
+  connectionId: string,
+  vmid: unknown,
+): Promise<boolean> {
+  return (
+    typeof vmid === 'number' && (await providers.forConnection(connectionId)).confirmsVmIdle(vmid)
+  );
+}
+
 /** A missing VM is success only after a guarded delete was attempted on an earlier run. */
 export async function destroyGuardedVm(input: {
   storage: RemoteStorage;

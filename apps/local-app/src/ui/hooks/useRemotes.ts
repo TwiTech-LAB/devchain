@@ -76,6 +76,7 @@ export function useRemotes() {
                       'providerClis' in state ? (state.providerClis ?? null) : remote.providerClis,
                     lastSeenAt: state.lastSeenAt ?? remote.lastSeenAt,
                     powerState: state.powerState ?? remote.powerState,
+                    sharedVmRoster: state.sharedVmRoster ?? remote.sharedVmRoster,
                     // null is a real value here: the VM stopped reporting a home folder.
                     homePath: 'homePath' in state ? (state.homePath ?? null) : remote.homePath,
                     homePathMatches:

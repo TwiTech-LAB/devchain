@@ -2,7 +2,7 @@ import { PROVIDER_CLI_INSTALL_ROOT } from '../../modules/providers/services/prov
 import { TranscriptPathValidator } from '../../modules/session-reader/services/transcript-path-validator.service';
 import { ValidationPipe } from '@nestjs/common';
 import { FastifyAdapter, NestFastifyApplication } from '@nestjs/platform-fastify';
-import { Test } from '@nestjs/testing';
+import { Test, type TestingModuleBuilder } from '@nestjs/testing';
 import type Database from 'better-sqlite3';
 import { copyFileSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'fs';
 import { createHash } from 'node:crypto';
@@ -85,6 +85,12 @@ export interface TwoInstances {
 }
 
 export interface TwoInstanceOptions {
+  /** Replace a per-instance external boundary while keeping the full app/storage graph. */
+  configureModule?: (
+    builder: TestingModuleBuilder,
+    instance: 'home' | 'host',
+    dataDir: string,
+  ) => TestingModuleBuilder;
   /** Exercise real mobile dispatch/authorization while keeping the cloud transport mocked. */
   realTunnelHandler?: boolean;
   /** Health poll interval at home; short so online/offline flips are fast. */
@@ -135,6 +141,7 @@ async function startInstance(
   transcriptRoots?: TwoInstanceOptions['transcriptRoots'],
   realTunnelHandler = false,
   hostPeerAddress?: { current: () => string | null },
+  configureModule?: TwoInstanceOptions['configureModule'],
 ): Promise<TestInstance> {
   const dataDir = join(root, name);
   mkdirSync(dataDir, { recursive: true });
@@ -155,10 +162,11 @@ async function startInstance(
         .overrideProvider(TranscriptPathValidator)
         .useFactory({ factory: () => new TranscriptPathValidator(transcriptRoots(name, dataDir)) });
     }
-    const moduleRef = await applyExternalBoundaryMocks(builder, {
+    builder = applyExternalBoundaryMocks(builder, {
       realFileSync: fileSyncPaths !== undefined,
       realTunnelHandler,
-    }).compile();
+    });
+    const moduleRef = await (configureModule?.(builder, name, dataDir) ?? builder).compile();
 
     app = moduleRef.createNestApplication<NestFastifyApplication>(
       // The peer's health poll keeps reusing its keep-alive connections, so a
@@ -318,6 +326,8 @@ export async function startTwoInstances(options: TwoInstanceOptions = {}): Promi
         undefined,
         options.transcriptRoots,
         options.realTunnelHandler,
+        undefined,
+        options.configureModule,
       ),
     );
     started.push(
@@ -330,6 +340,7 @@ export async function startTwoInstances(options: TwoInstanceOptions = {}): Promi
         options.transcriptRoots,
         options.realTunnelHandler,
         hostPeerAddress,
+        options.configureModule,
       ),
     );
   } catch (error) {
@@ -367,6 +378,8 @@ export async function startTwoInstances(options: TwoInstanceOptions = {}): Promi
         undefined,
         options.transcriptRoots,
         options.realTunnelHandler,
+        undefined,
+        options.configureModule,
       );
       started.unshift(home);
       return home;
@@ -384,6 +397,7 @@ export async function startTwoInstances(options: TwoInstanceOptions = {}): Promi
         options.transcriptRoots,
         options.realTunnelHandler,
         hostPeerAddress,
+        options.configureModule,
       );
       started.push(host);
       return host;
@@ -402,6 +416,7 @@ export async function startTwoInstances(options: TwoInstanceOptions = {}): Promi
         options.transcriptRoots,
         options.realTunnelHandler,
         hostPeerAddress,
+        options.configureModule,
       );
       started.push(host);
       return host;

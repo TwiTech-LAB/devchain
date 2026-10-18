@@ -15,6 +15,7 @@ import { ProviderAdapterFactory } from '../../providers/adapters/provider-adapte
 import {
   type MessagePoolConfig,
   type MessageDeliveryMode,
+  type CommandGuardError,
   deliveryModeFromLegacyImmediate,
   isMessageDeliveryMode,
   type PooledMessage,
@@ -319,6 +320,13 @@ export class SessionsMessagePoolService implements OnModuleDestroy {
       outsideText: options.outsideText === true,
     };
 
+    if (options.commandGuard) {
+      return this.enqueueCommand(
+        { ...input, deliveryMode: 'immediate', humanPromptSubmit: false },
+        options.commandGuard,
+      );
+    }
+
     if (input.deferWhileHumanTyping || input.humanPromptSubmit || deliveryMode === 'on_idle') {
       return this.enqueueSerialized(input);
     }
@@ -435,6 +443,40 @@ export class SessionsMessagePoolService implements OnModuleDestroy {
     this.schedulePoolDebounce(agentId, pool, 'Debounce timer triggered');
 
     return { status: 'queued', poolSize: pool.messages.length, logEntryId };
+  }
+
+  private async enqueueCommand(
+    input: ResolvedEnqueueInput,
+    commandGuard: NonNullable<EnqueueOptions['commandGuard']>,
+  ): Promise<EnqueueResult> {
+    return this.coordinator.withAgentLock(input.agentId, async () => {
+      const activeSession = this.sessions.getActiveSessionForAgent(input.agentId);
+      let error: CommandGuardError | undefined;
+      if (!activeSession || activeSession.id !== commandGuard.sessionId) {
+        error = 'SESSION_CHANGED';
+      } else if (
+        activeSession.activityState !== 'idle' ||
+        // A deferred claim writes outside the agent lock, so idle is stale until it completes.
+        this.deferredLanes.get(input.agentId)?.activeClaim
+      ) {
+        error = 'AGENT_BUSY';
+      } else if (
+        activeSession.tmuxSessionId &&
+        this.humanPromptState.getState(activeSession.tmuxSessionId).phase !== 'inactive'
+      ) {
+        error = 'HUMAN_TYPING';
+      }
+
+      if (!error) {
+        const duplicate = this.findDuplicate(input);
+        if (duplicate) return duplicate;
+      }
+      const logEntry = this.createLogEntry(input, true);
+      this.recordEnqueued(logEntry);
+      return error
+        ? this.recordImmediateFailed(input, error)
+        : this.deliverImmediateUnderAgentLock(input, logEntry);
+    });
   }
 
   private async enqueueSerialized(input: ResolvedEnqueueInput): Promise<EnqueueResult> {

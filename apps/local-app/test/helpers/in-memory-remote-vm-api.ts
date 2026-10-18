@@ -12,6 +12,7 @@ import type {
   DockerPlan,
   ProjectFileSyncStatus,
   VmProviderConnectionView,
+  RemoteNoticeDto,
 } from '@/ui/pages/cloud/lib/remote-vm-contracts';
 import { FileListChangedError } from '@/ui/pages/cloud/lib/remote-vm-errors';
 import { DEFAULT_FILE_SYNC_IGNORES } from '@/modules/file-sync/file-sync.dto';
@@ -23,7 +24,9 @@ const READY: RemoteReadinessDto = {
 };
 
 export interface TestRemote
-  extends Partial<Pick<RemoteListItemDto, 'uid' | 'gid' | 'dockerUserMismatch'>> {
+  extends Partial<
+    Pick<RemoteListItemDto, 'uid' | 'gid' | 'dockerUserMismatch' | 'sharedVmRoster'>
+  > {
   id: string;
   name: string;
   baseUrl: string | null;
@@ -160,6 +163,7 @@ export class InMemoryRemoteVmApi implements RemoteVmApi {
   remotesData: TestRemote[] = [{ ...REMOTE }];
   bindingsData: RemoteProjectBindingRow[] = [];
   operationsData: RemoteOperationDto[] = [];
+  noticesData: RemoteNoticeDto[] = [];
   projectHistory: RemoteOperationDto[] = [];
   providerConnectionsData: VmProviderConnectionView[] = [];
   permissionMissing: string[] = [];
@@ -185,11 +189,14 @@ export class InMemoryRemoteVmApi implements RemoteVmApi {
   readonly calls: InMemoryRemoteVmApiCalls = {
     listRemotes: [],
     listBindings: [],
+    listNotices: [],
+    dismissNotice: [],
     createRemote: [],
     deleteRemote: [],
     renameRemote: [],
     readReadiness: [],
     readStatsHistory: [],
+    readSyncthingDevice: [],
     powerOn: [],
     setApiKey: [],
     resetApiKey: [],
@@ -197,12 +204,16 @@ export class InMemoryRemoteVmApi implements RemoteVmApi {
     readNewestOperation: [],
     attachProject: [],
     detachProject: [],
+    disconnectAll: [],
+    readRemoteProjectLanes: [],
     forceSync: [],
     updateHost: [],
     createVm: [],
     installHost: [],
     resetVm: [],
     destroyVm: [],
+    readSharedVm: [],
+    notifySharedVm: [],
     updateLogins: [],
     claimHost: [],
     retryOperation: [],
@@ -290,7 +301,14 @@ export class InMemoryRemoteVmApi implements RemoteVmApi {
       return remoteDto(renamed);
     },
     readReadiness: async () => this.readiness,
+    listNotices: async () => this.noticesData,
+    dismissNotice: async (remoteId, id) => {
+      this.noticesData = this.noticesData.filter(
+        (notice) => notice.remoteId !== remoteId || notice.id !== id,
+      );
+    },
     readStatsHistory: async () => ({ intervalMs: 0, samples: [] }),
+    readSyncthingDevice: async () => null,
     powerOn: async (remoteId) => {
       await this.powerOnGate;
       this.updateRemote(remoteId, { powerState: 'running', online: false });
@@ -305,6 +323,16 @@ export class InMemoryRemoteVmApi implements RemoteVmApi {
       ) ?? null,
     attachProject: async (remoteId, input) => this.projectOperation('attach', remoteId, input),
     detachProject: async (remoteId, input) => this.projectOperation('detach', remoteId, input),
+    disconnectAll: async (remoteId, input) =>
+      this.startOperation({
+        id: 'disconnect-all-op',
+        kind: 'disconnect_all',
+        remoteId,
+        projectId: null,
+        details: input,
+        steps: [step('preflight', 'Check connected projects', 'running')],
+      }),
+    readRemoteProjectLanes: async () => ({ lanes: [] }),
     forceSync: async (remoteId, input) => this.projectOperation('force-sync', remoteId, input),
     createVm: async (connectionId, input) => {
       const operation = this.startOperation({
@@ -382,6 +410,11 @@ export class InMemoryRemoteVmApi implements RemoteVmApi {
           step('attach:p1:preflight', 'Reconnect p1: Check connection'),
         ],
       }),
+    readSharedVm: async () => ({
+      occupancy: { unavailable: false, instances: [] },
+      lastRoster: null,
+    }),
+    notifySharedVm: async () => ({ results: [] }),
     destroyVm: async (remoteId, input) =>
       this.startOperation({
         id: 'destroy-op',
@@ -596,11 +629,14 @@ export class InMemoryRemoteVmApi implements RemoteVmApi {
 
   readonly listRemotes = this.method('listRemotes');
   readonly listBindings = this.method('listBindings');
+  readonly listNotices = this.method('listNotices');
+  readonly dismissNotice = this.method('dismissNotice');
   readonly createRemote = this.method('createRemote');
   readonly deleteRemote = this.method('deleteRemote');
   readonly renameRemote = this.method('renameRemote');
   readonly readReadiness = this.method('readReadiness');
   readonly readStatsHistory = this.method('readStatsHistory');
+  readonly readSyncthingDevice = this.method('readSyncthingDevice');
   readonly powerOn = this.method('powerOn');
   readonly setApiKey = this.method('setApiKey');
   readonly resetApiKey = this.method('resetApiKey');
@@ -608,12 +644,16 @@ export class InMemoryRemoteVmApi implements RemoteVmApi {
   readonly readNewestOperation = this.method('readNewestOperation');
   readonly attachProject = this.method('attachProject');
   readonly detachProject = this.method('detachProject');
+  readonly disconnectAll = this.method('disconnectAll');
+  readonly readRemoteProjectLanes = this.method('readRemoteProjectLanes');
   readonly forceSync = this.method('forceSync');
   readonly updateHost = this.method('updateHost');
   readonly createVm = this.method('createVm');
   readonly installHost = this.method('installHost');
   readonly resetVm = this.method('resetVm');
   readonly destroyVm = this.method('destroyVm');
+  readonly readSharedVm = this.method('readSharedVm');
+  readonly notifySharedVm = this.method('notifySharedVm');
   readonly updateLogins = this.method('updateLogins');
   readonly claimHost = this.method('claimHost');
   readonly retryOperation = this.method('retryOperation');

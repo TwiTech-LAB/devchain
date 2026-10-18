@@ -1,13 +1,17 @@
 /**
  * OpenCode session-reader adapter.
  *
- * Bridges the pure {@link OpencodeSqliteReader} to the provider-agnostic
+ * Bridges the pure OpenCode SQLite readers to the provider-agnostic
  * {@link SessionReaderAdapter} contract. Unlike the file adapters, OpenCode is a
  * DB-backed source: a single SQLite container holds every session, so the
  * adapter declares `sourceKind = 'db'` and resolves the target session via
  * `SessionSourceRef.providerSessionId` (the `ses_…` id) threaded through the
  * cache (Task 1). Snapshot incremental mode (gemini pattern): each refresh
  * re-reads the full session and the cache replaces the message array.
+ *
+ * Routing is data-driven, not version-driven: the table that holds the session
+ * picks the reader (`session` → v1, `session_v2` → v2), so a transcript stays
+ * readable after the host switches OpenCode versions.
  */
 
 import { Inject, Injectable, Logger } from '@nestjs/common';
@@ -25,7 +29,14 @@ import { EXACT_SUMMARY_FIELDS } from './session-reader-adapter.interface';
 import type { UnifiedSession, UnifiedMessage } from '../dtos/unified-session.types';
 import { PRICING_SERVICE, type PricingServiceInterface } from '../services/pricing.interface';
 import { ValidationError } from '../../../common/errors/error-types';
-import { OpencodeSqliteReader } from '../readers/opencode-sqlite.reader';
+import { OpencodeSqliteV1Reader } from '../readers/opencode-sqlite.v1.reader';
+import { OpencodeSqliteV2Reader } from '../readers/opencode-sqlite.v2.reader';
+import {
+  inspectOpencodeDb,
+  type OpencodeLayout,
+  type OpencodeSessionCandidate,
+  type OpencodeTranscriptReader,
+} from '../readers/opencode-sqlite.db';
 
 /** Root (relative to home) of the OpenCode data dir; must match PROVIDER_ROOTS. */
 const OPENCODE_ROOT = '.local/share/opencode';
@@ -44,24 +55,29 @@ export class OpenCodeSessionReaderAdapter implements SessionReaderAdapter {
   readonly providerName = 'opencode';
   readonly incrementalMode = 'snapshot' as const;
   readonly sourceKind = 'db' as const;
+  readonly reportsContextWindow = true as const;
   readonly allowedRoots: string[];
 
   private readonly logger = new Logger(OpenCodeSessionReaderAdapter.name);
   private readonly dbPath: string;
-  private readonly reader: OpencodeSqliteReader;
+  private readonly readers: Record<OpencodeLayout, OpencodeTranscriptReader>;
 
   constructor(@Inject(PRICING_SERVICE) private readonly pricingService: PricingServiceInterface) {
     const root = path.join(os.homedir(), OPENCODE_ROOT);
     this.allowedRoots = [root];
     this.dbPath = path.join(root, OPENCODE_DB_FILE);
-    this.reader = new OpencodeSqliteReader(this.pricingService);
+    this.readers = {
+      v1: new OpencodeSqliteV1Reader(this.pricingService),
+      v2: new OpencodeSqliteV2Reader(this.pricingService),
+    };
   }
 
   /**
    * Discover the OpenCode session(s) launched for this context via a structured
-   * SQL match on `session.directory` / `project.worktree` within the launch
-   * window. Returns one {@link SessionFileInfo} per candidate (all share the
-   * container `dbPath`, distinguished by `providerSessionId`). The persistence
+   * SQL match on the session `directory` / `project.worktree` within the launch
+   * window, over every session layout the container holds. Returns one
+   * {@link SessionFileInfo} per candidate (all share the container `dbPath`,
+   * distinguished by `providerSessionId`). The persistence
    * listener applies `(path, providerSessionId)` dedupe + an ambiguity guard.
    */
   async discoverSessionFile(context: SessionDiscoveryContext): Promise<SessionFileInfo[]> {
@@ -74,13 +90,17 @@ export class OpenCodeSessionReaderAdapter implements SessionReaderAdapter {
     }
 
     const directory = path.resolve(context.projectRoot);
-    let candidates;
+    const startedAtMs = context.sessionStartedAt.getTime();
+    let candidates: OpencodeSessionCandidate[];
     try {
-      candidates = this.reader.findSessionCandidates(this.dbPath, {
-        directory,
-        startedAtMs: context.sessionStartedAt.getTime(),
-        windowMs: DISCOVERY_WINDOW_MS,
-      });
+      const { layouts } = inspectOpencodeDb(this.dbPath);
+      const query = { directory, startedAtMs, windowMs: DISCOVERY_WINDOW_MS };
+      candidates = mergeCandidates(
+        [...layouts].flatMap((layout) =>
+          this.readers[layout].findSessionCandidates(this.dbPath, query),
+        ),
+        startedAtMs,
+      );
     } catch (error) {
       // Container may not exist yet on first launch — let discovery retry.
       this.logger.debug(
@@ -102,22 +122,24 @@ export class OpenCodeSessionReaderAdapter implements SessionReaderAdapter {
   /** Opaque DB freshness token: `{ count, maxUpdated }` for the session. */
   async getFreshnessToken(sourceRef: SessionSourceRef): Promise<unknown> {
     const providerSessionId = this.requireSessionId(sourceRef.providerSessionId);
-    return this.reader.getFreshness(this.resolveDbPath(sourceRef), providerSessionId);
+    const dbPath = this.resolveDbPath(sourceRef);
+    return this.readerFor(dbPath, providerSessionId).getFreshness(dbPath, providerSessionId);
   }
 
   /** Parse the full session located by `sourceRef.providerSessionId`. */
   async parseFullSession(filePath: string, sourceRef?: SessionSourceRef): Promise<UnifiedSession> {
     const providerSessionId = this.requireSessionId(sourceRef?.providerSessionId);
-    const { session } = this.reader.readSession(
-      this.resolveDbPath(sourceRef, filePath),
-      providerSessionId,
-    );
-    return session;
+    const dbPath = this.resolveDbPath(sourceRef, filePath);
+    return this.readerFor(dbPath, providerSessionId).readSession(dbPath, providerSessionId).session;
   }
 
   async getSummary(sourceRef: SessionSourceRef) {
     const providerSessionId = this.requireSessionId(sourceRef.providerSessionId);
-    const { metrics } = this.reader.readSummary(this.resolveDbPath(sourceRef), providerSessionId);
+    const dbPath = this.resolveDbPath(sourceRef);
+    const { metrics } = this.readerFor(dbPath, providerSessionId).readSummary(
+      dbPath,
+      providerSessionId,
+    );
     return {
       metrics,
       exactFields: EXACT_SUMMARY_FIELDS.filter(
@@ -137,8 +159,9 @@ export class OpenCodeSessionReaderAdapter implements SessionReaderAdapter {
     sourceRef?: SessionSourceRef,
   ): Promise<IncrementalResult> {
     const providerSessionId = this.requireSessionId(sourceRef?.providerSessionId);
-    const { session, sizeBytes } = this.reader.readSession(
-      this.resolveDbPath(sourceRef, filePath),
+    const dbPath = this.resolveDbPath(sourceRef, filePath);
+    const { session, sizeBytes } = this.readerFor(dbPath, providerSessionId).readSession(
+      dbPath,
       providerSessionId,
     );
     return {
@@ -190,6 +213,15 @@ export class OpenCodeSessionReaderAdapter implements SessionReaderAdapter {
   // Private helpers
   // ---------------------------------------------------------------------------
 
+  /**
+   * The reader for the layout that holds the session. An id that no layout holds
+   * goes to the newest layout present, whose reader reports it as not found.
+   */
+  private readerFor(dbPath: string, providerSessionId: string): OpencodeTranscriptReader {
+    const { layouts, holder } = inspectOpencodeDb(dbPath, providerSessionId);
+    return this.readers[holder ?? (layouts.has('v2') ? 'v2' : 'v1')];
+  }
+
   /** Prefer the resolved source-ref path (= persisted `transcript_path`). */
   private resolveDbPath(sourceRef?: SessionSourceRef, filePath?: string): string {
     return sourceRef?.filePath ?? filePath ?? this.dbPath;
@@ -204,4 +236,22 @@ export class OpenCodeSessionReaderAdapter implements SessionReaderAdapter {
     }
     return providerSessionId;
   }
+}
+
+/**
+ * One candidate per session id, ranked by closeness to the launch time. A
+ * migrated session appears in both layouts; it keeps its newest `timeUpdated`.
+ */
+function mergeCandidates(
+  candidates: OpencodeSessionCandidate[],
+  startedAtMs: number,
+): OpencodeSessionCandidate[] {
+  const byId = new Map<string, OpencodeSessionCandidate>();
+  for (const c of candidates) {
+    const seen = byId.get(c.providerSessionId);
+    if (!seen || c.timeUpdated > seen.timeUpdated) byId.set(c.providerSessionId, c);
+  }
+  return [...byId.values()].sort(
+    (a, b) => Math.abs(a.timeCreated - startedAtMs) - Math.abs(b.timeCreated - startedAtMs),
+  );
 }

@@ -35,6 +35,7 @@ import {
 } from './remote-status';
 import { isValidRename } from './RenameVmDialog';
 import { StatusChip } from './StatusChip';
+import { VmPorts, devchainPort } from './VmPorts';
 import type { VmMenuItem, VmMenuKey } from './VmList';
 
 function Fact({ label, children }: { label: string; children: ReactNode }) {
@@ -295,6 +296,11 @@ function Overview({
         </Fact>
         <Fact label="Last seen">{seenFact(remote)}</Fact>
       </dl>
+      <VmPorts
+        remoteId={remote.id}
+        port={devchainPort(remote.baseUrl)}
+        enabled={remote.online && !remote.apiKeyRejected}
+      />
       {mismatch && (
         <p role="note" aria-label="Docker user ids" className="text-muted-foreground">
           This PC: {userIds(mismatch.homeUid, mismatch.homeGid)}. VM:{' '}
@@ -303,7 +309,12 @@ function Overview({
             ` uid ${mismatch.uidConflict.requestedUid} is used by ${mismatch.uidConflict.holder} on the VM.`}
         </p>
       )}
-      {vmReachable(remote) && <RemoteMetricsStrip remoteId={remote.id} remoteName={remote.name} />}
+      {vmReachable(remote) && (
+        <section aria-label="VM-wide stats" className="space-y-2">
+          <h3 className="font-medium">VM-wide stats</h3>
+          <RemoteMetricsStrip remoteId={remote.id} remoteName={remote.name} />
+        </section>
+      )}
       {danger.length > 0 && (
         <section
           aria-label="Danger zone"
@@ -452,6 +463,11 @@ export function VmDetailsDrawer({
                 Connect a project
               </Button>
             )}
+            {menu.some((item) => item.key === 'disconnect-all') && (
+              <Button size="sm" variant="outline" onClick={() => onMenu('disconnect-all')}>
+                Disconnect all
+              </Button>
+            )}
             {resetApiKey && (
               <Button size="sm" variant="outline" onClick={() => onMenu('reset-api-key')}>
                 Reset API key
@@ -473,6 +489,20 @@ export function VmDetailsDrawer({
             <TabsTrigger value="activity">Activity</TabsTrigger>
           </TabsList>
           <TabsContent value="overview" className="pt-2">
+            {remote.sharedVmRoster && (
+              <section className="mb-4 space-y-1 text-sm" aria-label="Other users on this VM">
+                {remote.sharedVmRoster.roster.instances
+                  .filter(({ user }) => user !== remote.sharedVmRoster?.ownUser)
+                  .map((instance) => (
+                    <p key={instance.user}>
+                      Also on this VM: {instance.user} ({instance.connectedCount} projects)
+                    </p>
+                  ))}
+                {(!remote.online || remote.sharedVmRoster.vmIdentity !== remote.vmIdentity) && (
+                  <p className="text-muted-foreground">Last known roster; context only.</p>
+                )}
+              </section>
+            )}
             <Overview
               remote={remote}
               security={vmConnectionSecurity(remote, status.state)}

@@ -15,7 +15,7 @@ describe('PROVIDER_CLI_NPM_PACKAGES', () => {
       claude: '@anthropic-ai/claude-code',
       codex: '@openai/codex',
       copilot: '@github/copilot',
-      opencode: 'opencode-ai',
+      opencode: '@opencode/cli',
     });
     expect([...PROVIDER_CLI_NAMES]).toEqual(['claude', 'codex', 'copilot', 'opencode']);
   });

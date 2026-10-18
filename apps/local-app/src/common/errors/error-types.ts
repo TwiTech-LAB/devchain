@@ -95,6 +95,15 @@ export class TeamMemberCapReachedError extends AppError {
   }
 }
 
+export class WorktreeCapReachedError extends AppError {
+  constructor(maxWorktrees: number, currentCount: number) {
+    super('Project is at worktree cap', 'worktree_cap_reached', 409, {
+      maxWorktrees,
+      currentCount,
+    });
+  }
+}
+
 export class UnsupportedProviderError extends AppError {
   constructor(
     public readonly providerName: string,

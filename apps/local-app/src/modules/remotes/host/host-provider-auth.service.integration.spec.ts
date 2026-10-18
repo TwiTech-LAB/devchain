@@ -10,6 +10,7 @@ import {
   utimesSync,
   writeFileSync,
 } from 'node:fs';
+import Database from 'better-sqlite3';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { resetEnvConfig } from '../../../common/config/env.config';
@@ -23,6 +24,7 @@ import {
 } from '../../terminal/services/process-executor/process-executor.port';
 import { ProviderAuthWatcherService } from '../../provider-auth/provider-auth-watcher.service';
 import { HostHelperService } from './host-helper.service';
+import type { ProviderCliVersionProbe } from '../../providers/services/provider-cli-version-probe.service';
 import {
   HostProviderAuthService,
   parseHostEnvFile,
@@ -60,6 +62,38 @@ class RecordingExecutor extends ProcessExecutor {
   }
 }
 
+/**
+ * OpenCode 2 on the host: keeps `auth export` items in memory, logs out by id,
+ * imports from stdin, and records each `opencode` command with whether the
+ * pending `auth.json` still existed when it ran.
+ */
+class FakeOpencodeExecutor extends RecordingExecutor {
+  readonly commands: Array<{ args: string[]; input?: string; authFileExists: boolean }> = [];
+
+  constructor(
+    public credentials: Array<{ id: string; integrationID: string }>,
+    private readonly authFile: () => string,
+  ) {
+    super();
+  }
+
+  async run(options: ProcessExecutorOptions): Promise<ExecutorResult> {
+    const result = await super.run(options);
+    if (options.argv[0] !== 'opencode') return result;
+    const args = options.argv.slice(1);
+    this.commands.push({
+      args,
+      ...(options.input !== undefined && { input: options.input }),
+      authFileExists: existsSync(this.authFile()),
+    });
+    if (args[1] === 'export') return { ...result, stdout: JSON.stringify(this.credentials) };
+    if (args[1] === 'logout') {
+      this.credentials = this.credentials.filter((credential) => credential.id !== args[3]);
+    }
+    return result;
+  }
+}
+
 // Layer: backend integration. Real files in a temp home and a real child
 // process (a fake `claude` on PATH) through the process executor.
 describe('HostProviderAuthService', () => {
@@ -70,6 +104,10 @@ describe('HostProviderAuthService', () => {
   let watcher: ProviderAuthWatcherService;
   let saved: NodeJS.ProcessEnv;
   let executor: ProcessExecutor;
+  let opencodeVersion: string;
+  const versionProbe = {
+    probe: async () => opencodeVersion,
+  } as unknown as ProviderCliVersionProbe;
 
   beforeEach(() => {
     root = mkdtempSync(join(tmpdir(), 'devchain-host-auth-'));
@@ -95,9 +133,14 @@ describe('HostProviderAuthService', () => {
     executor = new ChildProcessExecutor();
     watcher = new ProviderAuthWatcherService();
     watcher.onModuleInit();
-    service = new HostProviderAuthService(new HostHelperService(executor), executor, watcher, {
-      listProviders: async () => ({ items: [] }),
-    } as never);
+    opencodeVersion = '1.18.32';
+    service = new HostProviderAuthService(
+      new HostHelperService(executor),
+      executor,
+      watcher,
+      { listProviders: async () => ({ items: [] }) } as never,
+      versionProbe,
+    );
   });
 
   afterEach(() => {
@@ -144,6 +187,35 @@ describe('HostProviderAuthService', () => {
         ]);
     },
   );
+
+  it.each([
+    ['1.18.32', ['opencode', 'auth', 'list']],
+    ['opencode v2.0.31', ['opencode', 'auth', 'list', '--standalone']],
+  ])('checks an OpenCode %s login with %j', async (version, argv) => {
+    opencodeVersion = version;
+    const run = jest.spyOn(executor, 'run').mockResolvedValue({
+      success: true,
+      exitCode: 0,
+      stdout: 'OpenAI OAuth stored',
+      stderr: '',
+      timedOut: false,
+      truncated: false,
+    });
+
+    await expect(service.verify('opencode', ['openai'])).resolves.toMatchObject({ ok: true });
+    expect(run.mock.calls[0][0].argv).toEqual(argv);
+  });
+
+  it('fails an unsupported OpenCode version without running the check', async () => {
+    opencodeVersion = 'opencode v3.0.0';
+    const run = jest.spyOn(executor, 'run');
+
+    const result = await service.verify('opencode', ['openai']);
+
+    expect(result).toMatchObject({ ok: false, summary: '' });
+    expect(result.hint).toContain("Unsupported OpenCode version 'opencode v3.0.0'");
+    expect(run).not.toHaveBeenCalled();
+  });
 
   it('reads host.env back exactly as the bootstrap writes it', () => {
     const env = { A: 'plain', B: 'quote " dollar $ tick ` slash \\' };
@@ -242,9 +314,13 @@ describe('HostProviderAuthService', () => {
 
     beforeEach(() => {
       recorder = new RecordingExecutor();
-      removing = new HostProviderAuthService(new HostHelperService(recorder), recorder, watcher, {
-        listProviders: async () => ({ items: [] }),
-      } as never);
+      removing = new HostProviderAuthService(
+        new HostHelperService(recorder),
+        recorder,
+        watcher,
+        { listProviders: async () => ({ items: [] }) } as never,
+        versionProbe,
+      );
     });
 
     it('removes env keys and family files before applying the writes', async () => {
@@ -368,6 +444,109 @@ describe('HostProviderAuthService', () => {
     });
   });
 
+  describe('OpenCode 2 logins', () => {
+    const OPENCODE_PATH = () => join(home, '.local', 'share', 'opencode', 'auth.json');
+    const AUTH_FILE = { anthropic: { type: 'oauth', refresh: 'r', access: 'a', expires: 1 } };
+    let fake: FakeOpencodeExecutor;
+    let host: HostProviderAuthService;
+
+    beforeEach(() => {
+      opencodeVersion = 'opencode v2.0.31';
+      fake = new FakeOpencodeExecutor(
+        [
+          { id: 'cred_migrated', integrationID: 'anthropic' },
+          { id: 'cred_devchain_openai', integrationID: 'openai' },
+          { id: 'cred_users_own', integrationID: 'xai' },
+        ],
+        OPENCODE_PATH,
+      );
+      host = new HostProviderAuthService(
+        new HostHelperService(fake),
+        fake,
+        watcher,
+        { listProviders: async () => ({ items: [] }) } as never,
+        versionProbe,
+      );
+      mkdirSync(join(home, '.local', 'share', 'opencode'), { recursive: true });
+    });
+
+    it('imports a pending auth.json at startup: export, a logout per credential, import, then delete', async () => {
+      writeFileSync(OPENCODE_PATH(), JSON.stringify(AUTH_FILE));
+
+      await host.onModuleInit();
+
+      expect(fake.commands).toEqual([
+        { args: ['auth', 'export', '--standalone'], authFileExists: true },
+        {
+          args: ['auth', 'logout', 'anthropic', 'cred_migrated', '--standalone'],
+          authFileExists: true,
+        },
+        {
+          args: ['auth', 'logout', 'openai', 'cred_devchain_openai', '--standalone'],
+          authFileExists: true,
+        },
+        { args: ['auth', 'logout', 'xai', 'cred_users_own', '--standalone'], authFileExists: true },
+        {
+          args: ['auth', 'import', '--standalone'],
+          input: expect.any(String),
+          authFileExists: true,
+        },
+      ]);
+      expect(JSON.parse(fake.commands[4].input!)).toEqual([
+        {
+          id: 'cred_devchain_anthropic',
+          integrationID: 'anthropic',
+          label: 'DevChain',
+          active: true,
+          value: { type: 'oauth', methodID: 'oauth', refresh: 'r', access: 'a', expires: 1 },
+        },
+      ]);
+      expect(existsSync(OPENCODE_PATH())).toBe(false);
+    });
+
+    it('leaves the OpenCode credentials alone when apply carries only a Claude login', async () => {
+      writeFileSync(OPENCODE_PATH(), JSON.stringify(AUTH_FILE));
+
+      await host.apply({ env: { CLAUDE_CODE_OAUTH_TOKEN: 'sk-ant-oat01-new' }, files: [] });
+
+      expect(fake.commands).toEqual([]);
+      expect(existsSync(OPENCODE_PATH())).toBe(true);
+    });
+
+    it('logs out only the DevChain credentials when the OpenCode login is removed', async () => {
+      const result = await host.apply({
+        env: {},
+        files: [],
+        remove: { envKeys: [], files: [OPENCODE_PATH()] },
+      });
+
+      expect(fake.commands.map((command) => command.args)).toEqual([
+        ['auth', 'export', '--standalone'],
+        ['auth', 'logout', 'openai', 'cred_devchain_openai', '--standalone'],
+      ]);
+      expect(result.removed.files).toEqual([OPENCODE_PATH()]);
+    });
+
+    it('keeps the written auth.json and runs no OpenCode command on a v1 host', async () => {
+      opencodeVersion = '1.18.32';
+      const content = JSON.stringify(AUTH_FILE);
+
+      await host.apply({
+        env: {},
+        files: [
+          {
+            path: OPENCODE_PATH(),
+            mode: '0600',
+            contentBase64: Buffer.from(content).toString('base64'),
+          },
+        ],
+      });
+
+      expect(fake.commands).toEqual([]);
+      expect(readFileSync(OPENCODE_PATH(), 'utf8')).toBe(content);
+    });
+  });
+
   describe('families report', () => {
     const CODEX_REFRESHED = '{"tokens":{"refresh_token":"rotated"}}';
 
@@ -411,6 +590,69 @@ describe('HostProviderAuthService', () => {
       const [second] = await service.families(first.files[0].mtime);
 
       expect(Buffer.from(second.files[0].contentBase64, 'base64').toString('utf8')).toBe(refreshed);
+    });
+
+    describe('on OpenCode 2', () => {
+      const credential = (refresh: string) =>
+        JSON.stringify({ type: 'oauth', methodID: 'oauth', refresh, access: 'a', expires: 1 });
+      let db: Database.Database;
+
+      beforeEach(() => {
+        opencodeVersion = 'opencode v2.0.31';
+        mkdirSync(join(home, '.local', 'share', 'opencode'), { recursive: true });
+        db = new Database(join(home, '.local', 'share', 'opencode', 'opencode.db'));
+        db.pragma('journal_mode = WAL');
+        db.exec(`CREATE TABLE credential (id text PRIMARY KEY, integration_id text, label text NOT NULL,
+          value text NOT NULL, connector_id text, method_id text, active integer,
+          time_created integer NOT NULL, time_updated integer NOT NULL);
+          CREATE TABLE session_message (id text PRIMARY KEY, data text)`);
+        const insert = db.prepare(
+          'INSERT INTO credential VALUES (?, ?, ?, ?, NULL, NULL, 1, 1, ?)',
+        );
+        insert.run('cred_devchain_anthropic', 'anthropic', 'DevChain', credential('r1'), 1000);
+        insert.run('cred_users_own', 'xai', 'Mine', credential('user'), 5000);
+      });
+
+      afterEach(() => db.close());
+
+      const reportedAuthFile = (report: { files: Array<{ contentBase64: string }> }) =>
+        JSON.parse(Buffer.from(report.files[0].contentBase64, 'base64').toString('utf8'));
+
+      it('reports a refreshed DevChain credential once, as auth.json, at its time_updated', async () => {
+        const [first] = await service.families(0);
+        expect(first.files[0]).toMatchObject({
+          path: '.local/share/opencode/auth.json',
+          mtime: 1000,
+        });
+        expect(reportedAuthFile(first)).toEqual({
+          anthropic: { type: 'oauth', refresh: 'r1', access: 'a', expires: 1 },
+        });
+        await expect(service.families(1000)).resolves.toEqual([]);
+
+        db.prepare('UPDATE credential SET value = ?, time_updated = ? WHERE id = ?').run(
+          credential('r2'),
+          2000,
+          'cred_devchain_anthropic',
+        );
+        const changed = await service.families(1000);
+
+        expect(changed).toHaveLength(1);
+        expect(changed[0].files[0].mtime).toBe(2000);
+        expect(reportedAuthFile(changed[0]).anthropic.refresh).toBe('r2');
+      });
+
+      it('reports nothing new for DB writes that leave the DevChain logins unchanged', async () => {
+        const [first] = await service.families(0);
+
+        db.prepare('INSERT INTO session_message VALUES (?, ?)').run('msg_1', '{}');
+        db.prepare('UPDATE credential SET label = ?, time_updated = ? WHERE id = ?').run(
+          'Renamed',
+          3000,
+          'cred_devchain_anthropic',
+        );
+
+        await expect(service.families(first.files[0].mtime)).resolves.toEqual([]);
+      });
     });
 
     it('reports nothing when no family file exists', async () => {

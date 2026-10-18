@@ -53,6 +53,7 @@ export function ChangeLoginsDialog({
   remoteNames,
   pending,
   error,
+  initialChoices,
   onClose,
   onChangeLogins,
 }: {
@@ -66,11 +67,16 @@ export function ChangeLoginsDialog({
   pending: boolean;
   /** The refusal of the last request, shown above the buttons. */
   error?: string | null;
+  /** Rows that start on a choice other than Keep current, such as a login assigned from the Logins tab. */
+  initialChoices?: Readonly<Record<string, LoginChoice>>;
   onClose: () => void;
   onChangeLogins: (providerAuth: Record<string, string>, force: boolean) => void;
 }) {
   const { entries } = useProviderAuth();
-  const keep = useCallback((): LoginChoice => 'keep', []);
+  const keep = useCallback(
+    (provider: string): LoginChoice => initialChoices?.[provider] ?? 'keep',
+    [initialChoices],
+  );
   const { choices, setChoice } = useLoginChoices(LOGIN_PROVIDERS, keep);
   const { onAddLogin, addLoginDialog } = useAddLoginLink(LOGIN_PROVIDERS, setChoice);
   const context = useMemo(

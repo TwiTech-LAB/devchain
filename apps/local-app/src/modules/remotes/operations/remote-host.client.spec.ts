@@ -209,9 +209,13 @@ describe('RemoteHostClient git guard', () => {
         `${REMOTE.baseUrl}/api/host/projects/A%2FB/git-guard`,
         {
           method: action === 'install' ? 'POST' : 'DELETE',
-          headers: action === 'install' ? { 'content-type': 'application/json' } : {},
+          headers: { 'content-type': 'application/json' },
           signal: expect.any(AbortSignal),
-          ...(action === 'install' ? { body: JSON.stringify(request) } : {}),
+          body: JSON.stringify({
+            ...(action === 'install' ? request : { refreshIndex: false }),
+            expectedGeneration: 0,
+            transitionId: null,
+          }),
         },
       );
     },
@@ -483,7 +487,11 @@ describe('RemoteHostClient VM certificate', () => {
 
 // Client units are the cheapest layer for request-dependent echoes: transport schemas only check shape.
 describe('RemoteHostClient settings echoes', () => {
-  const methods = ['putProviderCliSettings', 'putSkillSettings'] as const;
+  const methods = [
+    'putProviderCliSettings',
+    'putProviderUsageSettings',
+    'putSkillSettings',
+  ] as const;
 
   it.each(methods)('accepts the requested revision for %s', async (method) => {
     stubHost(202, { revision: 'requested-revision' });
@@ -578,8 +586,53 @@ describe('RemoteHostClient update outcomes', () => {
     { status: 409, code: 'UPDATE_IN_PROGRESS', outcome: 'in_progress' },
   ])('maps an update response of $status/$code to $outcome', async ({ status, code, outcome }) => {
     stubHost(status, { details: { code } });
-    await expect(makeClient().requestHostUpdate(REMOTE.id, '1.0.0')).resolves.toBe(outcome);
+    await expect(makeClient().requestHostUpdate(REMOTE.id, '1.0.0')).resolves.toEqual({
+      outcome,
+      registryIgnored: false,
+    });
   });
+
+  const sentBodies = () =>
+    (global.fetch as jest.Mock).mock.calls.map(([, init]) => JSON.parse(init.body as string));
+
+  it.each([
+    { registry: 'http://lan.test/', body: { version: '1.0.0', npmRegistry: 'http://lan.test/' } },
+    { registry: undefined, body: { version: '1.0.0' } },
+  ])('sends the body $body', async ({ registry, body }) => {
+    stubHost(202, {});
+    await makeClient().requestHostUpdate(REMOTE.id, '1.0.0', registry);
+    expect(sentBodies()).toEqual([body]);
+  });
+
+  it('sends the request again without the registry when an older host answers 400/validation_error', async () => {
+    global.fetch = jest
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ code: 'validation_error' }), { status: 400 }),
+      )
+      .mockResolvedValueOnce(new Response('{}', { status: 202 })) as typeof fetch;
+    await expect(
+      makeClient().requestHostUpdate(REMOTE.id, '1.0.0', 'http://lan.test/'),
+    ).resolves.toEqual({ outcome: 'started', registryIgnored: true });
+    expect(sentBodies()).toEqual([
+      { version: '1.0.0', npmRegistry: 'http://lan.test/' },
+      { version: '1.0.0' },
+    ]);
+  });
+
+  it.each([
+    { hostBody: { details: { code: 'INVALID_REGISTRY' } }, hostCode: 'INVALID_REGISTRY', sends: 1 },
+    { hostBody: { code: 'validation_error' }, hostCode: 'validation_error', sends: 2 },
+  ])(
+    'sends $sends request(s) when every answer is 400/$hostCode',
+    async ({ hostBody, hostCode, sends }) => {
+      stubHost(400, hostBody);
+      await expect(
+        makeClient().requestHostUpdate(REMOTE.id, '1.0.0', 'http://lan.test/'),
+      ).rejects.toMatchObject({ details: { status: 400, hostCode } });
+      expect(sentBodies()).toHaveLength(sends);
+    },
+  );
 
   it('refuses an update answered 409/OTHER_CONFLICT', async () => {
     stubHost(409, { details: { code: 'OTHER_CONFLICT' } });

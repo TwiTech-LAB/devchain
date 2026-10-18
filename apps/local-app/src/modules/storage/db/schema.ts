@@ -1528,6 +1528,38 @@ export const guests = sqliteTable(
   }),
 );
 
+export const worktrees = sqliteTable(
+  'worktrees',
+  {
+    id: text('id').primaryKey(),
+    projectId: text('project_id')
+      .notNull()
+      .references(() => projects.id, { onDelete: 'cascade' }),
+    name: text('name').notNull(),
+    path: text('path').notNull(),
+    branch: text('branch').notNull(),
+    baseBranch: text('base_branch').notNull(),
+    baseSha: text('base_sha').notNull(),
+    epicId: text('epic_id').references(() => epics.id, { onDelete: 'set null' }),
+    createdByType: text('created_by_type', { enum: ['agent', 'user'] }).notNull(),
+    createdByAgentId: text('created_by_agent_id').references(() => agents.id, {
+      onDelete: 'set null',
+    }),
+    createdAt: text('created_at').notNull(),
+    updatedAt: text('updated_at').notNull(),
+  },
+  (table) => ({
+    projectNameUnique: uniqueIndex('worktrees_project_name_unique').on(
+      table.projectId,
+      sql`${table.name} COLLATE NOCASE`,
+    ),
+    createdByTypeCheck: check(
+      'worktrees_created_by_type_check',
+      sql`${table.createdByType} IN ('agent', 'user')`,
+    ),
+  }),
+);
+
 // ============================================
 // TEAMS - Agent team organization
 // ============================================

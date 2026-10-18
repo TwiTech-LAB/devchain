@@ -8,6 +8,15 @@ import {
   TeamMemberCapReachedError,
 } from '../../../common/errors/error-types';
 import { SessionsService } from '../../sessions/services/sessions.service';
+import { SessionLifecycleFacade } from '../../sessions/services/session-lifecycle-facade.service';
+import { ActiveSessionLookup } from '../../sessions/services/active-session-lookup.service';
+import {
+  MessageEnqueueService,
+  type MessageEnqueueResult,
+} from '../../sessions/services/message-enqueue.service';
+import { isCommandGuardError } from '../../sessions/services/message-pool.types';
+import { ProviderAdapterFactory } from '../../providers/adapters/provider-adapter.factory';
+import { isSessionCommandCapable } from '../../providers/adapters/capabilities/type-guards';
 import {
   STORAGE_SERVICE,
   type DeleteAgentOptions,
@@ -53,6 +62,37 @@ export interface AutomationAgentDeletionResult {
   presetCleanupError?: string;
 }
 
+export type TeamMemberSessionAction = 'restart' | 'compact' | 'stop';
+
+export type TeamMemberSessionControlResult = { agentId: string } & (
+  | { action: 'stop'; performedAs: 'stop'; previousSessionId: string }
+  | {
+      action: 'restart';
+      performedAs: 'restart';
+      previousSessionId?: string;
+      sessionId: string;
+    }
+  | {
+      action: 'compact';
+      performedAs: 'command';
+      sessionId: string;
+      deliveryStatus: Exclude<MessageEnqueueResult['status'], 'failed'>;
+    }
+);
+
+interface TeamMemberTargetInput {
+  leadAgentId: string;
+  projectId: string;
+  name: string;
+  teamName?: string;
+}
+
+// The verb names the refused action in target-guard messages; each verb keeps its own lead code.
+const TEAM_LEAD_TARGET_CODES = {
+  control: 'CANNOT_CONTROL_TEAM_LEAD',
+  delete: 'CANNOT_DELETE_TEAM_LEAD',
+} as const;
+
 @Injectable()
 export class TeamsService {
   private sessionsServiceRef?: SessionsService;
@@ -67,6 +107,10 @@ export class TeamsService {
     private readonly moduleRef: ModuleRef,
     private readonly settingsService: SettingsService,
     private readonly gate: ProjectWriteGate,
+    private readonly sessionLifecycle: SessionLifecycleFacade,
+    private readonly activeSessionLookup: ActiveSessionLookup,
+    private readonly messageEnqueue: MessageEnqueueService,
+    private readonly providerAdapterFactory: ProviderAdapterFactory,
     @Optional() private readonly eventsService?: EventsService,
   ) {}
 
@@ -839,18 +883,13 @@ export class TeamsService {
     return agent;
   }
 
-  async deleteTeamAgent(input: {
-    leadAgentId: string;
-    projectId: string;
-    name: string;
-    teamName?: string;
-  }): Promise<
-    | { result: { deletedAgentId: string; deletedAgentName: string; teamName: string } }
-    | { error: { code: string; message: string } }
+  private async resolveTeamMemberTarget(
+    input: TeamMemberTargetInput,
+    verb: keyof typeof TEAM_LEAD_TARGET_CODES,
+  ): Promise<
+    | { team: Team; targetAgent: Agent }
+    | { error: { code: string; message: string; data?: unknown } }
   > {
-    // Admit before terminating team-agent tmux sessions.
-    this.gate.assertWritable(input.projectId);
-    // 1. Resolve led team
     const teamResult = await this.resolveLedTeam(
       input.leadAgentId,
       input.projectId,
@@ -859,7 +898,6 @@ export class TeamsService {
     if ('error' in teamResult) return teamResult;
     const { team } = teamResult;
 
-    // 2. Resolve target agent by name within team members
     const teamDetail = await this.teamsStore.getTeam(team.id);
     if (!teamDetail) {
       return { error: { code: 'TEAM_NOT_FOUND_OR_NOT_LED', message: 'Team no longer exists' } };
@@ -892,20 +930,16 @@ export class TeamsService {
 
     const targetAgent = nameMatches[0];
 
-    // 3. Cross-team safety guards
     if (targetAgent.id === team.teamLeadAgentId) {
       return {
         error: {
-          code: 'CANNOT_DELETE_TEAM_LEAD',
-          message: `Cannot delete "${targetAgent.name}" — they are the team lead of "${team.name}"`,
+          code: TEAM_LEAD_TARGET_CODES[verb],
+          message: `Cannot ${verb} "${targetAgent.name}" — they are the team lead of "${team.name}"`,
         },
       };
     }
 
-    // Defense-in-depth: the UI restricts adding agents to multiple teams, but the data model
-    // permits it. If multi-team membership exists (via REST API directly, older data, or future
-    // UI changes), refuse this delete and surface an explicit error so the operator can resolve
-    // memberships first.
+    // A shared agent's session and lifetime affect every team it belongs to.
     const agentTeams = await this.teamsStore.listTeamsByAgent(targetAgent.id);
     for (const agentTeam of agentTeams) {
       if (agentTeam.id === team.id) continue;
@@ -913,19 +947,142 @@ export class TeamsService {
         return {
           error: {
             code: 'TARGET_LEADS_OTHER_TEAM',
-            message: `Cannot delete "${targetAgent.name}" — they lead team "${agentTeam.name}"`,
+            message: `Cannot ${verb} "${targetAgent.name}" — they lead team "${agentTeam.name}"`,
           },
         };
       }
       return {
         error: {
           code: 'TARGET_BELONGS_TO_OTHER_TEAM',
-          message: `Cannot delete "${targetAgent.name}" — they also belong to team "${agentTeam.name}". Remove them from that team first.`,
+          message: `Cannot ${verb} "${targetAgent.name}" — they also belong to team "${agentTeam.name}". Remove them from that team first.`,
         },
       };
     }
 
-    // 4. Auto-terminate running sessions (best-effort)
+    return { team, targetAgent };
+  }
+
+  async controlTeamMemberSession(
+    input: TeamMemberTargetInput & { action: TeamMemberSessionAction },
+  ): Promise<
+    | { result: TeamMemberSessionControlResult }
+    | { error: { code: string; message: string; data?: unknown } }
+  > {
+    this.gate.assertWritable(input.projectId);
+    const target = await this.resolveTeamMemberTarget(input, 'control');
+    if ('error' in target) return target;
+
+    const { targetAgent } = target;
+    const activeSession = await this.activeSessionLookup.getActiveSession(
+      targetAgent.id,
+      input.projectId,
+    );
+
+    if (input.action === 'restart') {
+      const session = await this.sessionLifecycle.restart(targetAgent.id, input.projectId, {
+        source: 'team-management',
+      });
+      if (activeSession && session.id === activeSession.sessionId) {
+        return {
+          error: {
+            code: 'RESTART_FAILED',
+            message: `Could not restart "${targetAgent.name}" — the previous session is still active`,
+          },
+        };
+      }
+      return {
+        result: {
+          agentId: targetAgent.id,
+          action: 'restart',
+          performedAs: 'restart',
+          ...(activeSession ? { previousSessionId: activeSession.sessionId } : {}),
+          sessionId: session.id,
+        },
+      };
+    }
+
+    if (!activeSession) {
+      return {
+        error: {
+          code: 'NO_ACTIVE_SESSION',
+          message: `No active session for "${targetAgent.name}"`,
+        },
+      };
+    }
+
+    if (input.action === 'stop') {
+      await this.sessionLifecycle.terminate(activeSession.sessionId, {
+        source: 'team-management',
+      });
+      return {
+        result: {
+          agentId: targetAgent.id,
+          action: 'stop',
+          performedAs: 'stop',
+          previousSessionId: activeSession.sessionId,
+        },
+      };
+    }
+
+    const providerName = activeSession.providerNameAtLaunch;
+    const adapter =
+      providerName && this.providerAdapterFactory.isSupported(providerName)
+        ? this.providerAdapterFactory.getAdapter(providerName)
+        : undefined;
+    const command =
+      adapter && isSessionCommandCapable(adapter) ? adapter.sessionCommands.compact : undefined;
+    if (!command) {
+      return {
+        error: {
+          code: 'COMPACT_UNSUPPORTED',
+          message: `The provider for "${targetAgent.name}" does not support compaction`,
+        },
+      };
+    }
+
+    const [delivery] = await this.messageEnqueue.enqueue([
+      {
+        agentId: targetAgent.id,
+        text: command,
+        source: 'team.session_control',
+        submitKeys: ['Enter'],
+        deliveryMode: 'immediate',
+        projectId: input.projectId,
+        senderAgentId: input.leadAgentId,
+        commandGuard: { sessionId: activeSession.sessionId },
+      },
+    ]);
+    if (!delivery || delivery.status === 'failed') {
+      const error = delivery?.error;
+      const code = isCommandGuardError(error) ? error : 'DELIVERY_FAILED';
+      return {
+        error: { code, message: `Could not deliver the compact command to "${targetAgent.name}"` },
+      };
+    }
+    return {
+      result: {
+        agentId: targetAgent.id,
+        action: 'compact',
+        performedAs: 'command',
+        sessionId: activeSession.sessionId,
+        deliveryStatus: delivery.status,
+      },
+    };
+  }
+
+  async deleteTeamAgent(
+    input: TeamMemberTargetInput,
+  ): Promise<
+    | { result: { deletedAgentId: string; deletedAgentName: string; teamName: string } }
+    | { error: { code: string; message: string } }
+  > {
+    // Admit before terminating team-agent tmux sessions.
+    this.gate.assertWritable(input.projectId);
+    const target = await this.resolveTeamMemberTarget(input, 'delete');
+    if ('error' in target) return target;
+    const { team, targetAgent } = target;
+
+    // Auto-terminate running sessions (best-effort)
     try {
       const sessionsService = this.getSessionsService();
       const activeSessions = await sessionsService.listActiveSessions(
@@ -952,7 +1109,7 @@ export class TeamsService {
       );
     }
 
-    // 5. Capture pre-delete data
+    // Capture pre-delete data
     const preDeleteData = {
       teamId: team.id,
       teamName: team.name,
@@ -961,7 +1118,7 @@ export class TeamsService {
       removedAgentName: targetAgent.name,
     };
 
-    // 6. Delete agent
+    // Delete agent
     try {
       await this.storage.deleteAgent(targetAgent.id);
     } catch (error) {
@@ -973,7 +1130,7 @@ export class TeamsService {
       throw error;
     }
 
-    // 7. Cleanup presets
+    // Cleanup presets
     try {
       await this.settingsService.removeAgentFromProjectPresets(
         input.projectId,
@@ -993,7 +1150,7 @@ export class TeamsService {
       throw error;
     }
 
-    // 8. Publish events (best-effort)
+    // Publish events (best-effort)
     try {
       const eventNames = await this.resolveTeamEventNames(
         input.projectId,
@@ -1034,7 +1191,7 @@ export class TeamsService {
       );
     }
 
-    // 8. Return result
+    // Return result
     return {
       result: {
         deletedAgentId: targetAgent.id,

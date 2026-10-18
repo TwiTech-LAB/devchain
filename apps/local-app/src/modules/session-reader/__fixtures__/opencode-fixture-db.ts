@@ -1,4 +1,10 @@
 import Database from 'better-sqlite3';
+import {
+  createOpencodeV2FixtureDb,
+  withWritableOpencodeDb,
+  type V2SeedProject,
+  type V2SeedSession,
+} from './opencode-v2-fixture-db';
 
 /**
  * Seeding + mutation helpers for a fixture OpenCode SQLite container.
@@ -11,8 +17,11 @@ import Database from 'better-sqlite3';
  *   - part `data`:    `{ type: 'text' | 'reasoning' | 'step-finish' | …, text?, … }`
  */
 
-const SCHEMA_SQL = `
+const PROJECT_SCHEMA_SQL = `
   CREATE TABLE project (id TEXT PRIMARY KEY, worktree TEXT NOT NULL);
+`;
+
+const LEGACY_SESSION_SCHEMA_SQL = `
   CREATE TABLE session (
     id TEXT PRIMARY KEY, title TEXT, model TEXT, agent TEXT, parent_id TEXT,
     directory TEXT, project_id TEXT,
@@ -69,17 +78,6 @@ export interface SeedProject {
 }
 
 type WritableDb = ReturnType<typeof Database>;
-
-/** Open a writable WAL connection, run `fn`, and close it. */
-export function withWritableOpencodeDb(dbPath: string, fn: (db: WritableDb) => void): void {
-  const db = new Database(dbPath);
-  try {
-    db.pragma('journal_mode = WAL'); // match OpenCode; the reader must read WAL DBs
-    fn(db);
-  } finally {
-    db.close();
-  }
-}
 
 function insertSession(db: WritableDb, session: SeedSession): void {
   db.prepare(
@@ -138,10 +136,26 @@ export function createOpencodeFixtureDb(
   projects: SeedProject[] = [],
 ): void {
   withWritableOpencodeDb(dbPath, (db) => {
-    db.exec(SCHEMA_SQL);
+    db.exec(PROJECT_SCHEMA_SQL + LEGACY_SESSION_SCHEMA_SQL);
     const insProject = db.prepare(`INSERT INTO project (id, worktree) VALUES (?, ?)`);
     for (const p of projects) insProject.run(p.id, p.worktree);
     for (const s of sessions) insertSession(db, s);
+  });
+}
+
+/**
+ * Create an "upgraded" container: the OpenCode 2 tables plus the legacy v1
+ * `session / message / part` tables, as left behind when OpenCode 2 migrates a v1
+ * DB. The `project` table is the v2 one; v1 sessions reference it by `projectId`.
+ */
+export function createUpgradedOpencodeFixtureDb(
+  dbPath: string,
+  args: { legacySessions: SeedSession[]; v2Sessions: V2SeedSession[]; projects?: V2SeedProject[] },
+): void {
+  createOpencodeV2FixtureDb(dbPath, { sessions: args.v2Sessions, projects: args.projects });
+  withWritableOpencodeDb(dbPath, (db) => {
+    db.exec(LEGACY_SESSION_SCHEMA_SQL);
+    for (const s of args.legacySessions) insertSession(db, s);
   });
 }
 

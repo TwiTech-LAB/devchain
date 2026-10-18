@@ -1,8 +1,21 @@
+import { HostWorktreesSchema, LaneAdmissionSchema } from '../../worktrees/host-worktrees.dto';
 import { z } from 'zod';
+import {
+  GitCoordinatorRecordSchema,
+  GitCoordinatorStatusSchema,
+  GitFenceSchema,
+  HomeWriteBeginSchema,
+  HomeWriteEndSchema,
+  HandoverBeginSchema,
+  HandoverPhaseSchema,
+  GitIndexSnapshotSchema,
+} from '../git-coordinator/git-coordinator.dto';
+import type { GitFence } from '../git-coordinator/git-coordinator.dto';
 import {
   HostProviderCliSettingsSchema,
   HostProviderCliSettingsStatusSchema,
   HostSkillSettingsSchema,
+  ProviderUsageSettingsSchema,
   HostSkillSettingsStatusSchema,
   PROJECT_REPLICA_CONTENT_TYPE,
   ProjectReplicaChangesSchema,
@@ -17,6 +30,7 @@ import {
   ForceCopyBackupSchema,
   ReceiveOnlyChangesSchema,
   RemoteNeedSchema,
+  RemoteNeedNamesSchema,
   SyncDeviceSchema,
   SyncFolderSchema,
   SyncFolderConfigurationSchema,
@@ -32,8 +46,6 @@ import {
   GitGuardInstallResultSchema,
   GitGuardRemoveRequestSchema,
   GitGuardRemoveResultSchema,
-  GitIndexRequestSchema,
-  GitIndexResultSchema,
   VmGitGuardRequestSchema,
 } from '../../file-sync/git-guard.dto';
 import {
@@ -54,6 +66,16 @@ import {
   TranscriptListingSchema,
 } from '../transcripts/transcript-transfer.dto';
 import { VmUidConflictSchema } from '../vm-user-identity';
+import {
+  SharedVmAbandonSchema,
+  SharedVmDismissSchema,
+  SharedVmFenceRequestSchema,
+  SharedVmFenceResultSchema,
+  SharedVmNoticesSchema,
+  SharedVmNotifySchema,
+  SharedVmNotifyResultSchema,
+  SharedVmRosterSchema,
+} from '../host/shared-vm.contract';
 
 export const CONTROL_TIMEOUT_MS = 15_000;
 export const REPLICA_TIMEOUT_MS = 120_000;
@@ -136,13 +158,31 @@ export type HostRuntimeResponse = HostHandlerResponse<typeof hostRoutes.runtimeA
 
 type ProjectParams = { projectId: string };
 type FolderParams = { folderId: string };
+type FencedParams = { gitFence?: GitFence };
 type NoParams = Record<string, never>;
 const enc = encodeURIComponent;
 const fixed = (path: string) => (_params: NoParams) => path;
 const NO_CONTENT = { 204: 'none' } as const;
 const RevisionAckSchema = z.object({ revision: z.string() });
+
+export const HostProviderUsageSettingsSchema = z
+  .object({ revision: z.string().regex(/^[a-f0-9]{64}$/), settings: ProviderUsageSettingsSchema })
+  .strict();
+export type HostProviderUsageSettings = z.infer<typeof HostProviderUsageSettingsSchema>;
+
+/** `appliedRevision` is the revision of the values the VM runs with now. */
+export const HostProviderUsageSettingsStatusSchema = z
+  .object({ appliedRevision: z.string().nullable() })
+  .strict();
+export type HostProviderUsageSettingsStatus = z.infer<typeof HostProviderUsageSettingsStatusSchema>;
 const projectPath = ({ projectId }: ProjectParams) => `/api/host/projects/${enc(projectId)}`;
 const folderPath = ({ folderId }: FolderParams) => `/api/host/sync/folders/${enc(folderId)}`;
+const fenced = (path: string, { gitFence }: FencedParams): string =>
+  gitFence
+    ? `${path}?${new URLSearchParams({ expectedGeneration: String(gitFence.expectedGeneration), transitionId: gitFence.transitionId ?? 'none' })}`
+    : path;
+const fencedFolderPath = (params: FolderParams & FencedParams) =>
+  fenced(folderPath(params), params);
 const syncStatusPath = ({
   folderId,
   deviceId,
@@ -161,6 +201,79 @@ const helperCodes = {
 };
 
 export const hostRoutes = {
+  gitCoordinatorStatus: {
+    method: 'GET',
+    path: (params: ProjectParams) => `${projectPath(params)}/git-coordinator`,
+    timeoutMs: CONTROL_TIMEOUT_MS,
+    statuses: { 200: GitCoordinatorStatusSchema },
+  },
+  gitCoordinatorIndex: {
+    method: 'GET',
+    path: (params: ProjectParams) => `${projectPath(params)}/git-coordinator/index`,
+    timeoutMs: REPLICA_TIMEOUT_MS,
+    statuses: { 200: GitIndexSnapshotSchema },
+  },
+  homeWriteBegin: {
+    method: 'POST',
+    path: (params: ProjectParams) => `${projectPath(params)}/git-coordinator/home-write-begin`,
+    body: HomeWriteBeginSchema,
+    timeoutMs: CONTROL_TIMEOUT_MS,
+    statuses: { 200: GitCoordinatorRecordSchema },
+  },
+  homeWriteEnd: {
+    method: 'POST',
+    path: (params: ProjectParams) => `${projectPath(params)}/git-coordinator/home-write-end`,
+    body: HomeWriteEndSchema,
+    timeoutMs: REPLICA_TIMEOUT_MS,
+    statuses: { 200: GitCoordinatorRecordSchema },
+  },
+  handoverBegin: {
+    method: 'POST',
+    path: (params: ProjectParams) => `${projectPath(params)}/git-coordinator/handover-begin`,
+    body: HandoverBeginSchema,
+    timeoutMs: CONTROL_TIMEOUT_MS,
+    statuses: { 200: GitCoordinatorRecordSchema },
+  },
+  handoverRenew: {
+    method: 'POST',
+    path: (params: ProjectParams) => `${projectPath(params)}/git-coordinator/handover-renew`,
+    body: GitFenceSchema.strict(),
+    timeoutMs: CONTROL_TIMEOUT_MS,
+    statuses: { 200: GitCoordinatorRecordSchema },
+  },
+  handoverAbort: {
+    method: 'POST',
+    path: (params: ProjectParams) => `${projectPath(params)}/git-coordinator/handover-abort`,
+    body: GitFenceSchema.strict(),
+    timeoutMs: CONTROL_TIMEOUT_MS,
+    statuses: { 200: GitCoordinatorRecordSchema },
+  },
+  handoverPhase: {
+    method: 'POST',
+    path: (params: ProjectParams) => `${projectPath(params)}/git-coordinator/handover-phase`,
+    body: HandoverPhaseSchema,
+    timeoutMs: REPLICA_TIMEOUT_MS,
+    statuses: { 200: GitCoordinatorRecordSchema },
+  },
+  handoverComplete: {
+    method: 'POST',
+    path: (params: ProjectParams) => `${projectPath(params)}/git-coordinator/handover-complete`,
+    body: GitFenceSchema.strict(),
+    timeoutMs: CONTROL_TIMEOUT_MS,
+    statuses: { 200: GitCoordinatorRecordSchema },
+  },
+  gitCoordinatorClose: {
+    method: 'POST',
+    path: (params: ProjectParams) => `${projectPath(params)}/git-coordinator/close`,
+    timeoutMs: CONTROL_TIMEOUT_MS,
+    statuses: { 200: GitCoordinatorRecordSchema },
+  },
+  gitCoordinatorReopen: {
+    method: 'POST',
+    path: (params: ProjectParams) => `${projectPath(params)}/git-coordinator/reopen`,
+    timeoutMs: CONTROL_TIMEOUT_MS,
+    statuses: { 200: GitCoordinatorRecordSchema },
+  },
   listTranscripts: {
     method: 'POST',
     path: fixed('/api/host/transcripts/list'),
@@ -201,6 +314,19 @@ export const hostRoutes = {
     timeoutMs: REPLICA_TIMEOUT_MS,
     statuses: { 200: ProjectReplicaChangesSchema },
   },
+  worktrees: {
+    method: 'GET',
+    path: (params: ProjectParams) => `${projectPath(params)}/worktrees`,
+    timeoutMs: BULK_TIMEOUT_MS,
+    statuses: { 200: HostWorktreesSchema },
+  },
+  laneAdmission: {
+    method: 'POST',
+    path: (params: ProjectParams) => `${projectPath(params)}/worktrees/admission`,
+    body: LaneAdmissionSchema,
+    timeoutMs: BULK_TIMEOUT_MS,
+    statuses: { 200: LaneAdmissionSchema },
+  },
   freeze: {
     method: 'POST',
     path: (params: ProjectParams) => `${projectPath(params)}/freeze`,
@@ -210,23 +336,16 @@ export const hostRoutes = {
   installGitGuard: {
     method: 'POST',
     path: (params: ProjectParams) => `${projectPath(params)}/git-guard`,
-    body: VmGitGuardRequestSchema,
+    body: VmGitGuardRequestSchema.merge(GitFenceSchema).strict(),
     timeoutMs: CONTROL_TIMEOUT_MS,
     statuses: { 200: GitGuardInstallResultSchema },
   },
   removeGitGuard: {
     method: 'DELETE',
     path: (params: ProjectParams) => `${projectPath(params)}/git-guard`,
-    body: GitGuardRemoveRequestSchema,
+    body: GitGuardRemoveRequestSchema.merge(GitFenceSchema).strict(),
     timeoutMs: CONTROL_TIMEOUT_MS,
     statuses: { 200: GitGuardRemoveResultSchema },
-  },
-  refreshGitIndex: {
-    method: 'POST',
-    path: (params: ProjectParams) => `${projectPath(params)}/git-index`,
-    body: GitIndexRequestSchema,
-    timeoutMs: REPLICA_TIMEOUT_MS,
-    statuses: { 200: GitIndexResultSchema },
   },
   thaw: {
     method: 'POST',
@@ -294,7 +413,7 @@ export const hostRoutes = {
   },
   syncFolders: {
     method: 'POST',
-    path: fixed('/api/host/sync/folders'),
+    path: (params: FencedParams) => fenced('/api/host/sync/folders', params),
     body: SyncFolderRequestSchema,
     timeoutMs: CONTROL_TIMEOUT_MS,
     statuses: { 200: SyncFolderSchema },
@@ -308,7 +427,7 @@ export const hostRoutes = {
   },
   syncFolderType: {
     method: 'PATCH',
-    path: folderPath,
+    path: fencedFolderPath,
     body: SyncFolderPatchSchema,
     timeoutMs: CONTROL_TIMEOUT_MS,
     statuses: NO_CONTENT,
@@ -327,25 +446,25 @@ export const hostRoutes = {
   },
   syncRemoveFolder: {
     method: 'DELETE',
-    path: folderPath,
+    path: fencedFolderPath,
     timeoutMs: CONTROL_TIMEOUT_MS,
     statuses: NO_CONTENT,
   },
   syncScan: {
     method: 'POST',
-    path: (params: FolderParams) => `${folderPath(params)}/scan`,
+    path: (params: FolderParams & FencedParams) => fenced(`${folderPath(params)}/scan`, params),
     timeoutMs: SCAN_TIMEOUT_MS + CONTROL_TIMEOUT_MS,
     statuses: NO_CONTENT,
   },
   syncRevert: {
     method: 'POST',
-    path: (params: FolderParams) => `${folderPath(params)}/revert`,
+    path: (params: FolderParams & FencedParams) => fenced(`${folderPath(params)}/revert`, params),
     timeoutMs: CONTROL_TIMEOUT_MS,
     statuses: NO_CONTENT,
   },
   syncOverride: {
     method: 'POST',
-    path: (params: FolderParams) => `${folderPath(params)}/override`,
+    path: (params: FolderParams & FencedParams) => fenced(`${folderPath(params)}/override`, params),
     timeoutMs: CONTROL_TIMEOUT_MS,
     statuses: NO_CONTENT,
   },
@@ -373,6 +492,13 @@ export const hostRoutes = {
       `${folderPath(params)}/remote-need?${new URLSearchParams({ device: params.deviceId })}`,
     timeoutMs: CONTROL_TIMEOUT_MS,
     statuses: { 200: RemoteNeedSchema },
+  },
+  syncRemoteNeedThrough: {
+    method: 'GET',
+    path: (params: FolderParams & { deviceId: string; sequence: number }) =>
+      `${folderPath(params)}/remote-need-through?${new URLSearchParams({ device: params.deviceId, sequence: String(params.sequence) })}`,
+    timeoutMs: CONTROL_TIMEOUT_MS,
+    statuses: { 200: RemoteNeedNamesSchema },
   },
   syncInspect: {
     method: 'POST',
@@ -404,6 +530,7 @@ export const hostRoutes = {
       gid: z.number().optional(),
       version: z.string(),
       port: z.number(),
+      nonce: z.string().optional(),
       providerAuth: HostProviderApplyRequestSchema.pick({ env: true, files: true }),
     }),
     timeoutMs: CLAIM_TIMEOUT_MS,
@@ -436,6 +563,46 @@ export const hostRoutes = {
     body: HostUpdateRequestSchema,
     timeoutMs: CONTROL_TIMEOUT_MS,
     statuses: { 202: 'none', 409: 'error-code' },
+  },
+  sharedVmRoster: {
+    method: 'GET',
+    path: fixed('/api/host/shared-vm/roster'),
+    timeoutMs: CONTROL_TIMEOUT_MS,
+    statuses: { 200: SharedVmRosterSchema },
+  },
+  sharedVmNotify: {
+    method: 'POST',
+    path: fixed('/api/host/shared-vm/notify'),
+    body: SharedVmNotifySchema,
+    timeoutMs: CONTROL_TIMEOUT_MS,
+    statuses: { 200: SharedVmNotifyResultSchema },
+  },
+  sharedVmNotices: {
+    method: 'GET',
+    path: fixed('/api/host/shared-vm/notices'),
+    timeoutMs: CONTROL_TIMEOUT_MS,
+    statuses: { 200: SharedVmNoticesSchema },
+  },
+  sharedVmDismiss: {
+    method: 'POST',
+    path: fixed('/api/host/shared-vm/dismiss'),
+    body: SharedVmDismissSchema,
+    timeoutMs: CONTROL_TIMEOUT_MS,
+    statuses: { 204: 'none' },
+  },
+  sharedVmAbandon: {
+    method: 'POST',
+    path: fixed('/api/host/shared-vm/abandon'),
+    body: SharedVmAbandonSchema,
+    timeoutMs: CONTROL_TIMEOUT_MS,
+    statuses: { 204: 'none' },
+  },
+  sharedVmFence: {
+    method: 'POST',
+    path: fixed('/api/host/shared-vm/fence'),
+    body: SharedVmFenceRequestSchema,
+    timeoutMs: CONTROL_TIMEOUT_MS,
+    statuses: { 200: SharedVmFenceResultSchema },
   },
   hostUpdateStatus: {
     method: 'GET',
@@ -476,6 +643,19 @@ export const hostRoutes = {
     path: fixed('/api/host/provider-clis/check'),
     timeoutMs: SETTINGS_TIMEOUT_MS,
     statuses: { 202: z.object({ accepted: z.literal(true) }) },
+  },
+  getProviderUsageSettingsStatus: {
+    method: 'GET',
+    path: fixed('/api/host/provider-usage-settings/status'),
+    timeoutMs: SETTINGS_TIMEOUT_MS,
+    statuses: { 200: HostProviderUsageSettingsStatusSchema },
+  },
+  putProviderUsageSettings: {
+    method: 'PUT',
+    path: fixed('/api/host/provider-usage-settings'),
+    body: HostProviderUsageSettingsSchema,
+    timeoutMs: SETTINGS_TIMEOUT_MS,
+    statuses: { 202: RevisionAckSchema },
   },
   getSkillSettingsStatus: {
     method: 'GET',

@@ -88,7 +88,7 @@ function overviewFixture(): ProviderClisOverview {
       },
       opencode: {
         provider: 'opencode',
-        npmPackage: 'opencode-ai',
+        npmPackage: '@opencode/cli',
         setting: { version: '1.18.32', homeManaged: true },
         lookup: {
           latestVersion: '1.18.33',

@@ -8,6 +8,7 @@ import { chatBindings } from './chat.bindings';
 import { projectBindings } from './project.bindings';
 import { teamBindings } from './team.bindings';
 import { reviewBindings } from './review.bindings';
+import { worktreeBindings } from './worktree.bindings';
 
 export const allBindingGroups = Object.freeze([
   sessionBindings,
@@ -20,6 +21,7 @@ export const allBindingGroups = Object.freeze([
   projectBindings,
   teamBindings,
   reviewBindings,
+  worktreeBindings,
 ]);
 
 export const allBindingDefinitions = Object.freeze(allBindingGroups.flat());

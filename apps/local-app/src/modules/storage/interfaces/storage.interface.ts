@@ -66,6 +66,8 @@ import {
   CreateEpicComment,
   Guest,
   CreateGuest,
+  Worktree,
+  CreateWorktree,
   Watcher,
   CreateWatcher,
   UpdateWatcher,
@@ -876,6 +878,15 @@ export interface RecordStorage {
   deleteRecord(id: string): Promise<void>;
 }
 
+export interface WorktreeStorage {
+  createWorktree(data: CreateWorktree): Promise<Worktree>;
+  createWorktreeAtomicCapped(data: CreateWorktree, maxWorktrees: number): Promise<Worktree>;
+  getWorktree(id: string): Promise<Worktree>;
+  getWorktreeByName(projectId: string, name: string): Promise<Worktree | null>;
+  listWorktrees(projectId: string): Promise<Worktree[]>;
+  deleteWorktree(id: string): Promise<void>;
+}
+
 export interface GuestStorage {
   createGuest(data: CreateGuest): Promise<Guest>;
   getGuest(id: string): Promise<Guest>;
@@ -1170,6 +1181,7 @@ export interface StorageService
     ProfileProviderConfigStorage,
     AgentStorage,
     RecordStorage,
+    WorktreeStorage,
     GuestStorage,
     WatcherStorage,
     SubscriberStorage,

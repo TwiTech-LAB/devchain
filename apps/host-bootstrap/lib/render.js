@@ -17,7 +17,7 @@ function renderEnvFile(env) {
 /** `devchain-host.service` from the template; inputs are validated plain names and paths. */
 function renderHostUnit(
   templateText,
-  { userName, groupName, homePath, port, binDir },
+  { userName, groupName, homePath, port, binDir, etcDir, syncthingPath },
 ) {
   const values = {
     USER: userName,
@@ -26,10 +26,44 @@ function renderHostUnit(
     PORT: String(port),
     BIN: binDir,
   };
-  return templateText.replace(
+  let unit = templateText.replace(
     /@([A-Z]+)@/g,
     (match, key) => values[key] ?? match,
   );
+  if (etcDir) {
+    unit = unit
+      .replace(/^Conflicts=.*\n/gm, "")
+      .replace(
+        /^ConditionPathExists=.*$/m,
+        `ConditionPathExists=${etcDir}/claim.json`,
+      )
+      .replace(
+        "[Service]\n",
+        `[Service]\nEnvironment=DEVCHAIN_HOST_ETC_DIR=${etcDir}\nEnvironment=DEVCHAIN_HOST_BIN_DIR=${binDir}\nEnvironment=DEVCHAIN_HOST_SYNCTHING_BINARY=${syncthingPath}\nEnvironment=PATH=${binDir}:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\n`,
+      );
+  }
+  return unit;
+}
+
+function renderJoinUnit(join, paths) {
+  return `[Unit]
+Description=DevChain join bootstrap for ${join.userName}
+After=network-online.target
+Wants=network-online.target
+ConditionPathExists=!${paths.etcDir}/claim.json
+
+[Service]
+Type=simple
+Environment=DEVCHAIN_BOOTSTRAP_PORT=${join.port}
+ExecStart=${paths.helperPrefix}/bin/devchain-bootstrap --join ${join.userName}
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=240
+KillMode=mixed
+
+[Install]
+WantedBy=multi-user.target
+`;
 }
 
 /**
@@ -45,4 +79,9 @@ function renderSudoers(userName, binDir) {
   ].join("\n");
 }
 
-module.exports = { renderEnvFile, renderHostUnit, renderSudoers };
+module.exports = {
+  renderEnvFile,
+  renderHostUnit,
+  renderJoinUnit,
+  renderSudoers,
+};

@@ -76,6 +76,7 @@ import type { FetchFn } from '@/ui/lib/api-transport';
 import { useFetchFactory } from '@/ui/hooks/useFetchFactory';
 import { markProviderCliOwnInstall, useProviderClisOverview } from '@/ui/hooks/useProviderClis';
 import { ProviderCliVersionsSection } from '@/ui/components/providers/ProviderCliVersionsSection';
+import { ProviderUsageSettingsCard } from '@/ui/components/providers/ProviderUsageSettingsCard';
 import { CountBadge } from '@/ui/components/shared/CountBadge';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/ui/components/ui/tabs';
 import { useSubNavSearchParam } from '@/ui/hooks/useSubNavSearchParam';
@@ -1393,6 +1394,7 @@ export function ProvidersPage() {
 
         <TabsContent value="cli-versions" className="mt-4">
           <ProviderCliVersionsSection />
+          <ProviderUsageSettingsCard />
         </TabsContent>
       </Tabs>
 

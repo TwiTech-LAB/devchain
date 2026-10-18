@@ -2,7 +2,7 @@ import { PROVIDER_CLI_NAMES } from '@devchain/shared';
 import type { RemoteListItemDto } from '@/modules/remotes/dtos/remote.dto';
 import { HOST_LIFECYCLE_KINDS } from '@/modules/remotes/operations/remote-operation.types';
 import { isStuckFileSyncProblem } from '@/modules/remotes/sync/remote-file-sync.dto';
-import type { RemoteOperationDto } from './lib/remote-vm-contracts';
+import type { RemoteNoticeDto, RemoteOperationDto } from './lib/remote-vm-contracts';
 import type { RemoteProjectBindingRow } from '@/ui/lib/backend-provider';
 import type { StatusTone } from '@/ui/lib/status-tone';
 import { providerName } from './login-choices';
@@ -107,7 +107,7 @@ interface KindWords {
 }
 
 /** Operations that move a project between this PC and a VM, or repair its file sync. */
-const PROJECT_OPERATION_KINDS = ['attach', 'detach', 'force_sync', 'git_owner'];
+const PROJECT_OPERATION_KINDS = ['attach', 'detach', 'force_sync'];
 
 const KIND_WORDS: Record<string, KindWords> = {
   claim: { busy: 'Setting up', noun: 'Setup', title: 'Set up' },
@@ -119,8 +119,10 @@ const KIND_WORDS: Record<string, KindWords> = {
   destroy_vm: { busy: 'Destroying', noun: 'Destroy', title: 'Destroy' },
   attach: { busy: 'Connecting', noun: 'Connect', title: 'Connect' },
   force_sync: { busy: 'Force syncing', noun: 'Force sync', title: 'Force sync' },
+  // Manual Git switches no longer run; their rows stay as read-only history.
   git_owner: { busy: 'Moving Git', noun: 'Git switch', title: 'Git switch' },
   detach: { busy: 'Disconnecting', noun: 'Disconnect', title: 'Disconnect' },
+  disconnect_all: { busy: 'Disconnecting', noun: 'Disconnect all', title: 'Disconnect all' },
 };
 
 const DOCKER_INSTALL_WORDS: KindWords = {
@@ -130,11 +132,6 @@ const DOCKER_INSTALL_WORDS: KindWords = {
 };
 
 export function kindWords(operation: RemoteOperationDto): KindWords {
-  if (operation.kind === 'git_owner')
-    return {
-      ...KIND_WORDS.git_owner,
-      busy: operation.details.owner === 'home' ? 'Moving Git to this PC' : 'Moving Git to the VM',
-    };
   if (
     operation.kind === 'update_host' &&
     operation.details.dockerChange === true &&
@@ -175,7 +172,6 @@ export function errorFirstLine(operation: RemoteOperationDto): string | null {
 
 function projectBusyLabel(operation: RemoteOperationDto, vm: string): string {
   const { kind } = operation;
-  if (kind === 'git_owner') return kindWords(operation).busy;
   if (kind === 'attach') return `Connecting to ${vm}`;
   if (kind === 'force_sync') return KIND_WORDS.force_sync.busy;
   return `Disconnecting from ${vm}`;
@@ -491,6 +487,26 @@ export function projectStatus(projectId: string, ctx: StatusContext): ProjectSta
   const binding = ctx.bindingByProject.get(projectId);
   const projectOperations = ctx.open.filter((operation) => operation.projectId === projectId);
 
+  const batch = ctx.open.find(
+    (operation) =>
+      operation.kind === 'disconnect_all' &&
+      (binding?.remoteId === operation.remoteId ||
+        (Array.isArray(operation.details.projects) &&
+          operation.details.projects.some((project) => project?.projectId === projectId))),
+  );
+  if (batch) {
+    const stopped = batch.state === 'failed';
+    return {
+      state: stopped ? 'stopped' : 'busy',
+      label: stopped ? 'Disconnect all stopped' : 'Disconnecting',
+      note: stopped ? errorFirstLine(batch) : stepNote(batch),
+      tone: stopped ? 'error' : 'running',
+      action: null,
+      operation: batch,
+      remoteId: batch.remoteId,
+    };
+  }
+
   const running = projectOperations.find(
     (operation) =>
       operation.state === 'running' && PROJECT_OPERATION_KINDS.includes(operation.kind),
@@ -585,14 +601,6 @@ export type RecoveryAction = 'retry' | 'cancel' | 'disconnect-instead' | 'force-
 export function projectRecovery(operation: RemoteOperationDto): RecoveryAction[] | null {
   if (operation.state !== 'failed') return null;
   if (operation.kind === 'detach') return ['retry', 'cancel', 'force-disconnect'];
-  if (operation.kind === 'git_owner') {
-    const flipped = operation.steps.some(
-      (step) =>
-        step.id === 'git_flip' &&
-        (step.startedAt != null || (step.state !== 'pending' && step.state !== 'skipped')),
-    );
-    return flipped ? ['retry', 'force-disconnect'] : ['retry', 'cancel', 'force-disconnect'];
-  }
   if (operation.kind !== 'attach') return null;
   const bindState = operation.steps.find((step) => step.id === 'bind_remote')?.state;
   if (bindState === 'done') return ['retry', 'disconnect-instead'];
@@ -603,6 +611,8 @@ export function projectRecovery(operation: RemoteOperationDto): RecoveryAction[]
 // ── Needs attention ─────────────────────────────────────────────────────────
 
 export type AttentionAction =
+  | { kind: 'disconnect-all'; label: 'Disconnect all'; remoteId: string }
+  | { kind: 'dismiss-notice'; label: 'Dismiss'; remoteId: string; id: string }
   | { kind: 'fix-file-sync'; label: 'Fix'; projectId: string }
   | { kind: 'open-activity'; label: 'Open'; operationId: string }
   | { kind: 'view-vm'; label: 'View'; remoteId: string }
@@ -621,6 +631,7 @@ export interface AttentionItem {
   tone: 'error' | 'warn';
   text: string;
   action: AttentionAction | null;
+  secondaryAction?: AttentionAction;
 }
 
 /** Facts about this PC that the attention list reports. */
@@ -645,9 +656,34 @@ function boundProjectNames(ctx: StatusContext, remoteId: string): string[] {
   );
 }
 
-/** Errors first, then warnings; each with one sentence and at most one button. */
-export function attentionItems(ctx: StatusContext, pc: PcFacts = {}): AttentionItem[] {
+/** Errors first, then warnings; received notices also offer dismissal. */
+export function attentionItems(
+  ctx: StatusContext,
+  pc: PcFacts = {},
+  notices: readonly RemoteNoticeDto[] = [],
+): AttentionItem[] {
   const items: AttentionItem[] = [];
+
+  for (const notice of notices) {
+    if (!ctx.remotesById.has(notice.remoteId)) continue;
+    const vm = remoteName(ctx, notice.remoteId);
+    const text =
+      notice.action === 'forced'
+        ? `${notice.fromUser} forced a reset/destroy of ${vm}`
+        : `${notice.fromUser} asks you to disconnect from ${vm} before ${notice.action}`;
+    items.push({
+      key: `notice:${notice.remoteId}:${notice.id}`,
+      tone: 'warn',
+      text: notice.message ? `${text}: ${notice.message}` : sentence(text),
+      action: { kind: 'disconnect-all', label: 'Disconnect all', remoteId: notice.remoteId },
+      secondaryAction: {
+        kind: 'dismiss-notice',
+        label: 'Dismiss',
+        remoteId: notice.remoteId,
+        id: notice.id,
+      },
+    });
+  }
 
   for (const remote of ctx.remotes) {
     if (!remote.apiKeyRejected) continue;

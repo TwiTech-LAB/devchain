@@ -659,6 +659,13 @@
       "when": 1790806241239,
       "tag": "0093_remote_tls_certificate",
       "breakpoints": true
+    },
+    {
+      "idx": 94,
+      "version": "6",
+      "when": 1791761398862,
+      "tag": "0094_agent_worktree_lanes",
+      "breakpoints": true
     }
   ]
 }

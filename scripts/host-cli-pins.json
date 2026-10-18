@@ -2,6 +2,6 @@
   "claude": { "package": "@anthropic-ai/claude-code", "version": "2.1.281" },
   "codex": { "package": "@openai/codex", "version": "0.156.1" },
   "copilot": { "package": "@github/copilot", "version": "1.0.88" },
-  "opencode": { "package": "opencode-ai", "version": "1.18.32" },
+  "opencode": { "package": "@opencode/cli", "version": "2.0.31" },
   "agy": { "installer": "https://antigravity.google/cli/install.sh" }
 }

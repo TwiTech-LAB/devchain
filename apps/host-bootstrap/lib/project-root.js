@@ -82,14 +82,14 @@ async function createProjectRoot(target, sys) {
   const claim = readClaim(sys);
   if (!claim)
     throw new BootstrapError(409, "NOT_CLAIMED", "This VM is not claimed.");
-  const owner = await sys.lookupUser(claim.userName);
-  if (!owner)
+  const account = await sys.lookupUser(claim.userName);
+  if (!account)
     throw new BootstrapError(
       409,
       "NOT_CLAIMED",
       `User ${claim.userName} is missing.`,
     );
-  owner.name = claim.userName;
+  const owner = { ...account, name: claim.userName };
   if (!isPlainAbsolutePath(target)) {
     throw new BootstrapError(
       400,

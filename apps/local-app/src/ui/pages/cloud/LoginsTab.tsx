@@ -6,6 +6,12 @@ import { ConfirmDialog } from '@/ui/components/shared/ConfirmDialog';
 import { Badge } from '@/ui/components/ui/badge';
 import { Button } from '@/ui/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/ui/components/ui/card';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@/ui/components/ui/dropdown-menu';
 import { Input } from '@/ui/components/ui/input';
 import { Label } from '@/ui/components/ui/label';
 import { BusyStatus } from '@/ui/components/ui/spinner';
@@ -13,10 +19,27 @@ import { useProviderAuth } from '@/ui/hooks/useProviderAuth';
 import type { ProviderAuthEntryItem } from './lib/remote-vm-contracts';
 import { getErrorMessage } from '@/ui/lib/toast-helpers';
 import { AddLoginDialog, type AddLoginProvider } from './AddLoginDialog';
-import { PROVIDER_NAMES } from './login-choices';
+import { LOGIN_PROVIDERS, PROVIDER_NAMES } from './login-choices';
 
 const SECTION_ORDER = ['claude', 'codex', 'copilot', 'agy', 'opencode'] as const;
 type SectionProvider = (typeof SECTION_ORDER)[number];
+
+function usesEntry(remote: RemoteListItemDto, entryId: string): boolean {
+  return Object.values(remote.logins ?? {}).some((recorded) => recorded.entryIds.includes(entryId));
+}
+
+/**
+ * The VMs a login can be assigned to: a free login goes to any of them, a
+ * token to those that do not use it yet. Change logins has no row for other keys.
+ */
+function assignableTo(
+  entry: ProviderAuthEntryItem,
+  targets: readonly RemoteListItemDto[],
+): readonly RemoteListItemDto[] {
+  if (!(LOGIN_PROVIDERS as readonly string[]).includes(entry.provider)) return [];
+  if (entry.kind === 'family') return entry.checkedOutRemoteId ? [] : targets;
+  return targets.filter((remote) => !usesEntry(remote, entry.id));
+}
 
 function formatTime(value: string | null): string | null {
   if (!value) return null;
@@ -27,18 +50,23 @@ function formatTime(value: string | null): string | null {
 function EntryRow({
   entry,
   remotes,
+  assignTo,
   releasing,
   deleting,
   onRename,
+  onAssign,
   onRelease,
   onDelete,
 }: {
   entry: ProviderAuthEntryItem;
   remotes: readonly RemoteListItemDto[];
+  /** The VMs this entry can be assigned to now; Assign hides when there are none. */
+  assignTo: readonly RemoteListItemDto[];
   releasing: boolean;
   deleting: boolean;
   /** Resolves when the server accepted the label; a refusal rejects with the server's error. */
   onRename: (label: string) => Promise<void>;
+  onAssign: (remote: RemoteListItemDto) => void;
   onRelease: () => void;
   onDelete: () => void;
 }) {
@@ -53,13 +81,7 @@ function EntryRow({
   const holder = login ? entry.checkedOutRemoteId : null;
   const usedBy = login
     ? []
-    : remotes
-        .filter((remote) =>
-          Object.values(remote.logins ?? {}).some((recorded) =>
-            recorded.entryIds.includes(entry.id),
-          ),
-        )
-        .map((remote) => remote.name);
+    : remotes.filter((remote) => usesEntry(remote, entry.id)).map((remote) => remote.name);
   let place: string;
   if (login) place = holder ? `On ${nameOf(holder)}` : 'Free';
   else place = usedBy.length > 0 ? `Used by ${usedBy.join(', ')}` : 'Not used';
@@ -157,6 +179,22 @@ function EntryRow({
             <Pencil aria-hidden="true" className="h-4 w-4" />
           </Button>
         )}
+        {assignTo.length > 0 && (
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button variant="outline" size="sm" aria-label={`Assign ${entry.label}`}>
+                Assign
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end">
+              {assignTo.map((remote) => (
+                <DropdownMenuItem key={remote.id} onSelect={() => onAssign(remote)}>
+                  {remote.name}
+                </DropdownMenuItem>
+              ))}
+            </DropdownMenuContent>
+          </DropdownMenu>
+        )}
         {holder && (
           <Button
             variant="outline"
@@ -186,7 +224,17 @@ function EntryRow({
  * The vault by provider: each login with its type, where it is used and when
  * it was last checked, plus one Add login dialog for every provider.
  */
-export function LoginsTab({ remotes }: { remotes: readonly RemoteListItemDto[] }) {
+export function LoginsTab({
+  remotes,
+  assignTargets = [],
+  onAssign,
+}: {
+  remotes: readonly RemoteListItemDto[];
+  /** The VMs that accept a login change now; Assign offers only these. */
+  assignTargets?: readonly RemoteListItemDto[];
+  /** Opens Change logins for the VM with this entry chosen in its provider's row. */
+  onAssign?: (remote: RemoteListItemDto, entry: ProviderAuthEntryItem) => void;
+}) {
   const { entries, entriesLoading, remove, rename, release } = useProviderAuth();
   const [adding, setAdding] = useState<{ provider?: AddLoginProvider } | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<ProviderAuthEntryItem | null>(null);
@@ -254,11 +302,13 @@ export function LoginsTab({ remotes }: { remotes: readonly RemoteListItemDto[] }
                       key={entry.id}
                       entry={entry}
                       remotes={remotes}
+                      assignTo={onAssign ? assignableTo(entry, assignTargets) : []}
                       releasing={release.isPending && release.variables === entry.id}
                       deleting={remove.isPending && remove.variables === entry.id}
                       onRename={async (label) => {
                         await rename.mutateAsync({ id: entry.id, label });
                       }}
+                      onAssign={(remote) => onAssign?.(remote, entry)}
                       onRelease={() => setReleaseTarget(entry)}
                       onDelete={() => setDeleteTarget(entry)}
                     />

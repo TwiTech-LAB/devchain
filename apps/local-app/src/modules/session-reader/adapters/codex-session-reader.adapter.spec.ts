@@ -58,6 +58,10 @@ describe('CodexSessionReaderAdapter provider session id extraction', () => {
     jest.clearAllMocks();
   });
 
+  it('opts in to reporting its own context window', () => {
+    expect(createAdapter().reportsContextWindow).toBe(true);
+  });
+
   describe('extractCandidateMetadata', () => {
     it('returns providerSessionId, timestamp, and workspacePath from a valid first-line session_meta event', () => {
       const adapter = createAdapter();

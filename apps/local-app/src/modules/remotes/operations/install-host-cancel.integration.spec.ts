@@ -66,6 +66,7 @@ describe('host install cancellation over SSH', () => {
       stream.on('data', (data: Buffer) => inputs.push(data.toString()));
       if (command.startsWith('mktemp ')) return false;
       let output = '';
+      if (command.includes('__DEVCHAIN_HOST_STATE__')) output = '__DEVCHAIN_HOST_STATE__unclaimed';
       let code = 0;
       if (command.includes(' --check') && holdCheck) {
         stream.on('close', () => {

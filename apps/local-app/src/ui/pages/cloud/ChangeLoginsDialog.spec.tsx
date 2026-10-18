@@ -3,6 +3,7 @@ import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type { ProviderAuthEntryItem } from './lib/remote-vm-contracts';
 import { ChangeLoginsDialog } from './ChangeLoginsDialog';
+import type { LoginChoice } from './login-choices';
 
 let entries: ProviderAuthEntryItem[];
 let changeBody: { providerAuth: Record<string, string>; force: boolean } | null;
@@ -58,6 +59,7 @@ const recorded = {
 
 function renderDialog(
   providerEnvOverrides: Array<{ key: string; source: string; provider: string }> = [],
+  initialChoices?: Record<string, LoginChoice>,
 ) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
@@ -71,6 +73,7 @@ function renderDialog(
         }}
         remoteNames={new Map([['r2', 'vm-two']])}
         pending={false}
+        initialChoices={initialChoices}
         onClose={jest.fn()}
         onChangeLogins={(providerAuth, force) => {
           changeBody = { providerAuth, force };
@@ -124,6 +127,24 @@ describe('ChangeLoginsDialog', () => {
       providerAuth: { codex: 'generate', claude: 'skip' },
       force: false,
     });
+  });
+
+  it('starts a row on the login assigned from the Logins tab and sends only that row', async () => {
+    entries = [entry({ id: 'f1', provider: 'codex', kind: 'family', label: 'Codex family' })];
+    renderDialog([], { codex: 'reuse:f1' });
+    await settleSessions();
+
+    await waitFor(() =>
+      expect(screen.getByRole('combobox', { name: 'codex login choice' })).toHaveTextContent(
+        'Codex family · Login',
+      ),
+    );
+    expect(screen.getByRole('combobox', { name: 'claude login choice' })).toHaveTextContent(
+      'Keep current',
+    );
+    await userEvent.click(submit());
+
+    expect(changeBody).toEqual({ providerAuth: { codex: 'reuse:f1' }, force: false });
   });
 
   it('shows a login another VM holds as disabled', async () => {

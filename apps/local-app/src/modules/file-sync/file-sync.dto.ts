@@ -61,9 +61,14 @@ export function codeIgnores(managed: string[], user: string[]): string[] {
   return [...new Set([CODE_SYSTEM_IGNORE, ...managed, ...user])];
 }
 
+/** Lane admin records under `.git/worktrees` hold machine paths; lane creation requires this ignore. */
+export const WORKTREES_GIT_IGNORE = '/worktrees';
+
 /** The git folder's ignores; hooks and index stay per side once the VM owns git. */
 export function gitIgnores(connected: boolean): string[] {
-  return connected ? ['*.lock', '/hooks', '/index'] : ['*.lock'];
+  return connected
+    ? ['*.lock', '/hooks', '/index', WORKTREES_GIT_IGNORE]
+    : ['*.lock', WORKTREES_GIT_IGNORE];
 }
 /** The leading system pattern does not consume either editable list's allowance. */
 export const FolderIgnoresSchema = z
@@ -210,6 +215,12 @@ export const ConflictBaselineSchema = z.union([
 ]);
 export type ConflictBaseline = z.infer<typeof ConflictBaselineSchema>;
 export const RemoteNeedQuerySchema = z.object({ device: DeviceIdSchema }).strict();
+export const RemoteNeedThroughQuerySchema = z
+  .object({
+    device: DeviceIdSchema,
+    sequence: z.string().regex(/^\d+$/).transform(Number).pipe(z.number().int().nonnegative()),
+  })
+  .strict();
 export const RemoteNeedSchema = z.object({
   total: z.number().int().nonnegative(),
   deleted: z.number().int().nonnegative(),
@@ -220,6 +231,8 @@ export const RemoteNeedSchema = z.object({
   conflictsOverCap: z.boolean(),
 });
 export type RemoteNeed = z.infer<typeof RemoteNeedSchema>;
+/** Names the peer still needs, of changes up to a recorded sequence; see `remoteNeedThrough`. */
+export const RemoteNeedNamesSchema = z.object({ names: z.array(z.string()) });
 
 export const ConflictReportSchema = z.object({
   total: z.number().int().nonnegative(),

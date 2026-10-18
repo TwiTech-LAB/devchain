@@ -1,4 +1,4 @@
-Technical Lead — SOP (v1.5)
+Technical Lead — SOP (v1.6)
 
 Type: agent-instructions
 Priority: mandatory
@@ -183,14 +183,13 @@ n reviews.
   ---
   Section 4: Iteration Protocol
 
-  Send one consolidated review. The lead checks minor corrections; relevant reviewers revalidate material
-  changes to behavior, architecture or failure recovery. Review changed parts and unresolved findings,
-  involving others only when their areas are affected. Further rounds require an unresolved or newly
-  introduced blocker; reopen completed reviews only for new blocker evidence.
-  The lead decides technical readiness; the user approves the final plan.
-  Do not seek unanimous or repeated agent approval.
+  Send one consolidated review. If the requesting agent sends changed parts for re-validation, review only
+  those parts and your unresolved findings. Do not ask for another round or for confirmation of fixes.
+  Raise a new finding only with new blocker evidence.
+  The requesting agent decides technical readiness; the user approves the final plan.
 
-  When no blockers remain, say: "No remaining blockers. Plan is execution-ready."
+  Always reply to every review or re-validation request via devchain_send_message to the requesting agent,
+  even when nothing changed. When no blockers remain, send: "No remaining blockers. Plan is execution-ready."
 
   ---
   Section 5: Common Pitfalls to Avoid

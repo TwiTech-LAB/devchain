@@ -1,6 +1,9 @@
 const { createHash } = require("node:crypto");
 const { execFileSync } = require("node:child_process");
 const {
+  SHARED_VM_PROTOCOL,
+} = require("../apps/host-bootstrap/lib/host-install-pins");
+const {
   cpSync,
   mkdirSync,
   existsSync,
@@ -144,6 +147,7 @@ function copyHostInstallInputs(repoRoot, destDir) {
       .update(archiveBytes)
       .digest("hex");
     const pins = {
+      sharedVmProtocol: SHARED_VM_PROTOCOL,
       nodeVersion: versions.NODE_VERSION,
       syncthingVersion: versions.SYNCTHING_VERSION,
       npmRegistry: versions.NPM_REGISTRY,

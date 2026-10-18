@@ -23,6 +23,8 @@ import type {
   CreateRemoteInput,
   CreateVmRequestBody,
   DetachProjectRequest,
+  DisconnectAllRequest,
+  RemoteProjectLanes,
   ForceSyncRequest,
   HomeIdentity,
   InstallHostRequestBody,
@@ -38,20 +40,30 @@ import type {
   RemoteProjectBindingRow,
   RemoteReadinessDto,
   RemoteStatsHistoryDto,
+  SyncDevice,
   ResetVmRequestBody,
   RetryOperationRequest,
   UpdateLoginsRequestBody,
   VmProviderConnectionView,
+  RemoteNoticeDto,
+} from './remote-vm-contracts';
+import type {
+  SharedVmGuardContext,
+  SharedVmForceRequest,
+  SharedVmNotifyResult,
 } from './remote-vm-contracts';
 
 export interface RemoteVmApi {
   listRemotes(signal: AbortSignal): Promise<RemoteListItemDto[]>;
   listBindings(signal: AbortSignal): Promise<RemoteProjectBindingRow[]>;
+  listNotices(signal: AbortSignal): Promise<RemoteNoticeDto[]>;
+  dismissNotice(remoteId: string, id: string): Promise<void>;
   createRemote(input: CreateRemoteInput): Promise<RemoteListItemDto>;
   deleteRemote(remoteId: string): Promise<void>;
   renameRemote(remoteId: string, name: string): Promise<RemoteListItemDto>;
   readReadiness(signal: AbortSignal): Promise<RemoteReadinessDto>;
   readStatsHistory(remoteId: string, signal: AbortSignal): Promise<RemoteStatsHistoryDto>;
+  readSyncthingDevice(remoteId: string, signal: AbortSignal): Promise<SyncDevice | null>;
   powerOn(remoteId: string): Promise<void>;
   setApiKey(remoteId: string, apiKey: string): Promise<void>;
   resetApiKey(remoteId: string): Promise<void>;
@@ -63,12 +75,23 @@ export interface RemoteVmApi {
   readNewestOperation(projectId: string, signal: AbortSignal): Promise<RemoteOperationDto | null>;
   attachProject(remoteId: string, input: AttachProjectRequest): Promise<RemoteOperationDto>;
   detachProject(remoteId: string, input: DetachProjectRequest): Promise<RemoteOperationDto>;
+  disconnectAll(remoteId: string, input: DisconnectAllRequest): Promise<RemoteOperationDto>;
+  readRemoteProjectLanes(
+    remoteId: string,
+    projectId: string,
+    signal?: AbortSignal,
+  ): Promise<RemoteProjectLanes>;
   forceSync(remoteId: string, input: ForceSyncRequest): Promise<RemoteOperationDto>;
   updateHost(remoteId: string, input?: { installDocker: true }): Promise<RemoteOperationDto>;
   createVm(connectionId: string, input: CreateVmRequestBody): Promise<RemoteOperationDto>;
   installHost(input: InstallHostRequestBody): Promise<RemoteOperationDto>;
   resetVm(remoteId: string, input: ResetVmRequestBody): Promise<RemoteOperationDto>;
-  destroyVm(remoteId: string, input: { force: boolean }): Promise<RemoteOperationDto>;
+  destroyVm(remoteId: string, input: SharedVmForceRequest): Promise<RemoteOperationDto>;
+  readSharedVm(remoteId: string, signal: AbortSignal): Promise<SharedVmGuardContext>;
+  notifySharedVm(
+    remoteId: string,
+    input: { action: 'reset' | 'destroy'; message?: string },
+  ): Promise<SharedVmNotifyResult>;
   updateLogins(remoteId: string, input: UpdateLoginsRequestBody): Promise<RemoteOperationDto>;
   claimHost(input: ClaimRequestBody): Promise<RemoteOperationDto>;
   retryOperation(operationId: string, input?: RetryOperationRequest): Promise<RemoteOperationDto>;

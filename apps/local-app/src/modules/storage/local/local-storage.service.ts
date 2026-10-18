@@ -26,6 +26,7 @@ import { RecordStorageDelegate } from './delegates/record.delegate';
 import { WatcherStorageDelegate } from './delegates/watcher.delegate';
 import { SubscriberStorageDelegate } from './delegates/subscriber.delegate';
 import { GuestStorageDelegate } from './delegates/guest.delegate';
+import { WorktreeStorageDelegate } from './delegates/worktree.delegate';
 import { ReviewStorageDelegate } from './delegates/review.delegate';
 import { ProviderModelStorageDelegate } from './delegates/provider-model.delegate';
 import { ProviderEffortStorageDelegate } from './delegates/provider-effort.delegate';
@@ -112,6 +113,7 @@ export class LocalStorageService {
       watcher: new WatcherStorageDelegate(context),
       subscriber: new SubscriberStorageDelegate(context),
       guest: new GuestStorageDelegate(context),
+      worktree: new WorktreeStorageDelegate(context),
       review: new ReviewStorageDelegate(context),
       scheduledEpic: new ScheduledEpicStorageDelegate(context),
       session: new SessionStorageDelegate(context),

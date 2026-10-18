@@ -1,22 +1,35 @@
-import { applyProviderCliNoUpdate } from '../adapters/provider-cli-policy';
+import {
+  applyProviderCliNoUpdate,
+  type ProviderCliNoUpdateCommand,
+} from '../adapters/provider-cli-policy';
 import { Inject, Injectable } from '@nestjs/common';
 import { IOError, TimeoutError, ValidationError } from '../../../common/errors/error-types';
 import { resolveBinary } from '../../../common/resolve-binary';
 import { STORAGE_SERVICE, type StorageService } from '../../storage/interfaces/storage.interface';
 import type { Provider } from '../../storage/models/domain.models';
+import { createLogger } from '../../../common/logging/logger';
 import { ProcessExecutor } from '../../terminal/services/process-executor/process-executor.port';
 import { ProviderAdapterFactory } from '../adapters/provider-adapter.factory';
-import { isProviderPluginCapable } from '../adapters/capabilities/type-guards';
+import {
+  isProviderPluginCapable,
+  type ProviderPluginCatalogResult,
+  type ProviderPluginCatalogSource,
+} from '../adapters/capabilities/type-guards';
 import type {
   ProviderPluginCatalogDto,
-  ProviderPluginCatalogEntry,
   ProviderPluginDto,
   ProviderPluginInstallDto,
 } from '../dtos/provider-plugin.dto';
+import { CodexAppServerClient } from './codex-app-server.client';
+
+const logger = createLogger('ProviderPluginsService');
 
 const CATALOG_TTL_MS = 10_000;
 const PLUGIN_COMMAND_TIMEOUT_MS = 60_000;
-const PLUGIN_COMMAND_MAX_BYTES = 2 * 1024 * 1024;
+/** Claude Code 2.1.302 lists its built-in plugin directory too: about 2.3 MB of JSON. */
+const PLUGIN_COMMAND_MAX_BYTES = 16 * 1024 * 1024;
+/** Codex `plugin/list` returns the remote catalog with descriptions: about 16 MB in one line. */
+const APP_SERVER_CATALOG_MAX_BYTES = 64 * 1024 * 1024;
 const MAX_PLUGIN_ID_LENGTH = 512;
 const ASCII_CONTROL_PATTERN = /[\u0000-\u001f\u007f]/;
 
@@ -34,6 +47,7 @@ export class ProviderPluginsService {
     private readonly storage: Pick<StorageService, 'getProvider' | 'listProviders'>,
     private readonly adapterFactory: ProviderAdapterFactory,
     private readonly executor: ProcessExecutor,
+    private readonly appServer: CodexAppServerClient,
   ) {}
 
   async listCatalog(options: { refresh?: boolean } = {}): Promise<ProviderPluginCatalogDto> {
@@ -114,31 +128,21 @@ export class ProviderPluginsService {
     }
 
     const binaryPath = await this.resolveProviderBinary(provider);
+    const source = adapter.providerPluginCatalog();
     const command = applyProviderCliNoUpdate(
       provider.name,
-      [binaryPath, ...adapter.listProviderPlugins()],
+      [binaryPath, ...source.args],
       process.env,
     );
-    const result = await this.executor.run({
-      argv: command.argv,
-      env: command.env,
-      mode: 'pipe',
-      timeout: PLUGIN_COMMAND_TIMEOUT_MS,
-      outputLimits: { maxBytes: PLUGIN_COMMAND_MAX_BYTES },
-    });
-    this.assertCommandSucceeded(result, provider, 'catalog');
-
-    let parsed: ProviderPluginCatalogEntry[];
-    try {
-      parsed = adapter.parseProviderPluginCatalog(result.stdout);
-    } catch (error) {
-      throw new IOError(`Unable to parse ${provider.name} plugin catalog`, {
-        providerId: provider.id,
-        cause: error instanceof Error ? error.message : 'Unknown parser error',
-      });
+    const parsed = await this.readCatalog(provider, source, command);
+    if (parsed.warnings.length > 0) {
+      logger.warn(
+        { providerId: provider.id, warnings: parsed.warnings },
+        `${provider.name} plugin catalog loaded with warnings`,
+      );
     }
 
-    const items = parsed.map((entry) => ({
+    const items = parsed.entries.map((entry) => ({
       ...entry,
       providerId: provider.id,
       providerName: provider.name,
@@ -148,6 +152,48 @@ export class ProviderPluginsService {
       items,
     });
     return items;
+  }
+
+  private async readCatalog(
+    provider: Provider,
+    source: ProviderPluginCatalogSource,
+    command: ProviderCliNoUpdateCommand,
+  ): Promise<ProviderPluginCatalogResult> {
+    if (source.transport === 'app-server') {
+      const result = await this.appServer.request({
+        argv: command.argv,
+        env: command.env,
+        method: source.method,
+        params: source.params,
+        timeoutMs: PLUGIN_COMMAND_TIMEOUT_MS,
+        maxOutputBytes: APP_SERVER_CATALOG_MAX_BYTES,
+      });
+      return this.parseCatalog(provider, () => source.parse(result));
+    }
+
+    const result = await this.executor.run({
+      argv: command.argv,
+      env: command.env,
+      mode: 'pipe',
+      timeout: PLUGIN_COMMAND_TIMEOUT_MS,
+      outputLimits: { maxBytes: PLUGIN_COMMAND_MAX_BYTES },
+    });
+    this.assertCommandSucceeded(result, provider, 'catalog');
+    return this.parseCatalog(provider, () => source.parse(result.stdout));
+  }
+
+  private parseCatalog(
+    provider: Provider,
+    parse: () => ProviderPluginCatalogResult,
+  ): ProviderPluginCatalogResult {
+    try {
+      return parse();
+    } catch (error) {
+      throw new IOError(`Unable to parse ${provider.name} plugin catalog`, {
+        providerId: provider.id,
+        cause: error instanceof Error ? error.message : 'Unknown parser error',
+      });
+    }
   }
 
   private hasProviderPluginCapability(provider: Provider): boolean {

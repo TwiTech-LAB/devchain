@@ -71,6 +71,10 @@ export class PricingService implements PricingServiceInterface {
     return this.pricingMap.get(modelName.toLowerCase()) ?? null;
   }
 
+  hasPricing(modelName: string): boolean {
+    return this.getPricing(modelName) !== null;
+  }
+
   /**
    * Calculate cost for a single message using tiered pricing at 200k boundary.
    */

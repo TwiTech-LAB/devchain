@@ -69,7 +69,7 @@ Before you start:
 | ------------------------------------------------------- | ---------- |
 | [Claude Code](https://claude.ai/claude-code)            | `claude`   |
 | [Codex](https://github.com/openai/codex)                | `codex`    |
-| [OpenCode](https://github.com/opencode-ai/opencode)     | `opencode` |
+| [OpenCode](https://opencode.ai)                         | `opencode` |
 | [Antigravity](https://antigravity.google)               | `agy`      |
 | [GitHub Copilot](https://github.com/github/copilot-cli) | `copilot`  |
 

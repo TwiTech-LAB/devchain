@@ -140,16 +140,16 @@ describe('RemoteMetricsStrip rendering', () => {
       renderStrip([makeSample({ memUsedBytes: memUsed, memTotalBytes: 16 * GB })]);
       const block = screen.getByTestId('remote-metric-ram');
       const value = within(block).getByText(`${percent}%`);
-      const tone = ['text-status-warn', 'text-destructive'].find((cls) =>
+      const tone = ['text-status-warn', 'text-status-danger'].find((cls) =>
         value.className.includes(cls),
       );
       return tone ?? 'none';
     }
 
-    it('stays neutral at 79%, warns at 80% and turns destructive at 90%', () => {
-      expect(ramTone(79)).toBe('none');
-      expect(ramTone(80)).toBe('text-status-warn');
-      expect(ramTone(90)).toBe('text-destructive');
+    it('stays neutral at 74%, warns at 75% and turns danger-red at 90%', () => {
+      expect(ramTone(74)).toBe('none');
+      expect(ramTone(75)).toBe('text-status-warn');
+      expect(ramTone(90)).toBe('text-status-danger');
     });
   });
 

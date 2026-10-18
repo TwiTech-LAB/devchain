@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { ProviderCliRuntimeReportSchema } from '@devchain/shared';
 import { ProviderCliVersionsService } from '../../providers/services/provider-cli-versions.service';
 import { RemoteProviderCliSettingsService } from './remote-provider-cli-settings.service';
+import { RemoteProviderUsageSettingsService } from './remote-provider-usage-settings.service';
 import {
   RemoteSkillSettingsService,
   type SkillSettingsPollCycle,
@@ -30,6 +31,8 @@ import { matchesHomePath } from '../home-identity';
 import { isHostApiKeyRejection } from '../host-api-key';
 import { remoteFetch, requireRemoteTls } from '../transport/remote-tls';
 import { reportedVmUserMismatch, VmUidConflictSchema } from '../vm-user-identity';
+import { RemoteSharedVmService } from './remote-shared-vm.service';
+import { HomeSharedVmNoticesService } from './home-shared-vm-notices.service';
 
 const logger = createLogger('RemoteHealthService');
 
@@ -90,8 +93,11 @@ export class RemoteHealthService implements RemoteHealthPort, OnModuleInit, OnMo
     private readonly vmProviders: VmProvidersService,
     private readonly skillSettings: RemoteSkillSettingsService,
     private readonly cliSettings: RemoteProviderCliSettingsService,
+    private readonly usageSettings: RemoteProviderUsageSettingsService,
     private readonly cliVersions: ProviderCliVersionsService,
     private readonly apiKeys: RemoteApiKeyService,
+    private readonly sharedVm: RemoteSharedVmService,
+    private readonly notices: HomeSharedVmNoticesService,
   ) {}
 
   onModuleInit(): void {
@@ -122,7 +128,9 @@ export class RemoteHealthService implements RemoteHealthPort, OnModuleInit, OnMo
   }
 
   getState(remoteId: string): RemoteHealthState {
-    return this.state.get(remoteId) ?? OFFLINE_DEFAULT_STATE;
+    const state = this.state.get(remoteId) ?? OFFLINE_DEFAULT_STATE;
+    const roster = this.sharedVm.lastRoster(remoteId);
+    return roster ? { ...state, sharedVmRoster: roster } : state;
   }
 
   getStatsHistory(remoteId: string): HostStats[] {
@@ -191,6 +199,7 @@ export class RemoteHealthService implements RemoteHealthPort, OnModuleInit, OnMo
   /** Drops tracked state for remotes deleted since the last poll, so the maps stay bounded. */
   private pruneDeletedRemotes(currentIds: Set<string>): void {
     this.skillSettings.prune(currentIds);
+    this.notices.prune(currentIds);
     for (const trackedId of this.state.keys()) {
       if (!currentIds.has(trackedId)) {
         this.state.delete(trackedId);
@@ -236,6 +245,7 @@ export class RemoteHealthService implements RemoteHealthPort, OnModuleInit, OnMo
       this.commit(remoteId, {
         online: true,
         apiKeyRejected,
+        sharedVmRoster: this.sharedVm.lastRoster(remoteId) ?? undefined,
         version,
         versionMatches,
         homePath,
@@ -254,12 +264,28 @@ export class RemoteHealthService implements RemoteHealthPort, OnModuleInit, OnMo
       if (apiKeyRejected) return;
       this.appendStatsSample(remoteId, stats);
 
+      if (remote.kind === 'proxmox') {
+        try {
+          const context = await this.sharedVm.context(remoteId);
+          if (this.pollVersions.get(remoteId) !== pollVersion) return;
+          this.commit(remoteId, {
+            ...this.getState(remoteId),
+            sharedVmRoster: context.lastRoster ?? undefined,
+          });
+        } catch (error) {
+          logger.debug({ remoteId, error: String(error) }, 'Shared VM roster polling failed');
+        }
+      }
+      await this.notices.poll(remoteId);
+      if (this.pollVersions.get(remoteId) !== pollVersion) return;
+
       // The families pull rides a successful poll only; its own failures are
       // tolerated inside and never change the online/version state above.
       await this.familyWriteback.pullIfChanged(remoteId, baseUrl, certificate);
       if (versionMatches) {
         void this.skillSettings.pushIfChanged(remoteId, skillCycle);
         void this.cliSettings.pushIfChanged(remoteId);
+        void this.usageSettings.pushIfChanged(remoteId);
       }
     } catch (error) {
       if (this.pollVersions.get(remoteId) !== pollVersion) return;
@@ -319,6 +345,9 @@ export class RemoteHealthService implements RemoteHealthPort, OnModuleInit, OnMo
 
   private isEquivalentIgnoringLastSeenAt(a: RemoteHealthState, b: RemoteHealthState): boolean {
     return (
+      JSON.stringify(a.sharedVmRoster?.roster) === JSON.stringify(b.sharedVmRoster?.roster) &&
+      a.sharedVmRoster?.ownUser === b.sharedVmRoster?.ownUser &&
+      a.sharedVmRoster?.vmIdentity === b.sharedVmRoster?.vmIdentity &&
       JSON.stringify(a.cliVersions ?? null) === JSON.stringify(b.cliVersions ?? null) &&
       JSON.stringify(a.providerClis ?? null) === JSON.stringify(b.providerClis ?? null) &&
       JSON.stringify(a.docker) === JSON.stringify(b.docker) &&

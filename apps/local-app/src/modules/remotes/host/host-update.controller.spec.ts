@@ -19,21 +19,30 @@ describe('HostUpdateController', () => {
 
   beforeEach(() => jest.clearAllMocks());
 
-  it('starts an update for a semantic version', async () => {
-    await expect(controller.update({ version: '0.25.0-rc.1' })).resolves.toEqual({
+  it.each([
+    { body: { version: '0.25.0-rc.1' }, registry: undefined },
+    {
+      body: { version: '0.25.0-rc.1', npmRegistry: 'http://lan.test:4873/' },
+      registry: 'http://lan.test:4873/',
+    },
+  ])('starts an update for body $body', async ({ body, registry }) => {
+    await expect(controller.update(body)).resolves.toEqual({
       version: '0.25.0-rc.1',
       state: 'pending',
     });
-    expect(helper.requestUpdate).toHaveBeenCalledWith('0.25.0-rc.1');
+    expect(helper.requestUpdate).toHaveBeenCalledWith('0.25.0-rc.1', registry);
   });
 
-  it.each([{ version: 'latest' }, { version: '1.2' }, { version: '1.2.3', extra: 1 }, {}])(
-    'refuses update body %p before any helper runs',
-    async (body) => {
-      await expect(controller.update(body)).rejects.toBeInstanceOf(ZodError);
-      expect(helper.requestUpdate).not.toHaveBeenCalled();
-    },
-  );
+  it.each([
+    { version: 'latest' },
+    { version: '1.2' },
+    { version: '1.2.3', extra: 1 },
+    { version: '1.2.3', npmRegistry: 'lan' },
+    {},
+  ])('refuses update body %p before any helper runs', async (body) => {
+    await expect(controller.update(body)).rejects.toBeInstanceOf(ZodError);
+    expect(helper.requestUpdate).not.toHaveBeenCalled();
+  });
 
   it('refuses a claim with 409: a VM running DevChain is claimed already', () => {
     expect(() => controller.claim()).toThrow(

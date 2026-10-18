@@ -68,6 +68,7 @@ export interface ClaimProviderState {
 }
 
 export interface ClaimDetails {
+  joinRequestId?: string;
   installDocker?: boolean;
   sshPublicKeys?: string[];
   /** Where the VM's bootstrap answers before the claim. */
@@ -105,6 +106,7 @@ export class ClaimOperation implements RemoteOperationDefinition {
   readonly kind = 'claim' as const;
   readonly steps: readonly RemoteOperationStepDefinition[];
   private readonly bundles = new Map<string, ProviderAuthClaimBundle>();
+  private readonly joinNonces = new Map<string, string>();
   /** Isolated logins a resolve step is waiting on, by operation. */
   private readonly waiting = new Map<string, Set<string>>();
   private readonly timing: RemoteOperationTiming;
@@ -150,6 +152,15 @@ export class ClaimOperation implements RemoteOperationDefinition {
 
   forget(operationId: string): void {
     this.bundles.delete(operationId);
+    this.joinNonces.delete(operationId);
+  }
+
+  seedJoinNonce(operationId: string, nonce: string): void {
+    this.joinNonces.set(operationId, nonce);
+  }
+
+  hasJoinNonce(operationId: string): boolean {
+    return this.joinNonces.has(operationId);
   }
 
   /** Ends the logins the resolve step waits on; the step then fails and the cancel proceeds. */
@@ -203,6 +214,7 @@ export class ClaimOperation implements RemoteOperationDefinition {
       claim.bootstrapUrl,
       await this.certificateFor(operation, claim),
     );
+    if (claim.joinRequestId && claim.claimed && runtime.version === claim.version) return;
     if (runtime.state !== 'unclaimed') {
       throw refused(
         'VM_NOT_UNCLAIMED',
@@ -369,6 +381,12 @@ export class ClaimOperation implements RemoteOperationDefinition {
         return;
       }
       let outcome: HostClaimOutcome = 'starting';
+      const nonce = claim.joinRequestId ? this.joinNonces.get(operation.id) : undefined;
+      if (claim.joinRequestId && !nonce)
+        throw refused(
+          'SSH_CREDENTIALS_REQUIRED',
+          'Reconnect over SSH to resume the join reservation before claiming.',
+        );
       const certificate = await this.certificateFor(operation, claim);
       try {
         const apiKey = await this.apiKeys.getOrCreate(operation.remoteId);
@@ -384,6 +402,7 @@ export class ClaimOperation implements RemoteOperationDefinition {
             ...(claim.gid !== undefined ? { gid: claim.gid } : {}),
             version: claim.version,
             port: claim.port,
+            ...(nonce ? { nonce } : {}),
             providerAuth: {
               ...bundle,
               files: [...bundle.files, ...(gitConfig ? [gitConfig] : []), keyFile],
@@ -406,6 +425,7 @@ export class ClaimOperation implements RemoteOperationDefinition {
           : refused('HOST_START_TIMEOUT', `DevChain did not answer on ${address} after the claim.`);
       }
       claim.claimed = true;
+      this.joinNonces.delete(operation.id);
     } finally {
       this.bundles.delete(operation.id);
     }

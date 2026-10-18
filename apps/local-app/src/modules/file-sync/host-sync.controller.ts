@@ -12,8 +12,13 @@ import {
 } from '@nestjs/common';
 import { ApiNoContentResponse, ApiOkResponse, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { createLogger } from '../../common/logging/logger';
-import { FolderIdSchema, RemoteNeedQuerySchema, SyncStatusQuerySchema } from './file-sync.dto';
-import { FileSyncService } from './file-sync.service';
+import {
+  FolderIdSchema,
+  RemoteNeedQuerySchema,
+  RemoteNeedThroughQuerySchema,
+  SyncStatusQuerySchema,
+} from './file-sync.dto';
+import { FileSyncService, gitFolderProjectId, projectFolderId } from './file-sync.service';
 
 import { SyncthingRestError } from './syncthing-rest.client';
 import { resolve } from 'node:path';
@@ -21,6 +26,8 @@ import { assertVmHomePath } from '../../common/filesystem/vm-home-path';
 import { SyncPathInspector } from './sync-path-inspector';
 import { hostRoutes } from '../remotes/contract/host-routes';
 import type { HostHandlerResponse } from '../remotes/contract/host-routes';
+import { GitCoordinatorService } from '../remotes/git-coordinator/git-coordinator.service';
+import { GitFenceQuerySchema } from '../remotes/git-coordinator/git-coordinator.dto';
 
 const logger = createLogger('HostSyncController');
 
@@ -34,6 +41,7 @@ export class HostSyncController {
   constructor(
     private readonly fileSync: FileSyncService,
     private readonly inspector: SyncPathInspector,
+    private readonly coordinator: GitCoordinatorService,
   ) {}
 
   @Post('inspect')
@@ -66,13 +74,18 @@ export class HostSyncController {
 
   @Post('folders')
   @HttpCode(200)
-  folders(@Body() body: unknown): Promise<HostHandlerResponse<typeof hostRoutes.syncFolders, 200>> {
+  folders(
+    @Body() body: unknown,
+    @Query() query: unknown,
+  ): Promise<HostHandlerResponse<typeof hostRoutes.syncFolders, 200>> {
     const request = hostRoutes.syncFolders.body.parse(body);
     logger.info(
       { projectId: request.projectId, kind: request.kind, type: request.type },
       'POST /api/host/sync/folders',
     );
-    return this.fileSync.ensureFolder(request);
+    return this.mutate(projectFolderId(request.projectId, request.kind), query, () =>
+      this.fileSync.ensureFolder(request),
+    );
   }
 
   @Post('force-copy-backup')
@@ -90,29 +103,35 @@ export class HostSyncController {
   async updateFolder(
     @Param('id') id: string,
     @Body() body: unknown,
+    @Query() query: unknown,
   ): Promise<HostHandlerResponse<typeof hostRoutes.syncFolderType, 204>> {
     const folderId = FolderIdSchema.parse(id);
     const patch = hostRoutes.syncFolderType.body.parse(body);
     logger.info({ folderId, ...patch }, 'PATCH /api/host/sync/folders/:id');
-    await this.fileSync.updateFolder(folderId, patch).catch(folderNotFound);
+    await this.mutate(folderId, query, () => this.fileSync.updateFolder(folderId, patch)).catch(
+      folderNotFound,
+    );
   }
 
   @Delete('folders/:id')
   @HttpCode(204)
   async removeFolder(
     @Param('id') id: string,
+    @Query() query: unknown,
   ): Promise<HostHandlerResponse<typeof hostRoutes.syncRemoveFolder, 204>> {
     const folderId = FolderIdSchema.parse(id);
     logger.info({ folderId }, 'DELETE /api/host/sync/folders/:id');
-    await this.fileSync.removeFolder(folderId);
+    await this.mutate(folderId, query, () => this.fileSync.removeFolder(folderId));
   }
 
   @Post('folders/:id/scan')
   @HttpCode(204)
   async scan(
     @Param('id') id: string,
+    @Query() query: unknown,
   ): Promise<HostHandlerResponse<typeof hostRoutes.syncScan, 204>> {
-    await this.fileSync.rescan(FolderIdSchema.parse(id));
+    const folderId = FolderIdSchema.parse(id);
+    await this.mutate(folderId, query, () => this.fileSync.rescan(folderId));
   }
 
   /** Discards the host's local changes in a receive-only folder. */
@@ -120,10 +139,11 @@ export class HostSyncController {
   @HttpCode(204)
   async revert(
     @Param('id') id: string,
+    @Query() query: unknown,
   ): Promise<HostHandlerResponse<typeof hostRoutes.syncRevert, 204>> {
     const folderId = FolderIdSchema.parse(id);
     logger.info({ folderId }, 'POST /api/host/sync/folders/:id/revert');
-    await this.fileSync.revertLocalChanges(folderId);
+    await this.mutate(folderId, query, () => this.fileSync.revertLocalChanges(folderId));
   }
 
   @Post('folders/:id/override')
@@ -132,8 +152,10 @@ export class HostSyncController {
   @ApiNoContentResponse()
   async override(
     @Param('id') id: string,
+    @Query() query: unknown,
   ): Promise<HostHandlerResponse<typeof hostRoutes.syncOverride, 204>> {
-    await this.fileSync.override(FolderIdSchema.parse(id));
+    const folderId = FolderIdSchema.parse(id);
+    await this.mutate(folderId, query, () => this.fileSync.override(folderId));
   }
 
   @Get('folders/:id/local-changes')
@@ -180,6 +202,27 @@ export class HostSyncController {
   ): Promise<HostHandlerResponse<typeof hostRoutes.syncRemoteNeed, 200>> {
     const { device } = RemoteNeedQuerySchema.parse(query);
     return this.fileSync.remoteNeed(FolderIdSchema.parse(id), device);
+  }
+
+  @Get('folders/:id/remote-need-through')
+  async remoteNeedThrough(
+    @Param('id') id: string,
+    @Query() query: unknown,
+  ): Promise<HostHandlerResponse<typeof hostRoutes.syncRemoteNeedThrough, 200>> {
+    const { device, sequence } = RemoteNeedThroughQuerySchema.parse(query);
+    return {
+      names: await this.fileSync.remoteNeedThrough(FolderIdSchema.parse(id), device, sequence),
+    };
+  }
+
+  private mutate<T>(folderId: string, query: unknown, operation: () => Promise<T>): Promise<T> {
+    const projectId = gitFolderProjectId(folderId);
+    if (projectId === null) return operation();
+    return this.coordinator.withHostMutation(
+      projectId,
+      GitFenceQuerySchema.parse(query),
+      operation,
+    );
   }
 }
 

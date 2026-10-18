@@ -80,6 +80,7 @@ export function ProbeOutcome({
   onOpenActivity,
   onSetUpInstaller,
   onInstallOverSsh,
+  onJoinOverSsh,
   onRunBlock,
 }: {
   result: ProbeResultDto;
@@ -99,8 +100,10 @@ export function ProbeOutcome({
   onOpenActivity: (operationId: string) => void;
   onSetUpInstaller: (result: InstallerResult) => void;
   onInstallOverSsh: () => void;
+  onJoinOverSsh: () => void;
   onRunBlock: () => void;
 }) {
+  const [addByAddress, setAddByAddress] = useState(false);
   const panel = 'space-y-3 rounded-md border p-3 text-sm';
   const fingerprintValid = parseCertificateFingerprint(fingerprint) !== null;
   const fingerprintField = (
@@ -113,7 +116,8 @@ export function ProbeOutcome({
   );
 
   if (result.kind === 'devchain') {
-    if (result.remoteId) {
+    const otherUser = result.homePathMatches === false;
+    if (result.remoteId && !otherUser) {
       const listedAs = remoteNames.get(result.remoteId);
       return (
         <section aria-label="Address check" className={panel}>
@@ -131,49 +135,79 @@ export function ProbeOutcome({
         </p>
         {!result.versionMatches && (
           <p className="text-status-warn">
-            Its version differs from this PC&apos;s. You can add it now and update it from its row.
+            Its version differs from this PC&apos;s.
+            {!otherUser && ' You can add it now and update it from its row.'}
           </p>
         )}
-        {result.homePathMatches === false && (
-          <p className="text-status-warn">
-            Its home folder{result.homePath ? ` (${result.homePath})` : ''} differs from this
-            PC&apos;s, so project paths will not match there.
-          </p>
+        {otherUser && (
+          <>
+            <p>
+              This DevChain uses another home folder{result.homePath ? ` (${result.homePath})` : ''}
+              . Set up your own instance with this PC&apos;s user and home folder.
+            </p>
+            <div className="flex flex-wrap gap-2">
+              <Button type="button" onClick={onJoinOverSsh} disabled={pending}>
+                Set up my DevChain on this VM
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() =>
+                  result.remoteId ? onViewVm(result.remoteId) : setAddByAddress(true)
+                }
+                disabled={pending}
+              >
+                Add by address
+              </Button>
+            </div>
+          </>
         )}
-        <div className="space-y-1.5">
-          <Label htmlFor="own-vm-api-key">API key</Label>
-          <Input
-            id="own-vm-api-key"
-            type="password"
-            autoComplete="new-password"
-            value={apiKey}
-            onChange={(event) => onApiKeyChange(event.target.value)}
-            disabled={pending}
-          />
-          <p className="text-muted-foreground">
-            Run <code>devchain host api-key reset</code> on the VM, then paste the key here.
-          </p>
-        </div>
-        {fingerprintField}
-        <div className="flex flex-wrap items-end gap-2">
-          <div className="min-w-[12rem] flex-1 space-y-1.5">
-            <Label htmlFor="own-vm-add-name">Name</Label>
-            <Input
-              id="own-vm-add-name"
-              value={name}
-              onChange={(event) => onNameChange(event.target.value)}
-              disabled={pending}
-            />
-          </div>
-          <Button
-            type="button"
-            onClick={() => onAddVm(result.baseUrl)}
-            disabled={name.trim().length === 0 || apiKey.trim().length === 0 || !fingerprintValid}
-            pending={pending}
-          >
-            Add VM
-          </Button>
-        </div>
+        {(!otherUser || addByAddress) && (
+          <>
+            <div className="space-y-1.5">
+              <Label htmlFor="own-vm-api-key">API key</Label>
+              <Input
+                id="own-vm-api-key"
+                type="password"
+                autoComplete="new-password"
+                value={apiKey}
+                onChange={(event) => onApiKeyChange(event.target.value)}
+                disabled={pending}
+              />
+              <p className="text-muted-foreground">
+                {otherUser ? (
+                  'Ask the owner of this DevChain for its API key.'
+                ) : (
+                  <>
+                    Run <code>devchain host api-key reset</code> on the VM, then paste the key here.
+                  </>
+                )}
+              </p>
+            </div>
+            {fingerprintField}
+            <div className="flex flex-wrap items-end gap-2">
+              <div className="min-w-[12rem] flex-1 space-y-1.5">
+                <Label htmlFor="own-vm-add-name">Name</Label>
+                <Input
+                  id="own-vm-add-name"
+                  value={name}
+                  onChange={(event) => onNameChange(event.target.value)}
+                  disabled={pending}
+                />
+              </div>
+              <Button
+                type="button"
+                onClick={() => onAddVm(result.baseUrl)}
+                disabled={
+                  name.trim().length === 0 || apiKey.trim().length === 0 || !fingerprintValid
+                }
+                pending={pending}
+              >
+                Add VM
+              </Button>
+            </div>
+          </>
+        )}
       </section>
     );
   }
@@ -232,3 +266,4 @@ export function ProbeOutcome({
     </section>
   );
 }
+import { useState } from 'react';

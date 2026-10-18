@@ -30,8 +30,18 @@ import {
   DEFAULT_MESSAGING_FOLLOW_NOTE,
 } from '../../services/settings.constants';
 import { settingsTerminalChangedEvent } from '../../../events/catalog';
+import {
+  PROVIDER_USAGE_SETTINGS_DEFAULTS,
+  ProviderUsageSettingsSchema,
+  type ProviderUsageSettings,
+} from '@devchain/shared';
 
 const logger = createLogger('CoreSettingsDelegate');
+
+type ProviderUsageSettingsDto = NonNullable<SettingsDto['providerUsage']>;
+const PROVIDER_USAGE_FIELDS = Object.keys(
+  ProviderUsageSettingsSchema.shape,
+) as (keyof ProviderUsageSettings)[];
 
 export interface CoreDelegateContext {
   gate?: ProjectWriteGate;
@@ -232,6 +242,9 @@ export class CoreSettingsDelegate {
         const valueStr = this.decodeStringSetting(row.value);
         settings.messaging = settings.messaging ?? {};
         settings.messaging.followNote = valueStr === 'true';
+      } else if (row.key.startsWith('providerUsage.')) {
+        settings.providerUsage = settings.providerUsage ?? {};
+        this.readProviderUsageSetting(settings.providerUsage, row.key, row.value);
       } else if (row.key === 'registryTemplates') {
         try {
           const map = JSON.parse(row.value);
@@ -297,6 +310,8 @@ export class CoreSettingsDelegate {
     settings.messaging = {
       followNote: settings.messaging?.followNote ?? DEFAULT_MESSAGING_FOLLOW_NOTE,
     };
+
+    settings.providerUsage = { ...PROVIDER_USAGE_SETTINGS_DEFAULTS, ...settings.providerUsage };
 
     logger.debug({ settings }, 'Retrieved settings');
     return settings;
@@ -479,6 +494,16 @@ export class CoreSettingsDelegate {
         stmt.run(randomUUID(), 'messaging.followNote', String(followNote), now, now);
       }
 
+      const providerUsage = settings.providerUsage;
+      if (providerUsage !== undefined) {
+        for (const field of PROVIDER_USAGE_FIELDS) {
+          const value = providerUsage[field];
+          if (value !== undefined) {
+            stmt.run(randomUUID(), `providerUsage.${field}`, String(value), now, now);
+          }
+        }
+      }
+
       if (settings.registry !== undefined) {
         if (settings.registry.url !== undefined) {
           stmt.run(randomUUID(), 'registry.url', JSON.stringify(settings.registry.url), now, now);
@@ -613,6 +638,31 @@ export class CoreSettingsDelegate {
     const value = this.getSetting('messaging.followNote');
     // Only a stored 'false' suppresses the note.
     return value === undefined ? DEFAULT_MESSAGING_FOLLOW_NOTE : value !== 'false';
+  }
+
+  getProviderUsageConfig(): ProviderUsageSettings {
+    const rows = this.sqlite
+      .prepare("SELECT key, value FROM settings WHERE key LIKE 'providerUsage.%'")
+      .all() as Array<{ key: string; value: string }>;
+    const stored: ProviderUsageSettingsDto = {};
+    for (const row of rows) {
+      this.readProviderUsageSetting(stored, row.key, row.value);
+    }
+    return { ...PROVIDER_USAGE_SETTINGS_DEFAULTS, ...stored };
+  }
+
+  /** A stored value outside the schema bounds is ignored, so its default applies. */
+  private readProviderUsageSetting(
+    target: ProviderUsageSettingsDto,
+    key: string,
+    rawValue: string,
+  ): void {
+    const value = this.decodeStringSetting(rawValue);
+    const field = key.slice('providerUsage.'.length);
+    const parsed = ProviderUsageSettingsSchema.partial().safeParse({
+      [field]: field === 'enabled' ? value === 'true' : Number(value),
+    });
+    if (parsed.success) Object.assign(target, parsed.data);
   }
 
   private async validateBinaryPath(binaryPath: string, providerName: string): Promise<void> {

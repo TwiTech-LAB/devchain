@@ -371,6 +371,7 @@ describe('UpdateLoginsOperation', () => {
         readProviderAuthPayload: storage.readProviderAuthPayload,
       } as never,
       { isSupported: (provider: string) => provider in PROVIDER_AUTH_ADAPTERS } as never,
+      {} as never,
     );
     vault.opencodeProviderIds.mockImplementation((ids: string[]) =>
       realVault.opencodeProviderIds(ids),

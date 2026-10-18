@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react';
 import { useRemoteStatsHistory, type RemoteStatsSample } from '@/ui/hooks/useRemoteStatsHistory';
 import { cn } from '@/ui/lib/utils';
+import { PERCENT_TONE_TEXT_CLASS, percentTone } from '@/ui/lib/percent-tone';
 import { Sparkline, type SparklineColorVar } from './Sparkline';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '../ui/tooltip';
 
@@ -47,12 +48,8 @@ function cpuPercent(sample: RemoteStatsSample): number | null {
   return Math.round(sample.cpuPercent);
 }
 
-/** Warning from 80%, destructive from 90%; the thresholds apply to the displayed (rounded) percent. */
 function percentToneClass(percent: number | null): string {
-  if (percent === null) return '';
-  if (percent >= 90) return 'text-destructive';
-  if (percent >= 80) return 'text-status-warn';
-  return '';
+  return percent === null ? '' : PERCENT_TONE_TEXT_CLASS[percentTone(percent)];
 }
 
 export function formatUptime(seconds: number): string {

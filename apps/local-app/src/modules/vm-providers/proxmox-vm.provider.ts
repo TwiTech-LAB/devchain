@@ -91,6 +91,23 @@ export class ProxmoxVmProvider implements VmProvider {
     await this.assertDestroyGuard(await this.nodeVm(vmid));
   }
 
+  async confirmsVmIdle(vmid: number): Promise<boolean> {
+    const vm = await this.nodeVm(vmid);
+    const config = await this.client.getVmConfig(this.target, vm.node, vmid);
+    if (config.lock) return false;
+    const permissions = await this.client.request(this.target, {
+      method: 'GET',
+      path: `/api2/json/access/permissions?path=${encodeURIComponent(`/nodes/${vm.node}`)}`,
+    });
+    // Without node audit, Proxmox hides other tokens' tasks; an empty list is inconclusive.
+    if (!(this.readAclPrivileges(permissions, `/nodes/${vm.node}`)['Sys.Audit'] > 0)) return false;
+    const tasks = await this.client.request(this.target, {
+      method: 'GET',
+      path: `/api2/json/nodes/${encodeURIComponent(vm.node)}/tasks?source=active&vmid=${vmid}&limit=1`,
+    });
+    return Array.isArray(tasks) && tasks.length === 0;
+  }
+
   private async nodeVm(vmid: number): Promise<VmLocation> {
     const vm = (await this.client.getQemuList(this.target, this.connection.node)).find(
       (item) => item.vmid === vmid,

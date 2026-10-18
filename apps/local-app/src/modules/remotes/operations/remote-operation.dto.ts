@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { SharedVmRetryConfirmationSchema } from '../dtos/shared-vm.dto';
 import { SshPublicKeysSchema } from '../../../common/validation/ssh-public-key';
 import { REMOTE_OPERATION_STATE_IDS } from '../../storage/models/domain.models';
 import {
@@ -41,6 +42,21 @@ export const ListRemoteOperationsQuerySchema = z
     limit: z.coerce.number().int().min(1).max(200).optional(),
   })
   .strict();
+
+export const DisconnectAllSchema = z
+  .object({
+    force: z.boolean().default(false),
+    projects: z
+      .array(DetachProjectSchema.pick({ projectId: true, dockerCopyBack: true }))
+      .min(1)
+      .refine(
+        (projects) =>
+          new Set(projects.map((project) => project.projectId)).size === projects.length,
+        'Choose each project once.',
+      ),
+  })
+  .strict();
+export type DisconnectAllData = z.infer<typeof DisconnectAllSchema>;
 
 /** `reuse:<entryId>`, `generate` or `skip`, per provider. */
 const ProviderAuthChoiceSchema = z.union([
@@ -147,6 +163,7 @@ export type InstallHostData = z.infer<typeof InstallHostSchema>;
 
 export const RetryRemoteOperationSchema = z
   .object({
+    vm: SharedVmRetryConfirmationSchema.optional(),
     /** For a claim whose login check failed: new choices for those providers. */
     providerAuth: ProviderAuthSelectionSchema.optional(),
     /** In-memory SSH credentials needed again after a home restart. */

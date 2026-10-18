@@ -4,6 +4,7 @@ import {
   handleTeamsConfigsList,
   handleTeamsCreateAgent,
   handleTeamsDeleteAgent,
+  handleTeamsSessionControl,
   handleDevchainTeam,
 } from './teams-tools';
 import type { TeamsToolContext } from './teams-context';
@@ -1011,5 +1012,59 @@ describe('handleTeamsDeleteAgent', () => {
 
     expect(result.success).toBe(false);
     expect(result.error?.code).toBe(code);
+  });
+});
+
+// Handler unit tests cover service dispatch; registry tests own guest/project guards.
+describe('handleTeamsSessionControl', () => {
+  const validParams = { sessionId: 'abcd1234', name: 'Worker', teamName: TEAM_NAME };
+
+  it.each(['restart', 'compact', 'stop'] as const)(
+    'returns the %s service result as MCP data',
+    async (action) => {
+      const data = { agentId: MEMBER_AGENT_ID, action, sessionId: 'new-session' };
+      const control = jest.fn().mockResolvedValue({ result: data });
+      const ctx = makeCtx({ teamsService: { controlTeamMemberSession: control } as never });
+
+      expect(await handleTeamsSessionControl(ctx, { ...validParams, action })).toEqual({
+        success: true,
+        data,
+      });
+      expect(control).toHaveBeenCalledWith({
+        leadAgentId: AGENT_ID,
+        projectId: PROJECT_ID,
+        name: 'Worker',
+        teamName: TEAM_NAME,
+        action,
+      });
+    },
+  );
+
+  it('passes through the service error including its data', async () => {
+    const error = { code: 'AGENT_BUSY', message: 'Member is busy', data: { retry: false } };
+    const control = jest.fn().mockResolvedValue({ error });
+    const ctx = makeCtx({ teamsService: { controlTeamMemberSession: control } as never });
+
+    expect(await handleTeamsSessionControl(ctx, { ...validParams, action: 'compact' })).toEqual({
+      success: false,
+      error,
+    });
+  });
+
+  it('rejects a context without an agent before service dispatch', async () => {
+    const control = jest.fn();
+    const ctx = makeCtx({
+      teamsService: { controlTeamMemberSession: control } as never,
+      resolveSessionContext: jest.fn().mockResolvedValue({
+        success: true,
+        data: { ...makeAgentSessionContext(), agent: null },
+      }),
+    });
+
+    expect(await handleTeamsSessionControl(ctx, { ...validParams, action: 'stop' })).toEqual({
+      success: false,
+      error: { code: 'AGENT_REQUIRED', message: 'No agent associated with this session' },
+    });
+    expect(control).not.toHaveBeenCalled();
   });
 });

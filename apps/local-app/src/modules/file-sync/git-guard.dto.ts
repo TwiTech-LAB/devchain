@@ -19,11 +19,3 @@ export const GitGuardRemoveResultSchema = z.object({
   warning: z.string().nullable(),
 });
 export type GitGuardRemoveResult = z.infer<typeof GitGuardRemoveResultSchema>;
-
-export const GitIndexRequestSchema = z.object({ since: z.string().nullable() }).strict();
-export const GitIndexResultSchema = z.object({
-  head: z.string().nullable(),
-  refreshed: z.boolean(),
-  warning: z.string().nullable(),
-});
-export type GitIndexResult = z.infer<typeof GitIndexResultSchema>;

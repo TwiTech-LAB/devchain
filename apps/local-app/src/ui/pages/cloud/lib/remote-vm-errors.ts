@@ -12,3 +12,13 @@ export class ProviderAuthApiError extends Error {
 }
 
 export class FileListChangedError extends Error {}
+
+export class SharedVmGuardApiError extends Error {
+  constructor(
+    message: string,
+    readonly context: import('./remote-vm-contracts').SharedVmGuardContext,
+  ) {
+    super(message);
+    this.name = 'SharedVmGuardApiError';
+  }
+}

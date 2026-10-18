@@ -60,14 +60,14 @@ describe('ProviderCliNpmLookupService', () => {
 
     it('throws when the registry responds without a version field', async () => {
       fetchMock.mockResolvedValueOnce(okJson({}));
-      await expect(service().fetchLatestVersion('opencode-ai')).rejects.toThrow(
-        /no version for opencode-ai/,
+      await expect(service().fetchLatestVersion('@opencode/cli')).rejects.toThrow(
+        /no version for @opencode\/cli/,
       );
     });
 
     it('throws on a non-2xx registry response', async () => {
       fetchMock.mockResolvedValueOnce({ ok: false, status: 404 });
-      await expect(service().fetchLatestVersion('opencode-ai')).rejects.toThrow(
+      await expect(service().fetchLatestVersion('@opencode/cli')).rejects.toThrow(
         /Unexpected status 404/,
       );
     });
@@ -112,7 +112,7 @@ describe('ProviderCliNpmLookupService', () => {
       fetchMock.mockResolvedValueOnce(
         okJson(packument({ '1.9.0': {}, '1.10.0': {}, '1.2.0': {} })),
       );
-      await expect(service().fetchStableVersions('opencode-ai')).resolves.toEqual([
+      await expect(service().fetchStableVersions('@opencode/cli')).resolves.toEqual([
         '1.10.0',
         '1.9.0',
         '1.2.0',
@@ -138,7 +138,7 @@ describe('ProviderCliNpmLookupService', () => {
   describe('network failures', () => {
     it('surfaces a fetch rejection as a plain error', async () => {
       fetchMock.mockRejectedValueOnce(new Error('ENOTFOUND registry'));
-      await expect(service().fetchLatestVersion('opencode-ai')).rejects.toThrow('ENOTFOUND');
+      await expect(service().fetchLatestVersion('@opencode/cli')).rejects.toThrow('ENOTFOUND');
     });
   });
 });

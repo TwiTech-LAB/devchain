@@ -106,6 +106,23 @@ describe('resolveBackend', () => {
         localActiveContext,
       ),
     ).toBe(REMOTE_B);
+    // Agent time accounting runs on the project's owner; home's mirror refuses buffer writes.
+    expect(
+      resolveBackend(
+        `/api/agent-time-buffers?projectId=${BOUND_OTHER}`,
+        undefined,
+        {},
+        localActiveContext,
+      ),
+    ).toBe(REMOTE_B);
+    expect(
+      resolveBackend(
+        '/api/agent-time-buffers/agent-1/assign',
+        { method: 'POST', body: JSON.stringify({ projectId: BOUND_OTHER }) },
+        {},
+        localActiveContext,
+      ),
+    ).toBe(REMOTE_B);
   });
 
   it('routes a named but unbound project home even when the active project is remote', () => {
@@ -149,10 +166,10 @@ describe('resolveBackend', () => {
     '/api/templates',
     '/api/registry/check-updates/p1',
     '/api/preflight',
-    '/api/agent-time-buffers',
     '/api/epics/import-external-task',
     '/api/epics/external-sources',
     '/api/epics/external-sources/batch',
+    '/api/epics/e1/external-sources',
     '/api/epics/e1/time-logs',
     '/api/epics/e1/time',
     '/api/epics/time-summary/batch',
@@ -198,6 +215,9 @@ describe('resolveBackend', () => {
   it('does not treat look-alike prefixes as home-always', () => {
     expect(resolveBackend('/api/projectsx', undefined, {}, context)).toBe(REMOTE_A);
     expect(resolveBackend('/api/epics/e1/timeline', undefined, {}, context)).toBe(REMOTE_A);
+    expect(resolveBackend('/api/epics/e1/external-sourcesx', undefined, {}, context)).toBe(
+      REMOTE_A,
+    );
     expect(resolveBackend('/api/provider-clisx', undefined, {}, context)).toBe(REMOTE_A);
   });
 

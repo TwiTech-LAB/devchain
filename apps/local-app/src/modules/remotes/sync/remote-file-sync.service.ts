@@ -27,6 +27,7 @@ import {
   projectFolderId,
 } from '../../file-sync/file-sync.service';
 import { GitService } from '../../git/services/git.service';
+import type { GitCoordinatorRecord } from '../git-coordinator/git-coordinator.dto';
 import {
   STORAGE_SERVICE,
   type RemoteStorage,
@@ -60,14 +61,18 @@ interface ProjectState {
   remoteId: string;
   step: MoveStep;
   hasGit: boolean;
-  heads?: Partial<Record<GitOwner, string>>;
-  /** The owner-store generation that `heads` belong to. */
-  headsGeneration?: number;
+  /** The PC's HEAD after its last receiver index rebuild. */
+  homeHead?: string;
+  /** The owner-cache revision that `homeHead` belongs to. */
+  homeHeadRevision?: number;
   warning: string | null;
   checkProblem?: FileSyncProblem;
   guardWarning?: string | null;
+  laneBranchesWarning?: string | null;
   checkWarning?: string | null;
   lastCheck?: number;
+  /** Last successful git-ignore repair; drift from outside DevChain is rare. */
+  ignoresRepairedAt?: number;
   observations?: Map<string, SyncObservation>;
   failed?: FileSyncFailedCounts;
   autoFixAttempt?: { at: number; home: number; vm: number };
@@ -123,16 +128,18 @@ export class RemoteFileSyncService {
     return null;
   }
 
-  async hasOpenHold(projectId: string): Promise<boolean> {
+  /** With the VM record, a home write, transition or Disconnect in progress also holds upkeep. */
+  async hasOpenHold(projectId: string, vm?: GitCoordinatorRecord): Promise<boolean> {
+    if (vm && (vm.transition || vm.closed || Object.keys(vm.homeWrites).length)) return true;
     const operations = await this.storage.listRemoteOperations({
       projectId,
-      kinds: ['force_sync', 'git_owner'],
+      kinds: ['force_sync'],
       states: ['running', 'failed'],
       limit: 1,
     });
     return operations.some(
       (operation) =>
-        (operation.kind === 'force_sync' || operation.kind === 'git_owner') &&
+        operation.kind === 'force_sync' &&
         (operation.state === 'running' || operation.state === 'failed'),
     );
   }
@@ -140,7 +147,7 @@ export class RemoteFileSyncService {
   async assertNoHold(projectId: string): Promise<void> {
     if (await this.hasOpenHold(projectId))
       throw new ConflictError(
-        'Force sync or a Git switch is running for this project. Save the list after it finishes.',
+        'Force sync is running for this project. Save the list after it finishes.',
       );
   }
 
@@ -343,6 +350,19 @@ export class RemoteFileSyncService {
     }
   }
 
+  private async repairGitIgnores(projectId: string, remoteId: string): Promise<void> {
+    const id = projectFolderId(projectId, 'git');
+    const ignores = gitIgnores(true);
+    const [home, vm] = await Promise.all([
+      this.files.installedIgnores(id),
+      this.host.syncFolderIgnores(remoteId, id),
+    ]);
+    if (home.ignore.join('\0') !== ignores.join('\0'))
+      await this.files.updateFolder(id, { ignores });
+    if (vm.ignore.join('\0') !== ignores.join('\0'))
+      await this.host.syncFolderType(remoteId, id, { ignores }, this.gitOwner.fence(projectId));
+  }
+
   async tick(projectId: string, remoteId: string, active: () => boolean): Promise<void> {
     const health = this.health.getState(remoteId);
     if (!active() || !health.online || health.apiKeyRejected || !health.versionMatches) return;
@@ -362,59 +382,108 @@ export class RemoteFileSyncService {
         // Migration's revert and ordinary upkeep must never run in the same tick.
         return;
       }
+      const now = Date.now();
+      if (
+        state.hasGit &&
+        (state.ignoresRepairedAt === undefined ||
+          now - state.ignoresRepairedAt >= CHECK_INTERVAL_MS)
+      ) {
+        await this.repairGitIgnores(projectId, remoteId);
+        state.ignoresRepairedAt = now;
+      }
+      if (!active()) return;
       await this.checkSync(projectId, state, active);
       if (!state.hasGit || !active()) return;
-      const owner = this.gitOwner.get(projectId);
-      const receiver = owner === 'vm' ? 'home' : 'vm';
-      // Each switch of Git control starts a new receiver lifetime, even when a take and a return
-      // both happen between two ticks, so earlier index checkpoints no longer apply.
-      const generation = this.gitOwner.generation(projectId);
-      if (state.headsGeneration !== generation) {
-        state.heads = undefined;
-        state.headsGeneration = generation;
+      const vm = await this.host.gitCoordinatorStatus(remoteId, projectId);
+      if (!active() || (await this.hasOpenHold(projectId, vm))) return;
+      const owner = this.followVmRecord(projectId, vm, state);
+      if (owner === null || !active()) return;
+      if (owner === 'home') {
+        await this.protectLaneBranches(projectId, remoteId, state, vm.worktreeBranches);
+        if (!active()) return;
       }
+      // Receiver maintenance only: it never changes the owner's side or the VM index.
       const id = projectFolderId(projectId, 'git');
       const config =
-        receiver === 'home'
+        owner === 'vm'
           ? await this.files.folderConfiguration(id)
           : await this.host.syncFolderConfiguration(remoteId, id);
       if (!active() || config.type !== 'receiveonly' || config.paused) return;
       const status =
-        receiver === 'home'
-          ? await this.files.status(id)
-          : await this.host.syncStatus(remoteId, id);
+        owner === 'vm' ? await this.files.status(id) : await this.host.syncStatus(remoteId, id);
       if (!active() || status.state !== 'idle' || status.needTotalItems !== 0) return;
       state.warning = null;
       if (status.receiveOnlyChangedFiles > 0) {
-        if (receiver === 'home') await this.files.revertLocalChanges(id);
-        else await this.host.syncRevert(remoteId, id);
+        if (owner === 'vm') await this.files.revertLocalChanges(id);
+        else await this.host.syncRevert(remoteId, id, this.gitOwner.fence(projectId));
         return;
+      }
+      // While the PC owns Git, the VM index changes only through confirmed checkpoints.
+      if (owner === 'home') return;
+      // Each change of Git control starts a new receiver lifetime, even when Git left and came
+      // back between two ticks, so an earlier rebuild no longer applies.
+      const revision = this.gitOwner.revision(projectId);
+      if (state.homeHeadRevision !== revision) {
+        state.homeHead = undefined;
+        state.homeHeadRevision = revision;
       }
       const root = await this.files.folderPath(projectId);
       const head = await this.git.mirroredHead(projectId, root);
-      if (!active() || head === null || head === state.heads?.[receiver]) return;
-      if (receiver === 'home') {
-        await this.git.refreshIndexFromHead(projectId, root);
-        (state.heads ??= {}).home = head;
-      } else {
-        // The PC's HEAD triggers the request; only the VM's successful rebuild advances it.
-        const result = await this.host.refreshGitIndex(
-          remoteId,
-          projectId,
-          state.heads?.vm ?? null,
-        );
-        if (!active()) return;
-        if (result.warning) {
-          state.warning = result.warning;
-          return;
-        }
-        if (result.refreshed && result.head !== null) (state.heads ??= {}).vm = result.head;
-      }
+      if (!active() || head === null || head === state.homeHead) return;
+      await this.git.refreshIndexFromHead(projectId, root);
+      state.homeHead = head;
     } catch (error) {
       state.warning =
         'File sync could not finish updating this project. It will retry automatically.';
       logger.warn({ error, projectId, step: state.step }, 'Remote file sync will retry');
     }
+  }
+
+  /** While this PC owns Git, its hooks refuse changes to branches that VM worktrees check out. */
+  private async protectLaneBranches(
+    projectId: string,
+    remoteId: string,
+    state: ProjectState,
+    worktreeBranches: string[],
+  ): Promise<void> {
+    try {
+      const warning = await this.guard.protectBranches(projectId, remoteId, worktreeBranches);
+      if (warning && warning !== state.laneBranchesWarning) logger.warn({ projectId }, warning);
+      state.laneBranchesWarning = warning;
+    } catch (error) {
+      // The previous protection stays installed until a refresh succeeds.
+      logger.warn({ error, projectId }, 'VM worktree branch protection was not refreshed');
+    }
+  }
+
+  /**
+   * The owner upkeep may act for, or null when this PC's cache disagrees with the VM record in a
+   * way only a handover or step-down may settle. A VM-owned record only moves the cached
+   * generation forward; this PC is the receiver either way.
+   */
+  private followVmRecord(
+    projectId: string,
+    vm: GitCoordinatorRecord,
+    state: ProjectState,
+  ): GitOwner | null {
+    const cached = this.gitOwner.get(projectId);
+    // `cached === 'home'` with a VM-owned record at the same generation is a PC that took Git with
+    // the removed manual take: its saved 'home' reads as generation 0, and the VM record starts at
+    // vm/0. It is not dead code.
+    if (
+      vm.generation === this.gitOwner.generation(projectId) &&
+      (vm.owner === cached || cached === 'home')
+    )
+      return cached;
+    if (vm.owner === 'vm' && cached === 'vm') {
+      this.gitOwner.remember(projectId, vm);
+      return 'vm';
+    }
+    state.warning =
+      cached === 'home'
+        ? 'The VM took Git back while this PC was away. File sync continues after this PC gives up Git.'
+        : 'Git is moving to this PC. File sync continues after the move finishes.';
+    return null;
   }
 
   private async checkSync(
@@ -670,7 +739,6 @@ export class RemoteFileSyncService {
 
   private async move(projectId: string, state: ProjectState, active: () => boolean): Promise<void> {
     const { remoteId } = state;
-    const owner = this.gitOwner.get(projectId);
     const codeId = projectFolderId(projectId, 'code');
     const gitId = projectFolderId(projectId, 'git');
     if (state.step === 'create') {
@@ -679,6 +747,18 @@ export class RemoteFileSyncService {
       state.hasGit = (await this.files.initialFolders(projectId)).some(
         (folder) => folder.kind === 'git',
       );
+    }
+    // Directions follow the VM record: a stale cache after a VM reclaim must not undo it.
+    let owner: GitOwner = this.gitOwner.get(projectId);
+    if (state.hasGit) {
+      const vm = await this.host.gitCoordinatorStatus(remoteId, projectId);
+      if (!active() || (await this.hasOpenHold(projectId, vm))) return;
+      const followed = this.followVmRecord(projectId, vm, state);
+      if (followed === null) return;
+      owner = followed;
+    }
+    const fence = this.gitOwner.fence(projectId);
+    if (state.step === 'create') {
       if (state.hasGit) {
         const home = this.files.device();
         const host = await this.host.syncDevice(remoteId);
@@ -686,14 +766,18 @@ export class RemoteFileSyncService {
         await this.files.addPeer(host);
         await this.host.syncPeer(remoteId, home);
         const ensureVm = () =>
-          this.host.syncFolders(remoteId, {
-            projectId,
-            kind: 'git',
-            type: owner === 'vm' ? 'sendonly' : 'receiveonly',
-            peerDeviceId: home.deviceId,
-            ignores: gitIgnores(true),
-            paused: true,
-          });
+          this.host.syncFolders(
+            remoteId,
+            {
+              projectId,
+              kind: 'git',
+              type: owner === 'vm' ? 'sendonly' : 'receiveonly',
+              peerDeviceId: home.deviceId,
+              ignores: gitIgnores(true),
+              paused: true,
+            },
+            fence,
+          );
         const ensureHome = () =>
           this.files.ensureFolder({
             projectId,
@@ -711,9 +795,9 @@ export class RemoteFileSyncService {
           await ensureVm();
           await ensureHome();
         }
-        await this.host.syncFolderType(remoteId, gitId, { paused: false });
+        await this.host.syncFolderType(remoteId, gitId, { paused: false }, fence);
         await this.files.updateFolder(gitId, { paused: false });
-        await Promise.all([this.host.syncScan(remoteId, gitId), this.files.rescan(gitId)]);
+        await Promise.all([this.host.syncScan(remoteId, gitId, fence), this.files.rescan(gitId)]);
       }
       state.step = state.hasGit ? 'settle' : 'ignores';
     }
@@ -739,7 +823,7 @@ export class RemoteFileSyncService {
       if (!active()) return;
       if (receiver.state === 'idle' && receiver.receiveOnlyChangedFiles > 0) {
         if (owner === 'vm') await this.files.revertLocalChanges(gitId);
-        else await this.host.syncRevert(remoteId, gitId);
+        else await this.host.syncRevert(remoteId, gitId, fence);
         return;
       }
       if (!evaluateCompletion(sender, receiver).done) {
@@ -770,10 +854,12 @@ export class RemoteFileSyncService {
           owner === 'vm'
             ? await this.guard.install(projectId, remoteId)
             : (
-                await this.host.installGitGuard(remoteId, projectId, {
-                  homeName: hostname(),
-                  reason: 'pc-git',
-                })
+                await this.host.installGitGuard(
+                  remoteId,
+                  projectId,
+                  { homeName: hostname(), reason: 'pc-git' },
+                  fence,
+                )
               ).warning;
       }
       state.step = 'done';

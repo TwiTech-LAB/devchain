@@ -83,7 +83,6 @@ const HOME_ALWAYS_PREFIXES = [
   '/api/templates',
   '/api/registry',
   '/api/preflight',
-  '/api/agent-time-buffers',
   '/api/epics/import-external-task',
   '/api/epics/external-sources',
   '/api/epics/time-summary',
@@ -92,6 +91,8 @@ const HOME_ALWAYS_PREFIXES = [
 // Epic time link boundaries live only at home, so time reads for any project go there.
 const HOME_ALWAYS_EPIC_TIME_LOGS = /^\/api\/epics\/[^/]+\/time-logs(?:\/|$)/;
 const HOME_ALWAYS_EPIC_TIME_READ = /^\/api\/epics\/[^/]+\/time(?:\/|$)/;
+// External task links live only at home; a remote rejects every integration route.
+const HOME_ALWAYS_EPIC_EXTERNAL_SOURCES = /^\/api\/epics\/[^/]+\/external-sources$/;
 
 // Routes outside the home-always set that carry the target project id in the path.
 const PROJECT_ID_IN_PATH = [/^\/api\/settings\/autoclean\/([^/]+)/];
@@ -156,7 +157,10 @@ export function isHomeAlwaysRoute(pathname: string, method = 'GET'): boolean {
   if (HOME_ALWAYS_PREFIXES.some((prefix) => matchesPrefix(pathname, prefix))) {
     return true;
   }
-  if (HOME_ALWAYS_EPIC_TIME_LOGS.test(pathname)) {
+  if (
+    HOME_ALWAYS_EPIC_TIME_LOGS.test(pathname) ||
+    HOME_ALWAYS_EPIC_EXTERNAL_SOURCES.test(pathname)
+  ) {
     return true;
   }
   return method === 'GET' && HOME_ALWAYS_EPIC_TIME_READ.test(pathname);

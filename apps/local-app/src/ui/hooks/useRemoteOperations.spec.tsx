@@ -15,6 +15,54 @@ jest.mock('@/ui/components/BackendBoundary', () => ({ useHomeQueryClient: jest.f
 jest.mock('./useHomeSocket', () => ({ useHomeSocket: jest.fn() }));
 jest.mock('@/ui/hooks/use-toast', () => ({ useToast: () => ({ toast: jest.fn() }) }));
 
+// Hook/cache integration is the cheapest layer for expanding batch history beyond list limits.
+it('loads every batch child even when it falls outside the recent finished list', async () => {
+  const home = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  jest.mocked(useHomeQueryClient).mockReturnValue(home);
+  const originalFetch = global.fetch;
+  const children = Array.from({ length: 25 }, (_, index) => ({
+    id: `child-${index}`,
+    kind: 'detach',
+    remoteId: 'r1',
+    projectId: `p${index}`,
+    state: 'done',
+    steps: [],
+    details: { parentOperationId: 'batch' },
+    createdAt: 'then',
+    updatedAt: 'then',
+  }));
+  const batch = {
+    id: 'batch',
+    kind: 'disconnect_all',
+    remoteId: 'r1',
+    projectId: null,
+    state: 'failed',
+    steps: [],
+    details: {},
+    children,
+    createdAt: 'then',
+    updatedAt: 'then',
+  };
+  global.fetch = jest.fn(async (input: RequestInfo | URL) => ({
+    ok: true,
+    json: async () => ({ items: String(input).includes('state=failed') ? [batch] : [] }),
+  })) as unknown as typeof fetch;
+  const { result, unmount } = renderHook(() => useRemoteOperations(), {
+    wrapper: ({ children }) => <QueryClientProvider client={home}>{children}</QueryClientProvider>,
+  });
+  try {
+    await waitFor(() => expect(result.current.operations).toHaveLength(26));
+    expect(result.current.operations.map((operation) => operation.id)).toEqual([
+      'batch',
+      ...children.map((child) => child.id),
+    ]);
+  } finally {
+    unmount();
+    home.clear();
+    global.fetch = originalFetch;
+  }
+});
+
 async function submitAction(
   action: RemoteOperationAction,
   expectedPath: string,

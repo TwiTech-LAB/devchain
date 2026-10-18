@@ -1,3 +1,4 @@
+import { sharedVmGuardStub } from '../../../common/test/shared-vm.stub';
 import { VmOperationsController } from './vm-operations.controller';
 import type { VmOperationsService } from './vm-operations.service';
 
@@ -8,11 +9,14 @@ describe('VmOperationsController', () => {
   const create = jest.fn().mockResolvedValue({ id: 'create-operation' });
   const reset = jest.fn().mockResolvedValue({ id: 'reset-operation' });
   const destroy = jest.fn().mockResolvedValue({ id: 'destroy-operation' });
-  const controller = new VmOperationsController({
-    create,
-    reset,
-    destroy,
-  } as unknown as VmOperationsService);
+  const controller = new VmOperationsController(
+    {
+      create,
+      reset,
+      destroy,
+    } as unknown as VmOperationsService,
+    sharedVmGuardStub(),
+  );
 
   beforeEach(() => jest.clearAllMocks());
 

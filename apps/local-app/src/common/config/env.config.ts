@@ -62,6 +62,7 @@ const envSchema = z.object({
   // Claim record and root helpers of a host VM (apps/host-bootstrap).
   DEVCHAIN_HOST_ETC_DIR: z.string().default('/etc/devchain-host'),
   DEVCHAIN_HOST_BIN_DIR: z.string().default('/usr/local/bin'),
+  DEVCHAIN_HOST_SYNCTHING_BINARY: z.string().default('/opt/devchain-host/bin/syncthing'),
   // The VM certificate for the app port, set by the host unit (apps/host-bootstrap).
   DEVCHAIN_HOST_TLS_KEY_FILE: optionalPathSchema,
   DEVCHAIN_HOST_TLS_CERT_FILE: optionalPathSchema,

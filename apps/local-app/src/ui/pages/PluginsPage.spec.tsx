@@ -239,20 +239,14 @@ describe('PluginsPage', () => {
     expect(global.fetch).not.toHaveBeenCalled();
   });
 
-  it('pins the provider filter to Claude and excludes Codex catalog rows', async () => {
+  it('shows Claude and Codex rows by default and keeps switches off for uninstalled plugins', async () => {
     policyItems = policyItems.filter((item) => item.source !== 'project');
     renderPage();
 
     const claudeRow = (await screen.findByText('Review Tools')).closest('tr');
     expect(claudeRow).not.toBeNull();
-    expect(screen.getByLabelText('Provider filter pinned to Claude')).toHaveTextContent('Claude');
-    expect(screen.queryByRole('combobox', { name: 'Filter by provider' })).not.toBeInTheDocument();
-    expect(screen.queryByText('Profile Tools')).not.toBeInTheDocument();
-    expect(
-      within(claudeRow as HTMLElement).getByRole('switch', {
-        name: 'DevChain Default policy for Review Tools',
-      }),
-    ).toBeChecked();
+    expect(screen.getByRole('combobox', { name: 'Filter by provider' })).toHaveTextContent('All');
+    expect(screen.getByText('Profile Tools')).toBeInTheDocument();
     expect(
       within(claudeRow as HTMLElement).getByRole('switch', {
         name: 'DevChain Default policy for Review Tools',
@@ -262,39 +256,68 @@ describe('PluginsPage', () => {
       within(claudeRow as HTMLElement).getByRole('switch', {
         name: 'This Project policy for Review Tools',
       }),
-    ).toBeChecked();
-    expect(
-      within(claudeRow as HTMLElement).getByRole('switch', {
-        name: 'This Project policy for Review Tools',
-      }),
     ).toBeDisabled();
-    expect(screen.queryByRole('columnheader', { name: 'Active' })).not.toBeInTheDocument();
-    expect(screen.queryByText('Inherited')).not.toBeInTheDocument();
+    expect(screen.queryByRole('columnheader', { name: 'Actions' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /install/i })).not.toBeInTheDocument();
     expect(global.fetch).toHaveBeenCalledWith(
       '/api/provider-plugins/policy?projectId=project-1',
       expect.objectContaining({ signal: expect.anything() }),
     );
+  });
 
-    {
-      const claudeRow = (await screen.findByText('Review Tools')).closest('tr');
-      expect(claudeRow).not.toBeNull();
-      expect(screen.queryByRole('columnheader', { name: 'Actions' })).not.toBeInTheDocument();
-      expect(screen.queryByRole('button', { name: /install/i })).not.toBeInTheDocument();
-      expect(
-        within(claudeRow as HTMLElement).getByRole('switch', {
-          name: 'DevChain Default policy for Review Tools',
+  it('filters rows by provider', async () => {
+    renderPage();
+
+    await screen.findByText('Review Tools');
+    fireEvent.click(screen.getByRole('combobox', { name: 'Filter by provider' }));
+    fireEvent.click(await screen.findByRole('option', { name: 'Codex' }));
+    expect(screen.getByText('Profile Tools')).toBeInTheDocument();
+    expect(screen.queryByText('Review Tools')).not.toBeInTheDocument();
+    expect(screen.queryByText('Workflow Tools')).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('combobox', { name: 'Filter by provider' }));
+    fireEvent.click(await screen.findByRole('option', { name: 'Claude' }));
+    expect(screen.getByText('Review Tools')).toBeInTheDocument();
+    expect(screen.getByText('Workflow Tools')).toBeInTheDocument();
+    expect(screen.queryByText('Profile Tools')).not.toBeInTheDocument();
+  });
+
+  it('says no plugins match when the provider filter leaves no rows', async () => {
+    catalogPlugins = [claudePlugin, claudeInstalledPlugin];
+    renderPage();
+
+    await screen.findByText('Review Tools');
+    fireEvent.click(screen.getByRole('combobox', { name: 'Filter by provider' }));
+    fireEvent.click(await screen.findByRole('option', { name: 'Codex' }));
+    expect(screen.getByText('No plugins match these filters.')).toBeInTheDocument();
+  });
+
+  it('saves a project rule for an installed Codex plugin', async () => {
+    policyItems = [];
+    renderPage();
+
+    const codexRow = (await screen.findByText('Profile Tools')).closest('tr');
+    expect(codexRow).not.toBeNull();
+    fireEvent.click(
+      within(codexRow as HTMLElement).getByRole('switch', {
+        name: 'This Project policy for Profile Tools',
+      }),
+    );
+
+    await waitFor(() => {
+      expect(global.fetch).toHaveBeenCalledWith(
+        '/api/provider-plugins/policy/project',
+        expect.objectContaining({
+          method: 'PUT',
+          body: JSON.stringify({
+            projectId: 'project-1',
+            providerId: 'provider-codex',
+            pluginId: 'profile@community',
+            enabled: true,
+          }),
         }),
-      ).toBeDisabled();
-      expect(
-        within(claudeRow as HTMLElement).getByRole('switch', {
-          name: 'This Project policy for Review Tools',
-        }),
-      ).toBeDisabled();
-      expect(global.fetch).not.toHaveBeenCalledWith(
-        '/api/provider-plugins/install',
-        expect.anything(),
       );
-    }
+    });
   });
 
   it('sorts installed project-effective plugins first, then by normal catalog order', async () => {
@@ -328,7 +351,40 @@ describe('PluginsPage', () => {
     expect(within(rows[0]).getByText('Alpha Active')).toBeInTheDocument();
     expect(within(rows[1]).getByText('Zulu Active')).toBeInTheDocument();
     expect(within(rows[2]).getByText('Inactive Plugin')).toBeInTheDocument();
-    expect(screen.queryByText('Profile Tools')).not.toBeInTheDocument();
+    expect(within(rows[3]).getByText('Profile Tools')).toBeInTheDocument();
+  });
+
+  describe('with more plugins than the page shows', () => {
+    beforeEach(() => {
+      policyItems = [];
+      catalogPlugins = Array.from({ length: 250 }, (_, index) => ({
+        ...claudePlugin,
+        pluginId: `plugin-${index}@directory`,
+        name: `Plugin ${String(index).padStart(3, '0')}`,
+      }));
+    });
+
+    it('shows the first 200 rows and says how many match', async () => {
+      renderPage();
+
+      await screen.findByText('Plugin 000');
+      expect(screen.getAllByRole('row')).toHaveLength(201);
+      expect(screen.queryByText('Plugin 200')).not.toBeInTheDocument();
+      expect(
+        screen.getByText('Showing 200 of 250 plugins. Search to narrow the list.'),
+      ).toBeInTheDocument();
+    });
+
+    it('finds a plugin beyond the first 200 by search', async () => {
+      renderPage();
+
+      await screen.findByText('Plugin 000');
+      fireEvent.change(screen.getByRole('textbox', { name: 'Search plugins' }), {
+        target: { value: 'Plugin 240' },
+      });
+      expect(screen.getByText('Plugin 240')).toBeInTheDocument();
+      expect(screen.getByText('1 plugin')).toBeInTheDocument();
+    });
   });
 
   it('covers search and Installed/Available status filters', async () => {

@@ -13,36 +13,20 @@ const { join, dirname, basename } = require('path');
 const { existsSync, writeFileSync, readFileSync, unlinkSync, mkdirSync, openSync, realpathSync } = require('fs');
 const { homedir, platform } = require('os');
 const { spawn, execSync, execFileSync } = require('child_process');
-const { pathToFileURL } = require('url');
 const { InteractiveCLI } = require('./lib/interactive-cli');
 const { runHostInstallCommand } = require('./lib/host-install');
-const { runGitOwnerCommand } = require('./lib/git-owner');
+const { runGitStatusCommand } = require('./lib/git-owner');
+const { installShim, runGitShimInstall } = require('./lib/git-shim');
 const { getLocalApiBaseUrl } = require('./lib/local-api');
+const {
+  getPidFilePath,
+  isProcessRunning,
+  readPidFile,
+  resolveSharedModuleSpecifier,
+} = require('./lib/local-app-process');
 const { runHostApiKeyReset } = require('./lib/host-api-key');
 const { QUEUE_NAME, runExclusive } = require('./lib/exclusive-run');
 const readline = require('readline');
-
-// Resolve @devchain/shared across packed (dist/node_modules) and workspace (packages/shared
-// or apps/local-app/node_modules) layouts. Node's ESM resolver only walks node_modules from
-// this script's location, where the workspace symlink does not exist, so dynamic imports must
-// use a concrete file:// URL.
-let _sharedModuleUrlCache;
-function resolveSharedModuleSpecifier() {
-  if (_sharedModuleUrlCache) return _sharedModuleUrlCache;
-  const candidates = [
-    join(__dirname, '..', 'dist', 'node_modules', '@devchain', 'shared', 'index.js'),
-    join(__dirname, '..', 'packages', 'shared', 'dist', 'index.js'),
-    join(__dirname, '..', 'node_modules', '@devchain', 'shared', 'dist', 'index.js'),
-    join(__dirname, '..', 'apps', 'local-app', 'node_modules', '@devchain', 'shared', 'dist', 'index.js'),
-  ];
-  for (const candidate of candidates) {
-    if (existsSync(candidate)) {
-      _sharedModuleUrlCache = pathToFileURL(candidate).href;
-      return _sharedModuleUrlCache;
-    }
-  }
-  return '@devchain/shared';
-}
 
 async function waitForHealth(url, { timeoutMs = 15000, intervalMs = 250 } = {}) {
   const start = Date.now();
@@ -574,33 +558,10 @@ function parseDbPath(db) {
   }
 }
 
-function getPidFilePath() {
-  const devchainDir = join(homedir(), '.devchain');
-  if (!existsSync(devchainDir)) {
-    mkdirSync(devchainDir, { recursive: true });
-  }
-  return join(devchainDir, 'devchain.pid');
-}
-
 function writePidFile(port, host) {
   const pidFile = getPidFilePath();
   const data = JSON.stringify({ pid: process.pid, port, host: host || '127.0.0.1', timestamp: Date.now() });
   writeFileSync(pidFile, data, 'utf8');
-}
-
-function readPidFile() {
-  const pidFile = getPidFilePath();
-  if (!existsSync(pidFile)) {
-    return null;
-  }
-  try {
-    const data = readFileSync(pidFile, 'utf8');
-    const parsed = JSON.parse(data);
-    if (parsed && !parsed.host) parsed.host = '127.0.0.1';
-    return parsed;
-  } catch {
-    return null;
-  }
 }
 
 function removePidFile() {
@@ -636,16 +597,6 @@ function getSudoStatus({
     if (error && error.code === 'ENOENT') return 'not installed';
     if (error && error.code === 'ETIMEDOUT') return 'unknown (sudo did not answer in 5 s)';
     return 'needs a password';
-  }
-}
-
-function isProcessRunning(pid) {
-  try {
-    // Sending signal 0 checks if process exists without killing it
-    process.kill(pid, 0);
-    return true;
-  } catch {
-    return false;
   }
 }
 
@@ -826,7 +777,7 @@ async function runHostPreflightChecks(
         '  - Install Codex:    npm i -g @openai/codex (example) or follow provider docs',
         '  - Install Claude:   npm i -g @anthropic-ai/claude-code (example) or follow provider docs',
         '  - Install agy:      curl -fsSL https://antigravity.google/cli/install.sh | bash or follow provider docs',
-        '  - Install OpenCode: go install github.com/opencode-ai/opencode@latest or follow provider docs',
+        '  - Install OpenCode: npm i -g @opencode/cli or follow provider docs',
         'Advanced: bypass with DEVCHAIN_SKIP_PROVIDER_CHECK=1',
       ].join('\n');
       if (opts.foreground) {
@@ -1263,6 +1214,14 @@ async function main(argv) {
         require('module').Module._initPaths();
       }
 
+      // Sessions put the shim first on PATH only once it exists; an old Git just gets no shim.
+      try {
+        const shim = installShim();
+        if (shim.error) log('warn', `Git shim not installed: ${shim.error}`);
+      } catch (error) {
+        log('warn', 'Git shim not installed', { error: String(error) });
+      }
+
       // Start server (main.js bootstraps immediately)
       const spinner = opts.foreground ? null : cli.spinner('Starting server');
       if (spinner) spinner.start();
@@ -1414,23 +1373,13 @@ async function main(argv) {
       });
     });
 
-  const git = program.command('git').description('Move Git control between this PC and the VM');
-  for (const name of ['status', 'take', 'return']) {
-    const command = git
-      .command(name)
-      .description(
-        {
-          status: 'Show Git control and any unfinished switch',
-          take: 'Move Git control to this PC',
-          return: 'Move Git control back to the VM',
-        }[name],
-      )
-      .option('--project <path>', 'Project folder (defaults to the current folder)');
-    if (name === 'take') {
-      command.option('--force', "Stop this project's agent sessions on the VM before the switch");
-    }
-    command.action(async (options) => {
-      process.exitCode = await runGitOwnerCommand(name, options, {
+  const git = program.command('git').description('Inspect where Git runs for a connected project');
+  git
+    .command('status')
+    .description('Show the Git owner, generation, in-flight writes, last checkpoint and warnings')
+    .option('--project <path>', 'Project folder (defaults to the current folder)')
+    .action(async (options) => {
+      process.exitCode = await runGitStatusCommand(options, {
         getMachineRole,
         getLocalApiBaseUrl: () =>
           getLocalApiBaseUrl({
@@ -1440,7 +1389,16 @@ async function main(argv) {
           }),
       });
     });
-  }
+
+  git
+    .command('shim')
+    .description('Manage the git shim that routes Git writes in connected projects')
+    .command('install')
+    .description('Write the git shim and print the PATH line and IDE settings')
+    .option('--shell', 'Put the shim first on PATH in your bash or zsh startup file')
+    .action((options) => {
+      process.exitCode = runGitShimInstall({ shell: Boolean(options.shell) });
+    });
 
   const host = program.command('host').description('Manage DevChain hosts');
 

@@ -127,7 +127,7 @@ describe('RemoteLiveSyncService', () => {
   });
 
   it.each(
-    (['force_sync', 'git_owner'] as const).flatMap((kind) =>
+    (['force_sync'] as const).flatMap((kind) =>
       (['running', 'failed'] as const).map((state) => ({ kind, state })),
     ),
   )(
@@ -174,7 +174,7 @@ describe('RemoteLiveSyncService', () => {
       expect(applier.apply).toHaveBeenCalledTimes(2);
       expect(storage.listRemoteOperations).toHaveBeenCalledWith({
         projectId: PROJECT,
-        kinds: ['force_sync', 'git_owner'],
+        kinds: ['force_sync'],
         states: ['running', 'failed'],
         limit: 1,
       });

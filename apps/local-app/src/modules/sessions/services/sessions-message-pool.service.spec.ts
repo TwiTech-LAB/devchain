@@ -15,7 +15,7 @@ jest.mock('../../../common/logging/logger', () => ({
 
 import { SessionsMessagePoolService } from './sessions-message-pool.service';
 import type { SessionsService } from './sessions.service';
-import type { SessionCoordinatorService } from './session-coordinator.service';
+import { SessionCoordinatorService } from './session-coordinator.service';
 import type { MessageActivityStreamService } from './message-activity-stream.service';
 import type { TerminalIOService } from '../../terminal/services/terminal-io/terminal-io.service';
 import { ShellForegroundError } from '../../terminal/services/terminal-io/delivery';
@@ -403,6 +403,221 @@ describe('SessionsMessagePoolService', () => {
       const [target, calledText] = mockTerminalIO.deliver.mock.calls[0];
       expect(target).toEqual({ name: 'tmux-1' });
       expect(calledText).toContain('Pooled message');
+    });
+  });
+
+  // Module-unit: a real FIFO coordinator exposes guard races without tmux or storage I/O.
+  describe('Guarded commands', () => {
+    let activeSession: ReturnType<SessionsService['getActiveSessionForAgent']>;
+
+    beforeEach(() => {
+      const coordinator = new SessionCoordinatorService();
+      mockCoordinator.withAgentLock.mockImplementation(coordinator.withAgentLock.bind(coordinator));
+      activeSession = { ...createActiveSession('agent-1'), activityState: 'idle' };
+      mockSessionsService.getActiveSessionForAgent.mockImplementation(() => activeSession);
+      mockSessionsService.listActiveSessions.mockImplementation(async () =>
+        activeSession ? [activeSession] : [],
+      );
+    });
+
+    it('delivers raw command text and submit keys to the exact idle session under one lock', async () => {
+      const result = await service.enqueue('agent-1', '/compact', {
+        source: 'test',
+        submitKeys: ['C-m'],
+        commandGuard: { sessionId: 'session-agent-1' },
+      });
+
+      expect(result).toEqual({ status: 'delivered', logEntryId: expect.any(String) });
+      expect(mockCoordinator.withAgentLock).toHaveBeenCalledTimes(1);
+      expect(mockTerminalIO.deliverImmediate).toHaveBeenCalledTimes(1);
+      expect(mockTerminalIO.deliverImmediate).toHaveBeenCalledWith(
+        { name: 'tmux-1' },
+        '/compact',
+        expect.objectContaining({ submitKeys: ['C-m'], confirm: false }),
+      );
+      expect(mockTerminalIO.deliver).not.toHaveBeenCalled();
+      expect(mockTerminalIO.deliverGuarded).not.toHaveBeenCalled();
+      expect(service.getMessageLog()).toEqual([
+        expect.objectContaining({
+          id: result.logEntryId,
+          text: '/compact',
+          status: 'delivered',
+          immediate: true,
+          nonce: undefined,
+        }),
+      ]);
+    });
+
+    it.each([
+      { state: 'missing', error: 'SESSION_CHANGED' },
+      { state: 'replaced', error: 'SESSION_CHANGED' },
+      { state: 'busy', error: 'AGENT_BUSY' },
+      { state: 'unknown', error: 'AGENT_BUSY' },
+      { state: 'draft_active', error: 'HUMAN_TYPING' },
+      { state: 'awaiting_stable_idle', error: 'HUMAN_TYPING' },
+    ])(
+      'fails and logs $error for a $state session without delivery or deferral',
+      async ({ state, error }) => {
+        if (state === 'missing') activeSession = null;
+        else if (state === 'replaced') {
+          activeSession = { ...createActiveSession('agent-1'), id: 'replacement' };
+        } else if (state === 'busy' || state === 'unknown') {
+          activeSession = {
+            ...createActiveSession('agent-1'),
+            activityState: state === 'busy' ? 'busy' : null,
+          };
+        } else {
+          const prompt = humanPromptState.recordPromptText('tmux-1');
+          if (state === 'awaiting_stable_idle') {
+            humanPromptState.transitionToAwaiting('tmux-1', prompt.generation);
+          }
+        }
+
+        const result = await service.enqueue('agent-1', '/compact', {
+          source: 'test',
+          deliveryMode: 'on_idle',
+          deferWhileHumanTyping: true,
+          commandGuard: { sessionId: 'session-agent-1' },
+        });
+
+        expect(result).toEqual({ status: 'failed', error, logEntryId: expect.any(String) });
+        expect(service.getMessageLog()).toEqual([
+          expect.objectContaining({
+            id: result.logEntryId,
+            status: 'failed',
+            error,
+            immediate: true,
+          }),
+        ]);
+        expect(mockActivityStream.broadcastFailed).toHaveBeenCalledWith(
+          expect.objectContaining({ id: result.logEntryId, error }),
+        );
+        expect(service.getPoolDetails()).toEqual([]);
+        await jest.advanceTimersByTimeAsync(30001);
+        expect(mockTerminalIO.deliverImmediate).not.toHaveBeenCalled();
+        expect(mockTerminalIO.deliver).not.toHaveBeenCalled();
+        expect(mockTerminalIO.deliverGuarded).not.toHaveBeenCalled();
+      },
+    );
+
+    it('rechecks activity after an earlier delivery takes the agent lock', async () => {
+      let releaseDelivery!: () => void;
+      const deliveryGate = new Promise<void>((resolve) => {
+        releaseDelivery = resolve;
+      });
+      let markDeliveryStarted!: () => void;
+      const deliveryStarted = new Promise<void>((resolve) => {
+        markDeliveryStarted = resolve;
+      });
+      mockTerminalIO.deliverImmediate.mockImplementationOnce(async () => {
+        markDeliveryStarted();
+        await deliveryGate;
+        activeSession = createActiveSession('agent-1');
+        return { confirmed: true, nonce: 'first', retryCount: 0 };
+      });
+      const firstDelivery = service.enqueue('agent-1', 'Earlier message', {
+        source: 'test',
+        deliveryMode: 'immediate',
+      });
+      await deliveryStarted;
+
+      const command = service.enqueue('agent-1', '/compact', {
+        source: 'test',
+        projectId: 'project-1',
+        agentName: 'Test Agent',
+        commandGuard: { sessionId: 'session-agent-1' },
+      });
+      await Promise.resolve();
+      expect(mockCoordinator.withAgentLock).toHaveBeenCalledTimes(2);
+      expect(mockSessionsService.getActiveSessionForAgent).not.toHaveBeenCalled();
+
+      releaseDelivery();
+      await expect(firstDelivery).resolves.toMatchObject({ status: 'delivered' });
+      await expect(command).resolves.toMatchObject({ status: 'failed', error: 'AGENT_BUSY' });
+      expect(mockTerminalIO.deliverImmediate).toHaveBeenCalledTimes(1);
+      expect(mockTerminalIO.deliverImmediate.mock.calls[0][1]).toBe('Earlier message');
+      expect(service.getMessageLog()).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ text: '/compact', status: 'failed', error: 'AGENT_BUSY' }),
+        ]),
+      );
+    });
+
+    it('fails as busy while an on_idle claim delivers outside the agent lock', async () => {
+      mockSessionsService.getSession.mockImplementation(() => activeSession);
+      let releaseClaim!: () => void;
+      const claimGate = new Promise<void>((resolve) => {
+        releaseClaim = resolve;
+      });
+      let markClaimStarted!: () => void;
+      const claimStarted = new Promise<void>((resolve) => {
+        markClaimStarted = resolve;
+      });
+      mockTerminalIO.deliverGuarded.mockImplementationOnce(async () => {
+        markClaimStarted();
+        await claimGate;
+        return { confirmed: true, nonce: 'first', retryCount: 0 };
+      });
+      const earlier = service.enqueue('agent-1', 'Earlier idle message', {
+        source: 'test',
+        deliveryMode: 'on_idle',
+      });
+      await claimStarted;
+
+      await expect(
+        service.enqueue('agent-1', '/compact', {
+          source: 'test',
+          commandGuard: { sessionId: 'session-agent-1' },
+        }),
+      ).resolves.toMatchObject({ status: 'failed', error: 'AGENT_BUSY' });
+      expect(mockTerminalIO.deliverImmediate).not.toHaveBeenCalled();
+
+      releaseClaim();
+      await expect(earlier).resolves.toMatchObject({ status: 'delivered' });
+      expect(mockTerminalIO.deliverGuarded).toHaveBeenCalledTimes(1);
+      expect(mockTerminalIO.deliverImmediate).not.toHaveBeenCalled();
+    });
+
+    it('keeps the command separate from pending pooled and deferred messages', async () => {
+      const pooled = await service.enqueue('agent-1', 'Pooled message', { source: 'test' });
+      activeSession = createActiveSession('agent-1');
+      const deferred = await service.enqueue('agent-1', 'Idle message', {
+        source: 'test',
+        deliveryMode: 'on_idle',
+      });
+      activeSession = { ...createActiveSession('agent-1'), activityState: 'idle' };
+
+      await expect(
+        service.enqueue('agent-1', '/compact', {
+          source: 'test',
+          deliveryMode: 'on_idle',
+          deferWhileHumanTyping: true,
+          commandGuard: { sessionId: 'session-agent-1' },
+        }),
+      ).resolves.toMatchObject({ status: 'delivered' });
+
+      expect(service.getPoolDetails()).toEqual([
+        expect.objectContaining({
+          messageCount: 2,
+          messages: [
+            expect.objectContaining({ id: pooled.logEntryId }),
+            expect.objectContaining({ id: deferred.logEntryId }),
+          ],
+        }),
+      ]);
+      expect(mockTerminalIO.deliverImmediate.mock.calls.map((call) => call[1])).toEqual([
+        '/compact',
+      ]);
+      expect(mockTerminalIO.deliverGuarded).not.toHaveBeenCalled();
+
+      await service.flushNow('agent-1');
+      expect(mockTerminalIO.deliver.mock.calls.map((call) => call[1])).toEqual(['Pooled message']);
+      expect(service.getPoolDetails()).toEqual([
+        expect.objectContaining({
+          messageCount: 1,
+          messages: [expect.objectContaining({ id: deferred.logEntryId })],
+        }),
+      ]);
     });
   });
 

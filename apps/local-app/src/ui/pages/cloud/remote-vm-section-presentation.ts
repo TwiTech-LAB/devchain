@@ -7,6 +7,7 @@ import type { ApiKeyDialog } from './ApiKeyDialog';
 import type { ChangeLoginsDialog } from './ChangeLoginsDialog';
 import type { ConnectDialog } from './ConnectDialog';
 import type { DisconnectProjectDialog } from './DisconnectProjectDialog';
+import type { DisconnectAllDialog } from './DisconnectAllDialog';
 import type { FileSyncSettingsDialog } from './FileSyncSettingsDialog';
 import type { FirstRunChecklist } from './FirstRunChecklist';
 import type { FixFileSyncDialog } from './FixFileSyncDialog';
@@ -63,6 +64,7 @@ export interface RemoteVmSectionPresentation {
     readonly fileSyncSettings: ComponentProps<typeof FileSyncSettingsDialog> | null;
     readonly connect: ComponentProps<typeof ConnectDialog> | null;
     readonly disconnect: ComponentProps<typeof DisconnectProjectDialog> | null;
+    readonly disconnectAll: ComponentProps<typeof DisconnectAllDialog> | null;
     readonly fixFileSync: ComponentProps<typeof FixFileSyncDialog> | null;
     readonly forceSync: {
       readonly key: string;

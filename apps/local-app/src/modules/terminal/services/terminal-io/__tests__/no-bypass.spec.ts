@@ -64,7 +64,11 @@ const NODE_PTY_IMPORT_PATTERN = /from\s+['"]node-pty['"]|require\(\s*['"]node-pt
 
 const PROCESS_EXECUTOR_DIR = 'modules/terminal/services/process-executor/';
 
-const CHILD_PROCESS_ALLOWLIST: ReadonlyArray<{ path: string; reason: string }> = [];
+const CHILD_PROCESS_ALLOWLIST: ReadonlyArray<{ path: string; reason: string }> = [
+  // backlog: aa806917 — streaming stdin in ProcessExecutor; `codex app-server` exits on stdin EOF
+  { path: 'modules/provider-usage/checkers/codex.checker.ts', reason: 'backlog: aa806917' },
+  { path: 'modules/providers/services/codex-app-server.client.ts', reason: 'backlog: aa806917' },
+];
 
 const NODE_PTY_ALLOWLIST: ReadonlyArray<{ path: string; reason: string }> = [
   // backlog: 721b64bf — pty.service.ts streaming (attach-to-existing-session pattern)

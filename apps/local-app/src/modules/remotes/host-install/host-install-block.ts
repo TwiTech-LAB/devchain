@@ -4,8 +4,11 @@ export const HOST_CERTIFICATE_PATH = '/etc/devchain-host/tls/cert.pem';
 /** Prints the VM certificate's SHA-256 fingerprint on the VM; no sudo needed. */
 export const HOST_CERTIFICATE_FINGERPRINT_COMMAND = `openssl x509 -in ${HOST_CERTIFICATE_PATH} -noout -fingerprint -sha256`;
 export const HOST_INSTALL_MIN_MEMORY_MIB = 3584;
+/** The instance layout a host package supports; apps/host-bootstrap/lib/host-install-pins.js owns the VM side. */
+export const SHARED_VM_PROTOCOL = 1;
 
 export interface HostInstallPins {
+  sharedVmProtocol?: number;
   nodeVersion: string;
   syncthingVersion: string;
   npmRegistry: string;
@@ -338,7 +341,7 @@ devchain_host_install() {
     done < <(ip -o -4 addr show scope global 2>/dev/null | awk '{ print $4 }')
   fi
   if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q '^Status: active'; then
-    devchain_warn "ufw is active; allow TCP ports $DEVCHAIN_BOOTSTRAP_PORT, $DEVCHAIN_HOME_PORT and 22000."
+    devchain_warn "ufw is active; allow TCP ports $DEVCHAIN_BOOTSTRAP_PORT and $DEVCHAIN_HOME_PORT from this PC. After setup, allow the Syncthing listen port shown in VM details."
   fi
   local account=''
   if command -v getent >/dev/null 2>&1; then account="$(getent passwd "$DEVCHAIN_HOME_USER" 2>/dev/null || true)"; fi

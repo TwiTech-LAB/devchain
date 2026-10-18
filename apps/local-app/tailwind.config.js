@@ -60,6 +60,7 @@ module.exports = {
         overlay: 'hsl(var(--overlay))',
         'status-ok': 'hsl(var(--status-ok) / <alpha-value>)',
         'status-warn': 'hsl(var(--status-warn) / <alpha-value>)',
+        'status-danger': 'hsl(var(--status-danger) / <alpha-value>)',
         'status-info': 'hsl(var(--status-info) / <alpha-value>)',
         'switch-off': 'hsl(var(--switch-off))',
       },

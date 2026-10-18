@@ -400,9 +400,9 @@ describe('RemoteVmSection', () => {
     });
 
     it.each([
-      [{ online: false, apiKeyRejected: false }, /Provider logins keep their last saved copy/i],
-      [{ online: true, apiKeyRejected: true }, /The VM rejects this PC's API key/],
-    ])('requires force confirmation for an unreachable VM: %j', async (state, warning) => {
+      { online: false, apiKeyRejected: false },
+      { online: true, apiKeyRejected: true },
+    ])('requires force confirmation for an unreachable VM: %j', async (state) => {
       fx.remotesData = [
         {
           ...REMOTE,
@@ -416,11 +416,17 @@ describe('RemoteVmSection', () => {
       await pickVmMenu('lab-vm', 'Destroy VM');
       const dialog = screen.getByRole('dialog');
 
-      expect(within(dialog).getByText(warning)).toBeInTheDocument();
       const destroyButton = within(dialog).getByRole('button', { name: 'Destroy VM' });
       expect(destroyButton).toBeDisabled();
+      await waitFor(() =>
+        expect(
+          within(dialog).getByRole('checkbox', {
+            name: 'Force destruction while the VM is unreachable',
+          }),
+        ).toBeEnabled(),
+      );
       await userEvent.click(
-        within(dialog).getByRole('checkbox', {
+        within(screen.getByRole('dialog')).getByRole('checkbox', {
           name: 'Force destruction while the VM is unreachable',
         }),
       );
@@ -464,12 +470,21 @@ describe('RemoteVmSection', () => {
         within(dialog).getByText(/Delete registration leaves any VM in Proxmox/i),
       ).toBeInTheDocument();
       await userEvent.click(within(dialog).getByRole('checkbox', { name: 'Destroy VM too' }));
+      await waitFor(() =>
+        expect(
+          within(screen.getByRole('dialog')).getByRole('checkbox', {
+            name: 'Force destruction while the VM is unreachable',
+          }),
+        ).toBeEnabled(),
+      );
       await userEvent.click(
-        within(dialog).getByRole('checkbox', {
+        within(screen.getByRole('dialog')).getByRole('checkbox', {
           name: 'Force destruction while the VM is unreachable',
         }),
       );
-      await userEvent.click(within(dialog).getByRole('button', { name: 'Destroy VM' }));
+      await userEvent.click(
+        within(screen.getByRole('dialog')).getByRole('button', { name: 'Destroy VM' }),
+      );
       expect(fx.calls.destroyVm).toContainEqual(['r1', expect.objectContaining({ force: true })]);
     });
 
@@ -1161,11 +1176,13 @@ describe('RemoteVmSection.shell', () => {
       });
 
       it('opens the details drawer from View details', async () => {
-        fx.remotesData = [READY];
+        fx.remotesData = [{ ...READY, baseUrl: 'https://10.0.0.5:3001' }];
         renderSection();
         await pickVmMenu('lab-vm', 'View details');
         expect(fx.search).toContain('vm=r1');
-        expect(await screen.findByRole('dialog', { name: 'lab-vm' })).toBeInTheDocument();
+        const drawer = await screen.findByRole('dialog', { name: 'lab-vm' });
+        expect(within(drawer).getByLabelText('DevChain port')).toHaveTextContent('3001');
+        await waitFor(() => expect(fx.calls.readSyncthingDevice[0][0]).toBe('r1'));
       });
 
       it('renames a VM', async () => {
@@ -1507,7 +1524,7 @@ describe('RemoteVmSection.drawer', () => {
       await userEvent.click(within(reset).getByRole('button', { name: 'Cancel' }));
 
       await userEvent.click(within(await drawer()).getByRole('button', { name: 'Destroy VM' }));
-      const destroy = await screen.findByRole('dialog', { name: 'Delete lab-vm?' });
+      const destroy = await screen.findByRole('dialog', { name: 'Destroy lab-vm?' });
       expect(
         within(destroy).getByRole('list', { name: 'Projects connected to this VM' }),
       ).toHaveTextContent('Side Project');

@@ -69,7 +69,7 @@ export const epicMetadata: ToolMetadataEntry[] = [
   {
     name: 'devchain_list_assigned_epics_tasks',
     description:
-      'List epics assigned to the specified agent within the project resolved from the session',
+      'List epics assigned to the specified agent within the project resolved from the session. Epics with a linked lane include worktreePath; work in that lane by path and set it up from the project root.',
     inputSchema: {
       type: 'object',
       required: ['sessionId', 'agentName'],
@@ -143,7 +143,7 @@ export const epicMetadata: ToolMetadataEntry[] = [
   {
     name: 'devchain_get_epic_by_id',
     description:
-      "Fetch a single epic, including comments and related hierarchy details. The parent is a summary ({ id, title, status, agentName }); pass includeParentDescription: true to also get the parent's full description for phase context, or call this tool with the parent id",
+      "Fetch a single epic, including comments and related hierarchy details. Linked lanes appear in worktrees with name, path, branch, baseBranch and projectRootPath, plus worktreeInstruction telling the worker to work by path and set up the lane from the root; both fields are omitted when no lane is linked. The parent is a summary ({ id, title, status, agentName }); pass includeParentDescription: true to also get the parent's full description for phase context, or call this tool with the parent id",
     inputSchema: {
       type: 'object',
       required: ['sessionId', 'id'],

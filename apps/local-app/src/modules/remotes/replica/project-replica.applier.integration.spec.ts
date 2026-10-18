@@ -7,6 +7,12 @@ import { BUILT_IN_SKILL_SOURCE_NAMES } from '../../../common/constants/built-in-
  * built by the real builder so the round trip is covered end to end.
  */
 import type Database from 'better-sqlite3';
+import fs from 'node:fs';
+import { drizzle } from 'drizzle-orm/better-sqlite3';
+import { VM_DESTROY_FENCE_PATH } from '../../../common/config/vm-destroy-fence';
+import { TransactionRunner } from '../../storage/db/transaction-runner';
+import { HostSharedVmStore } from '../host/host-shared-vm.store';
+import { readAbandonedProjects } from '../../storage/local/helpers/host-abandoned-projects';
 import { randomUUID } from 'node:crypto';
 import type { ProjectReplicaScope, ProjectReplicaV1 } from '@devchain/shared';
 import { ReplicaApplyError } from '../../../common/errors/error-types';
@@ -133,6 +139,7 @@ describe('ProjectReplicaApplier (integration)', () => {
   });
 
   afterEach(() => {
+    jest.restoreAllMocks();
     home.close();
     host.close();
   });
@@ -147,6 +154,153 @@ describe('ProjectReplicaApplier (integration)', () => {
     if (!result.ok) throw new Error(JSON.stringify(result.errors));
     return result.replica;
   }
+
+  // Storage integration retains real transaction admission and commit/rollback;
+  // only the machine-wide root-owned fence file is substituted.
+  function fenceFixture(): { set: (value: string | null) => void } {
+    const read = fs.readFileSync;
+    let value: string | null = null;
+    jest.spyOn(fs, 'readFileSync').mockImplementation(((
+      file: fs.PathOrFileDescriptor,
+      ...args: unknown[]
+    ) => {
+      if (file !== VM_DESTROY_FENCE_PATH) return Reflect.apply(read, fs, [file, ...args]);
+      expect(host.inTransaction).toBe(true);
+      if (value === null) throw Object.assign(new Error('absent'), { code: 'ENOENT' });
+      return value;
+    }) as typeof fs.readFileSync);
+    return {
+      set: (next) => {
+        value = next;
+      },
+    };
+  }
+
+  const activeFence = () =>
+    JSON.stringify({
+      ownerUser: 'alice',
+      operationId: 'destroy-1',
+      expiresAt: new Date(Date.now() + 60_000).toISOString(),
+    });
+
+  it('refuses an import queued before the fence when its write transaction starts after it', async () => {
+    const replica = await build('attach');
+    const fence = fenceFixture();
+    const store = new HostSharedVmStore(drizzle(host));
+    await store.abandon('A');
+    let release!: () => void;
+    let entered!: () => void;
+    const started = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const blocked = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const holding = new TransactionRunner(host).runImmediateAsync(async () => {
+      entered();
+      await blocked;
+    });
+    await started;
+    const importing = applier.apply(replica, {
+      mode: 'full',
+      remoteId: null,
+      cursor: T,
+      frozenAt: T,
+    });
+    const refusal = expect(importing).rejects.toMatchObject({
+      code: 'VM_DESTROY_PENDING',
+      statusCode: 409,
+      message: expect.stringContaining('alice'),
+    });
+    fence.set(activeFence());
+    release();
+    await holding;
+    await refusal;
+    expect(store.connectedCount()).toBe(0);
+    expect(host.prepare('SELECT id FROM projects').all()).toEqual([]);
+    expect(readAbandonedProjects(host)).toEqual(['A']);
+    expect(syncedEvents(host)).toEqual([]);
+  });
+
+  it('counts a committed frozen import after a fence is written and excludes templates and abandonment without deleting rows', async () => {
+    const fence = fenceFixture();
+    const store = new HostSharedVmStore(drizzle(host));
+    await applier.apply(await build('attach'), {
+      mode: 'full',
+      remoteId: null,
+      cursor: T,
+      frozenAt: T,
+    });
+    fence.set(activeFence());
+    hostSeed.seedProject('template');
+    host.prepare('UPDATE projects SET is_template = 1 WHERE id = ?').run('template');
+    expect(store.connectedCount()).toBe(1);
+    await store.abandon('A');
+    await store.abandon('A');
+    expect(store.connectedCount()).toBe(0);
+    expect(host.prepare('SELECT id, frozen_at FROM projects WHERE id = ?').get('A')).toEqual({
+      id: 'A',
+      frozen_at: T,
+    });
+    expect(readAbandonedProjects(host)).toEqual(['A']);
+    const exported = await build('attach', hostBuilder);
+    expect(exported.tables.project_settings?.map(({ key }) => key)).not.toContain(
+      'host.abandonedProjects',
+    );
+    expect(exported.tables.instance_settings).not.toHaveProperty('host.abandonedProjects');
+  });
+
+  it('treats an expired fence as absent and atomically clears abandonment on reimport', async () => {
+    const fence = fenceFixture();
+    const store = new HostSharedVmStore(drizzle(host));
+    await store.abandon('A');
+    await store.abandon('unrelated');
+    fence.set(
+      JSON.stringify({
+        ownerUser: 'alice',
+        operationId: 'destroy-1',
+        expiresAt: new Date(Date.now() - 1).toISOString(),
+      }),
+    );
+    await applier.apply(await build('attach'), {
+      mode: 'full',
+      remoteId: null,
+      cursor: T,
+      frozenAt: T,
+    });
+    expect(readAbandonedProjects(host)).toEqual(['unrelated']);
+    expect(store.connectedCount()).toBe(1);
+    await hostStorage.releaseProject('A');
+    expect(store.connectedCount()).toBe(0);
+  });
+
+  it('rolls back abandonment clearing when the imported transaction fails', async () => {
+    fenceFixture();
+    const store = new HostSharedVmStore(drizzle(host));
+    await store.abandon('A');
+    const replica = await build('attach');
+    await expect(
+      hostStorage.applyProjectReplica(
+        replica,
+        'full',
+        () => {
+          throw new Error('event failed');
+        },
+        { frozenAt: T },
+      ),
+    ).rejects.toThrow('event failed');
+    expect(readAbandonedProjects(host)).toEqual(['A']);
+    expect(host.prepare('SELECT id FROM projects').all()).toEqual([]);
+  });
+
+  it.each(['{}', 'not-json'])('refuses import with an invalid VM fence %s', async (value) => {
+    const replica = await build('attach');
+    fenceFixture().set(value);
+    await expect(
+      applier.apply(replica, { mode: 'full', remoteId: null, cursor: T, frozenAt: T }),
+    ).rejects.toMatchObject({ code: 'VM_FENCE_INVALID' });
+    expect(host.prepare('SELECT id FROM projects').all()).toEqual([]);
+  });
 
   function snapshot(db: Database.Database): Record<string, unknown[]> {
     return Object.fromEntries(

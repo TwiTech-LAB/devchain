@@ -6,7 +6,13 @@
  * (`providers/adapters/provider-adapter.factory.ts`), not this table.
  */
 
+import { assertSupportedOpencodeVersion } from '../providers/adapters/opencode-cli-version';
+import {
+  opencodeCommandArgs,
+  opencodeV2CommandArgs,
+} from '../providers/adapters/provider-cli-policy';
 import type { ProviderAuthPayload } from '../storage/models/domain.models';
+import { parseOpencodeV2Export } from './opencode-credentials';
 
 /** An env-var login (`CLAUDE_CODE_OAUTH_TOKEN=…`) pasted as a static entry. */
 export interface ProviderAuthEnvSpec {
@@ -56,6 +62,8 @@ export function specAcceptsPayload(
 
 /** The single `auth.json` every selected OpenCode entry is composed into. */
 export const OPENCODE_AUTH_FILE_PATH = '.local/share/opencode/auth.json';
+/** OpenCode 2 keeps its logins in this DB (the `credential` table), not in `auth.json`. */
+export const OPENCODE_DB_FILE_PATH = '.local/share/opencode/opencode.db';
 
 export function opencodeEntries(
   payload: ProviderAuthPayload,
@@ -155,6 +163,12 @@ export interface ProviderAuthLoginAdapter {
     entries: ProviderAuthGeneratedEntry[],
     bin: ProviderAuthBinResolver,
   ): ProviderAuthVerifySpec;
+  /**
+   * Set when the login depends on the CLI version: the generator probes the
+   * provider's own CLI and runs the returned variant instead. Throws for an
+   * unsupported version.
+   */
+  forCliVersion?(cliVersion: string, binPath: string): ProviderAuthLoginAdapter;
 }
 
 /** gh prefers these over its config dir, and Copilot over its own token variable. */
@@ -176,7 +190,10 @@ export type ProviderAuthVerifyOutcome = { ok: true } | { ok: false; hint: string
  * `agy` and `copilot` make one model call each.
  */
 export interface ProviderAuthVerifyCheck {
-  argv(bin: ProviderAuthBinResolver): string[];
+  /** When true, callers probe the provider's CLI and pass its `--version` output to `argv`. */
+  readonly requiresCliVersion?: true;
+  /** Throws for an unsupported `cliVersion`. */
+  argv(bin: ProviderAuthBinResolver, cliVersion?: string): string[];
   /** `opencodeProviderIds`: the OpenCode ids that must be listed. */
   check(output: string, context: { opencodeProviderIds: string[] }): ProviderAuthVerifyOutcome;
 }
@@ -224,7 +241,13 @@ export const PROVIDER_AUTH_VERIFY: Record<string, ProviderAuthVerifyCheck> = {
   },
   // The list shows display names ("OpenAI oauth"), so ids match loosely.
   opencode: {
-    argv: (bin) => [bin('opencode'), 'auth', 'list'],
+    requiresCliVersion: true,
+    argv: (bin, cliVersion) => {
+      const argv = [bin('opencode'), 'auth', 'list'];
+      return cliVersion === undefined
+        ? argv
+        : opencodeCommandArgs(assertSupportedOpencodeVersion(cliVersion, argv[0]), argv);
+    },
     check: (output, { opencodeProviderIds }) => {
       const listed = alphanumeric(output);
       const missing = opencodeProviderIds.filter((id) => !listed.includes(alphanumeric(id)));
@@ -252,10 +275,11 @@ function verifySpec(
   env: ProviderAuthLoginEnv,
   entries: ProviderAuthGeneratedEntry[],
   bin: ProviderAuthBinResolver,
+  cliVersion?: string,
 ): ProviderAuthVerifySpec {
   const verify = PROVIDER_AUTH_VERIFY[provider];
   return {
-    argv: verify.argv(bin),
+    argv: verify.argv(bin, cliVersion),
     env,
     accepts: (output) => verify.check(output, { opencodeProviderIds: opencodeIds(entries) }).ok,
   };
@@ -311,6 +335,72 @@ const opencodeIsolation = (dir: string): ProviderAuthLoginEnv => ({
 });
 const AGY_CAPTURE_FILE = `home/${AGY_TOKEN_FILE_PATH}`;
 
+/** One family per `oauth` login; `api` keys are reusable and imported from the PC instead. */
+function opencodeOauthFamilies(
+  logins: Record<string, unknown>,
+  what: string,
+): ProviderAuthGeneratedEntry[] {
+  const entries: ProviderAuthGeneratedEntry[] = [];
+  for (const [providerId, entry] of Object.entries(logins)) {
+    if (!entry || typeof entry !== 'object' || (entry as { type?: unknown }).type !== 'oauth') {
+      continue;
+    }
+    entries.push({
+      kind: 'family',
+      labelSuffix: providerId,
+      payload: {
+        payloadKind: 'opencode-entry',
+        providerId,
+        entry: entry as Record<string, unknown>,
+      },
+      secrets: stringLeaves(entry),
+    });
+  }
+  if (entries.length === 0) throw new Error(`${what} has no oauth login`);
+  return entries;
+}
+
+/**
+ * OpenCode 2 keeps logins in its DB. Every command needs `--standalone`: without
+ * it the shared daemon serves the user's real store, not the isolated one.
+ */
+function opencodeLoginV2(cliVersion: string): ProviderAuthLoginAdapter {
+  return {
+    isolationEnv: opencodeIsolation,
+    prepareDirs: [],
+    loginCommand: (bin) => opencodeV2CommandArgs([bin('opencode'), 'auth', 'login']),
+    capture: {
+      kind: 'command',
+      whenFile: 'opencode/opencode.db',
+      command: (bin) => opencodeV2CommandArgs([bin('opencode'), 'auth', 'export']),
+    },
+    parse: (captured) => {
+      if (typeof captured !== 'string') throw new Error('expected the auth export output');
+      return opencodeOauthFamilies(parseOpencodeV2Export(captured), 'auth export');
+    },
+    verifyCommand: (dir, entries, bin) =>
+      verifySpec('opencode', opencodeIsolation(dir), entries, bin, cliVersion),
+  };
+}
+
+const opencodeLoginV1: ProviderAuthLoginAdapter = {
+  isolationEnv: opencodeIsolation,
+  prepareDirs: [],
+  loginCommand: (bin) => [bin('opencode'), 'auth', 'login'],
+  capture: { kind: 'files', files: ['opencode/auth.json'] },
+  parse: (captured) =>
+    opencodeOauthFamilies(
+      jsonObject(filesOf(captured)['opencode/auth.json'], 'auth.json'),
+      'auth.json',
+    ),
+  verifyCommand: (dir, entries, bin) =>
+    verifySpec('opencode', opencodeIsolation(dir), entries, bin),
+  forCliVersion: (cliVersion, binPath) =>
+    assertSupportedOpencodeVersion(cliVersion, binPath).major === 2
+      ? opencodeLoginV2(cliVersion)
+      : opencodeLoginV1,
+};
+
 export const PROVIDER_AUTH_LOGIN_ADAPTERS: Record<string, ProviderAuthLoginAdapter> = {
   codex: {
     isolationEnv: codexIsolation,
@@ -341,36 +431,7 @@ export const PROVIDER_AUTH_LOGIN_ADAPTERS: Record<string, ProviderAuthLoginAdapt
     },
     verifyCommand: (dir, entries, bin) => verifySpec('agy', agyIsolation(dir), entries, bin),
   },
-  opencode: {
-    isolationEnv: opencodeIsolation,
-    prepareDirs: [],
-    loginCommand: (bin) => [bin('opencode'), 'auth', 'login'],
-    capture: { kind: 'files', files: ['opencode/auth.json'] },
-    parse: (captured) => {
-      const auth = jsonObject(filesOf(captured)['opencode/auth.json'], 'auth.json');
-      const entries: ProviderAuthGeneratedEntry[] = [];
-      for (const [providerId, entry] of Object.entries(auth)) {
-        // `api` keys are reusable and imported from the PC's own file instead.
-        if (!entry || typeof entry !== 'object' || (entry as { type?: unknown }).type !== 'oauth') {
-          continue;
-        }
-        entries.push({
-          kind: 'family',
-          labelSuffix: providerId,
-          payload: {
-            payloadKind: 'opencode-entry',
-            providerId,
-            entry: entry as Record<string, unknown>,
-          },
-          secrets: stringLeaves(entry),
-        });
-      }
-      if (entries.length === 0) throw new Error('auth.json has no oauth login');
-      return entries;
-    },
-    verifyCommand: (dir, entries, bin) =>
-      verifySpec('opencode', opencodeIsolation(dir), entries, bin),
-  },
+  opencode: opencodeLoginV1,
   copilot: {
     isolationEnv: (dir) => ({ set: { GH_CONFIG_DIR: dir }, unset: GITHUB_TOKEN_VARIABLES }),
     prepareDirs: [],

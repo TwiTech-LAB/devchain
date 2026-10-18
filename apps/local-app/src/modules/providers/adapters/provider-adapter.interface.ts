@@ -72,6 +72,21 @@ export interface BuildLaunchArgsInput {
    * is configured for the project.
    */
   initialPrompt?: string;
+  /**
+   * Raw `<bin> --version` output of the binary this launch runs. Supplied only for
+   * adapters that set `requiresCliVersion`.
+   */
+  cliVersion?: string;
+  /** The binary this launch runs; lets an adapter name it in version errors. */
+  providerBinPath?: string;
+  /** The launch env resolved so far. An adapter that returns `env` builds on this one. */
+  env?: Readonly<Record<string, string>> | null;
+}
+
+export interface BuildLaunchArgsResult {
+  argv: string[];
+  /** When set, replaces the launch env. Leave undefined to keep the input env. */
+  env?: Record<string, string>;
 }
 
 export interface ProviderAdapter {
@@ -113,5 +128,10 @@ export interface ProviderAdapter {
    * (`PROVIDER_ROOTS` is `os.homedir()`-relative). Provider-agnostic mechanism.
    */
   readonly launchRejectEnv?: readonly string[];
-  buildLaunchArgs(input: BuildLaunchArgsInput): { argv: string[] };
+  /**
+   * When true, the launch pipeline probes `<bin> --version` before every launch and
+   * restore and passes the output to `buildLaunchArgs` as `cliVersion`.
+   */
+  readonly requiresCliVersion?: true;
+  buildLaunchArgs(input: BuildLaunchArgsInput): BuildLaunchArgsResult;
 }

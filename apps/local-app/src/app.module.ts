@@ -44,6 +44,8 @@ import { AllExceptionsFilter } from './common/filters/http-exception.filter';
 import { AllWsExceptionsFilter } from './common/filters/ws-exception.filter';
 import { ExternalIntegrationsModule } from './modules/external-integrations/external-integrations.module';
 import { EpicTimeModule } from './modules/epic-time/epic-time.module';
+import { WorktreesModule } from './modules/worktrees/worktrees.module';
+import { ProviderUsageModule } from './modules/provider-usage/provider-usage.module';
 
 @Module({
   imports: [
@@ -88,6 +90,8 @@ import { EpicTimeModule } from './modules/epic-time/epic-time.module';
     AgentMessageDeliveryModule,
     ExternalIntegrationsModule,
     EpicTimeModule,
+    WorktreesModule,
+    ProviderUsageModule,
   ],
   controllers: [],
   providers: [

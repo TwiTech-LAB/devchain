@@ -173,6 +173,7 @@ export interface UpdateRemoteProjectBinding {
 export const REMOTE_OPERATION_KIND_IDS = [
   'attach',
   'detach',
+  'disconnect_all',
   'force_sync',
   'git_owner',
   'create_vm',
@@ -1044,6 +1045,30 @@ export type UpdateEpicComment = Partial<Omit<EpicComment, 'id' | 'createdAt' | '
 // ============================================
 
 export type EnvScopesMap = Record<string, string[]>;
+
+export interface Worktree {
+  id: string;
+  projectId: string;
+  name: string;
+  path: string;
+  branch: string;
+  baseBranch: string;
+  baseSha: string;
+  epicId: string | null;
+  createdByType: 'agent' | 'user';
+  createdByAgentId: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type CreateWorktree = Omit<
+  Worktree,
+  'id' | 'epicId' | 'createdByAgentId' | 'createdAt' | 'updatedAt'
+> & {
+  id?: string;
+  epicId?: string | null;
+  createdByAgentId?: string | null;
+};
 
 // ============================================
 // GUESTS - External agents registered via MCP

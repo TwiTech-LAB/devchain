@@ -119,6 +119,7 @@ export class TunnelHandlerService {
       // narrow session/storage facades; see MobileChatRpcService):
       'chat.listAgents': (p) => this.mobileChat.listAgents(p),
       'chat.listTeams': (p) => this.mobileChat.listTeams(p),
+      'chat.getProviderUsage': (p) => this.mobileChat.getProviderUsage(p),
       'chat.listProfiles': (p) => this.mobileChat.listProfiles(p),
       'chat.listProfileConfigs': (p) => this.mobileChat.listProfileConfigs(p),
       'chat.createTeamAgent': (p) => this.mobileChat.createTeamAgent(p),

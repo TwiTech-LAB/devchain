@@ -13,6 +13,7 @@ import type {
 } from '@devchain/shared';
 import { getEnvConfig } from '../../../common/config/env.config';
 import { ConflictError } from '../../../common/errors/error-types';
+import { createLogger } from '../../../common/logging/logger';
 import { STORAGE_SERVICE } from '../../storage/interfaces/storage.interface';
 import type { FrozenProject, RemoteStorage } from '../../storage/interfaces/storage.interface';
 import { DockerEngineClient, DockerEngineError } from '../../core/controllers/docker-engine.client';
@@ -68,11 +69,7 @@ import type {
   SyncInspectRequest,
   SyncPathInspection,
 } from '../../file-sync/sync-path-inspection.dto';
-import type {
-  GitGuardRemoveResult,
-  GitIndexResult,
-  VmGitGuardRequest,
-} from '../../file-sync/git-guard.dto';
+import type { GitGuardRemoveResult, VmGitGuardRequest } from '../../file-sync/git-guard.dto';
 import type { ProviderAuthClaimBundle } from '../../provider-auth/provider-auth-adapters';
 import type { HostProviderApplyInput } from '../host/host-provider-auth.dto';
 import { RemoteApiKeyService, remoteAuthorization } from '../auth/remote-api-key.service';
@@ -92,6 +89,8 @@ import {
   RUNTIME_TIMEOUT_MS,
 } from '../contract/host-routes';
 import type {
+  HostProviderUsageSettings,
+  HostProviderUsageSettingsStatus,
   HostProviderVerify,
   HostRoute,
   HostRouteBody,
@@ -107,12 +106,31 @@ import {
   RemoteHostRequestError,
 } from '../transport/host-transport';
 import type { HostSendOptions, HostTarget } from '../transport/host-transport';
+import type { SharedVmRoster } from '../dtos/shared-vm.dto';
+import type { VmDestroyFence } from '../../../common/config/vm-destroy-fence';
+import type { SharedVmNotifyResult } from '../host/shared-vm.contract';
+import type {
+  GitCoordinatorRecord,
+  GitCoordinatorStatus,
+  GitFence,
+} from '../git-coordinator/git-coordinator.dto';
+
+const logger = createLogger('RemoteHostClient');
+
+// Unconverted callers are pinned to the initial generation; retries never refresh a stale token.
+const INITIAL_GIT_FENCE: GitFence = { expectedGeneration: 0, transitionId: null };
+
+/** The fence of a VM folder call: Git folders always carry one, code folders only when given. */
+function folderFence(folderId: string, gitFence?: GitFence): GitFence | undefined {
+  return gitFence ?? (folderId.startsWith('git:') ? INITIAL_GIT_FENCE : undefined);
+}
 
 export type { HostRuntime, HostProviderVerify } from '../contract/host-routes';
 export { RemoteHostRequestError } from '../transport/host-transport';
 
 /** The bootstrap's claim contract (`apps/host-bootstrap/README.md`). */
 export interface HostClaimRequest {
+  nonce?: string;
   userName: string;
   homePath: string;
   /** This PC's uid; the VM takes it when free, older bootstraps drop it. */
@@ -169,6 +187,38 @@ export class RemoteHostClient {
     options?: HostSendOptions<R>,
   ): Promise<HostRouteResult<R>> {
     return send(await this.target(remoteId), route, params, options);
+  }
+
+  async sharedVmNotices(
+    remoteId: string,
+  ): Promise<HostRouteResult<typeof hostRoutes.sharedVmNotices>['body']['notices']> {
+    return (await this.call(remoteId, hostRoutes.sharedVmNotices, {})).body.notices;
+  }
+
+  async sharedVmDismiss(remoteId: string, id: string): Promise<void> {
+    await this.call(remoteId, hostRoutes.sharedVmDismiss, {}, { body: { id } });
+  }
+
+  async sharedVmAbandon(remoteId: string, projectId: string): Promise<void> {
+    await this.call(remoteId, hostRoutes.sharedVmAbandon, {}, { body: { projectId } });
+  }
+
+  async sharedVmRoster(remoteId: string): Promise<SharedVmRoster> {
+    return (await this.call(remoteId, hostRoutes.sharedVmRoster, {})).body;
+  }
+
+  async sharedVmNotify(
+    remoteId: string,
+    body: HostRouteBody<typeof hostRoutes.sharedVmNotify>,
+  ): Promise<SharedVmNotifyResult> {
+    return (await this.call(remoteId, hostRoutes.sharedVmNotify, {}, { body })).body;
+  }
+
+  async sharedVmFence(
+    remoteId: string,
+    body: HostRouteBody<typeof hostRoutes.sharedVmFence>,
+  ): Promise<{ fence: VmDestroyFence | null }> {
+    return (await this.call(remoteId, hostRoutes.sharedVmFence, {}, { body })).body;
   }
 
   private async dockerClient(
@@ -611,24 +661,116 @@ export class RemoteHostClient {
     return (await this.call(remoteId, hostRoutes.changes, { projectId, ...options })).body;
   }
 
+  async listWorktrees(remoteId: string, projectId: string) {
+    return (await this.call(remoteId, hostRoutes.worktrees, { projectId })).body;
+  }
+
+  async setLaneAdmission(remoteId: string, projectId: string, frozen: boolean): Promise<void> {
+    await this.call(remoteId, hostRoutes.laneAdmission, { projectId }, { body: { frozen } });
+  }
+
   /** The host's frozen answer; its `frozenAt` is the host-issued import cursor. */
   async freeze(remoteId: string, projectId: string): Promise<FrozenProject> {
     return (await this.call(remoteId, hostRoutes.freeze, { projectId })).body;
+  }
+
+  async gitCoordinatorStatus(remoteId: string, projectId: string): Promise<GitCoordinatorStatus> {
+    return (await this.call(remoteId, hostRoutes.gitCoordinatorStatus, { projectId })).body;
+  }
+
+  async gitCoordinatorIndex(remoteId: string, projectId: string): Promise<Buffer> {
+    const { indexBase64 } = (
+      await this.call(remoteId, hostRoutes.gitCoordinatorIndex, { projectId })
+    ).body;
+    return Buffer.from(indexBase64, 'base64');
+  }
+
+  async homeWriteBegin(
+    remoteId: string,
+    projectId: string,
+    body: HostRouteBody<typeof hostRoutes.homeWriteBegin>,
+  ): Promise<GitCoordinatorRecord> {
+    return (await this.call(remoteId, hostRoutes.homeWriteBegin, { projectId }, { body })).body;
+  }
+
+  async homeWriteEnd(
+    remoteId: string,
+    projectId: string,
+    body: HostRouteBody<typeof hostRoutes.homeWriteEnd>,
+  ): Promise<GitCoordinatorRecord> {
+    return (await this.call(remoteId, hostRoutes.homeWriteEnd, { projectId }, { body })).body;
+  }
+
+  async handoverBegin(
+    remoteId: string,
+    projectId: string,
+    body: HostRouteBody<typeof hostRoutes.handoverBegin>,
+  ): Promise<GitCoordinatorRecord> {
+    return (await this.call(remoteId, hostRoutes.handoverBegin, { projectId }, { body })).body;
+  }
+
+  async handoverRenew(
+    remoteId: string,
+    projectId: string,
+    body: GitFence,
+  ): Promise<GitCoordinatorRecord> {
+    return (await this.call(remoteId, hostRoutes.handoverRenew, { projectId }, { body })).body;
+  }
+
+  async handoverAbort(
+    remoteId: string,
+    projectId: string,
+    body: GitFence,
+  ): Promise<GitCoordinatorRecord> {
+    return (await this.call(remoteId, hostRoutes.handoverAbort, { projectId }, { body })).body;
+  }
+
+  async handoverPhase(
+    remoteId: string,
+    projectId: string,
+    body: HostRouteBody<typeof hostRoutes.handoverPhase>,
+  ): Promise<GitCoordinatorRecord> {
+    return (await this.call(remoteId, hostRoutes.handoverPhase, { projectId }, { body })).body;
+  }
+
+  async handoverComplete(
+    remoteId: string,
+    projectId: string,
+    body: GitFence,
+  ): Promise<GitCoordinatorRecord> {
+    return (await this.call(remoteId, hostRoutes.handoverComplete, { projectId }, { body })).body;
+  }
+
+  /** Disconnect closes VM Git admission; in-flight writes and transitions still finish. */
+  async gitCoordinatorClose(remoteId: string, projectId: string): Promise<GitCoordinatorRecord> {
+    return (await this.call(remoteId, hostRoutes.gitCoordinatorClose, { projectId })).body;
+  }
+
+  async gitCoordinatorReopen(remoteId: string, projectId: string): Promise<GitCoordinatorRecord> {
+    return (await this.call(remoteId, hostRoutes.gitCoordinatorReopen, { projectId })).body;
   }
 
   async installGitGuard(
     remoteId: string,
     projectId: string,
     request: VmGitGuardRequest,
+    fence: GitFence = INITIAL_GIT_FENCE,
   ): Promise<{ warning: string | null }> {
-    return (await this.call(remoteId, hostRoutes.installGitGuard, { projectId }, { body: request }))
-      .body;
+    return (
+      await this.call(
+        remoteId,
+        hostRoutes.installGitGuard,
+        { projectId },
+        { body: hostRoutes.installGitGuard.body.parse({ ...request, ...fence }) },
+      )
+    ).body;
   }
 
   async removeGitGuard(
     remoteId: string,
     projectId: string,
     options: { refreshIndex?: boolean } = {},
+    fence: GitFence = INITIAL_GIT_FENCE,
   ): Promise<GitGuardRemoveResult> {
     return (
       await this.call(
@@ -636,22 +778,13 @@ export class RemoteHostClient {
         hostRoutes.removeGitGuard,
         { projectId },
         {
-          ...(options.refreshIndex !== undefined && {
-            body: { refreshIndex: options.refreshIndex },
+          body: hostRoutes.removeGitGuard.body.parse({
+            refreshIndex: options.refreshIndex,
+            ...fence,
           }),
           ...(options.refreshIndex && { timeoutMs: REPLICA_TIMEOUT_MS }),
         },
       )
-    ).body;
-  }
-
-  async refreshGitIndex(
-    remoteId: string,
-    projectId: string,
-    since: string | null,
-  ): Promise<GitIndexResult> {
-    return (
-      await this.call(remoteId, hostRoutes.refreshGitIndex, { projectId }, { body: { since } })
     ).body;
   }
 
@@ -736,8 +869,19 @@ export class RemoteHostClient {
     await this.call(remoteId, hostRoutes.syncPeer, {}, { body: peer });
   }
 
-  async syncFolders(remoteId: string, folder: SyncFolderRequest): Promise<SyncFolder> {
-    return (await this.call(remoteId, hostRoutes.syncFolders, {}, { body: folder })).body;
+  async syncFolders(
+    remoteId: string,
+    folder: SyncFolderRequest,
+    gitFence?: GitFence,
+  ): Promise<SyncFolder> {
+    return (
+      await this.call(
+        remoteId,
+        hostRoutes.syncFolders,
+        { gitFence: folder.kind === 'git' ? (gitFence ?? INITIAL_GIT_FENCE) : gitFence },
+        { body: folder },
+      )
+    ).body;
   }
 
   async syncForceCopyBackup(
@@ -747,8 +891,21 @@ export class RemoteHostClient {
     return (await this.call(remoteId, hostRoutes.syncForceCopyBackup, {}, { body: request })).body;
   }
 
-  async syncFolderType(remoteId: string, folderId: string, patch: SyncFolderPatch): Promise<void> {
-    await this.call(remoteId, hostRoutes.syncFolderType, { folderId }, { body: patch });
+  async syncFolderType(
+    remoteId: string,
+    folderId: string,
+    patch: SyncFolderPatch,
+    gitFence?: GitFence,
+  ): Promise<void> {
+    await this.call(
+      remoteId,
+      hostRoutes.syncFolderType,
+      {
+        folderId,
+        gitFence: folderFence(folderId, gitFence),
+      },
+      { body: patch },
+    );
   }
 
   async syncFolderConfiguration(
@@ -763,20 +920,32 @@ export class RemoteHostClient {
   }
 
   /** Stops sharing the folder on the host; a folder the host no longer has counts as removed. */
-  async syncRemoveFolder(remoteId: string, folderId: string): Promise<void> {
-    await this.call(remoteId, hostRoutes.syncRemoveFolder, { folderId });
+  async syncRemoveFolder(remoteId: string, folderId: string, gitFence?: GitFence): Promise<void> {
+    await this.call(remoteId, hostRoutes.syncRemoveFolder, {
+      folderId,
+      gitFence: folderFence(folderId, gitFence),
+    });
   }
 
-  async syncScan(remoteId: string, folderId: string): Promise<void> {
-    await this.call(remoteId, hostRoutes.syncScan, { folderId });
+  async syncScan(remoteId: string, folderId: string, gitFence?: GitFence): Promise<void> {
+    await this.call(remoteId, hostRoutes.syncScan, {
+      folderId,
+      gitFence: folderFence(folderId, gitFence),
+    });
   }
 
-  async syncRevert(remoteId: string, folderId: string): Promise<void> {
-    await this.call(remoteId, hostRoutes.syncRevert, { folderId });
+  async syncRevert(remoteId: string, folderId: string, gitFence?: GitFence): Promise<void> {
+    await this.call(remoteId, hostRoutes.syncRevert, {
+      folderId,
+      gitFence: folderFence(folderId, gitFence),
+    });
   }
 
-  async syncOverride(remoteId: string, folderId: string): Promise<void> {
-    await this.call(remoteId, hostRoutes.syncOverride, { folderId });
+  async syncOverride(remoteId: string, folderId: string, gitFence?: GitFence): Promise<void> {
+    await this.call(remoteId, hostRoutes.syncOverride, {
+      folderId,
+      gitFence: folderFence(folderId, gitFence),
+    });
   }
 
   async syncLocalChanges(remoteId: string, folderId: string): Promise<ReceiveOnlyChanges> {
@@ -806,6 +975,17 @@ export class RemoteHostClient {
 
   async syncRemoteNeed(remoteId: string, folderId: string, deviceId: string): Promise<RemoteNeed> {
     return (await this.call(remoteId, hostRoutes.syncRemoteNeed, { folderId, deviceId })).body;
+  }
+
+  async syncRemoteNeedThrough(
+    remoteId: string,
+    folderId: string,
+    deviceId: string,
+    sequence: number,
+  ): Promise<string[]> {
+    return (
+      await this.call(remoteId, hostRoutes.syncRemoteNeedThrough, { folderId, deviceId, sequence })
+    ).body.names;
   }
 
   async syncInspect(remoteId: string, input: SyncInspectRequest): Promise<SyncPathInspection> {
@@ -917,14 +1097,41 @@ export class RemoteHostClient {
     await this.call(remoteId, hostRoutes.applySshKeys, {}, { body: { keys } });
   }
 
-  /** Starts the host's version install; answers once the install runs outside DevChain. */
-  async requestHostUpdate(remoteId: string, version: string): Promise<'started' | 'in_progress'> {
-    const response = await this.call(
-      remoteId,
-      hostRoutes.requestHostUpdate,
-      {},
-      { body: { version } },
-    );
+  /**
+   * Starts the host's version install; answers once the install runs outside DevChain.
+   * A host older than the `npmRegistry` field refuses the body with 400 `validation_error`
+   * before it starts anything, so the request is sent once more without the registry.
+   */
+  async requestHostUpdate(
+    remoteId: string,
+    version: string,
+    npmRegistry?: string,
+  ): Promise<{ outcome: 'started' | 'in_progress'; registryIgnored: boolean }> {
+    try {
+      return {
+        outcome: await this.sendHostUpdate(remoteId, { version, npmRegistry }),
+        registryIgnored: false,
+      };
+    } catch (error) {
+      if (
+        npmRegistry === undefined ||
+        !(error instanceof RemoteHostRequestError) ||
+        error.status !== 400 ||
+        error.hostCode !== 'validation_error'
+      ) {
+        throw error;
+      }
+    }
+    const outcome = await this.sendHostUpdate(remoteId, { version });
+    logger.warn({ remoteId, version }, 'Host ignores the npm registry of its update request');
+    return { outcome, registryIgnored: true };
+  }
+
+  private async sendHostUpdate(
+    remoteId: string,
+    body: HostRouteBody<typeof hostRoutes.requestHostUpdate>,
+  ): Promise<'started' | 'in_progress'> {
+    const response = await this.call(remoteId, hostRoutes.requestHostUpdate, {}, { body });
     if (response.status === 202) return 'started';
     const code = response.body;
     if (code === 'UPDATE_IN_PROGRESS') return 'in_progress';
@@ -960,6 +1167,16 @@ export class RemoteHostClient {
 
   async checkProviderClis(remoteId: string): Promise<void> {
     await this.call(remoteId, hostRoutes.checkProviderClis, {});
+  }
+
+  async getProviderUsageSettingsStatus(remoteId: string): Promise<HostProviderUsageSettingsStatus> {
+    return (await this.call(remoteId, hostRoutes.getProviderUsageSettingsStatus, {})).body;
+  }
+
+  async putProviderUsageSettings(remoteId: string, body: HostProviderUsageSettings): Promise<void> {
+    const route = hostRoutes.putProviderUsageSettings;
+    const response = await this.call(remoteId, route, {}, { body });
+    checkSettingsRevision(remoteId, route.path({}), response, body.revision);
   }
 
   async getSkillSettingsStatus(remoteId: string): Promise<HostSkillSettingsStatus> {

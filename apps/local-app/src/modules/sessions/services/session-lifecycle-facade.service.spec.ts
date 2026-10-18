@@ -41,32 +41,45 @@ function build() {
 }
 
 describe('SessionLifecycleFacade', () => {
-  it('terminate delegates to SessionsService.terminateSession', async () => {
-    const { facade, sessionsService } = build();
-    await facade.terminate('s1');
-    expect(sessionsService.terminateSession).toHaveBeenCalledWith('s1', {
-      source: 'mobile-rpc',
-      reason: 'user-requested',
-    });
-  });
+  it.each([
+    { options: undefined, source: 'mobile-rpc' },
+    { options: { source: 'team-management' as const }, source: 'team-management' },
+  ])(
+    'terminate delegates to SessionsService.terminateSession with source=$source',
+    async ({ options, source }) => {
+      const { facade, sessionsService } = build();
+      await facade.terminate('s1', options);
+      expect(sessionsService.terminateSession).toHaveBeenCalledWith('s1', {
+        source,
+        reason: 'user-requested',
+      });
+    },
+  );
 
   describe('restart (sequential terminate + launch)', () => {
-    it('terminates the agent existing session then launches a new one', async () => {
-      const { facade, sessionRuntime, sessionsService } = build();
-      (sessionsService.listActiveSessions as jest.Mock).mockResolvedValue([
-        { id: 'old-session', agentId: 'a1' },
-        { id: 'other', agentId: 'a2' },
-      ]);
+    // Module-unit: the termination boundary verifies source attribution without running a CLI.
+    it.each([
+      { options: undefined, source: 'mobile-rpc' },
+      { options: { source: 'team-management' as const }, source: 'team-management' },
+    ])(
+      'terminates the agent existing session with source=$source then launches a new one',
+      async ({ options, source }) => {
+        const { facade, sessionRuntime, sessionsService } = build();
+        (sessionsService.listActiveSessions as jest.Mock).mockResolvedValue([
+          { id: 'old-session', agentId: 'a1' },
+          { id: 'other', agentId: 'a2' },
+        ]);
 
-      const result = await facade.restart('a1', 'p1');
+        const result = await facade.restart('a1', 'p1', options);
 
-      expect(sessionsService.terminateSession).toHaveBeenCalledWith('old-session', {
-        source: 'mobile-rpc',
-        reason: 'restart',
-      });
-      expect(sessionRuntime.launch).toHaveBeenCalledWith({ agentId: 'a1', projectId: 'p1' });
-      expect(result).toEqual({ id: 'new-session' });
-    });
+        expect(sessionsService.terminateSession).toHaveBeenCalledWith('old-session', {
+          source,
+          reason: 'restart',
+        });
+        expect(sessionRuntime.launch).toHaveBeenCalledWith({ agentId: 'a1', projectId: 'p1' });
+        expect(result).toEqual({ id: 'new-session' });
+      },
+    );
 
     it('launches even when no existing session is found', async () => {
       const { facade, sessionRuntime, sessionsService } = build();

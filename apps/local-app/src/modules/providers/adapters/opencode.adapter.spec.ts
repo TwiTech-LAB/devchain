@@ -148,13 +148,57 @@ describe('OpencodeAdapter', () => {
       expect(result.argv).toEqual(['--model', 'gpt-4o']);
     });
 
-    it('prepends --session and providerSessionId for mode restore', () => {
-      const result = adapter.buildLaunchArgs({
-        mode: 'restore',
-        providerSessionId: 'session-abc',
-        profileOptionArgs: ['--model', 'gpt-4o'],
+    it.each([undefined, '1.18.32'])(
+      'prepends --session and providerSessionId for mode restore (version %s)',
+      (cliVersion) => {
+        const result = adapter.buildLaunchArgs({
+          mode: 'restore',
+          providerSessionId: 'ses_abc',
+          profileOptionArgs: ['--model', 'gpt-4o'],
+          cliVersion,
+        });
+        expect(result).toEqual({ argv: ['--session', 'ses_abc', '--model', 'gpt-4o'] });
+      },
+    );
+
+    describe('OpenCode 2', () => {
+      const OVERLAY = 'OPENCODE_CONFIG_CONTENT';
+      const cliVersion = 'opencode v2.0.31';
+
+      it.each([[['--model', 'a/b']], [['-m', 'a/b']], [['--model=a/b']], [['-m=a/b']]])(
+        'moves the model from %j into OPENCODE_CONFIG_CONTENT',
+        (modelArgs) => {
+          const result = adapter.buildLaunchArgs({
+            mode: 'new',
+            profileOptionArgs: [...modelArgs, '--verbose'],
+            cliVersion,
+          });
+          expect(result.argv).toEqual(['--verbose', '--standalone']);
+          expect(JSON.parse(result.env![OVERLAY])).toEqual({ model: 'a/b' });
+        },
+      );
+
+      it('keeps the user OPENCODE_CONFIG_CONTENT keys and other env when it adds the model', () => {
+        const result = adapter.buildLaunchArgs({
+          mode: 'new',
+          profileOptionArgs: ['--model', 'a/b'],
+          cliVersion,
+          env: { FOO: 'bar', [OVERLAY]: JSON.stringify({ model: 'x/y', theme: 'dark' }) },
+        });
+        expect(result.env!.FOO).toBe('bar');
+        expect(JSON.parse(result.env![OVERLAY])).toEqual({ model: 'a/b', theme: 'dark' });
       });
-      expect(result.argv).toEqual(['--session', 'session-abc', '--model', 'gpt-4o']);
+
+      it('restores with --session and leaves the env alone when there is no model', () => {
+        const result = adapter.buildLaunchArgs({
+          mode: 'restore',
+          providerSessionId: 'ses_abc',
+          profileOptionArgs: [],
+          cliVersion,
+          env: { FOO: 'bar' },
+        });
+        expect(result).toEqual({ argv: ['--session', 'ses_abc', '--standalone'] });
+      });
     });
   });
 

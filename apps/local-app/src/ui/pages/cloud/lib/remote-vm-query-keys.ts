@@ -29,6 +29,8 @@ export const vmProviderRightsQueryKey = (connectionId: string) =>
   [HOME_BACKEND, 'vm-provider-rights', connectionId] as const;
 export const remoteRunningAgentsQueryKey = (remoteId: string) =>
   [HOME_BACKEND, 'remote-running-agents', remoteId] as const;
+export const remoteSyncthingDeviceQueryKey = (remoteId: string) =>
+  [HOME_BACKEND, 'remote-syncthing-device', remoteId] as const;
 
 export const providerAuthKeys = {
   all: [HOME_BACKEND, 'provider-auth'] as const,
@@ -53,3 +55,5 @@ export const dockerSyncStateQueryKey = (projectId: string, remoteId: string) =>
   [HOME_BACKEND, 'docker-sync-state', projectId, remoteId] as const;
 export const fileSyncStatusQueryKey = (projectId: string) =>
   [HOME_BACKEND, 'file-sync', projectId, 'status'] as const;
+export const disconnectAllChecksQueryKey = (remoteId: string, projectId: string, force: boolean) =>
+  [HOME_BACKEND, 'disconnect-all-checks', remoteId, projectId, force] as const;

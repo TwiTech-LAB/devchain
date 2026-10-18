@@ -5,6 +5,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { TerminalDock } from './TerminalDock';
 import type { TerminalWindowState } from '@/ui/terminal-windows';
 import type { ActiveSession } from '@/ui/lib/sessions';
+import { PROVIDER_USAGE_SETTINGS_DEFAULTS, type ProviderUsageResponse } from '@devchain/shared';
 
 // Mock useTerminalWindows hook
 const mockRestoreWindow = jest.fn();
@@ -35,6 +36,12 @@ jest.mock('@/ui/hooks/use-toast', () => ({
   useToast: () => ({
     toast: jest.fn(),
   }),
+}));
+
+// Usage rings read their own endpoint and socket; their data is set per test.
+let mockProviderUsage: ProviderUsageResponse | null = null;
+jest.mock('@/ui/hooks/useProviderUsage', () => ({
+  useProviderUsage: () => ({ data: mockProviderUsage, refreshForHover: jest.fn() }),
 }));
 
 // Mock sessions API to prevent actual network calls
@@ -456,6 +463,52 @@ describe('TerminalDock collapsed bar pills', () => {
       // Double-click on pill button should NOT trigger the header bar toggle
       // Pill has its own click handler for focus/minimize, but not onToggle
       expect(onToggle).not.toHaveBeenCalled();
+    });
+
+    it('renders usage rings before the session counter and ignores a double-click on them', async () => {
+      const user = userEvent.setup();
+      const onToggle = jest.fn();
+      mockWindows = [];
+      mockProviderUsage = {
+        accounts: [
+          {
+            accountKey: 'codex:/home/dev/.codex:none',
+            provider: 'codex',
+            label: 'Codex',
+            windows: [
+              {
+                id: 'weekly',
+                label: 'Weekly limit',
+                kind: 'weekly',
+                usedPercent: 40,
+                resetsAt: null,
+              },
+            ],
+            extras: [],
+            plan: 'plus',
+            source: 'cli',
+            fetchedAt: new Date().toISOString(),
+            state: 'ok',
+            error: null,
+          },
+        ],
+        config: { ...PROVIDER_USAGE_SETTINGS_DEFAULTS },
+      };
+
+      try {
+        renderWithQueryClient(<TerminalDock {...defaultProps} onToggle={onToggle} />);
+
+        const ring = screen.getByRole('button', { name: 'Codex usage: weekly 40%' });
+        const counter = screen.getByRole('button', { name: 'Expand terminal dock' });
+        expect(ring.compareDocumentPosition(counter) & Node.DOCUMENT_POSITION_FOLLOWING).toBe(
+          Node.DOCUMENT_POSITION_FOLLOWING,
+        );
+
+        await user.dblClick(ring);
+        expect(onToggle).not.toHaveBeenCalled();
+      } finally {
+        mockProviderUsage = null;
+      }
     });
 
     it('single click on header toggle button works normally', async () => {

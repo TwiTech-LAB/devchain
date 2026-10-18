@@ -157,7 +157,10 @@ describe('ClaudeAdapter', () => {
 
   describe('ProviderPluginCapability', () => {
     it('uses the JSON catalog and normal user-scope install commands', () => {
-      expect(adapter.listProviderPlugins()).toEqual(['plugin', 'list', '--available', '--json']);
+      expect(adapter.providerPluginCatalog()).toMatchObject({
+        transport: 'cli',
+        args: ['plugin', 'list', '--available', '--json'],
+      });
       expect(adapter.installProviderPlugin('sample@market')).toEqual([
         'plugin',
         'install',

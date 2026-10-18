@@ -40,9 +40,12 @@ class InMemoryOperations {
     return structuredClone(row);
   }
 
-  async listRemoteOperations(filter: { states?: RemoteOperationState[] } = {}) {
+  async listRemoteOperations(
+    filter: { states?: RemoteOperationState[]; kinds?: RemoteOperation['kind'][] } = {},
+  ) {
     return [...this.rows.values()]
       .filter((row) => !filter.states || filter.states.includes(row.state))
+      .filter((row) => !filter.kinds || filter.kinds.includes(row.kind))
       .map((row) => structuredClone(row));
   }
 
@@ -460,6 +463,32 @@ describe('RemoteOperationRunner', () => {
 
     expect((await storage.getRemoteOperation('op-9')).state).toBe('done');
   });
+
+  it.each(['running', 'failed'] as const)(
+    'closes an unfinished %s manual Git switch at startup and keeps it as history',
+    async (state) => {
+      const runner = runnerFor(definition([step('one')]));
+      storage.rows.set('op-git', {
+        id: 'op-git',
+        kind: 'git_owner',
+        remoteId: 'remote-1',
+        projectId: 'project-1',
+        state,
+        steps: [],
+        details: { owner: 'home', force: false },
+        createdAt: 'now',
+        updatedAt: 'now',
+      });
+
+      await runner.onApplicationBootstrap();
+
+      expect(await storage.getRemoteOperation('op-git')).toMatchObject({
+        kind: 'git_owner',
+        state: 'cancelled',
+        details: { owner: 'home', force: false, retiredAt: expect.any(String) },
+      });
+    },
+  );
 
   it('fails a resumed claim-capable operation persisted with another PC identity', async () => {
     const claimSteps = [step('claim_claim')];

@@ -9,8 +9,18 @@ import { STORAGE_SERVICE, type RemoteStorage } from '../../storage/interfaces/st
 import type { RemoteOperation } from '../../storage/models/domain.models';
 import { ProxmoxVmLifecycleService } from '../../vm-providers/proxmox-vm-lifecycle.service';
 import { VmProvidersService } from '../../vm-providers/vm-providers.service';
-import { destroyGuardedVm, destroyGuardedVmid } from './guarded-vm-destroy';
+import {
+  confirmedVmGone,
+  confirmedVmIdle,
+  destroyGuardedVm,
+  destroyGuardedVmid,
+} from './guarded-vm-destroy';
 import { RemoteOperationStepRefusedError } from './remote-operation.errors';
+import {
+  RemoteSharedVmService,
+  notifyForcedStep,
+  type SharedVmOperationDetails,
+} from '../services/remote-shared-vm.service';
 import {
   stepStarted,
   type RemoteOperationDefinition,
@@ -20,7 +30,7 @@ import {
 
 const logger = createLogger('DestroyVmOperation');
 
-export interface DestroyVmDetails {
+export interface DestroyVmDetails extends SharedVmOperationDetails {
   connectionId: string;
   vmIdentity: string | null;
   expectedRemoteIdentity: string | null;
@@ -52,6 +62,7 @@ export class DestroyVmOperation implements RemoteOperationDefinition {
       label: 'Save the logins from the VM',
       run: (run) => this.pullFamilies(run),
     },
+    notifyForcedStep(() => this.sharedVm),
     { id: 'destroy', label: 'Destroy the VM', run: (run) => this.destroy(run) },
   ];
 
@@ -60,6 +71,7 @@ export class DestroyVmOperation implements RemoteOperationDefinition {
     private readonly providers: VmProvidersService,
     private readonly writeback: ProviderAuthWritebackService,
     private readonly lifecycle: ProxmoxVmLifecycleService,
+    private readonly sharedVm: RemoteSharedVmService,
   ) {}
 
   assertCancellable(operation: RemoteOperation): void {
@@ -106,6 +118,7 @@ export class DestroyVmOperation implements RemoteOperationDefinition {
       });
     }
     if (!destroy.vmIdentity && destroy.targetVmid === undefined) return;
+    await this.sharedVm.assertAllowed(operation.remoteId, destroy);
     try {
       const provider = await this.providers.forConnection(destroy.connectionId);
       if (destroy.vmIdentity) {
@@ -160,28 +173,41 @@ export class DestroyVmOperation implements RemoteOperationDefinition {
 
   private async destroy({ operation, details }: RemoteOperationStepRun): Promise<void> {
     const target = details as unknown as DestroyVmDetails;
-    if (target.vmIdentity) {
-      await destroyGuardedVm({
-        storage: this.storage,
-        providers: this.providers,
+    if (target.vmIdentity || target.targetVmid !== undefined)
+      await this.sharedVm.fencedDestroy({
         operation,
-        details,
-        connectionId: target.connectionId,
-        vmIdentity: target.vmIdentity,
-        vmidKey: 'vmid',
-        attemptKey: 'destroyAttempted',
+        details: target,
+        previouslyAttempted: target.destroyAttempted,
+        confirmedGone: async () => {
+          if (!target.vmIdentity) return false;
+          return confirmedVmGone(this.providers, target.connectionId, target.vmIdentity);
+        },
+        confirmedIdle: () => confirmedVmIdle(this.providers, target.connectionId, target.vmid),
+        destroy: async () => {
+          if (target.vmIdentity) {
+            await destroyGuardedVm({
+              storage: this.storage,
+              providers: this.providers,
+              operation,
+              details,
+              connectionId: target.connectionId,
+              vmIdentity: target.vmIdentity,
+              vmidKey: 'vmid',
+              attemptKey: 'destroyAttempted',
+            });
+          } else if (target.targetVmid !== undefined && (await this.isSupersededClone(target))) {
+            await destroyGuardedVmid({
+              storage: this.storage,
+              providers: this.providers,
+              operation,
+              details,
+              connectionId: target.connectionId,
+              vmid: target.targetVmid,
+              attemptKey: 'destroyAttempted',
+            });
+          }
+        },
       });
-    } else if (target.targetVmid !== undefined && (await this.isSupersededClone(target))) {
-      await destroyGuardedVmid({
-        storage: this.storage,
-        providers: this.providers,
-        operation,
-        details,
-        connectionId: target.connectionId,
-        vmid: target.targetVmid,
-        attemptKey: 'destroyAttempted',
-      });
-    }
     await this.storage.updateRemoteBaseUrl(operation.remoteId, null);
     await this.storage.updateRemoteVmIdentity(operation.remoteId, null);
   }

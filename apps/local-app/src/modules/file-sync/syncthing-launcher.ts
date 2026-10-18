@@ -47,6 +47,7 @@ export abstract class SyncthingLauncher {
 export interface BinaryLookupDeps {
   /** `SYNCTHING_BIN`; when set it is the only candidate. */
   explicitPath: string | undefined;
+  hostPath?: string;
   pathEnv: string | undefined;
   homeDir: string;
   platform: NodeJS.Platform;
@@ -70,7 +71,7 @@ export async function findSyncthingBinary(deps: BinaryLookupDeps): Promise<Synct
   const candidates = explicit
     ? [explicit]
     : [
-        ...(deps.platform === 'linux' ? [HOST_SYNCTHING_BINARY] : []),
+        ...(deps.platform === 'linux' ? [deps.hostPath ?? HOST_SYNCTHING_BINARY] : []),
         ...(deps.pathEnv ?? '')
           .split(delimiter)
           .filter((dir) => dir.length > 0)
@@ -129,6 +130,7 @@ export class NodeSyncthingLauncher extends SyncthingLauncher {
   findBinary(): Promise<SyncthingBinaryLookup> {
     return findSyncthingBinary({
       explicitPath: getEnvConfig().SYNCTHING_BIN,
+      hostPath: getEnvConfig().DEVCHAIN_HOST_SYNCTHING_BINARY,
       pathEnv: process.env.PATH,
       homeDir: homedir(),
       platform: process.platform,

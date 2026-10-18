@@ -639,6 +639,7 @@ describe('TerminalIOService delivery', () => {
       ['the command follows a newline', '\n\t!git status', { followNote: true }],
     ])('does not type the note when %s', async (_label, text, options) => {
       const { fake, svc } = makeService();
+      const runSpy = jest.spyOn(fake, 'run');
 
       await advanceDelivery(
         svc.deliver(target, text, {
@@ -654,6 +655,16 @@ describe('TerminalIOService delivery', () => {
 
       expect(fake.calls.filter((c) => c.argv[1] === 'paste-buffer')).toHaveLength(2);
       expect(noteCalls(fake)).toHaveLength(0);
+      const immediatePaste = runSpy.mock.calls
+        .filter(([call]) => call.argv[1] === 'load-buffer')
+        .at(-1)?.[0].input;
+      const rawText = text.replace(/\n/g, '\r');
+      expect(immediatePaste).toBe(
+        options.bracketed === false ? rawText : `\x1b[200~${rawText}\x1b[201~`,
+      );
+      if (options.submitKeys === undefined) {
+        expect(fake.calls.at(-1)?.argv).toEqual(ENTER_ARGV);
+      }
     });
 
     it('types the note for a message that only mentions a command', async () => {

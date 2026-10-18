@@ -34,6 +34,7 @@ import { FileSyncHandoff } from '../remotes/operations/file-sync-handoff';
 import { RemoteFileSyncService } from '../remotes/sync/remote-file-sync.service';
 import { RemoteBindingsService } from '../remotes/services/remote-bindings.service';
 import { GitOwnerStore } from '../remotes/git-owner.store';
+import { GitCoordinatorStore } from '../remotes/git-coordinator/git-coordinator.store';
 import { RemoteLiveSyncService } from '../remotes/sync/remote-live-sync.service';
 import { HomeGitGuardService } from './home-git-guard.service';
 import type { Remote, RemoteOperation } from '../storage/models/domain.models';
@@ -484,6 +485,8 @@ describeWithBinary(
       await home.app.get(RemoteLiveSyncService).runExclusive(seed.projectId, async () => {
         await home.app.get(HomeGitGuardService).remove(seed.projectId, { refreshIndex: true });
         home.app.get(GitOwnerStore).set(seed.projectId, 'home');
+        const vmRecord = host.app.get(GitCoordinatorStore);
+        vmRecord.write(seed.projectId, { ...vmRecord.read(seed.projectId), owner: 'home' });
         await home.app.get(FileSyncHandoff).flipBackToHost(remote.id, seed.projectId, false);
       });
       write(code(home, 'file.txt'), 'PC commit\n');
@@ -509,7 +512,16 @@ describeWithBinary(
       seed = seedRemoteProject(instances.home.sqlite);
       write(code(instances.home, 'plain.txt'), 'one folder');
       expect(existsSync(code(instances.home, '.git'))).toBe(false);
+      // A record left by an earlier connection must not survive into this one.
+      const vmRecord = instances.host.app.get(GitCoordinatorStore);
+      vmRecord.write(seed.projectId, {
+        ...vmRecord.read(seed.projectId),
+        owner: 'home',
+        generation: 7,
+      });
       const connected = await run('attach');
+      expect(vmRecord.projects()).not.toContain(seed.projectId);
+      expect(vmRecord.read(seed.projectId)).toMatchObject({ owner: 'vm', generation: 0 });
       expect(connected.details.gitInit).toBe('created');
       expect(existsSync(code(instances.host, '.git/HEAD'))).toBe(true);
       expect(read(code(instances.host, '.git/HEAD'))).toBe(read(code(instances.home, '.git/HEAD')));
@@ -521,9 +533,14 @@ describeWithBinary(
         { id: gitId(), kind: 'git' },
       ]);
       const live = instances.home.app.get(RemoteFileSyncService);
-      for (let tick = 0; tick < 4; tick++) await live.tick(seed.projectId, remote.id, () => true);
+      // Scans and peer transfer finish asynchronously outside tick's promise.
+      await waitForValue(async () => {
+        await live.tick(seed.projectId, remote.id, () => true);
+        return live.warning(seed.projectId) === null;
+      }, 15_000);
       expect(live.warning(seed.projectId)).toBeNull();
       await run('detach');
+      expect(vmRecord.projects()).not.toContain(seed.projectId);
       await expect(folderConfig(instances.home, codeId())).resolves.toEqual({
         type: 'sendonly',
         paused: true,

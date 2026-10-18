@@ -2,6 +2,7 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { BadRequestException, NotFoundException } from '@nestjs/common';
 import { ProviderModelsController } from './provider-models.controller';
 import { STORAGE_SERVICE } from '../../storage/interfaces/storage.interface';
+import { ProviderCliVersionProbe } from '../services/provider-cli-version-probe.service';
 import { McpProviderRegistrationService } from '../services/mcp-provider-registration.service';
 
 import { ProcessExecutor } from '../../terminal/services/process-executor/process-executor.port';
@@ -20,6 +21,7 @@ describe('ProviderModelsController', () => {
   let mcpRegistration: {
     resolveBinary: jest.Mock;
   };
+  let versionProbe: { probe: jest.Mock };
 
   const opencodeProvider = {
     id: 'provider-1',
@@ -56,6 +58,8 @@ describe('ProviderModelsController', () => {
         .mockResolvedValue({ success: true, binaryPath: '/usr/local/bin/opencode' }),
     };
 
+    versionProbe = { probe: jest.fn().mockResolvedValue('1.18.32') };
+
     fakeExecutor = new FakeProcessExecutor();
     fakeExecutor.setDefaultResponse({ type: 'success', stdout: '' });
 
@@ -73,6 +77,10 @@ describe('ProviderModelsController', () => {
         {
           provide: ProcessExecutor,
           useValue: fakeExecutor,
+        },
+        {
+          provide: ProviderCliVersionProbe,
+          useValue: versionProbe,
         },
       ],
     }).compile();
@@ -163,7 +171,9 @@ describe('ProviderModelsController', () => {
       const result = await controller.discoverProviderModels('provider-1');
 
       expect(mcpRegistration.resolveBinary).toHaveBeenCalledWith(opencodeProvider);
+      expect(versionProbe.probe).toHaveBeenCalledWith('opencode', '/usr/local/bin/opencode');
       expect(fakeExecutor.calls[0].argv).toEqual(['/usr/local/bin/opencode', 'models']);
+      expect(fakeExecutor.calls[0].env).toMatchObject({ OPENCODE_DISABLE_AUTOUPDATE: 'true' });
       expect(storage.bulkCreateProviderModels).toHaveBeenCalledWith('provider-1', [
         'gpt-4.1',
         'claude-sonnet-4',
@@ -173,6 +183,24 @@ describe('ProviderModelsController', () => {
         existing: ['claude-sonnet-4'],
         total: 2,
       });
+    });
+
+    it('adds --standalone for OpenCode 2 and rejects unsupported versions', async () => {
+      storage.bulkCreateProviderModels.mockResolvedValue({ added: [], existing: [] });
+      versionProbe.probe.mockResolvedValueOnce('opencode v2.0.31');
+      await controller.discoverProviderModels('provider-1');
+      expect(fakeExecutor.calls[0].argv).toEqual([
+        '/usr/local/bin/opencode',
+        'models',
+        '--standalone',
+      ]);
+      expect(fakeExecutor.calls[0].env).toMatchObject({ OPENCODE_DISABLE_AUTOUPDATE: 'true' });
+
+      versionProbe.probe.mockResolvedValueOnce('3.0.0');
+      await expect(controller.discoverProviderModels('provider-1')).rejects.toThrow(
+        /Unsupported OpenCode version/,
+      );
+      expect(fakeExecutor.calls).toHaveLength(1);
     });
 
     it('rejects discover for non-opencode providers', async () => {

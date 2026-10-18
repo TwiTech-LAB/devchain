@@ -6,45 +6,15 @@ import type {
   AddMcpServerOptions,
   McpServerEntry,
   BuildLaunchArgsInput,
+  BuildLaunchArgsResult,
   TerminalOutputBehavior,
 } from './provider-adapter.interface';
 import type { EffortCapability } from './capabilities';
 import { ValidationError } from '../../../common/errors/error-types';
-import { EnvBuilderError } from '../utils/env-builder';
-
-/** Env var opencode reads as a per-process JSON config overlay (highest layer). */
-const OPENCODE_CONFIG_CONTENT_ENV = 'OPENCODE_CONFIG_CONTENT';
-
-/**
- * env-builder rejects values >32KB; mirror that ceiling here so the failure is an
- * actionable OpenCode-specific message rather than a generic env error downstream.
- */
-const MAX_CONFIG_CONTENT_BYTES = 32768;
-
-function isPlainObject(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
-/**
- * Recursively merge `source` onto `target`, both PLAIN JSON objects. Nested plain
- * objects merge key-by-key; any non-object source value (scalar/array) replaces the
- * target value. Keys present only on `target` are preserved untouched — this is
- * what keeps unrelated pre-existing OPENCODE_CONFIG_CONTENT keys intact.
- */
-function deepMergePlainObjects(
-  target: Record<string, unknown>,
-  source: Record<string, unknown>,
-): Record<string, unknown> {
-  const result: Record<string, unknown> = { ...target };
-  for (const [key, sourceValue] of Object.entries(source)) {
-    const targetValue = result[key];
-    result[key] =
-      isPlainObject(targetValue) && isPlainObject(sourceValue)
-        ? deepMergePlainObjects(targetValue, sourceValue)
-        : sourceValue;
-  }
-  return result;
-}
+import { assertSupportedOpencodeVersion } from './opencode-cli-version';
+import { mergeOpencodeConfigContent } from './opencode-config-content';
+import { buildOpencodeLaunchArgsV1 } from './opencode-launch.v1';
+import { buildOpencodeLaunchArgsV2 } from './opencode-launch.v2';
 
 @Injectable()
 export class OpencodeAdapter implements ProviderAdapter, EffortCapability {
@@ -53,6 +23,7 @@ export class OpencodeAdapter implements ProviderAdapter, EffortCapability {
   readonly launchEnv = getProviderCliNoUpdateOptions(this.providerName).env;
   readonly mcpMode = 'project_config' as const;
   readonly configFileName = 'opencode.json';
+  readonly requiresCliVersion = true as const;
 
   // OpenCode effort is NOT a CLI flag — it is per-model JSON config
   // (`provider.<pid>.models.<mid>.options.reasoningEffort`), so the effective
@@ -92,13 +63,14 @@ export class OpencodeAdapter implements ProviderAdapter, EffortCapability {
     return ['--version'];
   }
 
-  buildLaunchArgs({ mode, providerSessionId, profileOptionArgs }: BuildLaunchArgsInput): {
-    argv: string[];
-  } {
-    if (mode === 'restore') {
-      return { argv: ['--session', providerSessionId!, ...profileOptionArgs] };
-    }
-    return { argv: [...profileOptionArgs] };
+  /** Without `cliVersion` (callers that skip the launch-pipeline probe) this builds OpenCode 1 argv. */
+  buildLaunchArgs(input: BuildLaunchArgsInput): BuildLaunchArgsResult {
+    if (input.cliVersion === undefined) return buildOpencodeLaunchArgsV1(input);
+    const { major } = assertSupportedOpencodeVersion(
+      input.cliVersion,
+      input.providerBinPath ?? this.providerName,
+    );
+    return major === 2 ? buildOpencodeLaunchArgsV2(input) : buildOpencodeLaunchArgsV1(input);
   }
 
   /**
@@ -106,7 +78,8 @@ export class OpencodeAdapter implements ProviderAdapter, EffortCapability {
    * we merge `provider.<pid>.models.<mid>.options.reasoningEffort` into
    * `OPENCODE_CONFIG_CONTENT`, which opencode layers ABOVE the project
    * `opencode.json` with ZERO file writes (spike-verified precedence + deep merge,
-   * v1.17.13). `argv` is returned unchanged.
+   * v1.17.13). OpenCode 2 accepts the same overlay shape and applies it to the
+   * model request. `argv` is returned unchanged.
    *
    * `effectiveModel` is the pre-resolved model string (agent override → config
    * default → raw `--model`); `pid` = substring before the FIRST `/`, `mid` = the
@@ -138,36 +111,7 @@ export class OpencodeAdapter implements ProviderAdapter, EffortCapability {
       provider: { [pid]: { models: { [mid]: { options: { reasoningEffort: effortValue } } } } },
     };
 
-    // Deep-merge onto any pre-existing OPENCODE_CONFIG_CONTENT (already resolved by
-    // providerEnv < configEnv upstream), preserving every unrelated key.
-    const existing = env[OPENCODE_CONFIG_CONTENT_ENV];
-    let base: Record<string, unknown> = {};
-    if (existing != null && existing !== '') {
-      let parsed: unknown;
-      try {
-        parsed = JSON.parse(existing);
-      } catch {
-        throw new EnvBuilderError(
-          `${OPENCODE_CONFIG_CONTENT_ENV} is not valid JSON — cannot merge the OpenCode effort overlay`,
-        );
-      }
-      if (!isPlainObject(parsed)) {
-        throw new EnvBuilderError(
-          `${OPENCODE_CONFIG_CONTENT_ENV} must be a JSON object to merge the OpenCode effort overlay`,
-        );
-      }
-      base = parsed;
-    }
-
-    // Compact serialization only — env-builder rejects newlines/control chars.
-    const serialized = JSON.stringify(deepMergePlainObjects(base, overlay));
-    if (serialized.length > MAX_CONFIG_CONTENT_BYTES) {
-      throw new EnvBuilderError(
-        `Merged ${OPENCODE_CONFIG_CONTENT_ENV} exceeds 32KB — reduce the pre-existing config content`,
-      );
-    }
-
-    return { argv: args, env: { ...env, [OPENCODE_CONFIG_CONTENT_ENV]: serialized } };
+    return { argv: args, env: mergeOpencodeConfigContent(env, overlay, 'effort overlay') };
   }
 
   parseListOutput(_stdout: string, _stderr?: string): McpServerEntry[] {
