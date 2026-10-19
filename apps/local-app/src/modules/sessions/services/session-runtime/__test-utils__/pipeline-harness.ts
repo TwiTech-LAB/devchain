@@ -249,6 +249,7 @@ export function createLaunchPipelineHarness() {
       contextWindowOverride: null,
       promptHandshake: undefined,
     },
+    typedArgs: ['/bin/sh', '/private/launch/session.sh'],
     afterCommand: jest.fn().mockResolvedValue(undefined),
     rollback: jest.fn().mockResolvedValue(undefined),
   };
@@ -425,6 +426,7 @@ export function createRestorePipelineHarness<
       contextWindowOverride: null,
       promptHandshake: undefined,
     },
+    typedArgs: ['/bin/sh', '/private/launch/session.sh'],
     afterCommand: jest.fn().mockResolvedValue(undefined),
     rollback: jest.fn().mockResolvedValue(undefined),
   };

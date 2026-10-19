@@ -2,6 +2,7 @@ import { Inject, Injectable } from '@nestjs/common';
 import type { OnApplicationBootstrap, OnModuleDestroy } from '@nestjs/common';
 import { mkdir, readFile, readdir, realpath, rename, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
+import { GIT_SHIM_ON_VM } from '../../../common/git-shim-paths';
 import { createLogger } from '../../../common/logging/logger';
 import { FileSyncService } from '../../file-sync/file-sync.service';
 import {
@@ -18,8 +19,6 @@ import { GitOwnerStore } from '../git-owner.store';
 const logger = createLogger('GitShimRegistry');
 export const GIT_SHIM_HOME = Symbol('GIT_SHIM_HOME');
 export const GIT_SHIM_REFRESH_MS = Symbol('GIT_SHIM_REFRESH_MS');
-/** Whether this instance is a claimed VM; read on each refresh, because a claim can come later. */
-export const GIT_SHIM_ON_VM = Symbol('GIT_SHIM_ON_VM');
 const PROJECTS_FILE = 'projects.sh';
 
 interface ShimProject {

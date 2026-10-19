@@ -200,10 +200,15 @@ describe('recorded transcript handoff', () => {
       ]) {
         const restored = await host.app.get(SessionRuntime).restore(sessionId, 'A');
         expect(restored.status).toBe('running');
-        expect(terminal.typeCommand).toHaveBeenLastCalledWith(
-          expect.anything(),
-          expect.arrayContaining([resumeFlag, sessionId]),
-        );
+        expect(terminal.typeCommand).toHaveBeenLastCalledWith(expect.anything(), [
+          '/bin/sh',
+          expect.any(String),
+        ]);
+        // The mocked pane never runs the launch script, so it still holds the command.
+        const [, [, script]] = jest.mocked(terminal.typeCommand).mock.lastCall!;
+        const command = await readFile(script, 'utf8');
+        expect(command).toContain(` '${resumeFlag}' `);
+        expect(command).toContain(` '${sessionId}'\n`);
         expect(
           host.sqlite
             .prepare('SELECT status, provider_session_id FROM sessions WHERE id = ?')

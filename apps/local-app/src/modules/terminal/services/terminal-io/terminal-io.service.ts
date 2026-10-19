@@ -32,6 +32,10 @@ import { SettingsService } from '../../../settings/services/settings.service';
 
 const logger = createLogger('TerminalIOService');
 
+// macOS keeps 1,024 bytes per tty line before the shell's line editor starts and drops the
+// rest, Enter included. See docs/risks.md#terminal-io.
+const MAX_TYPED_COMMAND_BYTES = 1_000;
+
 interface HealthMonitorRecord {
   readonly token: number;
   readonly sessionName: string;
@@ -193,12 +197,20 @@ export class TerminalIOService implements BeforeApplicationShutdown {
     return lifecycle.applyWindowTheme(this.executor, target, foreground, background);
   }
 
-  async typeCommand(target: SessionTarget, argv: string[]): Promise<void> {
+  async typeCommand(target: SessionTarget, argv: readonly string[]): Promise<void> {
     if (!argv.length) throw new Error('Attempted to send empty argv command');
 
-    await this.gap.ensureGap(target.name);
-
     const commandString = argv.map(quoteShellArg).join(' ');
+    const commandBytes = Buffer.byteLength(commandString, 'utf8');
+    if (commandBytes > MAX_TYPED_COMMAND_BYTES) {
+      throw new TypeCommandFailedError(
+        target.name,
+        'length',
+        `${commandBytes} bytes exceeds the ${MAX_TYPED_COMMAND_BYTES}-byte limit`,
+      );
+    }
+
+    await this.gap.ensureGap(target.name);
 
     const literalResult = await this.executor.run({
       argv: ['tmux', 'send-keys', '-t', `=${target.name}:`, '-l', '--', commandString],

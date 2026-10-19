@@ -317,7 +317,7 @@ export async function requireForegroundProgram(
 export class TypeCommandFailedError extends Error {
   constructor(
     readonly sessionName: string,
-    readonly phase: 'literal' | 'enter',
+    readonly phase: 'length' | 'literal' | 'enter',
     readonly cause?: string,
   ) {
     super(

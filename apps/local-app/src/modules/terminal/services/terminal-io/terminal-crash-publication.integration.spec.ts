@@ -210,6 +210,7 @@ describe('terminal crash publication', () => {
         createPlan: jest.fn().mockResolvedValue({}),
         materialize: jest.fn().mockResolvedValue({
           config: { commandArgs: ['test-provider', '--resume', 'provider-session-1'] },
+          typedArgs: ['/bin/sh', '/private/launch/restore.sh'],
           rollback: jest.fn(),
           afterCommand: jest.fn().mockResolvedValue(undefined),
         }),

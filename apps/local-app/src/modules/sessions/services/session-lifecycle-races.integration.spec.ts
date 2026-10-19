@@ -226,6 +226,7 @@ describe('session lifecycle race serialization', () => {
           env: null,
           contextWindowOverride: null,
         },
+        typedArgs: ['/bin/sh', '/private/launch/session.sh'],
         afterCommand: jest.fn().mockResolvedValue(undefined),
         rollback: jest.fn().mockResolvedValue(undefined),
       })),

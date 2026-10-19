@@ -43,6 +43,7 @@ describe('provider plugin policy preparation workflow integration', () => {
       new RuntimeContextCaptureService(db),
       new ClaudeLaunchSettingsMaterializerService(join(temporaryRoot, 'claude-private')),
       new CodexPluginProfileMaterializerService(join(temporaryRoot, 'codex-private')),
+      join(temporaryRoot, 'runtime-context'),
     );
 
     sqlite

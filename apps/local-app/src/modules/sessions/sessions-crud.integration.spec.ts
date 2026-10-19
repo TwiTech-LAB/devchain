@@ -3,6 +3,7 @@
  *
  * Boots one real NestJS app from the migrated SQLite snapshot for the file.
  */
+import { readFileSync } from 'fs';
 import { mkdtemp, rm } from 'fs/promises';
 import { join } from 'path';
 import { tmpdir } from 'os';
@@ -711,15 +712,14 @@ describe('POST /api/sessions/:id/restore', () => {
       });
     expect(res.statusCode).toBe(201);
 
-    // typeCommand receives (target, argv) — the full env-prefixed command array
-    const [, commandArgs] = mockTerminalIO.typeCommand.mock.calls[0] as [
-      { name: string },
-      string[],
-    ];
+    // typeCommand receives (target, ['/bin/sh', script]); the mocked pane never runs the
+    // script, so it still holds the full env-prefixed command.
+    const [, typedArgs] = mockTerminalIO.typeCommand.mock.calls[0] as [{ name: string }, string[]];
+    expect(typedArgs[0]).toBe('/bin/sh');
     // Should contain --resume and the providerSessionId
-    const joined = commandArgs.join(' ');
-    expect(joined).toContain('--resume');
-    expect(joined).toContain('prov-session-XYZ');
+    const command = readFileSync(typedArgs[1], 'utf8');
+    expect(command).toContain('--resume');
+    expect(command).toContain('prov-session-XYZ');
   });
 
   it('rollback: reverts status to stopped when sendCommandArgs fails', async () => {

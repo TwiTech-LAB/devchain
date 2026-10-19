@@ -389,7 +389,7 @@ describe('SessionRestorePipeline', () => {
       );
     });
 
-    it('types the restore command carrying the ses_ id into tmux and completes restore', async () => {
+    it('types the prepared launch line for the ses_ restore and completes restore', async () => {
       const { pipeline, stoppedSessionRow, mocks } = createRestorePipelineHarness();
       const sesId = 'ses_opencode-abc-123';
       stoppedSessionRow.provider_session_id = sesId;
@@ -397,10 +397,10 @@ describe('SessionRestorePipeline', () => {
 
       await pipeline.restore(sessionId, projectId);
 
-      // The prepared runtime supplies the exact command, including the stored identity.
+      // The prepared runtime's launch script carries the command with the stored identity.
       expect(mocks.terminalIO.typeCommand).toHaveBeenCalledWith(
         expect.anything(),
-        expect.arrayContaining([sesId]),
+        mocks.preparedProviderRuntime.typedArgs,
       );
       // argv-includes guard passed → restore completed, correct session reattached
       expect(mocks.eventsService.publish).toHaveBeenCalledWith(

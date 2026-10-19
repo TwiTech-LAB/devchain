@@ -44,6 +44,8 @@ export abstract class ProviderRuntimePlan {
 
 export interface PreparedProviderRuntime {
   readonly config: LaunchConfig;
+  /** The line to type into the pane: `/bin/sh <launch script>`. The script runs `config.commandArgs`. */
+  readonly typedArgs: readonly string[];
   readonly afterCommand: () => Promise<void>;
   readonly rollback: () => Promise<void>;
 }

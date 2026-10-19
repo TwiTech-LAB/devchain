@@ -1,9 +1,10 @@
 import { Inject, Injectable, Optional } from '@nestjs/common';
 import { existsSync } from 'node:fs';
+import { rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { HostResolver } from '@devchain/shared';
 import { getEnvConfig } from '../../../../common/config/env.config';
-import { GIT_SHIM_BIN } from '../../../../common/git-shim-paths';
+import { GIT_SHIM_BIN, GIT_SHIM_ON_VM } from '../../../../common/git-shim-paths';
 import { ValidationError } from '../../../../common/errors/error-types';
 import { isHookCapable } from '../../../providers/adapters/capabilities';
 import { ProviderPluginPolicyService } from '../../../providers/services/provider-plugin-policy.service';
@@ -30,6 +31,12 @@ import {
   type LaunchConfig,
   type LaunchConfigInput,
 } from '../provider-launch-config';
+import {
+  LAUNCH_SCRIPT_SHELL,
+  PROVIDER_LAUNCH_SCRIPT_ROOT,
+  launchScriptPath,
+  writeLaunchScript,
+} from './launch-script';
 import type {
   PreparedProviderRuntime,
   ProviderRuntimePlanInput,
@@ -64,6 +71,7 @@ interface RollbackState {
   readonly priorCapture: RuntimeContextCaptureSnapshot | null;
   readonly captureStarted: boolean;
   readonly preparedArtifacts: readonly PreparedOwner[];
+  readonly launchScript: string | null;
 }
 
 interface PreparedOwner {
@@ -77,12 +85,17 @@ export class ProviderRuntimePreparationService {
 
   constructor(
     @Inject(STORAGE_SERVICE)
-    private readonly storage: Pick<StorageService, 'getProviderEnvForProject'>,
+    private readonly storage: Pick<
+      StorageService,
+      'getProviderEnvForProject' | 'getRemoteProjectBinding'
+    >,
     private readonly providerPluginPolicy: ProviderPluginPolicyService,
     private readonly runtimeContextCapture: RuntimeContextCaptureService,
     claudeLaunchSettings: ClaudeLaunchSettingsMaterializerService,
     codexPluginProfiles: CodexPluginProfileMaterializerService,
+    @Inject(PROVIDER_LAUNCH_SCRIPT_ROOT) private readonly launchScriptRoot: string,
     @Optional() @Inject(GIT_SHIM_BIN) private readonly gitShimBin: string | null = null,
+    @Optional() @Inject(GIT_SHIM_ON_VM) private readonly onVm: (() => boolean) | null = null,
     @Optional()
     @Inject(ProviderCliVersionProbe)
     private readonly cliVersionProbe: ProviderCliVersionProbe | null = null,
@@ -114,6 +127,7 @@ export class ProviderRuntimePreparationService {
       : undefined;
 
     const environment = getEnvConfig();
+    const shimBin = await this.connectedShimBin(input.projectId);
     const baseInput: Readonly<LaunchConfigInput> = Object.freeze({
       mode: input.mode,
       ...(input.mode === 'new'
@@ -128,8 +142,7 @@ export class ProviderRuntimePreparationService {
       providerEnv: providerEnv ? Object.freeze({ ...providerEnv }) : null,
       configEnv: input.configEnv ? Object.freeze({ ...input.configEnv }) : null,
       provider: frozenProvider,
-      ...(this.gitShimBin &&
-        existsSync(join(this.gitShimBin, 'git')) && { gitShimBin: this.gitShimBin }),
+      ...(shimBin && { gitShimBin: shimBin }),
       hookContext: isHookCapable(input.adapter)
         ? Object.freeze({
             apiUrl: HostResolver.buildInternalBaseUrl({
@@ -178,12 +191,14 @@ export class ProviderRuntimePreparationService {
       state.mode === 'restore' ? this.runtimeContextCapture.snapshot(state.sessionId) : null;
     let captureStarted = false;
     const preparedArtifacts: PreparedOwner[] = [];
+    let launchScript: string | null = null;
     const rollbackState = (): RollbackState => ({
       mode: state.mode,
       sessionId: state.sessionId,
       priorCapture,
       captureStarted,
       preparedArtifacts,
+      launchScript,
     });
 
     try {
@@ -229,9 +244,12 @@ export class ProviderRuntimePreparationService {
         }
       }
       const finalConfig = this.freezeConfig(config);
+      launchScript = launchScriptPath(this.launchScriptRoot);
+      await writeLaunchScript(launchScript, finalConfig.commandArgs);
 
       return Object.freeze({
         config: finalConfig,
+        typedArgs: Object.freeze([LAUNCH_SCRIPT_SHELL, launchScript]),
         afterCommand: async () => {
           for (const { handle } of preparedArtifacts) {
             await handle.afterCommand?.();
@@ -243,6 +261,17 @@ export class ProviderRuntimePreparationService {
       await this.rollbackPrepared(rollbackState(), true);
       throw error;
     }
+  }
+
+  /**
+   * The shim directory when the shim exists and the project is connected: any project on a
+   * claimed VM, or a project with a VM binding on the PC. Keep in step with the shim registry
+   * in `git-shim-registry.service.ts` (`projects`).
+   */
+  private async connectedShimBin(projectId: string): Promise<string | null> {
+    if (!this.gitShimBin || !existsSync(join(this.gitShimBin, 'git'))) return null;
+    if (this.onVm?.()) return this.gitShimBin;
+    return (await this.storage.getRemoteProjectBinding(projectId)) ? this.gitShimBin : null;
   }
 
   private probeCliVersion(providerName: string, providerBinPath: string): Promise<string> {
@@ -301,6 +330,9 @@ export class ProviderRuntimePreparationService {
       }
     };
 
+    const { launchScript } = state;
+    // The script normally deletes itself when the pane shell runs it.
+    if (launchScript) await attempt(() => rm(launchScript, { force: true }));
     for (const { owner, handle } of [...state.preparedArtifacts].reverse()) {
       await attempt(() => owner.cleanupPrepared(handle, state.sessionId));
     }

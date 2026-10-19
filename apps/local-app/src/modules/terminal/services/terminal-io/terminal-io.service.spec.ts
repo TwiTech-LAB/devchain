@@ -654,6 +654,17 @@ describe('TerminalIOService', () => {
       await expect(svc.typeCommand({ name: 'sess' }, [])).rejects.toThrow(/empty argv/);
     });
 
+    it('refuses a line over 1,000 UTF-8 bytes with phase length and sends no keys', async () => {
+      // 502 characters, 1,001 bytes once quoted: the limit counts bytes.
+      const error = await svc
+        .typeCommand({ name: 'sess' }, [`${'é'.repeat(499)}x`])
+        .catch((e) => e);
+
+      expect(error).toBeInstanceOf(TypeCommandFailedError);
+      expect(error).toMatchObject({ phase: 'length', sessionName: 'sess' });
+      expect(fake.calls).toHaveLength(0);
+    });
+
     it('waits 500 ms before typing the next command in the same pane', async () => {
       fake.setDefaultResponse({ type: 'success' });
       await svc.typeCommand({ name: 'sess' }, ['cmd1']);

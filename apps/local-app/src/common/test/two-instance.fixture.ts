@@ -1,4 +1,5 @@
 import { PROVIDER_CLI_INSTALL_ROOT } from '../../modules/providers/services/provider-cli-install-state.service';
+import { PROVIDER_LAUNCH_SCRIPT_ROOT } from '../../modules/sessions/services/provider-runtime-preparation/launch-script';
 import { TranscriptPathValidator } from '../../modules/session-reader/services/transcript-path-validator.service';
 import { ValidationPipe } from '@nestjs/common';
 import { FastifyAdapter, NestFastifyApplication } from '@nestjs/platform-fastify';
@@ -153,7 +154,9 @@ async function startInstance(
       .overrideProvider(DB_CONNECTION)
       .useValue(db)
       .overrideProvider(PROVIDER_CLI_INSTALL_ROOT)
-      .useValue(join(dataDir, 'provider-clis'));
+      .useValue(join(dataDir, 'provider-clis'))
+      .overrideProvider(PROVIDER_LAUNCH_SCRIPT_ROOT)
+      .useValue(join(dataDir, 'runtime-context'));
     if (fileSyncPaths) {
       builder = builder.overrideProvider(FILE_SYNC_PATHS).useValue(fileSyncPaths(name, dataDir));
     }

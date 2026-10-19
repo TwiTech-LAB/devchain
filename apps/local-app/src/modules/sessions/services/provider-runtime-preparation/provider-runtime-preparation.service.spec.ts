@@ -1,3 +1,7 @@
+import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { delimiter, dirname, join } from 'node:path';
+import { GIT_SHIM_BIN, GIT_SHIM_ON_VM } from '../../../../common/git-shim-paths';
 import { processIdsEnv } from '../../../../common/process-ids-env';
 import type { Provider as NestProvider } from '@nestjs/common';
 import { Test, type TestingModule } from '@nestjs/testing';
@@ -19,13 +23,17 @@ import {
   type StorageService,
 } from '../../../storage/interfaces/storage.interface';
 import type { Provider } from '../../../storage/models/domain.models';
+import { quoteShellArg } from '../../../terminal/services/terminal-io/quote-shell-arg';
+import { PROVIDER_LAUNCH_SCRIPT_ROOT } from './launch-script';
 import { ProviderRuntimePreparationService } from './provider-runtime-preparation.service';
 import type {
   NewProviderRuntimePlanInput,
   RestoreProviderRuntimePlanInput,
 } from './provider-runtime-preparation.types';
 
-type StorageMock = jest.Mocked<Pick<StorageService, 'getProviderEnvForProject'>>;
+type StorageMock = jest.Mocked<
+  Pick<StorageService, 'getProviderEnvForProject' | 'getRemoteProjectBinding'>
+>;
 
 interface TestAdapter extends ProviderAdapter {
   buildLaunchArgs: jest.MockedFunction<ProviderAdapter['buildLaunchArgs']>;
@@ -158,6 +166,8 @@ describe('ProviderRuntimePreparationService', () => {
     cleanupPrepared: jest.Mock;
   };
   let codex: ReturnType<typeof createCodexOwnerMock>;
+  let tempRoot: string;
+  let launchRoot: string;
 
   function compileModule(extraProviders: NestProvider[] = []): Promise<TestingModule> {
     return Test.createTestingModule({
@@ -168,13 +178,20 @@ describe('ProviderRuntimePreparationService', () => {
         { provide: RuntimeContextCaptureService, useValue: capture },
         { provide: ClaudeLaunchSettingsMaterializerService, useValue: claude },
         { provide: CodexPluginProfileMaterializerService, useValue: codex.owner },
+        { provide: PROVIDER_LAUNCH_SCRIPT_ROOT, useValue: launchRoot },
         ...extraProviders,
       ],
     }).compile();
   }
 
   beforeEach(async () => {
-    storage = { getProviderEnvForProject: jest.fn().mockReturnValue(null) };
+    tempRoot = mkdtempSync(join(tmpdir(), 'devchain-launch-script-'));
+    // A home-like runtime root, so the typed line has a realistic path length.
+    launchRoot = join(tempRoot, 'Users', 'firstname.lastname', '.devchain', 'runtime-context');
+    storage = {
+      getProviderEnvForProject: jest.fn().mockReturnValue(null),
+      getRemoteProjectBinding: jest.fn().mockResolvedValue(null),
+    };
     policy = { resolveAll: jest.fn().mockResolvedValue([]) };
     capture = {
       snapshot: jest.fn().mockReturnValue(null),
@@ -200,6 +217,7 @@ describe('ProviderRuntimePreparationService', () => {
 
   afterEach(async () => {
     await module.close();
+    rmSync(tempRoot, { recursive: true, force: true });
   });
 
   describe('createPlan', () => {
@@ -258,6 +276,60 @@ describe('ProviderRuntimePreparationService', () => {
       expect(capture.rotateEpoch).not.toHaveBeenCalled();
       expect(claude.prepare).not.toHaveBeenCalled();
       expect(codex.prepare).not.toHaveBeenCalled();
+    });
+
+    describe('git shim gate (same rule as git-shim-registry.service.ts:104-108)', () => {
+      let shimDir: string;
+      let emptyDir: string;
+
+      beforeEach(() => {
+        shimDir = mkdtempSync(join(tmpdir(), 'devchain-shim-'));
+        emptyDir = mkdtempSync(join(tmpdir(), 'devchain-no-shim-'));
+        writeFileSync(join(shimDir, 'git'), '#!/bin/sh\n');
+      });
+
+      afterEach(() => {
+        rmSync(shimDir, { recursive: true, force: true });
+        rmSync(emptyDir, { recursive: true, force: true });
+      });
+
+      async function launchEnv(
+        mode: 'new' | 'restore',
+        { shimBin, onVm, bound }: { shimBin: string; onVm: boolean; bound: boolean },
+      ): Promise<Record<string, string> | null> {
+        storage.getRemoteProjectBinding.mockResolvedValue(
+          bound ? ({ projectId: 'project-1' } as never) : null,
+        );
+        const gated = await compileModule([
+          { provide: GIT_SHIM_BIN, useValue: shimBin },
+          { provide: GIT_SHIM_ON_VM, useValue: () => onVm },
+        ]);
+        try {
+          const preparation = gated.get(ProviderRuntimePreparationService);
+          const adapter = makeAdapter();
+          const plan = await preparation.createPlan(
+            mode === 'new' ? makeNewInput(adapter) : makeRestoreInput(adapter),
+          );
+          return (await preparation.materialize(plan)).config.env;
+        } finally {
+          await gated.close();
+        }
+      }
+
+      it.each(['new', 'restore'] as const)(
+        'puts the shim on PATH only when it exists and the project is connected (%s)',
+        async (mode) => {
+          const pcUnbound = { shimBin: shimDir, onVm: false, bound: false };
+          const pcBound = { shimBin: shimDir, onVm: false, bound: true };
+          const vm = { shimBin: shimDir, onVm: true, bound: false };
+          const shimMissing = { shimBin: emptyDir, onVm: true, bound: true };
+
+          expect((await launchEnv(mode, pcUnbound))?.PATH).toBeUndefined();
+          expect((await launchEnv(mode, pcBound))?.PATH?.split(delimiter)[0]).toBe(shimDir);
+          expect((await launchEnv(mode, vm))?.PATH?.split(delimiter)[0]).toBe(shimDir);
+          expect((await launchEnv(mode, shimMissing))?.PATH).toBeUndefined();
+        },
+      );
     });
 
     it.each([
@@ -374,6 +446,55 @@ describe('ProviderRuntimePreparationService', () => {
       expect(claude.cleanupPrepared).not.toHaveBeenCalled();
       expect(capture.clear).toHaveBeenCalledWith('session-1');
       expect(capture.restoreSnapshot).not.toHaveBeenCalled();
+    });
+
+    it('types a short launch line for 10 KB of env and argv and keeps the real command in a private script', async () => {
+      const bigValue = 'v'.repeat(10_240);
+      const plan = await service.createPlan(
+        makeNewInput(makeAdapter(), {
+          profileOptions: `--note ${'a'.repeat(10_240)}`,
+          configEnv: { BIG_ENV: bigValue },
+        }),
+      );
+
+      const prepared = await service.materialize(plan);
+
+      expect(prepared.config.commandArgs).toEqual(
+        expect.arrayContaining([`BIG_ENV=${bigValue}`, '/usr/bin/other', 'a'.repeat(10_240)]),
+      );
+      const [shell, script] = prepared.typedArgs;
+      expect(shell).toBe('/bin/sh');
+      expect(dirname(script)).toBe(join(launchRoot, 'launch'));
+      // 255 bytes is the POSIX minimum MAX_CANON, so the line fits every tty line buffer.
+      const typedLine = prepared.typedArgs.map(quoteShellArg).join(' ');
+      expect(Buffer.byteLength(typedLine, 'utf8')).toBeLessThanOrEqual(255);
+      expect(readFileSync(script, 'utf8')).toBe(
+        [
+          '#!/bin/sh',
+          '/bin/rm -f -- "$0"',
+          `exec ${prepared.config.commandArgs.map(quoteShellArg).join(' ')}`,
+          '',
+        ].join('\n'),
+      );
+      expect(statSync(script).mode & 0o777).toBe(0o600);
+      expect(statSync(dirname(script)).mode & 0o777).toBe(0o700);
+      expect(statSync(launchRoot).mode & 0o777).toBe(0o700);
+    });
+
+    it('removes the launch script on rollback, also when the script already deleted itself', async () => {
+      const first = await service.materialize(
+        await service.createPlan(makeNewInput(makeAdapter())),
+      );
+      expect(existsSync(first.typedArgs[1])).toBe(true);
+      await first.rollback();
+      expect(existsSync(first.typedArgs[1])).toBe(false);
+
+      const second = await service.materialize(
+        await service.createPlan(makeNewInput(makeAdapter())),
+      );
+      rmSync(second.typedArgs[1]);
+      await expect(second.rollback()).resolves.toBeUndefined();
+      expect(capture.clear).toHaveBeenCalledTimes(2);
     });
 
     it('restores the exact prior capture snapshot on restore rollback', async () => {

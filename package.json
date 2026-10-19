@@ -1,6 +1,6 @@
 {
   "name": "devchain-cli",
-  "version": "0.26.0",
+  "version": "0.26.1",
   "description": "AI driven development platform",
   "homepage": "https://devchain.cc/",
   "repository": {
@@ -8,6 +8,9 @@
     "url": "https://github.com/twitech-lab/devchain.git"
   },
   "changelog": {
+    "0.26.1": [
+      "Terminal: agent sessions start again on macOS"
+    ],
     "0.26.0": [
       "Usage: plan usage rings in the bottom bar and in mobile chat",
       "Remote VMs: several people can share one VM, each with their own DevChain",
@@ -74,15 +77,6 @@
     "0.23.1": [
       "Improved time tracking",
       "Dev Template: clearer Architect planning instructions with more focused research and review rounds"
-    ],
-    "0.23.0": [
-      "Integrations: ClickUp and Jira connections, boards, and settings now belong to each project; synced subtasks hide local project paths",
-      "Epics: link related and blocking work across a workspace, preview relationships on the Board, and switch between an Epic and its linked task",
-      "Time tracking: assign unlogged agent activity to Epics, include team research and related work, and export only new time on the dates it happened",
-      "Remote boards: clearer linked-task and unlogged-time indicators, editable time entries, and more reliable ClickUp time confirmation",
-      "Stability: fewer Claude startup trust prompts, correct context limits for new Claude models, and fixes for model-selection crashes",
-      "Dev Template: improved code reviews and planning prompts",
-      "Mobile app 1.9.0: clearer transcript updates when reopening cached chats and fixes for missing-transcript errors"
     ]
   },
   "publishConfig": {

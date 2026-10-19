@@ -197,7 +197,6 @@ export class SessionRestorePipeline {
         const providerRuntime =
           await this.providerRuntimePreparation.materialize(providerRuntimePlan);
         cleanup.push('providerRuntime', providerRuntime.rollback);
-        const config = providerRuntime.config;
 
         // Phase 7: createTmuxSession
         await this.terminalIO.createEmptySession(tmuxSessionName, { cwd: project.rootPath });
@@ -243,7 +242,7 @@ export class SessionRestorePipeline {
         this.terminalSessionRegistry.bind(locked.id, this.terminalIO);
 
         // Issue the restore command — streaming is bound, output is captured
-        await this.terminalIO.typeCommand({ name: tmuxSessionName }, config.commandArgs);
+        await this.terminalIO.typeCommand({ name: tmuxSessionName }, providerRuntime.typedArgs);
         await providerRuntime.afterCommand();
 
         // Phase 9: emit session.restored (NOT session.started)

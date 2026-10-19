@@ -46,7 +46,6 @@ import { PreflightService } from '../../../core/services/preflight.service';
 import { ProviderMcpEnsureService } from '../../../providers/services/provider-mcp-ensure.service';
 import { EventsService } from '../../../events/services/events.service';
 import { TeamsStore } from '../../../teams/storage/teams.store';
-import type { LaunchConfig } from '../provider-launch-config';
 import { buildTmuxSessionName } from '../../utils/tmux-naming.util';
 import { renderTemplate } from '../../../../common/template/handlebars-renderer';
 import { buildPromptRenderContext } from '../../../../common/template/prompt-render-context';
@@ -54,7 +53,10 @@ import { CleanupStack } from './cleanup-stack';
 import { ensureMcpReadiness } from './ensure-mcp-readiness';
 import type { LaunchSessionDto, SessionDetailDto } from '../../dtos/sessions.dto';
 import { SessionTerminalRuntimeService } from '../../../session-terminal-runtime/session-terminal-runtime.service';
-import { ProviderRuntimePreparationService } from '../provider-runtime-preparation';
+import {
+  ProviderRuntimePreparationService,
+  type PreparedProviderRuntime,
+} from '../provider-runtime-preparation';
 
 const logger = createLogger('SessionLaunchPipeline');
 
@@ -186,7 +188,6 @@ export class SessionLaunchPipeline {
         const providerRuntime =
           await this.providerRuntimePreparation.materialize(providerRuntimePlan);
         cleanup.push('providerRuntime', providerRuntime.rollback);
-        const finalConfig = providerRuntime.config;
 
         // ── Runtime plan finalized checkpoint ──────────────────────────
         // From here: argv, env, sessionId, and generated artifact paths are immutable.
@@ -247,21 +248,15 @@ export class SessionLaunchPipeline {
           );
         }
 
-        await this.launchCliAndPastePrompt(
-          sessionId,
-          tmuxSessionName,
-          finalConfig,
-          {
-            agent,
-            project,
-            epic,
-            profile,
-            provider,
-            seedMode,
-            seededPrompt,
-          },
-          providerRuntime.afterCommand,
-        );
+        await this.launchCliAndPastePrompt(sessionId, tmuxSessionName, providerRuntime, {
+          agent,
+          project,
+          epic,
+          profile,
+          provider,
+          seedMode,
+          seededPrompt,
+        });
 
         await this.eventsService.publish('session.started', {
           sessionId,
@@ -518,7 +513,7 @@ export class SessionLaunchPipeline {
   private async launchCliAndPastePrompt(
     sessionId: string,
     tmuxSessionName: string,
-    config: LaunchConfig,
+    providerRuntime: PreparedProviderRuntime,
     context: {
       agent: Agent;
       project: Project;
@@ -528,10 +523,9 @@ export class SessionLaunchPipeline {
       seedMode?: 'argv' | 'stdin';
       seededPrompt: string | null;
     },
-    afterCommand?: () => Promise<unknown>,
   ): Promise<void> {
-    await this.terminalIO.typeCommand({ name: tmuxSessionName }, config.commandArgs);
-    await afterCommand?.();
+    await this.terminalIO.typeCommand({ name: tmuxSessionName }, providerRuntime.typedArgs);
+    await providerRuntime.afterCommand();
 
     const launchTimestamp = Date.now();
     await this.terminalIO.waitForOutput(
@@ -572,7 +566,7 @@ export class SessionLaunchPipeline {
       epic: context.epic,
       profile: context.profile,
       provider: context.provider,
-      launchHandshake: config.promptHandshake,
+      launchHandshake: providerRuntime.config.promptHandshake,
     });
   }
 

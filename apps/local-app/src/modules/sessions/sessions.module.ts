@@ -26,9 +26,13 @@ import { SessionsReadModule } from './sessions-read.module';
 import { SessionLauncherFacade } from './services/session-launcher-facade.service';
 import { RuntimeContextCaptureModule } from '../runtime-context-capture/runtime-context-capture.module';
 import { ProviderRuntimePreparationService } from './services/provider-runtime-preparation';
+import { PROVIDER_LAUNCH_SCRIPT_ROOT } from './services/provider-runtime-preparation/launch-script';
+import { getRuntimeContextCaptureRoot } from '../runtime-context-capture/runtime-context-capture-files';
 import { EpicTimeStoreModule } from '../epic-time/epic-time-store.module';
 import { SessionTerminalRuntimeModule } from '../session-terminal-runtime/session-terminal-runtime.module';
-import { GIT_SHIM_BIN, gitShimBin } from '../../common/git-shim-paths';
+import { GIT_SHIM_BIN, GIT_SHIM_ON_VM, gitShimBin } from '../../common/git-shim-paths';
+import { getEnvConfig } from '../../common/config/env.config';
+import { isClaimedHost } from '../remotes/host-api-key';
 
 @Module({
   imports: [
@@ -57,9 +61,14 @@ import { GIT_SHIM_BIN, gitShimBin } from '../../common/git-shim-paths';
     SessionLaunchPipeline,
     SessionRestorePipeline,
     ProviderRuntimePreparationService,
+    { provide: PROVIDER_LAUNCH_SCRIPT_ROOT, useFactory: () => getRuntimeContextCaptureRoot() },
     {
       provide: GIT_SHIM_BIN,
       useFactory: () => (process.env.NODE_ENV === 'test' ? null : gitShimBin()),
+    },
+    {
+      provide: GIT_SHIM_ON_VM,
+      useValue: () => isClaimedHost(getEnvConfig().DEVCHAIN_HOST_ETC_DIR),
     },
     SessionRuntime,
     SessionLauncherFacade,
@@ -73,6 +82,7 @@ import { GIT_SHIM_BIN, gitShimBin } from '../../common/git-shim-paths';
     MessageActivityStreamService,
     SessionRuntime,
     SessionLauncherFacade,
+    GIT_SHIM_ON_VM,
   ],
 })
 export class SessionsModule {}

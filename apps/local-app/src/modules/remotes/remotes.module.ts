@@ -117,12 +117,9 @@ import { RemoteForcedDetachStore } from './services/remote-forced-detach.store';
 import {
   GitShimRegistryService,
   GIT_SHIM_HOME,
-  GIT_SHIM_ON_VM,
   GIT_SHIM_REFRESH_MS,
 } from './git-shim/git-shim-registry.service';
 import { gitShimHome } from '../../common/git-shim-paths';
-import { getEnvConfig } from '../../common/config/env.config';
-import { isClaimedHost } from './host-api-key';
 import { HomeGitWriteController } from './git-writes/home-git-write.controller';
 import {
   HomeGitWriteService,
@@ -186,10 +183,6 @@ import {
   providers: [
     GitShimRegistryService,
     { provide: GIT_SHIM_HOME, useFactory: () => gitShimHome() },
-    {
-      provide: GIT_SHIM_ON_VM,
-      useValue: () => isClaimedHost(getEnvConfig().DEVCHAIN_HOST_ETC_DIR),
-    },
     // Tests never touch the developer's own shim files unless they provide a home.
     {
       provide: GIT_SHIM_REFRESH_MS,
