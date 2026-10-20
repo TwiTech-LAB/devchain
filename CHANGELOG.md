@@ -2,6 +2,10 @@
 
 Release notes for each published `devchain-cli` version, newest first. The `changelog` field in `package.json` keeps the newest 10 versions for the CLI update notice.
 
+## 0.26.2 — 2026-10-20
+
+- Usage: fixed reading of Claude usage limits
+
 ## 0.26.1 — 2026-10-19
 
 - Terminal: agent sessions start again on macOS

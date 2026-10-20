@@ -1,6 +1,6 @@
 {
   "name": "devchain-cli",
-  "version": "0.26.1",
+  "version": "0.26.2",
   "description": "AI driven development platform",
   "homepage": "https://devchain.cc/",
   "repository": {
@@ -8,6 +8,9 @@
     "url": "https://github.com/twitech-lab/devchain.git"
   },
   "changelog": {
+    "0.26.2": [
+      "Usage: fixed reading of Claude usage limits"
+    ],
     "0.26.1": [
       "Terminal: agent sessions start again on macOS"
     ],
@@ -73,10 +76,6 @@
     ],
     "0.23.2": [
       "Performance: reduced CPU usage in long-running sessions and smoother live transcript updates in the web UI"
-    ],
-    "0.23.1": [
-      "Improved time tracking",
-      "Dev Template: clearer Architect planning instructions with more focused research and review rounds"
     ]
   },
   "publishConfig": {

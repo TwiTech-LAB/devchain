@@ -9,17 +9,19 @@ import type {
   ProviderUsageCheckResult,
 } from '../provider-usage.types';
 import { claudeConfigDir } from '../services/provider-usage-accounts';
-import { parseClaudeUsage } from './claude-usage-parser';
+import { parseClaudeUsageStream } from './claude-usage-parser';
 import { ensureUsageCheckCwd } from './private-cwd';
 
 export const CLAUDE_USAGE_TIMEOUT_MS = 20_000;
-export const CLAUDE_USAGE_MAX_OUTPUT_BYTES = 64 * 1024;
+/** The stream-json init event lists every tool, skill, plugin and MCP server first. */
+export const CLAUDE_USAGE_MAX_OUTPUT_BYTES = 1024 * 1024;
 
 const NOT_LOGGED_IN_RE = /not logged in|please run \/login/i;
 const PLAN_FIELD_RE = /^[A-Za-z0-9_]{1,40}$/;
 
 /**
- * Reads a stored Claude login through `claude -p /usage`. The process runs in an empty
+ * Reads a stored Claude login through `claude -p /usage` with stream-json output, which
+ * carries a structured usage report next to the text. The process runs in an empty
  * directory of its own: a project directory would load that project's hooks, `CLAUDE.md`
  * and MCP servers into the check.
  */
@@ -39,7 +41,16 @@ export class ClaudeLoginChecker implements ProviderUsageChecker {
     // `--bare` would disable OAuth, and `/usage` then has no plan data.
     const command = applyProviderCliNoUpdate(
       'claude',
-      [binPath, '-p', '/usage', '--no-session-persistence'],
+      [
+        binPath,
+        '-p',
+        '/usage',
+        '--no-session-persistence',
+        // `--print` accepts stream-json only with `--verbose`.
+        '--output-format',
+        'stream-json',
+        '--verbose',
+      ],
       withoutParentSessionEnv(env),
     );
     const result = await this.executor.run({
@@ -53,7 +64,7 @@ export class ClaudeLoginChecker implements ProviderUsageChecker {
 
     if (result.timedOut) throw new Error('claude /usage timed out');
 
-    const parsed = parseClaudeUsage(result.stdout, Date.now());
+    const parsed = parseClaudeUsageStream(result.stdout, Date.now());
     if (parsed.kind === 'ok') {
       return {
         kind: 'ok',

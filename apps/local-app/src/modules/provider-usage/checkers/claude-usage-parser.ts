@@ -1,5 +1,5 @@
 import type { UsageWindow } from '@devchain/shared';
-import { standardWindow } from './checker-helpers';
+import { isObject, standardWindow, type JsonObject } from './checker-helpers';
 
 export type ParsedClaudeUsage =
   | { kind: 'ok'; windows: UsageWindow[]; extras: UsageWindow[] }
@@ -8,29 +8,49 @@ export type ParsedClaudeUsage =
 
 const WINDOW_LINE_RE =
   /^Current (session|week \((.+?)\)):\s*(\d+(?:\.\d+)?)%\s+used(?:\s+·\s+resets\s+(.+?))?\s*$/;
-const RESET_RE = /^([A-Za-z]{3}) (\d{1,2}), (\d{1,2})(?::(\d{2}))?\s*(am|pm)\s+\(([^()]+)\)$/i;
+const RESET_RE =
+  /^([A-Za-z]{3}) (\d{1,2})(?:,| at) (\d{1,2})(?::(\d{2}))?\s*(am|pm)\s+\(([^()]+)\)$/i;
 const MONTHS = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'];
 /** Covers a Feb 29 reset that falls in a non-leap year. */
 const MAX_YEARS_AHEAD = 4;
 // eslint-disable-next-line no-control-regex
 const ANSI_RE = /\x1b\[[0-9;?]*[ -/]*[@-~]/g;
 
+interface WindowEntry {
+  window: UsageWindow;
+  extra: boolean;
+}
+
 /**
- * Parses the stdout of `claude -p /usage`. A line that does not parse is dropped, and a
+ * Parses the stdout of `claude -p /usage --output-format stream-json --verbose`. The
+ * `usage_report` of the assistant event has the percentages and UTC reset times, so no
+ * date text is read. A version that does not send it falls back to the result event text.
+ */
+export function parseClaudeUsageStream(stdout: string, nowMs: number): ParsedClaudeUsage {
+  let text: string | null = null;
+  for (const line of stdout.split(/\r?\n/)) {
+    const event = parseJsonLine(line.trim());
+    if (event?.type === 'assistant') {
+      const parsed = parseUsageReport(event.usage_report);
+      if (parsed) return parsed;
+    } else if (event?.type === 'result' && typeof event.result === 'string') {
+      text = event.result;
+    }
+  }
+  return parseClaudeUsage(text ?? stdout, nowMs);
+}
+
+/**
+ * Parses the text of `claude -p /usage`. A line that does not parse is dropped, and a
  * window whose reset time cannot be read is dropped with it, so no value shown is a guess.
  */
 export function parseClaudeUsage(stdout: string, nowMs: number): ParsedClaudeUsage {
-  const windows: UsageWindow[] = [];
-  const extras: UsageWindow[] = [];
-  const seen = new Set<string>();
+  const entries: WindowEntry[] = [];
 
   for (const raw of stdout.replace(ANSI_RE, '').split(/\r?\n/)) {
     const match = WINDOW_LINE_RE.exec(raw.trim());
     if (!match) continue;
     const [, scope, model, percent, reset] = match;
-
-    const window = buildWindow(scope, model, Number(percent));
-    if (!window || seen.has(window.window.id)) continue;
 
     let resetsAt: number | null = null;
     if (reset !== undefined) {
@@ -38,25 +58,95 @@ export function parseClaudeUsage(stdout: string, nowMs: number): ParsedClaudeUsa
       if (resetsAt === null) continue;
     }
 
-    seen.add(window.window.id);
-    (window.extra ? extras : windows).push({ ...window.window, resetsAt });
+    const entry = buildWindow(scope === 'session' ? null : model, Number(percent), resetsAt);
+    if (entry) entries.push(entry);
   }
 
-  if (windows.length > 0 || extras.length > 0) return { kind: 'ok', windows, extras };
+  const parsed = collectWindows(entries);
+  if (parsed) return parsed;
   return /^\s*Total cost:/m.test(stdout) ? { kind: 'not-available' } : { kind: 'error' };
 }
 
-function buildWindow(
-  scope: string,
-  model: string | undefined,
-  usedPercent: number,
-): { window: Omit<UsageWindow, 'resetsAt'>; extra: boolean } | null {
-  if (scope === 'session') {
-    return { window: standardWindow('5h', usedPercent, null), extra: false };
+/** Null when no limit has a known kind and a readable percent and reset time. */
+function parseUsageReport(report: unknown): ParsedClaudeUsage | null {
+  const limits =
+    isObject(report) && isObject(report.rate_limits) ? report.rate_limits.limits : undefined;
+  if (!Array.isArray(limits)) return null;
+
+  const entries: WindowEntry[] = [];
+  for (const limit of limits) {
+    if (!isObject(limit)) continue;
+    const model = reportModel(limit);
+    const resetsAt = reportResetEpochSeconds(limit.resets_at);
+    const usedPercent = limit.percent;
+    if (model === undefined || resetsAt === undefined) continue;
+    if (typeof usedPercent !== 'number' || !Number.isFinite(usedPercent) || usedPercent < 0) {
+      continue;
+    }
+    const entry = buildWindow(model, usedPercent, resetsAt);
+    if (entry) entries.push(entry);
   }
-  if (model === undefined) return null;
+  return collectWindows(entries);
+}
+
+/** The `buildWindow` model of a limit; undefined for a kind this parser does not know. */
+function reportModel(limit: JsonObject): string | null | undefined {
+  switch (limit.kind) {
+    case 'session':
+      return null;
+    case 'weekly_all':
+      return 'all models';
+    case 'weekly_scoped': {
+      const scope = isObject(limit.scope) ? limit.scope : {};
+      const name = isObject(scope.model) ? scope.model.display_name : undefined;
+      return typeof name === 'string' ? name : undefined;
+    }
+    default:
+      return undefined;
+  }
+}
+
+/** Null when the window has not started; undefined when the value cannot be read. */
+function reportResetEpochSeconds(value: unknown): number | null | undefined {
+  if (value === null || value === undefined) return null;
+  const epochMs = typeof value === 'string' ? Date.parse(value) : NaN;
+  return Number.isFinite(epochMs) ? Math.floor(epochMs / 1000) : undefined;
+}
+
+function parseJsonLine(line: string): JsonObject | null {
+  if (!line.startsWith('{')) return null;
+  try {
+    const value: unknown = JSON.parse(line);
+    return isObject(value) ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+/** The first window of each id wins. Null when there is no window. */
+function collectWindows(entries: readonly WindowEntry[]): ParsedClaudeUsage | null {
+  const windows: UsageWindow[] = [];
+  const extras: UsageWindow[] = [];
+  const seen = new Set<string>();
+  for (const { window, extra } of entries) {
+    if (seen.has(window.id)) continue;
+    seen.add(window.id);
+    (extra ? extras : windows).push(window);
+  }
+  return windows.length > 0 || extras.length > 0 ? { kind: 'ok', windows, extras } : null;
+}
+
+/** A null `model` is the session window, and `all models` is the weekly window. */
+function buildWindow(
+  model: string | null,
+  usedPercent: number,
+  resetsAt: number | null,
+): WindowEntry | null {
+  if (model === null) {
+    return { window: standardWindow('5h', usedPercent, resetsAt), extra: false };
+  }
   if (model.toLowerCase() === 'all models') {
-    return { window: standardWindow('weekly', usedPercent, null), extra: false };
+    return { window: standardWindow('weekly', usedPercent, resetsAt), extra: false };
   }
   const slug = model
     .toLowerCase()
@@ -64,14 +154,21 @@ function buildWindow(
     .replace(/^-|-$/g, '');
   if (!slug) return null;
   return {
-    window: { id: `weekly-${slug}`, label: `Weekly · ${model}`, kind: 'weekly', usedPercent },
+    window: {
+      id: `weekly-${slug}`,
+      label: `Weekly · ${model}`,
+      kind: 'weekly',
+      usedPercent,
+      resetsAt,
+    },
     extra: true,
   };
 }
 
 /**
- * `Oct 23, 12am (Europe/Madrid)` to epoch seconds. The text has no year: the result is
- * the first such moment after `nowMs`.
+ * `Oct 23, 12am (Europe/Madrid)`, or `Oct 23 at 12am (Europe/Madrid)` as Claude Code
+ * 2.1.303 prints it on macOS, to epoch seconds. The text has no year: the result is the
+ * first such moment after `nowMs`.
  */
 export function parseResetEpochSeconds(text: string, nowMs: number): number | null {
   const match = RESET_RE.exec(text.trim());

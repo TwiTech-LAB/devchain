@@ -82,7 +82,15 @@ describe('ClaudeLoginChecker', () => {
     expect(result).toMatchObject({ kind: 'ok', source: 'cli', plan: null });
     expect(executor.calls).toHaveLength(1);
     const call = executor.options[0];
-    expect(call.argv).toEqual(['/opt/bin/claude', '-p', '/usage', '--no-session-persistence']);
+    expect(call.argv).toEqual([
+      '/opt/bin/claude',
+      '-p',
+      '/usage',
+      '--no-session-persistence',
+      '--output-format',
+      'stream-json',
+      '--verbose',
+    ]);
     expect(call.mode).toBe('pipe');
     expect(call.input).toBeUndefined();
     expect(call.timeout).toBe(CLAUDE_USAGE_TIMEOUT_MS);

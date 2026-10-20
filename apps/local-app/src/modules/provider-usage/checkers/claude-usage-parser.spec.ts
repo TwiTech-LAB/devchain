@@ -1,4 +1,8 @@
-import { parseClaudeUsage, parseResetEpochSeconds } from './claude-usage-parser';
+import {
+  parseClaudeUsage,
+  parseClaudeUsageStream,
+  parseResetEpochSeconds,
+} from './claude-usage-parser';
 
 const NOW = Date.UTC(2026, 9, 17, 12, 0, 0);
 const epoch = (...utc: [number, number, number, number, number]) => Date.UTC(...utc) / 1000;
@@ -38,6 +42,21 @@ describe('parseClaudeUsage', () => {
           usedPercent: 8,
           resetsAt: epoch(2026, 9, 22, 22, 0),
         },
+      ],
+    });
+  });
+
+  it('reads the "at" reset form of Claude Code 2.1.303 on macOS', () => {
+    const out = [
+      'Current session: 6% used · resets Oct 20 at 7pm (Europe/Kiev)',
+      'Current week (all models): 22% used · resets Oct 23 at 12am (Europe/Kiev)',
+    ].join('\n');
+    // EEST (UTC+3) until Oct 25.
+    expect(parseClaudeUsage(out, NOW)).toMatchObject({
+      kind: 'ok',
+      windows: [
+        { id: '5h', usedPercent: 6, resetsAt: epoch(2026, 9, 20, 16, 0) },
+        { id: 'weekly', usedPercent: 22, resetsAt: epoch(2026, 9, 22, 21, 0) },
       ],
     });
   });
@@ -87,6 +106,106 @@ describe('parseClaudeUsage', () => {
       expect(parseClaudeUsage(out, NOW)).toEqual({ kind: 'error' });
     },
   );
+});
+
+describe('parseClaudeUsageStream', () => {
+  // The event shapes of Claude Code 2.1.295, cut to the fields the parser reads.
+  const stream = (usageReport: unknown, resultText = SAMPLE) =>
+    [
+      { type: 'system', subtype: 'init', claude_code_version: '2.1.295', tools: ['Bash'] },
+      {
+        type: 'assistant',
+        local_command_run: { command: 'usage', args: '' },
+        ...(usageReport === undefined ? {} : { usage_report: usageReport }),
+      },
+      { type: 'result', subtype: 'success', local_command: 'usage', result: resultText },
+    ]
+      .map((event) => JSON.stringify(event))
+      .join('\n');
+  const limit = (kind: string, percent: number, resetsAt: unknown, model?: string) => ({
+    kind,
+    percent,
+    resets_at: resetsAt,
+    scope: model === undefined ? null : { model: { display_name: model }, surface: null },
+  });
+
+  it('maps the usage report and ignores the text', () => {
+    const report = {
+      rate_limits: {
+        limits: [
+          limit('session', 2, '2026-10-20T12:50:00.030188+00:00'),
+          limit('weekly_all', 76, '2026-10-22T22:00:00.030209+00:00'),
+          limit('weekly_scoped', 38, '2026-10-22T22:00:00.030388+00:00', 'Fable'),
+        ],
+      },
+    };
+    expect(parseClaudeUsageStream(stream(report, 'garbage'), NOW)).toEqual({
+      kind: 'ok',
+      windows: [
+        {
+          id: '5h',
+          label: '5-hour limit',
+          kind: '5h',
+          usedPercent: 2,
+          resetsAt: epoch(2026, 9, 20, 12, 50),
+        },
+        {
+          id: 'weekly',
+          label: 'Weekly limit',
+          kind: 'weekly',
+          usedPercent: 76,
+          resetsAt: epoch(2026, 9, 22, 22, 0),
+        },
+      ],
+      extras: [
+        {
+          id: 'weekly-fable',
+          label: 'Weekly · Fable',
+          kind: 'weekly',
+          usedPercent: 38,
+          resetsAt: epoch(2026, 9, 22, 22, 0),
+        },
+      ],
+    });
+  });
+
+  it('skips unknown kinds and unreadable values, and keeps a null reset as not started', () => {
+    const report = {
+      rate_limits: {
+        limits: [
+          limit('session', 0, null),
+          limit('weekly_all', 12, 'next Thursday'),
+          limit('weekly_all', 13, '2026-10-22T22:00:00+00:00'),
+          limit('monthly', 5, '2026-11-01T00:00:00+00:00'),
+          limit('weekly_scoped', 9, '2026-10-22T22:00:00+00:00'),
+          { ...limit('weekly_scoped', 0, null, 'Opus'), percent: '30' },
+        ],
+      },
+    };
+    expect(parseClaudeUsageStream(stream(report), NOW)).toEqual({
+      kind: 'ok',
+      windows: [
+        expect.objectContaining({ id: '5h', usedPercent: 0, resetsAt: null }),
+        expect.objectContaining({ id: 'weekly', usedPercent: 13 }),
+      ],
+      extras: [],
+    });
+  });
+
+  it.each([
+    ['no usage report', undefined],
+    ['no rate limits', { rate_limits: null }],
+    ['no known limit', { rate_limits: { limits: [limit('monthly', 5, null)] } }],
+  ])('falls back to the result text when there is %s', (_case, report) => {
+    expect(parseClaudeUsageStream(stream(report), NOW)).toEqual(parseClaudeUsage(SAMPLE, NOW));
+    expect(parseClaudeUsageStream(stream(report, 'Total cost: $0.0000\n'), NOW)).toEqual({
+      kind: 'not-available',
+    });
+  });
+
+  it('reads plain text output', () => {
+    expect(parseClaudeUsageStream(SAMPLE, NOW)).toEqual(parseClaudeUsage(SAMPLE, NOW));
+  });
 });
 
 describe('parseResetEpochSeconds', () => {
