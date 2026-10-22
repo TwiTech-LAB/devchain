@@ -34,6 +34,7 @@ import {
 } from './remote-operation.types';
 import { UpdateLoginsOperation } from './update-logins.operation';
 import { InstallHostOperation } from './install-host.operation';
+import { MAX_ERROR_MESSAGE_LENGTH } from './remote-operation.errors';
 import { ForceSyncOperation } from './force-sync.operation';
 import { DisconnectAllOperation } from './disconnect-all.operation';
 
@@ -586,8 +587,6 @@ function stepsFrom(
       : step,
   );
 }
-
-const MAX_ERROR_MESSAGE_LENGTH = 2_000;
 
 function toStepError(error: unknown): RemoteOperationStepError {
   const message = error instanceof Error ? error.message : String(error);

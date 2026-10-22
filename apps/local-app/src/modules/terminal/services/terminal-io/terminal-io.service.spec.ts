@@ -117,6 +117,50 @@ describe('TerminalIOService', () => {
     );
   });
 
+  describe('submission check human guard', () => {
+    const target = { name: 'agent-pane' };
+    const options = {
+      agentId: 'agent-1',
+      confirm: false,
+      postPasteDelayMs: 0,
+      requireForegroundProgram: false,
+      inputPromptMarker: '›',
+    };
+    const stuckScreen = '› [Pasted Content 1024 chars]';
+
+    beforeEach(() => {
+      jest.useFakeTimers();
+      fake.setDefaultResponse({ type: 'success', stdout: stuckScreen });
+    });
+    afterEach(() => jest.useRealTimers());
+
+    const enterCount = () =>
+      fake.calls.filter((call) => call.argv[1] === 'send-keys' && call.argv.includes('Enter'))
+        .length;
+
+    it.each([
+      ['deliver', 'no human input', 2],
+      ['deliver', 'executed input', 1],
+      ['deliver', 'typing', 1],
+      ['deliverImmediate', 'executed input', 1],
+      ['deliverGuarded', 'executed input', 1],
+    ] as const)('%s with %s sends %s Enter', async (method, input, expectedEnters) => {
+      const pending =
+        method === 'deliverGuarded'
+          ? svc.deliverGuarded(target, 'text', options, undefined)
+          : svc[method](target, 'text', options);
+      setTimeout(() => {
+        if (input === 'executed input') humanPromptState.recordExecutedInput(target.name);
+        if (input === 'typing') humanPromptState.recordPromptText(target.name);
+      }, 500);
+
+      await jest.advanceTimersByTimeAsync(5000);
+
+      await expect(pending).resolves.toMatchObject({ confirmed: true });
+      expect(enterCount()).toBe(expectedEnters);
+    });
+  });
+
   describe('createSession', () => {
     // The executor boundary is the cheapest layer that verifies both tmux and child env.
     it('uses process ids over inherited and supplied ids for a new session', async () => {

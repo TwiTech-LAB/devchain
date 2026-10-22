@@ -9,6 +9,9 @@ import { captureStrict } from './capture';
 import { readForegroundState } from './foreground';
 import { generateDeliveryNonce } from '../../../../common/delivery-nonce';
 import { FOLLOW_NOTE } from '../../../../common/follow-note';
+import { createLogger } from '../../../../common/logging/logger';
+
+const logger = createLogger('TerminalIODelivery');
 
 const DEFAULT_POST_PASTE_DELAY_MS = 250;
 const MAX_POST_PASTE_DELAY_MS = 5000;
@@ -17,6 +20,8 @@ const DEFAULT_CONFIRM_TIMEOUT_MS = 2000;
 const CONFIRM_POLL_INTERVAL_MS = 150;
 const CONFIRM_TAIL_LINES = 10;
 const MIN_FOLLOW_NOTE_DELAY_MS = 100;
+const SUBMIT_CHECK_INTERVAL_MS = 150;
+const SUBMIT_CHECK_TIMEOUT_MS = 2000;
 
 interface ConfirmationBaseline {
   readonly output: string | undefined;
@@ -27,6 +32,8 @@ interface PreparedBuffer {
 }
 
 export type ForegroundCheck = () => Promise<void>;
+// False when a human gave DevChain input to the pane after the delivery took the pane lock.
+export type SubmitGuard = () => boolean;
 
 function clampDelay(raw: number | undefined, fallback: number): number {
   const v = raw ?? fallback;
@@ -170,15 +177,77 @@ async function sendSubmitKeysWithRetry(
   target: SessionTarget,
   keys: readonly string[],
   foregroundCheck?: ForegroundCheck,
+  firstWriteChecked = false,
 ): Promise<void> {
   if (keys.length === 0) return;
-  await foregroundCheck?.();
+  if (!firstWriteChecked) await foregroundCheck?.();
   try {
     await sendKeys(executor, target, keys);
   } catch {
     await new Promise((r) => setTimeout(r, 150));
     await foregroundCheck?.();
     await sendKeys(executor, target, keys);
+  }
+}
+
+// The input box is the last line that starts with the marker, through the end of the capture.
+// Transcript lines can start with the marker too, but they always sit above the input box.
+function isMessageInInputBox(output: string, marker: string, nonce: string | undefined): boolean {
+  const lines = output.split('\n');
+  let inputStart = -1;
+  for (let i = lines.length - 1; i >= 0; i--) {
+    if (lines[i].trim().startsWith(marker)) {
+      inputStart = i;
+      break;
+    }
+  }
+  if (inputStart === -1) return false;
+  const inputBox = lines.slice(inputStart).join('\n');
+  return (nonce != null && inputBox.includes(`[MsgId:${nonce}]`)) || /\[Pasted/i.test(inputBox);
+}
+
+// Presses the submit keys once more when the message is still in the input box 2 s after
+// the first submit. Never throws: the delivery has already happened, and a failed
+// delivery is resent, which would duplicate the message. Logs never include pane text.
+async function resubmitIfStillInInputBox(
+  executor: ProcessExecutor,
+  target: SessionTarget,
+  options: { marker: string; nonce?: string; submitKeys: readonly string[] },
+  foregroundCheck?: ForegroundCheck,
+  submitGuard?: SubmitGuard,
+): Promise<void> {
+  const startedAt = Date.now();
+  let polls = 0;
+  while (true) {
+    await new Promise((r) => setTimeout(r, SUBMIT_CHECK_INTERVAL_MS));
+    const result = await captureStrict(executor, target, CONFIRM_TAIL_LINES).catch(() => undefined);
+    if (!result?.ok) return;
+    polls += 1;
+    if (!isMessageInInputBox(result.output, options.marker, options.nonce)) return;
+    if (Date.now() - startedAt + SUBMIT_CHECK_INTERVAL_MS > SUBMIT_CHECK_TIMEOUT_MS) break;
+  }
+
+  try {
+    await foregroundCheck?.();
+    if (submitGuard && !submitGuard()) return;
+  } catch {
+    return;
+  }
+
+  const logContext = {
+    sessionName: target.name,
+    nonce: options.nonce,
+    polls,
+    elapsedMs: Date.now() - startedAt,
+  };
+  logger.warn(logContext, 'Message still in the input box after submit; submitting once more');
+  try {
+    await sendSubmitKeysWithRetry(executor, target, options.submitKeys, foregroundCheck, true);
+  } catch (error) {
+    logger.warn(
+      { ...logContext, error: error instanceof Error ? error.message : String(error) },
+      'Extra submit failed',
+    );
   }
 }
 
@@ -199,8 +268,10 @@ async function pasteAndSubmit(
     preparedBuffer?: PreparedBuffer;
     followNote?: boolean;
     firstWriteChecked?: boolean;
+    inputPromptMarker?: string;
   },
   foregroundCheck?: ForegroundCheck,
+  submitGuard?: SubmitGuard,
 ): Promise<{ method?: 'nonce' | 'paste_indicator' | 'paste_changed' }> {
   // Set while a tmux buffer exists that this call must delete on failure.
   let pendingBuffer = options.preparedBuffer;
@@ -262,6 +333,15 @@ async function pasteAndSubmit(
       await typeFollowNote(executor, target, options.postPasteDelayMs, foregroundCheck);
     }
     await sendSubmitKeysWithRetry(executor, target, options.submitKeys, foregroundCheck);
+    if (options.inputPromptMarker && options.submitKeys.length > 0) {
+      await resubmitIfStillInInputBox(
+        executor,
+        target,
+        { marker: options.inputPromptMarker, nonce: options.nonce, submitKeys: options.submitKeys },
+        foregroundCheck,
+        submitGuard,
+      );
+    }
 
     return { method };
   } catch (error) {
@@ -348,6 +428,7 @@ function deliverWithFirstMutationGuard(
   options: DeliveryOptions,
   firstMutationGuard: undefined,
   foregroundCheck?: ForegroundCheck,
+  submitGuard?: SubmitGuard,
 ): Promise<DeliveryResult>;
 function deliverWithFirstMutationGuard(
   executor: ProcessExecutor,
@@ -357,6 +438,7 @@ function deliverWithFirstMutationGuard(
   options: DeliveryOptions,
   firstMutationGuard: () => boolean,
   foregroundCheck?: ForegroundCheck,
+  submitGuard?: SubmitGuard,
 ): Promise<GuardedDeliveryResult>;
 async function deliverWithFirstMutationGuard(
   executor: ProcessExecutor,
@@ -366,6 +448,7 @@ async function deliverWithFirstMutationGuard(
   options: DeliveryOptions,
   firstMutationGuard: (() => boolean) | undefined,
   foregroundCheck?: ForegroundCheck,
+  submitGuard?: SubmitGuard,
 ): Promise<GuardedDeliveryResult> {
   const maxAttempts = options.maxAttempts ?? DEFAULT_MAX_ATTEMPTS;
   const submitKeys = options.submitKeys ?? ['Enter'];
@@ -420,8 +503,10 @@ async function deliverWithFirstMutationGuard(
           followNote: options.followNote,
           // Prepared input lets the synchronous mutation fence protect the already-checked first write.
           firstWriteChecked: attempt === 0 && Boolean(firstMutationGuard),
+          inputPromptMarker: options.inputPromptMarker,
         },
         foregroundCheck,
+        submitGuard,
       );
 
       return { confirmed: true, nonce: lastNonce, retryCount: attempt, method: result.method };
@@ -457,6 +542,7 @@ export async function deliver(
   text: string,
   options: DeliveryOptions,
   foregroundCheck?: ForegroundCheck,
+  submitGuard?: SubmitGuard,
 ): Promise<DeliveryResult> {
   return deliverWithFirstMutationGuard(
     executor,
@@ -466,6 +552,7 @@ export async function deliver(
     options,
     undefined,
     foregroundCheck,
+    submitGuard,
   );
 }
 
@@ -477,6 +564,7 @@ export async function deliverGuarded(
   options: DeliveryOptions,
   firstMutationGuard: () => boolean,
   foregroundCheck?: ForegroundCheck,
+  submitGuard?: SubmitGuard,
 ): Promise<GuardedDeliveryResult> {
   return deliverWithFirstMutationGuard(
     executor,
@@ -486,6 +574,7 @@ export async function deliverGuarded(
     options,
     firstMutationGuard,
     foregroundCheck,
+    submitGuard,
   );
 }
 
@@ -495,6 +584,7 @@ export async function deliverImmediate(
   text: string,
   options: Omit<DeliveryOptions, 'agentId'>,
   foregroundCheck?: ForegroundCheck,
+  submitGuard?: SubmitGuard,
 ): Promise<DeliveryResult> {
   const submitKeys = options.submitKeys ?? ['Enter'];
   const bracketed = options.bracketed ?? true;
@@ -519,8 +609,10 @@ export async function deliverImmediate(
       nonce: confirm ? nonce : undefined,
       confirmTimeoutMs,
       followNote: options.followNote,
+      inputPromptMarker: options.inputPromptMarker,
     },
     foregroundCheck,
+    submitGuard,
   );
 
   return { confirmed: true, nonce, retryCount: 0, method: result.method };

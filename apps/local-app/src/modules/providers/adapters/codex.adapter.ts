@@ -6,6 +6,7 @@ import type {
   AddMcpServerOptions,
   McpServerEntry,
   LaunchInitialPromptBehavior,
+  RuntimePromptBehavior,
   BuildLaunchArgsInput,
 } from './provider-adapter.interface';
 import type {
@@ -68,6 +69,7 @@ export class CodexAdapter
     preKeys: ['Enter'],
     preDelayMs: 2000,
   };
+  readonly runtimePromptBehavior: RuntimePromptBehavior = { inputPromptMarker: '›' };
 
   async provisionProjectPath(
     projectPath: string,

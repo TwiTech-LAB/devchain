@@ -658,6 +658,7 @@ export class SessionLaunchPipeline {
         preKeys: params.launchHandshake?.preKeys,
         preDelayMs: params.launchHandshake?.preDelayMs,
         followNote: behavior?.followNote === true,
+        inputPromptMarker: behavior?.inputPromptMarker,
       }),
     );
   }

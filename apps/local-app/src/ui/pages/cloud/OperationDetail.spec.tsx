@@ -147,6 +147,7 @@ describe('OperationDetail progress', () => {
     const callout = screen.getByRole('alert');
     expect(callout).toHaveTextContent('Stopped at “Copy project”');
     expect(callout).toHaveTextContent('Disk full');
+    expect(screen.getByText('Disk full')).toHaveClass('whitespace-pre-wrap');
     expect(screen.getByText('Stopped')).toBeInTheDocument();
     expect(screen.getByText(/^Ended /)).toBeInTheDocument();
   });

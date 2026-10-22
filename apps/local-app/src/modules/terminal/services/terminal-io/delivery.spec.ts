@@ -15,6 +15,16 @@ jest.mock('../../../../common/delivery-nonce', () => ({
   generateDeliveryNonce: () => 'abc1234',
 }));
 
+const mockLoggerWarn = jest.fn();
+jest.mock('../../../../common/logging/logger', () => ({
+  createLogger: () => ({
+    info: jest.fn(),
+    warn: (...args: unknown[]) => mockLoggerWarn(...args),
+    error: jest.fn(),
+    debug: jest.fn(),
+  }),
+}));
+
 const target: SessionTarget = { name: 'test-session' };
 const NONCE = 'abc1234';
 
@@ -729,6 +739,106 @@ describe('TerminalIOService delivery', () => {
           ]);
         },
       );
+    });
+  });
+
+  describe('submission check', () => {
+    const MARKER = '›';
+    const CHECK_OPTS = { agentId: 'a1', postPasteDelayMs: 0, inputPromptMarker: MARKER } as const;
+    const STUCK_PLACEHOLDER = ['• Ran ls', '', '› [Pasted Content 1024 chars]', '', '  ⏎ send'];
+    const SCREENS: Record<string, string[]> = {
+      'the input box is cleared': ['• Working (1s)', '', '› Ask Codex to do anything'],
+      'the nonce is only in the transcript': [
+        '› hello',
+        `  [MsgId:${NONCE}]`,
+        '',
+        '• Working (1s)',
+        '',
+        '› Ask Codex to do anything',
+      ],
+      'no line starts with the marker': ['hello', `[MsgId:${NONCE}]`],
+      'the last marker line is a menu line': [
+        '› hello',
+        `  [MsgId:${NONCE}]`,
+        '',
+        '  Allow command?',
+        '› 1. Yes, proceed',
+        '  2. No',
+      ],
+    };
+
+    function enqueueSubmittedPaste(fake: FakeProcessExecutor) {
+      fake.enqueueResponse({ type: 'success', stdout: '' }); // baseline
+      fake.enqueueResponse({ type: 'success' }); // load-buffer
+      fake.enqueueResponse({ type: 'success' }); // paste-buffer
+      fake.enqueueResponse({ type: 'success' }); // delete-buffer
+      fake.enqueueResponse({ type: 'success', stdout: `[MsgId:${NONCE}]` }); // confirmation
+      fake.enqueueResponse({ type: 'success' }); // send-keys Enter
+    }
+
+    const enterCalls = (fake: FakeProcessExecutor) =>
+      fake.calls.filter((c) => c.argv[1] === 'send-keys' && c.argv.includes('Enter'));
+    const captureCalls = (fake: FakeProcessExecutor) =>
+      fake.calls.filter((c) => c.argv[1] === 'capture-pane');
+
+    beforeEach(() => mockLoggerWarn.mockClear());
+
+    it('submits exactly once more when the message is still in the input box after 2 s', async () => {
+      const { fake, svc } = makeService();
+      enqueueSubmittedPaste(fake);
+      fake.setDefaultResponse({ type: 'success', stdout: STUCK_PLACEHOLDER.join('\n') });
+
+      const result = await advanceDelivery(svc.deliver(target, 'hello', CHECK_OPTS));
+
+      expect(result).toMatchObject({ confirmed: true, method: 'nonce' });
+      expect(enterCalls(fake)).toHaveLength(2);
+      // Baseline and confirmation, then one capture every 150 ms from 150 ms to 1950 ms.
+      expect(captureCalls(fake)).toHaveLength(2 + 13);
+      expect(mockLoggerWarn).toHaveBeenCalledTimes(1);
+      const [context] = mockLoggerWarn.mock.calls[0];
+      expect(context).toEqual({
+        sessionName: target.name,
+        nonce: NONCE,
+        polls: 13,
+        elapsedMs: expect.any(Number),
+      });
+      expect(JSON.stringify(mockLoggerWarn.mock.calls)).not.toContain('Pasted Content');
+    });
+
+    it.each(Object.keys(SCREENS))('does not submit again when %s', async (name) => {
+      const { fake, svc } = makeService();
+      enqueueSubmittedPaste(fake);
+      fake.enqueueResponse({ type: 'success', stdout: SCREENS[name].join('\n') });
+
+      await advanceDelivery(svc.deliver(target, 'hello', CHECK_OPTS));
+
+      expect(enterCalls(fake)).toHaveLength(1);
+      expect(captureCalls(fake)).toHaveLength(3);
+    });
+
+    it('stops without throwing or submitting when a capture fails', async () => {
+      const { fake, svc } = makeService();
+      enqueueSubmittedPaste(fake);
+      fake.enqueueResponse({ type: 'success', stdout: STUCK_PLACEHOLDER.join('\n') });
+      fake.enqueueResponse({ type: 'failure', stderr: 'capture failed' });
+      fake.setDefaultResponse({ type: 'success', stdout: STUCK_PLACEHOLDER.join('\n') });
+
+      const result = await advanceDelivery(svc.deliver(target, 'hello', CHECK_OPTS));
+
+      expect(result).toEqual({ confirmed: true, nonce: NONCE, retryCount: 0, method: 'nonce' });
+      expect(enterCalls(fake)).toHaveLength(1);
+      expect(captureCalls(fake)).toHaveLength(4);
+    });
+
+    it('makes no extra capture without a marker', async () => {
+      const { fake, svc } = makeService();
+      enqueueSubmittedPaste(fake);
+      fake.setDefaultResponse({ type: 'success', stdout: STUCK_PLACEHOLDER.join('\n') });
+
+      await advanceDelivery(svc.deliver(target, 'hello', { agentId: 'a1', postPasteDelayMs: 0 }));
+
+      expect(enterCalls(fake)).toHaveLength(1);
+      expect(captureCalls(fake)).toHaveLength(2);
     });
   });
 

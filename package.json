@@ -1,6 +1,6 @@
 {
   "name": "devchain-cli",
-  "version": "0.26.2",
+  "version": "0.26.3",
   "description": "AI driven development platform",
   "homepage": "https://devchain.cc/",
   "repository": {
@@ -8,6 +8,12 @@
     "url": "https://github.com/twitech-lab/devchain.git"
   },
   "changelog": {
+    "0.26.3": [
+      "Remote VMs: fixed the Syncthing install on your own VMs",
+      "Terminal: retry when a message gets stuck in an agent's input box",
+      "Dev Template: after planning, the Architect offers to assign the Phase Epic to Epic Manager",
+      "Host image 1.5.1: updated Syncthing"
+    ],
     "0.26.2": [
       "Usage: fixed reading of Claude usage limits"
     ],
@@ -73,9 +79,6 @@
       "[Fix] Chat: model and context size no longer disappear while an agent works",
       "[New] Integrations: import the same ClickUp or Jira task into several projects",
       "[Fix] Integrations: \"Reload remote\" works again after a remote change"
-    ],
-    "0.23.2": [
-      "Performance: reduced CPU usage in long-running sessions and smoother live transcript updates in the web UI"
     ]
   },
   "publishConfig": {

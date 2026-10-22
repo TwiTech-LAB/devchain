@@ -139,7 +139,9 @@ describe('SessionsMessagePoolService', () => {
 
     mockProviderAdapterFactory = {
       // A Claude agent unless a test says otherwise: the provider that gets the follow note.
-      getRuntimePromptBehaviorForAgent: jest.fn().mockResolvedValue({ followNote: true }),
+      getRuntimePromptBehaviorForAgent: jest
+        .fn()
+        .mockResolvedValue({ followNote: true, inputPromptMarker: '❯' }),
     };
 
     const mockMessageLog = new MessageLogService();
@@ -241,7 +243,7 @@ describe('SessionsMessagePoolService', () => {
       expect(mockTerminalIO.deliver).toHaveBeenCalledWith(
         { name: 'tmux-1' },
         expect.stringContaining('Single message'),
-        expect.objectContaining({ agentId: 'agent-1', followNote: true }),
+        expect.objectContaining({ agentId: 'agent-1', followNote: true, inputPromptMarker: '❯' }),
       );
     });
 
@@ -714,7 +716,10 @@ describe('SessionsMessagePoolService', () => {
       expect(mockCoordinator.withAgentLock).toHaveBeenCalledTimes(2);
       expect(flushNow).not.toHaveBeenCalled();
       expect(mockTerminalIO.deliverGuarded).toHaveBeenCalledTimes(1);
-      expect(mockTerminalIO.deliverGuarded.mock.calls[0][2]).toHaveProperty('followNote', true);
+      expect(mockTerminalIO.deliverGuarded.mock.calls[0][2]).toMatchObject({
+        followNote: true,
+        inputPromptMarker: '❯',
+      });
     });
 
     it('replaces and fails an old-session lane without exposing it to delayed old events', async () => {

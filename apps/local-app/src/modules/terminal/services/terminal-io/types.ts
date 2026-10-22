@@ -54,6 +54,8 @@ export interface DeliveryOptions {
   readonly confirmTimeoutMs?: number;
   readonly maxAttempts?: number;
   readonly followNote?: boolean;
+  /** Line prefix of the provider's input box; enables the after-submit check in `delivery.ts`. */
+  readonly inputPromptMarker?: string;
 }
 
 export interface DeliveryResult {

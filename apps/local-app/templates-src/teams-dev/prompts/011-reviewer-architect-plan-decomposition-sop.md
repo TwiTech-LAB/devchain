@@ -1,4 +1,4 @@
-# Architect — Plan/Research Decomposition SOP (v1.27)
+# Architect — Plan/Research Decomposition SOP (v1.28)
 
 > **Type:** agent-instructions
 > **Priority:** mandatory
@@ -225,6 +225,7 @@ If ANY criterion fails → normal flow. When unsure, choose the normal flow — 
 6. **Decompose into Sub‑Epics (Tasks)** (Section 5).
 7. **Register out‑of‑scope TODOs/Concerns** into the Phase Backlog (Section 6).
 8. **Quality pass** (Section 7) and proceed to the next Phase.
+9. **Offer the hand-off** after the last Phase: ask the user "Assign Phase Epic `<id>` to Epic Manager now, or will you assign it from the board page?" On yes, set only the Phase Epic's agentName to `Epic Manager` (no sub-epics, no Workers).
 
 ---
 

@@ -13,7 +13,11 @@ import {
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { generateHostInstallBlock, type HostInstallBlockOptions } from './host-install-block';
+import {
+  generateHostInstallBlock,
+  HOST_INSTALL_START_MARKER,
+  type HostInstallBlockOptions,
+} from './host-install-block';
 
 const REQUIRED_FLAGS = ['cx16', 'pni', 'ssse3', 'sse4_1', 'sse4_2', 'popcnt', 'pclmulqdq'];
 const CPU_FLAGS = {
@@ -68,6 +72,14 @@ case "$name" in
     fi
     if [[ " $* " == *' -s '* ]]; then
       printf '%b\\n' "\${FAKE_PURGE_PREVIEW:-Remv gnome-keyring [1.0]}"
+    fi
+    ;;
+  apt-cache)
+    # like apt, the label is translated unless LC_ALL=C
+    label=Candidato
+    [[ "\${LC_ALL:-}" != C ]] || label=Candidate
+    if [[ "\${FAKE_SYNCTHING_CANDIDATE-2.1.5}" != '' ]]; then
+      printf 'syncthing:\\n  Installed: (none)\\n  %s: %s\\n  Version table:\\n' "$label" "\${FAKE_SYNCTHING_CANDIDATE-2.1.5}"
     fi
     ;;
   curl)
@@ -187,7 +199,21 @@ case "$name" in
     [[ " $* " == *" -in $DEVCHAIN_HOST_INSTALL_ROOT/etc/devchain-host/tls/cert.pem "* && -f "$DEVCHAIN_HOST_INSTALL_ROOT/etc/devchain-host/tls/cert.pem" ]] || exit 1
     printf 'sha256 Fingerprint=%s\\n' "$FAKE_FINGERPRINT"
     ;;
-  systemd-detect-virt) printf '%s\\n' "\${FAKE_VIRT:-qemu}" ;;
+  sysctl)
+    if [[ "\${FAKE_SYSCTL_EXIT:-0}" != 0 ]]; then
+      printf 'sysctl: permission denied on key "fs.inotify.max_user_watches"\\n' >&2
+      exit "$FAKE_SYSCTL_EXIT"
+    fi
+    ;;
+  systemd-detect-virt)
+    # the real command prints "none" and exits 1 for --container on a VM
+    if [[ "\${1:-}" == --container ]]; then
+      printf '%s\\n' "\${FAKE_CONTAINER:-none}"
+      [[ "\${FAKE_CONTAINER:-none}" != none ]]
+    else
+      printf '%s\\n' "\${FAKE_VIRT:-qemu}"
+    fi
+    ;;
   timeout)
     shift 2
     if [[ " $* " != *' -s '* && -n "\${FAKE_TIMEOUT_PACKAGE:-}" && " $* " == *" $FAKE_TIMEOUT_PACKAGE "* ]]; then exit 124; fi
@@ -219,6 +245,7 @@ const REAL_COMMANDS = [
 ];
 
 const FAKE_COMMANDS = [
+  'apt-cache',
   'apt-get',
   'curl',
   'df',
@@ -245,7 +272,6 @@ const FAKE_COMMANDS = [
   'useradd',
   'ufw',
   'visudo',
-  'xz',
 ];
 
 describe('host install block', () => {
@@ -303,6 +329,8 @@ describe('host install block', () => {
       encoding: 'utf8',
       env: {
         ...process.env,
+        // a developer's LC_ALL=C would hide a missing override in the block
+        LC_ALL: undefined,
         DEVCHAIN_HOST_INSTALL_ROOT: root,
         DEVCHAIN_HOST_INSTALL_PATH: fakeBin,
         DEVCHAIN_HOST_INSTALL_EUID: '0',
@@ -349,8 +377,8 @@ describe('host install block', () => {
   });
 
   // The block travels as an SFTP-uploaded script, not as an argv command, so the cap is a
-  // bloat tripwire: the real packed bootstrap is ~16.9 KiB and the shipped block is ~43 KiB.
-  it('stays below 48 KiB with a packed bootstrap-sized payload', () => {
+  // bloat tripwire for the block's own text around a fixed 16 KiB payload.
+  it('stays below 50 KiB with a packed bootstrap-sized payload', () => {
     const archive = Buffer.alloc(16 * 1024, 1);
     const block = generateHostInstallBlock(
       options({
@@ -377,7 +405,7 @@ describe('host install block', () => {
       }),
     );
 
-    expect(Buffer.byteLength(block)).toBeLessThan(48 * 1024);
+    expect(Buffer.byteLength(block)).toBeLessThan(50 * 1024);
   });
 
   // Running the generated shell against fixtures verifies refusal before mutation without a VM.
@@ -646,13 +674,81 @@ describe('host install block', () => {
     expect(homePort.stderr).not.toContain('not claimed');
   });
 
+  it('prints no container warning on a VM', () => {
+    const result = run({ checkOnly: true });
+    expect(result.status).toBe(0);
+    expect(result.stderr).not.toContain('container');
+  });
+
+  it('warns once in a container whose inotify limit is below the sysctl target', () => {
+    writeRoot('/proc/sys/fs/inotify/max_user_watches', '8192\n');
+    const result = run({ checkOnly: true }, { FAKE_CONTAINER: 'lxc' });
+    expect(result.status).toBe(0);
+    const warnings = result.stderr.toString().match(/^WARNING: .*$/gm) ?? [];
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain('lxc container');
+    expect(warnings[0]).toContain('tested on VMs');
+    expect(warnings[0]).toContain('up to 1 hour');
+    expect(warnings[0]).toContain('sudo sysctl -w fs.inotify.max_user_watches=1048576');
+    expect(warnings[0]).toContain('/etc/sysctl.d');
+  });
+
+  it('does not mention file sync lag in a container whose inotify limit is high enough', () => {
+    writeRoot('/proc/sys/fs/inotify/max_user_watches', '1048576\n');
+    const result = run({ checkOnly: true }, { FAKE_CONTAINER: 'lxc' });
+    expect(result.status).toBe(0);
+    expect(result.stderr).toContain('tested on VMs');
+    expect(result.stderr).not.toContain('1 hour');
+  });
+
+  it('finishes the install with a warning when the sysctl file cannot be applied', () => {
+    const result = run({}, { FAKE_SYSCTL_EXIT: '255' });
+    expect(result.status).toBe(0);
+    expect(result.stderr).toMatch(/^WARNING: The inotify limit could not be applied/m);
+    expect(existsSync(join(root, 'usr/share/devchain-host/manifest.json'))).toBe(true);
+  });
+
+  it('passes pre-validation on a PATH without xz', () => {
+    expect(existsSync(join(fakeBin, 'xz'))).toBe(false);
+    const result = run({ checkOnly: true });
+    expect(result.status).toBe(0);
+    expect(result.stderr).not.toContain('xz');
+  });
+
+  it('installs the apt candidate silently when it is the pinned 2.x version', () => {
+    const result = run();
+    expect(result.status).toBe(0);
+    expect(result.stderr).not.toContain('Syncthing');
+    expect(readFileSync(logPath, 'utf8')).toContain(
+      'install -y --no-install-recommends syncthing=2.1.5',
+    );
+  });
+
+  it('installs a newer 2.x candidate and warns with both versions', () => {
+    const result = run({}, { FAKE_SYNCTHING_CANDIDATE: '2.1.7' });
+    expect(result.status).toBe(0);
+    expect(result.stderr).toMatch(/^WARNING: .*2\.1\.7.*2\.1\.5/m);
+    expect(readFileSync(logPath, 'utf8')).toContain('syncthing=2.1.7');
+  });
+
+  it.each([
+    ['a 1.x candidate', '1.29.5'],
+    ['no candidate', ''],
+  ])('stops with a stable-v2 error and installs no Syncthing for %s', (_label, candidate) => {
+    const result = run({}, { FAKE_SYNCTHING_CANDIDATE: candidate });
+    expect(result.status).toBe(1);
+    expect(result.stderr.toString().match(/^ERROR: .*$/gm)).toEqual([
+      expect.stringMatching(/apt\.syncthing\.net.*stable-v2/),
+    ]);
+    expect(readFileSync(logPath, 'utf8')).not.toContain('syncthing=');
+  });
+
   it('reports every missing required tool in one check', () => {
     const tools = [
       'curl',
       'apt-get',
       'dpkg',
       'tar',
-      'xz',
       'systemctl',
       'systemd-run',
       'ss',
@@ -785,7 +881,7 @@ describe('host install block', () => {
     expect(log).toContain('manifest-before-start=yes');
     expect(log).toContain('systemctl\tdaemon-reload');
     expect(log).toContain('systemctl\tenable devchain-bootstrap.service');
-    expect(log).toContain('sysctl\t--system');
+    expect(log).toContain(`sysctl\t-p ${root}/etc/sysctl.d/60-devchain-inotify.conf`);
     const configure = log.indexOf('dpkg\t--configure -a');
     const firstMutatingApt = log.indexOf('apt-get\t-o DPkg::Lock::Timeout=600 update');
     expect(configure).toBeGreaterThanOrEqual(0);
@@ -957,6 +1053,47 @@ describe('host install block', () => {
       );
     },
   );
+
+  describe('failure reporting', () => {
+    const lastLine = (text: unknown): string => String(text).trimEnd().split('\n').at(-1) ?? '';
+
+    it('prints the start marker on install runs, not on check runs', () => {
+      expect(run().stdout).toContain(`${HOST_INSTALL_START_MARKER}\n`);
+      expect(run({ checkOnly: true }).stdout).not.toContain(HOST_INSTALL_START_MARKER);
+    });
+
+    it('ends with the failed command when apt fails', () => {
+      const result = run({}, { FAKE_APT_FAILED_PACKAGE: 'tmux' });
+
+      expect(result.status).toBe(100);
+      expect(result.stderr).toContain('E: Unable to locate package tmux');
+      expect(lastLine(result.stderr)).toMatch(
+        /^ERROR: Command failed with exit 100: apt-get .*install/,
+      );
+    });
+
+    it('prints no repeated trap line when a wrapped command fails', () => {
+      const result = run({}, { FAKE_DPKG_EXIT: '2', FAKE_DPKG_ERROR: 'dpkg: error: broken' });
+
+      expect(result.status).toBe(2);
+      expect(result.stderr).not.toContain('return "$status"');
+    });
+
+    it('names only the first line of a failed heredoc command', () => {
+      unlinkSync(join(fakeBin, 'node'));
+      writeFileSync(
+        join(fakeBin, 'node'),
+        '#!/bin/bash\nif [[ "$1" == --version ]]; then echo v24.21.0; else cat >/dev/null; exit 3; fi\n',
+        { mode: 0o755 },
+      );
+      const result = run();
+
+      expect(result.status).toBe(3);
+      const trapLines = String(result.stderr).match(/^ERROR: Command failed with exit 3: .*$/gm);
+      expect(trapLines).toEqual([expect.stringMatching(/node - /)]);
+      expect(lastLine(result.stderr)).toMatch(/^ERROR: Command failed with exit 3: node - /);
+    });
+  });
 
   it('fails at once when dpkg fails for a reason other than the lock', () => {
     const result = run(

@@ -582,10 +582,10 @@ export class SessionsService {
     logger.info({ sessionId, tmuxSessionId: session.tmuxSessionId }, 'Injecting text into session');
 
     const agentId = session.agentId ?? undefined;
-    const postPasteDelayMs = agentId
-      ? (await this.providerAdapterFactory.getRuntimePromptBehaviorForAgent(agentId))
-          .postPasteDelayMs
+    const behavior = agentId
+      ? await this.providerAdapterFactory.getRuntimePromptBehaviorForAgent(agentId)
       : undefined;
+    const postPasteDelayMs = behavior?.postPasteDelayMs;
 
     if (!agentId) {
       // deliverImmediate: no agent context, no gap enforcement possible
@@ -600,6 +600,7 @@ export class SessionsService {
       agentId,
       submitKeys: ['Enter'],
       postPasteDelayMs,
+      inputPromptMarker: behavior?.inputPromptMarker,
     });
 
     return { confirmed: result.confirmed, method: result.method };

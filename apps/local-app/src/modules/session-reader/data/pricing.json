@@ -806,11 +806,26 @@
     "max_input_tokens": 128000,
     "max_output_tokens": 16384
   },
+  "azure/eu/gpt-4o": {
+    "input_cost_per_token": 0.00000275,
+    "output_cost_per_token": 0.000011,
+    "cache_read_input_token_cost": 0.000001375,
+    "cache_creation_input_token_cost": 0.00000138,
+    "max_input_tokens": 128000,
+    "max_output_tokens": 16384
+  },
   "azure/eu/gpt-4o-2024-11-20": {
     "input_cost_per_token": 0.00000275,
     "output_cost_per_token": 0.000011,
     "cache_read_input_token_cost": 0.000001375,
     "cache_creation_input_token_cost": 0.00000138,
+    "max_input_tokens": 128000,
+    "max_output_tokens": 16384
+  },
+  "azure/eu/gpt-4o-mini": {
+    "input_cost_per_token": 1.65e-7,
+    "output_cost_per_token": 6.6e-7,
+    "cache_read_input_token_cost": 8.3e-8,
     "max_input_tokens": 128000,
     "max_output_tokens": 16384
   },
@@ -884,6 +899,13 @@
     "max_input_tokens": 272000,
     "max_output_tokens": 128000
   },
+  "azure/eu/o1": {
+    "input_cost_per_token": 0.0000165,
+    "output_cost_per_token": 0.000066,
+    "cache_read_input_token_cost": 0.00000825,
+    "max_input_tokens": 200000,
+    "max_output_tokens": 100000
+  },
   "azure/eu/o1-2024-12-17": {
     "input_cost_per_token": 0.0000165,
     "output_cost_per_token": 0.000066,
@@ -897,6 +919,13 @@
     "cache_read_input_token_cost": 6.05e-7,
     "max_input_tokens": 128000,
     "max_output_tokens": 65536
+  },
+  "azure/eu/o3-mini": {
+    "input_cost_per_token": 0.00000121,
+    "output_cost_per_token": 0.00000484,
+    "cache_read_input_token_cost": 6.05e-7,
+    "max_input_tokens": 200000,
+    "max_output_tokens": 100000
   },
   "azure/eu/o3-mini-2025-01-31": {
     "input_cost_per_token": 0.00000121,
@@ -2052,11 +2081,26 @@
     "max_input_tokens": 128000,
     "max_output_tokens": 16384
   },
+  "azure/us/gpt-4o": {
+    "input_cost_per_token": 0.00000275,
+    "output_cost_per_token": 0.000011,
+    "cache_read_input_token_cost": 0.000001375,
+    "cache_creation_input_token_cost": 0.00000138,
+    "max_input_tokens": 128000,
+    "max_output_tokens": 16384
+  },
   "azure/us/gpt-4o-2024-11-20": {
     "input_cost_per_token": 0.00000275,
     "output_cost_per_token": 0.000011,
     "cache_read_input_token_cost": 0.000001375,
     "cache_creation_input_token_cost": 0.00000138,
+    "max_input_tokens": 128000,
+    "max_output_tokens": 16384
+  },
+  "azure/us/gpt-4o-mini": {
+    "input_cost_per_token": 1.65e-7,
+    "output_cost_per_token": 6.6e-7,
+    "cache_read_input_token_cost": 8.3e-8,
     "max_input_tokens": 128000,
     "max_output_tokens": 16384
   },
@@ -2130,6 +2174,13 @@
     "max_input_tokens": 272000,
     "max_output_tokens": 128000
   },
+  "azure/us/o1": {
+    "input_cost_per_token": 0.0000165,
+    "output_cost_per_token": 0.000066,
+    "cache_read_input_token_cost": 0.00000825,
+    "max_input_tokens": 200000,
+    "max_output_tokens": 100000
+  },
   "azure/us/o1-2024-12-17": {
     "input_cost_per_token": 0.0000165,
     "output_cost_per_token": 0.000066,
@@ -2144,6 +2195,13 @@
     "max_input_tokens": 128000,
     "max_output_tokens": 65536
   },
+  "azure/us/o3": {
+    "input_cost_per_token": 0.0000022,
+    "output_cost_per_token": 0.0000088,
+    "cache_read_input_token_cost": 5.5e-7,
+    "max_input_tokens": 200000,
+    "max_output_tokens": 100000
+  },
   "azure/us/o3-2025-04-16": {
     "input_cost_per_token": 0.0000022,
     "output_cost_per_token": 0.0000088,
@@ -2151,10 +2209,24 @@
     "max_input_tokens": 200000,
     "max_output_tokens": 100000
   },
+  "azure/us/o3-mini": {
+    "input_cost_per_token": 0.00000121,
+    "output_cost_per_token": 0.00000484,
+    "cache_read_input_token_cost": 6.05e-7,
+    "max_input_tokens": 200000,
+    "max_output_tokens": 100000
+  },
   "azure/us/o3-mini-2025-01-31": {
     "input_cost_per_token": 0.00000121,
     "output_cost_per_token": 0.00000484,
     "cache_read_input_token_cost": 6.05e-7,
+    "max_input_tokens": 200000,
+    "max_output_tokens": 100000
+  },
+  "azure/us/o4-mini": {
+    "input_cost_per_token": 0.00000121,
+    "output_cost_per_token": 0.00000484,
+    "cache_read_input_token_cost": 3.03e-7,
     "max_input_tokens": 200000,
     "max_output_tokens": 100000
   },
@@ -6605,6 +6677,13 @@
     "output_cost_per_token": 0.00000484,
     "cache_read_input_token_cost": 6.05e-7
   },
+  "azure/eu/o3": {
+    "input_cost_per_token": 0.0000022,
+    "output_cost_per_token": 0.0000088,
+    "cache_read_input_token_cost": 5.5e-7,
+    "max_input_tokens": 200000,
+    "max_output_tokens": 100000
+  },
   "azure/eu/o3-2025-04-16": {
     "input_cost_per_token": 0.0000022,
     "output_cost_per_token": 0.0000088,
@@ -6616,6 +6695,13 @@
     "input_cost_per_token": 0.000011,
     "output_cost_per_token": 0.000044,
     "cache_read_input_token_cost": 0.00000275
+  },
+  "azure/eu/o4-mini": {
+    "input_cost_per_token": 0.00000121,
+    "output_cost_per_token": 0.00000484,
+    "cache_read_input_token_cost": 3.03e-7,
+    "max_input_tokens": 200000,
+    "max_output_tokens": 100000
   },
   "azure/eu/o4-mini-2025-04-16": {
     "input_cost_per_token": 0.00000121,

@@ -20,7 +20,7 @@ import * as lifecycle from './lifecycle';
 import * as capture from './capture';
 import * as monitoring from './monitoring';
 import * as deliveryMod from './delivery';
-import type { ForegroundCheck, SendGap } from './delivery';
+import type { ForegroundCheck, SendGap, SubmitGuard } from './delivery';
 import { TypeCommandFailedError } from './delivery';
 import { quoteShellArg } from './quote-shell-arg';
 import {
@@ -511,6 +511,7 @@ export class TerminalIOService implements BeforeApplicationShutdown {
         text,
         this.applyFollowNoteGate(options),
         foregroundCheck,
+        this.submitGuard(target),
       );
     });
   }
@@ -529,6 +530,7 @@ export class TerminalIOService implements BeforeApplicationShutdown {
         text,
         this.applyFollowNoteGate(options),
         foregroundCheck,
+        this.submitGuard(target),
       );
     });
   }
@@ -565,6 +567,7 @@ export class TerminalIOService implements BeforeApplicationShutdown {
           return true;
         },
         foregroundCheck,
+        this.submitGuard(target),
       );
     });
   }
@@ -577,6 +580,18 @@ export class TerminalIOService implements BeforeApplicationShutdown {
   ): ForegroundCheck | undefined {
     if (options.requireForegroundProgram === false) return undefined;
     return () => deliveryMod.requireForegroundProgram(this.executor, target);
+  }
+
+  // Must be created inside the pane operation: human input bumps these counters before its
+  // keys queue behind the pane lock, so a change means a human acted during this delivery.
+  private submitGuard(target: SessionTarget): SubmitGuard {
+    const before = this.humanPromptState.getState(target.name);
+    return () => {
+      const now = this.humanPromptState.getState(target.name);
+      return (
+        now.generation === before.generation && now.executedInputEpoch === before.executedInputEpoch
+      );
+    };
   }
 
   // The messaging.followNote setting is a suppression gate: it can only remove

@@ -6,3 +6,6 @@ export class RemoteOperationStepRefusedError extends AppError {
     super(message, code, 409, details);
   }
 }
+
+/** Step error messages are cut to this length when stored on the operation. */
+export const MAX_ERROR_MESSAGE_LENGTH = 2_000;

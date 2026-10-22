@@ -1,4 +1,6 @@
 export const HOST_INSTALL_BOOTSTRAP_PORT = 3000;
+/** First line an install run prints; the installer's step error reads the log after the last one. */
+export const HOST_INSTALL_START_MARKER = 'DevChain host install started';
 /** The certificate the VM's bootstrap creates and serves; DevChain serves the same one after the claim. */
 export const HOST_CERTIFICATE_PATH = '/etc/devchain-host/tls/cert.pem';
 /** Prints the VM certificate's SHA-256 fingerprint on the VM; no sudo needed. */
@@ -134,6 +136,15 @@ devchain_host_install() {
   local failures=0
   devchain_fail() { printf 'ERROR: %s\\n' "$*" >&2; failures=$((failures + 1)); return 0; }
   devchain_warn() { printf 'WARNING: %s\\n' "$*" >&2; }
+  # BASH_COMMAND is the failed command; a failing "return" only repeats an error already printed
+  devchain_on_error() {
+    local status=$?
+    [[ "$BASH_COMMAND" == return* ]] || printf 'ERROR: Command failed with exit %s: %s\\n' "$status" "\${BASH_COMMAND%%$'\\n'*}" >&2
+  }
+  if (( check == 0 )); then
+    trap devchain_on_error ERR
+    printf '%s\\n' '${HOST_INSTALL_START_MARKER}'
+  fi
 
   local effective_uid="$EUID"
   if [[ -n "$root" && -n "\${DEVCHAIN_HOST_INSTALL_EUID:-}" ]]; then
@@ -267,7 +278,7 @@ devchain_host_install() {
   done
 
   local tool
-  for tool in curl apt-get dpkg tar xz systemctl systemd-run ss useradd visudo getent id sudo; do
+  for tool in curl apt-get dpkg tar systemctl systemd-run ss useradd visudo getent id sudo; do
     if ! command -v "$tool" >/dev/null 2>&1; then devchain_fail "Required command is missing: $tool"; fi
   done
   if [[ ! -d "$(devchain_path /etc/sudoers.d)" ]]; then
@@ -355,6 +366,20 @@ devchain_host_install() {
     fi
   fi
 
+  # --container exits 1 on a VM
+  local container
+  container="$(systemd-detect-virt --container 2>/dev/null || true)"
+  if [[ -n "$container" && "$container" != none ]]; then
+    local watch_target watch_current='' container_warning
+    watch_target="$(awk -F= '$1 ~ /max_user_watches/ { gsub(/[[:space:]]/, "", $2); print $2 }' <<< "$DEVCHAIN_SYSCTL_CONFIG")"
+    watch_current="$(tr -d '[:space:]' < "$(devchain_path /proc/sys/fs/inotify/max_user_watches)" 2>/dev/null || true)"
+    container_warning="This is a $container container; DevChain is tested on VMs."
+    if [[ "$watch_target" =~ ^[0-9]+$ && "$watch_current" =~ ^[0-9]+$ ]] && (( watch_current < watch_target )); then
+      container_warning+=" The inotify limit is $watch_current, so file sync can lag by up to 1 hour. On the container host run: sudo sysctl -w fs.inotify.max_user_watches=$watch_target, and persist it under /etc/sysctl.d there."
+    fi
+    devchain_warn "$container_warning"
+  fi
+
   if (( failures > 0 )); then
     printf 'Pre-validation found %d problem(s); no changes were made.\\n' "$failures" >&2
     return 1
@@ -429,7 +454,18 @@ devchain_host_install() {
   printf '%s\\n' 'deb [signed-by=/etc/apt/keyrings/syncthing-archive-keyring.gpg] https://apt.syncthing.net/ syncthing stable-v2' \
     > "$(devchain_path /etc/apt/sources.list.d/syncthing.list)"
   devchain_update_package_lists
-  apt-get -o DPkg::Lock::Timeout=600 install -y --no-install-recommends "syncthing=$DEVCHAIN_SYNCTHING_VERSION"
+  # awk, not grep: a no-match grep would abort under pipefail before the ERROR below;
+  # LC_ALL=C because apt translates the Candidate: label
+  local syncthing_candidate
+  syncthing_candidate="$(LC_ALL=C apt-cache policy syncthing 2>/dev/null | awk '$1 == "Candidate:" { print $2 }' || true)"
+  if [[ "$syncthing_candidate" != 2.* ]]; then
+    printf 'ERROR: apt offers Syncthing %s, but DevChain needs 2.x from apt.syncthing.net (stable-v2).\\n' "\${syncthing_candidate:-none}" >&2
+    return 1
+  fi
+  if [[ "$syncthing_candidate" != "$DEVCHAIN_SYNCTHING_VERSION" ]]; then
+    devchain_warn "apt offers Syncthing $syncthing_candidate instead of the pinned $DEVCHAIN_SYNCTHING_VERSION; installing $syncthing_candidate."
+  fi
+  apt-get -o DPkg::Lock::Timeout=600 install -y --no-install-recommends "syncthing=$syncthing_candidate"
 
   # Agent tools are best effort, so they come after every required apt step, and they only add
   # packages: a failed upgrade of a package that installed packages depend on cannot be purged
@@ -501,7 +537,9 @@ devchain_host_install() {
   mkdir -p "$(devchain_path /etc/sysctl.d)"
   printf '%s' "$DEVCHAIN_SYSCTL_CONFIG" > "$(devchain_path /etc/sysctl.d/60-devchain-inotify.conf)"
   chmod 0644 "$(devchain_path /etc/sysctl.d/60-devchain-inotify.conf)"
-  sysctl --system
+  if ! sysctl -p "$(devchain_path /etc/sysctl.d/60-devchain-inotify.conf)"; then
+    devchain_warn 'The inotify limit could not be applied; set it on the container host.'
+  fi
 
   local bootstrap_tgz="$work/devchain-host-bootstrap.tgz"
   printf '%s' "$DEVCHAIN_BOOTSTRAP_TGZ_BASE64" | base64 -d > "$bootstrap_tgz"
@@ -555,7 +593,7 @@ DEVCHAIN_MANIFEST
   # The bootstrap creates its certificate before systemctl start returns.
   local fingerprint
   if ! fingerprint="$(openssl x509 -in "$(devchain_path "$DEVCHAIN_CERT_PATH")" -noout -fingerprint -sha256)"; then
-    printf 'The bootstrap started without its certificate %s. See journalctl -u devchain-bootstrap.\\n' "$DEVCHAIN_CERT_PATH" >&2
+    printf 'ERROR: The bootstrap started without its certificate %s. See journalctl -u devchain-bootstrap.\\n' "$DEVCHAIN_CERT_PATH" >&2
     return 1
   fi
   printf '%s\\n' 'DevChain host bootstrap is ready:'

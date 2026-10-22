@@ -1,6 +1,7 @@
 import { fixtureTls, otherTls } from '../../../common/test/tls-fixture';
 import { normalizeCertificate } from '../../../common/tls/certificate';
 import type { RemoteOperation } from '../../storage/models/domain.models';
+import { HOST_INSTALL_START_MARKER } from '../host-install/host-install-block';
 import type { HostInstallService } from '../host-install/host-install.service';
 import {
   SSH_COMMAND_TIMEOUT_MS,
@@ -15,7 +16,10 @@ import {
   InstallHostOperation,
   type InstallHostDetails,
 } from './install-host.operation';
-import { RemoteOperationStepRefusedError } from './remote-operation.errors';
+import {
+  MAX_ERROR_MESSAGE_LENGTH,
+  RemoteOperationStepRefusedError,
+} from './remote-operation.errors';
 import type { RemoteOperationStepRun } from './remote-operation.types';
 
 class FakeSession implements SshSession {
@@ -30,6 +34,7 @@ class FakeSession implements SshSession {
   account: SshCommandResult = { code: 2, stdout: '', stderr: '' };
   status: 'active' | 'finished' | 'absent' = 'absent';
   exitCodes: Array<number | null> = [0];
+  log = 'install log';
   certificate: SshCommandResult = { code: 0, stdout: fixtureTls.cert, stderr: '' };
 
   async uploadTemp(contents: string, options: SshExecOptions = {}): Promise<string> {
@@ -55,7 +60,7 @@ class FakeSession implements SshSession {
       const code = this.exitCodes.shift() ?? null;
       return {
         code: 0,
-        stdout: `install log\n__DEVCHAIN_EXIT__${code === null ? '' : code}`,
+        stdout: `${this.log}\n__DEVCHAIN_EXIT__${code === null ? '' : code}`,
         stderr: '',
       };
     }
@@ -545,6 +550,86 @@ describe('InstallHostOperation', () => {
       'remote-1',
       normalizeCertificate(otherTls.cert),
     );
+  });
+
+  describe('install failure message', () => {
+    const MARKER = HOST_INSTALL_START_MARKER;
+
+    async function failWith(log: string): Promise<string> {
+      await connect();
+      ssh.session.status = 'finished';
+      ssh.session.exitCodes = [7];
+      ssh.session.log = log;
+      const error = await step('install')
+        .run(run)
+        .then(
+          () => null,
+          (thrown: Error) => thrown,
+        );
+      return error?.message ?? '';
+    }
+
+    it('starts with the last ERROR line and the apt E line before it, and ends with the last log line', async () => {
+      const filler = Array.from(
+        { length: 70 },
+        (_, index) => `Get:${index} http://mirror ${'x'.repeat(40)}`,
+      );
+      const message = await failWith(
+        [
+          MARKER,
+          ...filler,
+          'E: Version 2.1.5 for syncthing was not found',
+          'ERROR: Command failed with exit 100: apt-get install syncthing',
+          'trailing line',
+        ].join('\n'),
+      );
+
+      expect(
+        message.startsWith(
+          'ERROR: Command failed with exit 100: apt-get install syncthing\nE: Version 2.1.5 for syncthing was not found\n\n',
+        ),
+      ).toBe(true);
+      expect(message.length).toBeLessThanOrEqual(MAX_ERROR_MESSAGE_LENGTH);
+      expect(message.endsWith('trailing line')).toBe(true);
+    });
+
+    it('leaves out an apt E line that a WARNING line follows', async () => {
+      const message = await failWith(
+        [
+          MARKER,
+          'E: Failed to fetch http://mirror/pool/unknown-tool_1.0_amd64.deb',
+          'WARNING: Skipped agent tool unknown-tool: package installation failed.',
+          'ERROR: Command failed with exit 1: npm install -g --omit=dev "$bootstrap_tgz"',
+        ].join('\n'),
+      );
+
+      expect(message.split('\n\n')[0]).toBe(
+        'ERROR: Command failed with exit 1: npm install -g --omit=dev "$bootstrap_tgz"',
+      );
+    });
+
+    it('ignores lines of an earlier attempt before the last start marker', async () => {
+      const message = await failWith(
+        [
+          MARKER,
+          'ERROR: Command failed with exit 1: old command',
+          MARKER,
+          'ERROR: apt offers Syncthing 1.29.5, but DevChain needs 2.x from apt.syncthing.net (stable-v2).',
+        ].join('\n'),
+      );
+
+      expect(message).toContain('apt.syncthing.net');
+      expect(message).not.toContain('old command');
+    });
+
+    it('ends with the last log line when no ERROR line was printed', async () => {
+      const message = await failWith(
+        Array.from({ length: 80 }, (_, index) => `line ${index} ${'y'.repeat(60)}`).join('\n'),
+      );
+
+      expect(message.length).toBeLessThanOrEqual(MAX_ERROR_MESSAGE_LENGTH);
+      expect(message.endsWith(`line 79 ${'y'.repeat(60)}`)).toBe(true);
+    });
   });
 
   it('never reads the certificate when the install fails', async () => {

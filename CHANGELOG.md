@@ -2,6 +2,13 @@
 
 Release notes for each published `devchain-cli` version, newest first. The `changelog` field in `package.json` keeps the newest 10 versions for the CLI update notice.
 
+## 0.26.3 — 2026-10-22
+
+- Remote VMs: fixed the Syncthing install on your own VMs
+- Terminal: retry when a message gets stuck in an agent's input box
+- Dev Template: after planning, the Architect offers to assign the Phase Epic to Epic Manager
+- Host image 1.5.1: updated Syncthing
+
 ## 0.26.2 — 2026-10-20
 
 - Usage: fixed reading of Claude usage limits

@@ -1855,7 +1855,7 @@ export class SessionsMessagePoolService implements OnModuleDestroy {
     const submitKeys = messages[messages.length - 1]?.submitKeys ?? ['Enter'];
 
     try {
-      const { postPasteDelayMs, followNote } =
+      const { postPasteDelayMs, followNote, inputPromptMarker } =
         await this.providerAdapterFactory.getRuntimePromptBehaviorForAgent(agentId);
       // One message from outside this DevChain keeps the whole batch without the note.
       const batchFollowNote = followNote === true && !messages.some((m) => m.outsideText);
@@ -1863,7 +1863,13 @@ export class SessionsMessagePoolService implements OnModuleDestroy {
         ? await this.terminalIO.deliverGuarded(
             { name: target.tmuxSessionName },
             baseText,
-            { agentId, submitKeys, postPasteDelayMs, followNote: batchFollowNote },
+            {
+              agentId,
+              submitKeys,
+              postPasteDelayMs,
+              followNote: batchFollowNote,
+              inputPromptMarker,
+            },
             claim.forceSnapshot ? undefined : quietSnapshot,
             {
               canStartMutation: () => {
@@ -1886,6 +1892,7 @@ export class SessionsMessagePoolService implements OnModuleDestroy {
             submitKeys,
             postPasteDelayMs,
             followNote: batchFollowNote,
+            inputPromptMarker,
           });
       const cancellation = deferredClaimCancellationResult(claim, messages.length);
       if (cancellation) return cancellation;
@@ -2003,6 +2010,7 @@ export class SessionsMessagePoolService implements OnModuleDestroy {
     const behavior = await this.providerAdapterFactory.getRuntimePromptBehaviorForAgent(agentId);
     const postPasteDelayMs = behavior.postPasteDelayMs;
     const followNote = behavior.followNote === true && opts?.outsideText !== true;
+    const inputPromptMarker = behavior.inputPromptMarker;
     if (opts?.skipConfirmation) {
       const delivery = await this.terminalIO.deliverImmediate(
         { name: session.tmuxSessionId },
@@ -2014,6 +2022,7 @@ export class SessionsMessagePoolService implements OnModuleDestroy {
           preKeys: opts.preKeys,
           preDelayMs: opts.preDelayMs,
           followNote,
+          inputPromptMarker,
         },
       );
       return {
@@ -2032,6 +2041,7 @@ export class SessionsMessagePoolService implements OnModuleDestroy {
       preKeys: opts?.preKeys,
       preDelayMs: opts?.preDelayMs,
       followNote,
+      inputPromptMarker,
     });
     return {
       nonce: delivery.nonce,

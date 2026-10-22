@@ -152,13 +152,13 @@ describe('ProviderAdapterFactory', () => {
     it('turns the follow note on for a Claude agent', async () => {
       setupChain('claude');
       const result = await factory.getRuntimePromptBehaviorForAgent(AGENT_ID);
-      expect(result).toEqual({ followNote: true });
+      expect(result).toEqual({ followNote: true, inputPromptMarker: '❯' });
     });
 
-    it('returns no behavior for a Codex agent', async () => {
+    it('returns only the input box marker for a Codex agent', async () => {
       setupChain('codex');
       const result = await factory.getRuntimePromptBehaviorForAgent(AGENT_ID);
-      expect(result).toEqual({});
+      expect(result).toEqual({ inputPromptMarker: '›' });
     });
 
     it('returns no behavior when agent not found', async () => {
@@ -205,7 +205,7 @@ describe('ProviderAdapterFactory', () => {
       const result = await factory.getRuntimePromptBehaviorForAgent(AGENT_ID);
       // Fallback resolves the provider name via getProvider to the Claude adapter.
       expect(mockStorage.getProvider).toHaveBeenCalledWith(PROVIDER_ID);
-      expect(result).toEqual({ followNote: true });
+      expect(result).toEqual({ followNote: true, inputPromptMarker: '❯' });
     });
 
     it('returns no behavior for an unsupported provider name', async () => {

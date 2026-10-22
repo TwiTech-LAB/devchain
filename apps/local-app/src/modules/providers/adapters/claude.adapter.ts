@@ -101,7 +101,10 @@ export class ClaudeAdapter
 
   // Claude Code gives a collapsed paste to the model as untrusted `<pasted_content>`,
   // so DevChain pastes need the typed follow note to count as the user's message.
-  readonly runtimePromptBehavior: RuntimePromptBehavior = { followNote: true };
+  readonly runtimePromptBehavior: RuntimePromptBehavior = {
+    followNote: true,
+    inputPromptMarker: '❯',
+  };
 
   // Claude's fullscreen renderer previously needed raw LF handling while
   // CLAUDE_CODE_NO_FLICKER was forced. With that env removed, normalize LF like

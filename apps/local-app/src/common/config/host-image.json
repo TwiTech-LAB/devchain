@@ -1,5 +1,5 @@
 {
-  "version": "1.5.0",
-  "url": "https://github.com/TwiTech-LAB/devchain/releases/download/host-image-v1.5.0/devchain-host-1.5.0.qcow2",
-  "sha256": "2ded804ab2d74641e8dbefc19ba3ed50c6abb186b5ac6ec162c0df973da46c6b"
+  "version": "1.5.1",
+  "url": "https://github.com/TwiTech-LAB/devchain/releases/download/host-image-v1.5.1/devchain-host-1.5.1.qcow2",
+  "sha256": "597ed7ed7c31b3075e7798cbf414bf5d8eefe0bcf18005c131704113733aab32"
 }

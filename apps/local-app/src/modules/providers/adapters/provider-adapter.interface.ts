@@ -19,6 +19,8 @@ export interface RuntimePromptBehavior {
    * typed as keys, and an open dialog in any other provider could read them as shortcuts.
    */
   followNote?: boolean;
+  /** Line prefix of the input box; enables the after-submit check in `delivery.ts`. Never `>`. */
+  inputPromptMarker?: string;
 }
 
 export interface TerminalOutputBehavior {

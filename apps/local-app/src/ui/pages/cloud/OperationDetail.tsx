@@ -808,7 +808,11 @@ export function OperationDetail({
           className="space-y-1 rounded-md border border-destructive/40 bg-destructive/5 p-3 text-sm"
         >
           <p className="font-medium">Stopped at “{stepLabel(operation, failedStep, names)}”</p>
-          {failedStep.error && <p className="break-words">{failedStep.error.message}</p>}
+          {failedStep.error && (
+            <p className="max-h-64 overflow-y-auto whitespace-pre-wrap break-words">
+              {failedStep.error.message}
+            </p>
+          )}
           {failedStep.error?.code === 'INSTANCE_EXISTS' && <p>Already joined? Enter host:P.</p>}
         </div>
       )}

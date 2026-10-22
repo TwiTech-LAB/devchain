@@ -3,7 +3,10 @@ import { setTimeout as abortableSleep } from 'node:timers/promises';
 import { createLogger } from '../../../common/logging/logger';
 import { normalizeCertificate } from '../../../common/tls/certificate';
 import { STORAGE_SERVICE, type RemoteStorage } from '../../storage/interfaces/storage.interface';
-import { HOST_CERTIFICATE_PATH } from '../host-install/host-install-block';
+import {
+  HOST_CERTIFICATE_PATH,
+  HOST_INSTALL_START_MARKER,
+} from '../host-install/host-install-block';
 import { HostInstallService } from '../host-install/host-install.service';
 import {
   shellQuote,
@@ -16,7 +19,10 @@ import {
 import { ClaimOperation, type ClaimDetails } from './claim.operation';
 import { MIN_HOST_IMAGE_VERSION, isSupportedHostImage } from '../host-image';
 import { RemoteHostClient } from './remote-host.client';
-import { RemoteOperationStepRefusedError } from './remote-operation.errors';
+import {
+  MAX_ERROR_MESSAGE_LENGTH,
+  RemoteOperationStepRefusedError,
+} from './remote-operation.errors';
 import {
   stepStarted,
   prefixSteps,
@@ -714,7 +720,7 @@ export class InstallHostOperation implements RemoteOperationDefinition {
             );
           throw new RemoteOperationStepRefusedError(
             'HOST_INSTALL_FAILED',
-            logTail || `The detached installer failed with code ${exitCode}.`,
+            installFailureMessage(output, exitCode),
           );
         }
         return;
@@ -921,6 +927,39 @@ function parseVmCertificate(output: string): string {
     'HOST_TLS_CERTIFICATE_INVALID',
     `The VM certificate ${HOST_CERTIFICATE_PATH} is not a valid PEM certificate. Retry the install step, or use a new VM.`,
   );
+}
+
+/**
+ * The failed run's last `ERROR: ` line and the apt `E: ` line before it come first, because the
+ * step error is cut to its first characters; the end of the log follows to fill the limit.
+ */
+function installFailureMessage(log: string, exitCode: number): string {
+  const lastIndex = (lines: string[], test: (line: string) => boolean): number => {
+    for (let index = lines.length - 1; index >= 0; index -= 1) if (test(lines[index])) return index;
+    return -1;
+  };
+  const lines = log.trim().split('\n');
+  const run = lines.slice(
+    lastIndex(lines, (line) => line.trim() === HOST_INSTALL_START_MARKER) + 1,
+  );
+  const errorIndex = lastIndex(run, (line) => line.startsWith('ERROR: '));
+  const summary: string[] = [];
+  if (errorIndex >= 0) {
+    summary.push(run[errorIndex]);
+    // a WARNING after the E line means the installer went on past that apt failure
+    const aptIndex = lastIndex(
+      run.slice(0, errorIndex),
+      (line) => line.startsWith('E: ') || line.startsWith('WARNING: '),
+    );
+    if (aptIndex >= 0 && run[aptIndex].startsWith('E: ')) summary.push(run[aptIndex]);
+  }
+  const head = summary.map((line) => line.slice(0, 500)).join('\n');
+  const body = run.join('\n').trim();
+  if (!head)
+    return body
+      ? tail(body, MAX_ERROR_MESSAGE_LENGTH)
+      : `The detached installer failed with code ${exitCode}.`;
+  return `${head}\n\n${tail(body, MAX_ERROR_MESSAGE_LENGTH - head.length - 2)}`;
 }
 
 function tail(value: string, max: number): string {
