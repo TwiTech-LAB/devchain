@@ -65,7 +65,7 @@ import { HostProviderAuthController } from './host/host-provider-auth.controller
 import { HostProviderAuthService } from './host/host-provider-auth.service';
 import { ProcessExecutorModule } from '../terminal/services/process-executor/process-executor.module';
 import { HostService } from './host/host.service';
-import { HostReplicaBodyParser } from './host/host-replica-body.parser';
+import { HostJsonBodyParser } from './host/host-json-body.parser';
 import { ProjectWriteAdmissionModule } from './admission/project-write-admission.module';
 import { SessionsModule } from '../sessions/sessions.module';
 import { RemoteBindingsService } from './services/remote-bindings.service';
@@ -216,7 +216,7 @@ import {
     RemoteForcedDetachStore,
     ProviderBaselineService,
     HostProviderAuthService,
-    HostReplicaBodyParser,
+    HostJsonBodyParser,
     HostTranscriptBodyParser,
     HostDockerBodyParser,
     HostDockerService,

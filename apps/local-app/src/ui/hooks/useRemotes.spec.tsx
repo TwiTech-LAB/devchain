@@ -2,6 +2,7 @@ import { act, renderHook, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type { ReactNode } from 'react';
 import type { RemoteListItemDto } from '@/modules/remotes/dtos/remote.dto';
+import { REMOTE_BINDINGS_QUERY_KEY } from '@/ui/pages/cloud/lib/remote-vm-query-keys';
 import { useHomeSocket } from './useHomeSocket';
 import { useRemotes } from './useRemotes';
 
@@ -198,5 +199,33 @@ describe('useRemotes remotes/state patch', () => {
     emit({ remoteId: 'r1', online: true, providerClis: null, cliVersions: null });
     await waitFor(() => expect(result.current.remotes[0].providerClis).toBeNull());
     expect(result.current.remotes[0].cliVersions).toBeNull();
+  });
+});
+
+// Layer: UI hook unit (Jest). The Projects page locks upgrades until the bindings
+// load; a failed background poll must not undo that once data has arrived.
+describe('useRemotes bindings readiness', () => {
+  it('stays loaded with the last bindings when a background poll fails', async () => {
+    let bindingsFail = false;
+    mockApiFetch.mockReset();
+    mockApiFetch.mockImplementation(async (path: string) => {
+      if (path === '/api/remotes/bindings' && bindingsFail) throw new Error('home restarting');
+      return { ok: true, json: async () => ({ items: [] }) };
+    });
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const { result } = renderHook(() => useRemotes(), {
+      wrapper: ({ children }: { children: ReactNode }) => (
+        <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+      ),
+    });
+    await waitFor(() => expect(result.current.bindingsLoaded).toBe(true));
+
+    bindingsFail = true;
+    await act(() => queryClient.refetchQueries({ queryKey: REMOTE_BINDINGS_QUERY_KEY }));
+    await waitFor(() =>
+      expect(queryClient.getQueryState(REMOTE_BINDINGS_QUERY_KEY)?.status).toBe('error'),
+    );
+
+    expect(result.current.bindingsLoaded).toBe(true);
   });
 });

@@ -25,6 +25,7 @@ import {
   FileSyncService,
   evaluateCompletion,
   projectFolderId,
+  receiverIdle,
 } from '../../file-sync/file-sync.service';
 import { GitService } from '../../git/services/git.service';
 import type { GitCoordinatorRecord } from '../git-coordinator/git-coordinator.dto';
@@ -411,7 +412,7 @@ export class RemoteFileSyncService {
       if (!active() || config.type !== 'receiveonly' || config.paused) return;
       const status =
         owner === 'vm' ? await this.files.status(id) : await this.host.syncStatus(remoteId, id);
-      if (!active() || status.state !== 'idle' || status.needTotalItems !== 0) return;
+      if (!active() || !receiverIdle(status)) return;
       state.warning = null;
       if (status.receiveOnlyChangedFiles > 0) {
         if (owner === 'vm') await this.files.revertLocalChanges(id);

@@ -544,6 +544,7 @@ describe('VM operation composition with fake Proxmox and bootstrap', () => {
       {} as never,
       {} as never,
       { sharedVmNotify: jest.fn().mockResolvedValue({ results: [] }) } as never,
+      {} as never,
     );
     vmOperations = new VmOperationsService(
       storage,

@@ -46,6 +46,7 @@ import { REMOTE_HEALTH_PORT } from '../ports/remote-health.port';
 import { RemotesController } from '../controllers/remotes.controller';
 import { RemotesService } from './remotes.service';
 import { RemoteFileSyncService } from '../sync/remote-file-sync.service';
+import { RemoteLiveSyncService } from '../sync/remote-live-sync.service';
 import { resetEnvConfig } from '../../../common/config/env.config';
 import { fixtureTls, installFixtureTlsFront } from '../../../common/test/tls-fixture';
 import { providerCliPolicyRevision } from '../host/host-provider-cli-policy';
@@ -210,6 +211,7 @@ describe('provider CLI policy across home and VM', () => {
         { provide: SyncthingManager, useValue: { getState: () => null } },
         { provide: RemotesService, useValue: {} },
         { provide: RemoteFileSyncService, useValue: {} },
+        { provide: RemoteLiveSyncService, useValue: {} },
       ],
     }).compile();
     const app = module.createNestApplication<NestFastifyApplication>(

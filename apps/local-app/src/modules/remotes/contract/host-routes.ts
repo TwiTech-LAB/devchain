@@ -1,6 +1,7 @@
 import { HostWorktreesSchema, LaneAdmissionSchema } from '../../worktrees/host-worktrees.dto';
 import { z } from 'zod';
 import {
+  GIT_CHECKPOINT_CONTENT_TYPE,
   GitCoordinatorRecordSchema,
   GitCoordinatorStatusSchema,
   GitFenceSchema,
@@ -224,6 +225,7 @@ export const hostRoutes = {
     method: 'POST',
     path: (params: ProjectParams) => `${projectPath(params)}/git-coordinator/home-write-end`,
     body: HomeWriteEndSchema,
+    contentType: GIT_CHECKPOINT_CONTENT_TYPE,
     timeoutMs: REPLICA_TIMEOUT_MS,
     statuses: { 200: GitCoordinatorRecordSchema },
   },

@@ -18,6 +18,7 @@ export {
 export {
   PROJECT_REPLICA_VERSION,
   PROJECT_REPLICA_SETTING_KEYS,
+  PROJECT_REPLICA_LIVE_SETTING_KEYS,
   ProjectReplicaScopeSchema,
   ProjectReplicaV1Schema,
   ProjectReplicaLiveTablesSchema,

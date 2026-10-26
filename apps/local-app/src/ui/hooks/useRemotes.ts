@@ -171,6 +171,8 @@ export function useRemotes() {
     remotesLoading: remotesQuery.isLoading,
     bindings: bindingsQuery.data ?? [],
     bindingsLoading: bindingsQuery.isLoading,
+    // A failed background poll keeps the last data, so it stays loaded; before any data it is not.
+    bindingsLoaded: bindingsQuery.data !== undefined,
     bindingByProjectId,
     createRemote,
     deleteRemote,

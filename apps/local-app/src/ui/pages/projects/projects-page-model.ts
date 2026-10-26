@@ -64,6 +64,8 @@ export interface BuildProjectsTableModelInput {
   statusMessage?: string;
   /** Projects a remote owns, by project ID. */
   remoteOwners?: ReadonlyMap<string, ProjectRemoteOwner>;
+  /** False until the remote bindings have loaded; upgrades stay locked meanwhile. Defaults to true. */
+  remoteOwnersLoaded?: boolean;
   actions: ProjectsTableActions;
 }
 
@@ -88,14 +90,16 @@ export function buildTemplateUpdateNoticeItems(
   templates: ProjectTemplate[] | undefined,
   remoteOwners: ReadonlyMap<string, ProjectRemoteOwner>,
   actions: Pick<ProjectsTableActions, 'upgradeProject'>,
+  remoteOwnersLoaded = true,
 ): TemplateUpdateNoticeItem[] {
   return projects.flatMap((project) => {
     const metadata = project.templateMetadata;
-    const { upgradeVersion, remoteLock, upgrade } = getProjectUpgradeIntent(
+    const { upgradeVersion, upgradeLock, upgrade } = getProjectUpgradeIntent(
       project,
       templates,
       actions,
       remoteOwners.get(project.id),
+      remoteOwnersLoaded,
     );
     if (!upgradeVersion || !metadata) return [];
     return [
@@ -106,26 +110,43 @@ export function buildTemplateUpdateNoticeItems(
         currentVersion: metadata.version,
         targetVersion: upgradeVersion,
         update: upgrade,
-        lockMessage: remoteLock?.message ?? null,
+        lockMessage: upgradeLock?.message ?? null,
       },
     ];
   });
 }
 
-/** The one upgrade rule shared by the row Upgrade button and the template-update notice. */
+/**
+ * The one upgrade rule shared by the row Upgrade button and the template-update notice.
+ * A project in binding state `remote` upgrades on its VM; every other remote state is locked.
+ */
 function getProjectUpgradeIntent(
   project: ProjectWithStats,
   templates: ProjectTemplate[] | undefined,
   actions: Pick<ProjectsTableActions, 'upgradeProject'>,
-  remoteOwner?: ProjectRemoteOwner,
+  remoteOwner: ProjectRemoteOwner | undefined,
+  remoteOwnersLoaded: boolean,
 ) {
   const upgradeVersion = getProjectUpgradeVersion(project, templates);
-  const remoteLock = remoteOwner ? { message: describeRemoteLock(remoteOwner) } : null;
+  const upgradeLock = upgradeLockFor(remoteOwner, remoteOwnersLoaded);
   const upgrade =
-    upgradeVersion && !remoteLock
+    upgradeVersion && !upgradeLock
       ? () => actions.upgradeProject(project, upgradeVersion)
       : undefined;
-  return { upgradeVersion, remoteLock, upgrade };
+  return { upgradeVersion, upgradeLock, upgrade };
+}
+
+function remoteLockFor(owner: ProjectRemoteOwner | undefined): { message: string } | null {
+  return owner ? { message: describeRemoteLock(owner) } : null;
+}
+
+function upgradeLockFor(
+  owner: ProjectRemoteOwner | undefined,
+  ownersLoaded: boolean,
+): { message: string } | null {
+  if (!ownersLoaded) return { message: 'Checking remote connections…' };
+  if (!owner || owner.state === 'remote') return null;
+  return remoteLockFor(owner);
 }
 
 export function getTemplateUpdateNoticeItemKeys(
@@ -172,6 +193,7 @@ export function buildProjectsTableModel(input: BuildProjectsTableModelInput): Pr
     projectDrag = { projectId: null, sourceWorkspaceId: null, targetWorkspaceId: null },
     statusMessage = '',
     remoteOwners = new Map<string, ProjectRemoteOwner>(),
+    remoteOwnersLoaded = true,
     notice = null,
   } = input;
   const failedData = new Set(unavailableData);
@@ -213,6 +235,7 @@ export function buildProjectsTableModel(input: BuildProjectsTableModelInput): Pr
       templates,
       collapsedWorkspaceIds,
       remoteOwners,
+      remoteOwnersLoaded,
       actions,
     }),
   };
@@ -229,6 +252,7 @@ function buildTableContent({
   templates,
   collapsedWorkspaceIds,
   remoteOwners,
+  remoteOwnersLoaded,
   actions,
 }: {
   data: ProjectsQueryData | undefined;
@@ -241,6 +265,7 @@ function buildTableContent({
   templates: ProjectTemplate[] | undefined;
   collapsedWorkspaceIds: ReadonlySet<string>;
   remoteOwners: ReadonlyMap<string, ProjectRemoteOwner>;
+  remoteOwnersLoaded: boolean;
   actions: ProjectsTableActions;
 }): ProjectsTableContent {
   if (isLoading) return { kind: 'loading' };
@@ -260,7 +285,14 @@ function buildTableContent({
         sortField,
         sortOrder,
       ).map((project) =>
-        buildRow(project, orderedWorkspaces, templates, actions, remoteOwners.get(project.id)),
+        buildRow(
+          project,
+          orderedWorkspaces,
+          templates,
+          actions,
+          remoteOwners.get(project.id),
+          remoteOwnersLoaded,
+        ),
       );
       const emptyState = getWorkspaceEmptyState(searchActive, rows.length, workspace.projectCount);
 
@@ -315,14 +347,17 @@ function buildRow(
   workspaces: ProjectWorkspace[],
   templates: ProjectTemplate[] | undefined,
   actions: ProjectsTableActions,
-  remoteOwner?: ProjectRemoteOwner,
+  remoteOwner: ProjectRemoteOwner | undefined,
+  remoteOwnersLoaded: boolean,
 ): ProjectTableRowModel {
-  const { upgradeVersion, remoteLock, upgrade } = getProjectUpgradeIntent(
+  const { upgradeVersion, upgradeLock, upgrade } = getProjectUpgradeIntent(
     project,
     templates,
     actions,
     remoteOwner,
+    remoteOwnersLoaded,
   );
+  const remoteLock = remoteLockFor(remoteOwner);
 
   return {
     id: project.id,
@@ -350,6 +385,7 @@ function buildRow(
     export: () => actions.exportProject(project),
     configure: project.isConfigurable ? () => actions.configureProject(project) : undefined,
     upgrade,
+    upgradeLock,
     actionsButtonId: projectActionsButtonId(project.id),
     remoteLock,
     moveTargets: workspaces

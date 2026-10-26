@@ -199,6 +199,8 @@ function dialogsModel(): ProjectsDialogsModel {
         targetVersion: '2.0.0',
         source: 'registry',
         result: { success: true, newVersion: '2.0.0' },
+        backend: 'home',
+        restored: jest.fn(),
         close: jest.fn(),
       },
     },

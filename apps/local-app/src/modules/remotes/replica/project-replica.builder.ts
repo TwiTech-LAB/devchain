@@ -218,6 +218,8 @@ function assembleProjectReplica<S extends ProjectReplicaScope>(
     }
   }
 
+  // The source reader already limits the settings rows to the scope's keys.
+  const projectSettings = buildProjectSettings(source.settings, [...projectIds]);
   const live: ProjectReplicaLiveTables = {
     projects: source.projects,
     statuses: source.statuses,
@@ -231,6 +233,7 @@ function assembleProjectReplica<S extends ProjectReplicaScope>(
     epic_comments: source.epic_comments,
     epic_relations: relations,
     epic_time_segments: source.epic_time_segments,
+    project_settings: projectSettings,
   };
   const configuration = {
     prompts,
@@ -245,7 +248,7 @@ function assembleProjectReplica<S extends ProjectReplicaScope>(
     terminal_watchers: source.terminal_watchers,
     automation_subscribers: source.automation_subscribers,
     scheduled_epics: source.scheduled_epics,
-    project_settings: buildProjectSettings(source.settings, [...projectIds]),
+    project_settings: projectSettings,
     project_provider_plugin_overrides: source.project_provider_plugin_overrides,
     sender_skill_slugs: source.sender_skill_slugs,
     skill_project_disabled: source.skill_project_disabled,

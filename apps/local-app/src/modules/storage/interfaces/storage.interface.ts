@@ -438,7 +438,11 @@ export interface ProjectReplicaSource {
   sender_skill_slugs: string[];
   skill_project_disabled: ProjectReplicaAttachTables['skill_project_disabled'];
   source_project_enabled: ProjectReplicaAttachTables['source_project_enabled'];
-  /** Stored `settings` rows for `PROJECT_REPLICA_SETTING_KEYS`; `value` is the raw JSON text. */
+  /**
+   * Stored `settings` rows for `PROJECT_REPLICA_SETTING_KEYS`, or only for
+   * `PROJECT_REPLICA_LIVE_SETTING_KEYS` without the configuration tier;
+   * `value` is the raw JSON text.
+   */
   settings: Array<{ key: string; value: string }>;
   /**
    * This instance's effective global agent settings (message pool, epic

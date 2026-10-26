@@ -16,6 +16,7 @@ import type {
   UpdateProjectResponse,
   UpgradeProjectResponse,
 } from '@/ui/pages/projects/lib/project-contracts';
+import type { BackendId } from '@/ui/lib/api-transport';
 
 export interface ProjectsPageApi {
   listProjects(): Promise<ProjectsQueryData>;
@@ -35,10 +36,25 @@ export interface ProjectsPageApi {
   updateProject(projectId: string, input: UpdateProjectInput): Promise<UpdateProjectResponse>;
   deleteProject(projectId: string): Promise<void>;
   loadSetupPreview(request: SetupPreviewRequest): Promise<SetupPreviewResponse>;
-  loadUpgradePreview(projectId: string, targetVersion: string): Promise<SetupPreviewResponse>;
-  runImportDryRun(projectId: string, input: Record<string, unknown>): Promise<ImportDryRunResponse>;
+  /** `backend` names the instance that owns the project; it defaults to home. */
+  loadUpgradePreview(
+    projectId: string,
+    targetVersion: string,
+    backend?: BackendId,
+  ): Promise<SetupPreviewResponse>;
+  runImportDryRun(
+    projectId: string,
+    input: Record<string, unknown>,
+    backend?: BackendId,
+  ): Promise<ImportDryRunResponse>;
   commitImport(projectId: string, input: Record<string, unknown>): Promise<ImportProjectResponse>;
-  commitUpgrade(projectId: string, input: Record<string, unknown>): Promise<UpgradeProjectResponse>;
+  commitUpgrade(
+    projectId: string,
+    input: Record<string, unknown>,
+    backend?: BackendId,
+  ): Promise<UpgradeProjectResponse>;
+  /** Asks home to pull a connected project's host changes into its mirror now. */
+  pullRemoteProject(projectId: string): Promise<void>;
   listRemoteOwners(): Promise<ProjectRemoteOwner[]>;
 }
 

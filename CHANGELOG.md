@@ -2,6 +2,12 @@
 
 Release notes for each published `devchain-cli` version, newest first. The `changelog` field in `package.json` keeps the newest 10 versions for the CLI update notice.
 
+## 0.26.4 — 2026-10-27
+
+- Remote VMs: upgrade the template of a connected project without disconnecting it
+- Remote VMs: fixed Git writes from this PC that stayed unconfirmed and blocked Disconnect
+- Dev Template: the Code Reviewer takes over the epics it is asked to review
+
 ## 0.26.3 — 2026-10-22
 
 - Remote VMs: fixed the Syncthing install on your own VMs

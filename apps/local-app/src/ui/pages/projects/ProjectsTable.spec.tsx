@@ -56,6 +56,7 @@ function row(overrides: Partial<ProjectTableRowModel> = {}): ProjectTableRowMode
     upgrade: jest.fn(),
     actionsButtonId: 'project-actions-project-1',
     remoteLock: null,
+    upgradeLock: null,
     moveTargets: [],
     ...overrides,
   };
@@ -320,7 +321,14 @@ describe('ProjectsTable', () => {
 
   it('disables delete and import on a remote-owned project and says why', () => {
     const message = 'Connected to remote "vm-1"; change this project there.';
-    const lockedRow = row({ remoteLock: { message }, upgrade: undefined, moveTargets: [] });
+    const lockedRow = row({
+      remoteLock: { message },
+      upgradeLock: {
+        message: 'Connecting to remote "vm-1"; changes are paused. Cancel it in Cloud.',
+      },
+      upgrade: undefined,
+      moveTargets: [],
+    });
     render(<ProjectsTable model={ready([group({ rows: [lockedRow] })])} />);
 
     const deleteButton = screen.getByRole('button', { name: 'Delete Project One' });
@@ -329,7 +337,7 @@ describe('ProjectsTable', () => {
     expect(deleteButton).toHaveAttribute('title', message);
     expect(importItem).toBeDisabled();
     expect(screen.getByText('Remote')).toHaveAttribute('title', message);
-    expect(screen.queryByTitle('Upgrade to v2.0.0')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /2\.0\.0/ })).toBeDisabled();
     expect(screen.queryByTestId('project-drag-handle-project-1')).not.toBeInTheDocument();
 
     fireEvent.click(deleteButton);

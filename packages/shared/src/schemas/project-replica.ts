@@ -41,6 +41,17 @@ export const PROJECT_REPLICA_SETTING_KEYS = [
 export type ProjectReplicaSettingKey = (typeof PROJECT_REPLICA_SETTING_KEYS)[number];
 
 /**
+ * The settings slices a live pull carries. A receiver replaces the project's
+ * slice of every carried key, so a key whose map the UI writes whole stays out:
+ * a live change to it would make home's next whole-map write fail admission.
+ */
+export const PROJECT_REPLICA_LIVE_SETTING_KEYS = [
+  'registryTemplates',
+  'projectPresets',
+  'projectActivePresets',
+] as const satisfies readonly ProjectReplicaSettingKey[];
+
+/**
  * Home's instance-level agent settings, carried by attach replicas so the
  * receiving host batches messages, notifies, sources skills and idles agents
  * exactly like home. The values are home's effective (default-resolved)
@@ -569,6 +580,8 @@ const liveTablesShape = {
   epic_comments: z.array(ReplicaEpicCommentRowSchema),
   epic_relations: z.array(ReplicaEpicRelationRowSchema),
   epic_time_segments: z.array(ReplicaEpicTimeSegmentRowSchema),
+  // Absent on older hosts. Attach and detach override it with the required field.
+  project_settings: z.array(ReplicaProjectSettingEntrySchema).optional(),
 };
 
 /** Configuration and history tables that live tier pulls leave out. */

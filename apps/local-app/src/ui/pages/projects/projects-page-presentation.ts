@@ -11,6 +11,7 @@ import type {
 } from './lib/project-contracts';
 import type { WorkspaceTransitionDevice } from './lib/projects-page-api';
 import type { WorkspaceIdentity } from '@/ui/lib/workspace-identity';
+import type { BackendId } from '@/ui/lib/api-transport';
 
 export type ProjectsSortField = 'name' | 'rootPath' | 'createdAt';
 export type ProjectsSortOrder = 'asc' | 'desc';
@@ -50,8 +51,10 @@ export interface ProjectTableRowModel {
   readonly configure?: () => void;
   readonly upgrade?: () => void;
   readonly actionsButtonId: string;
-  /** Set while a remote owns the project: delete, move, import and upgrade are refused. */
+  /** Set while a remote owns the project: delete, move and import are refused. */
   readonly remoteLock: { readonly message: string } | null;
+  /** Set while the upgrade is refused: remote bindings still loading, or a non-`remote` binding state. */
+  readonly upgradeLock: { readonly message: string } | null;
   readonly moveTargets: ReadonlyArray<{
     readonly workspaceId: string;
     readonly workspaceName: string;
@@ -265,6 +268,8 @@ export interface ProjectsUpgradeResultModel {
   readonly targetVersion: string;
   readonly source: ProjectTemplate['source'];
   readonly result: UpgradeProjectResponse;
+  readonly backend: BackendId;
+  readonly restored: () => void;
   readonly close: () => void;
 }
 

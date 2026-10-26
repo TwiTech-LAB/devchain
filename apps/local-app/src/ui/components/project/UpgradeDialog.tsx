@@ -18,7 +18,7 @@ import {
   isProjectPreMutationFailure,
 } from '@/ui/pages/projects/lib/project-failures';
 import type { UpgradeProjectResponse } from '@/ui/pages/projects/lib/project-contracts';
-import { HOME_BACKEND, apiFetch } from '@/ui/lib/api-transport';
+import { HOME_BACKEND, apiFetch, type BackendId } from '@/ui/lib/api-transport';
 
 interface UpgradeDialogProps {
   projectId: string;
@@ -26,11 +26,19 @@ interface UpgradeDialogProps {
   targetVersion: string;
   source: 'bundled' | 'registry' | 'file';
   result: UpgradeProjectResponse;
+  /** Instance that ran the upgrade; the restore must go to the same one. Defaults to home. */
+  backend?: BackendId;
   open: boolean;
   onClose: () => void;
+  /** Called after a manual restore succeeds. */
+  onRestored?: () => void;
 }
 
-async function restoreBackup(projectId: string, backupId: string): Promise<{ success: boolean }> {
+async function restoreBackup(
+  projectId: string,
+  backupId: string,
+  backend: BackendId,
+): Promise<{ success: boolean }> {
   const res = await apiFetch(
     `/api/projects/${encodeURIComponent(projectId)}/restore-backup`,
     {
@@ -38,7 +46,7 @@ async function restoreBackup(projectId: string, backupId: string): Promise<{ suc
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ backupId }),
     },
-    { backend: HOME_BACKEND },
+    { backend },
   );
   if (!res.ok) {
     const error = await res.json().catch(() => ({ message: 'Restore failed' }));
@@ -53,8 +61,10 @@ export function UpgradeDialog({
   targetVersion,
   source,
   result,
+  backend = HOME_BACKEND,
   open,
   onClose,
+  onRestored,
 }: UpgradeDialogProps) {
   const [restoreComplete, setRestoreComplete] = useState(false);
   const { toast } = useToast();
@@ -65,9 +75,10 @@ export function UpgradeDialog({
     !result.success && !preMutationFailure && !result.restored ? result.backupId : undefined;
 
   const restoreMutation = useMutation({
-    mutationFn: (backupId: string) => restoreBackup(projectId, backupId),
+    mutationFn: (backupId: string) => restoreBackup(projectId, backupId, backend),
     onSuccess: () => {
       setRestoreComplete(true);
+      onRestored?.();
       toast({
         title: 'Backup Restored',
         description: 'Project has been restored to its previous state',

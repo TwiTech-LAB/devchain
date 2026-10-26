@@ -30,7 +30,12 @@ import { GitCoordinatorStore } from './git-coordinator.store';
 import { GitProcessIdentity } from './git-process-identity';
 import { HostGitCoordinatorController } from './host-git-coordinator.controller';
 import { VmGitCoordinatorController } from './vm-git-coordinator.controller';
-import type { GitCoordinatorRecord } from './git-coordinator.dto';
+import {
+  GIT_CHECKPOINT_CONTENT_TYPE,
+  GitIndexSnapshotSchema,
+  type GitCoordinatorRecord,
+} from './git-coordinator.dto';
+import { HostJsonBodyParser } from '../host/host-json-body.parser';
 import { exportIndexSnapshot, refsDigest } from './git-checkpoint';
 
 // Integration is required for SQLite reopen, real staged indexes, process identity,
@@ -72,6 +77,7 @@ describe('VM Git coordinator persistence and host API', () => {
         GitCoordinatorStore,
         GitCoordinatorIndexService,
         GitProcessIdentity,
+        HostJsonBodyParser,
         { provide: DB_CONNECTION, useValue: drizzle(sqlite) },
         { provide: FileSyncService, useValue: files },
         { provide: HomeGitGuardService, useValue: guard },
@@ -456,6 +462,52 @@ describe('VM Git coordinator persistence and host API', () => {
       payload: { expectedGeneration: 1, transitionId: 'handover' },
     });
     expect(complete.json()).toMatchObject({ owner: 'home', generation: 1, transition: null });
+  });
+
+  it('takes an index of more than 8 MiB on the checkpoint content type', async () => {
+    store.write('p', { ...store.read('p'), owner: 'home' });
+    await coordinator.homeWriteBegin('p', { ...initialFence, writeId: 'write', homeName: 'PC' });
+    const body = JSON.stringify({
+      ...initialFence,
+      writeId: 'write',
+      refsDigest: 'not-the-vm-digest',
+      indexBase64: 'A'.repeat(9 * 1024 * 1024),
+    });
+    const url = '/api/host/projects/p/git-coordinator/home-write-end';
+
+    const checkpoint = await app.inject({
+      method: 'POST',
+      url,
+      headers: { 'content-type': GIT_CHECKPOINT_CONTENT_TYPE },
+      body,
+    });
+
+    // The coordinator answered: it compared refs and kept the write unconfirmed.
+    expect([checkpoint.statusCode, checkpoint.json().code]).toEqual([
+      409,
+      'GIT_CHECKPOINT_INCOMPLETE',
+    ]);
+  });
+
+  it('checks the index base64 alphabet and padding without a recursive pattern', () => {
+    const accepts = (indexBase64: string) =>
+      GitIndexSnapshotSchema.safeParse({ indexBase64 }).success;
+
+    expect(['', 'QQ==', 'QUI=', 'QUJD', 'A'.repeat(48 * 1024 * 1024)].map(accepts)).toEqual([
+      true,
+      true,
+      true,
+      true,
+      true,
+    ]);
+    expect(['abc', 'ab=c', 'a===', 'QQ=', '=QQQ', 'QQ==QQ=='].map(accepts)).toEqual([
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+    ]);
   });
 
   // Real Git on both sides: the refs digest, object checks and index stages are Git's own formats.

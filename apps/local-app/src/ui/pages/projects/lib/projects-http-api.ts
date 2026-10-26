@@ -21,9 +21,24 @@ import type {
 import { isProjectPreMutationFailure } from '@/ui/pages/projects/lib/project-failures';
 import type { ProjectsPageApi } from '@/ui/pages/projects/lib/projects-page-api';
 import type { WorkspaceTransitionDevice } from '@/ui/pages/projects/lib/projects-page-api';
-import { HOME_BACKEND, apiFetch } from '@/ui/lib/api-transport';
+import { HOME_BACKEND, apiFetch, type BackendId } from '@/ui/lib/api-transport';
 
-async function postConfiguredReplace<T>(url: string, body: Record<string, unknown>): Promise<T> {
+type ErrorBody = { message?: string; error?: string };
+
+function failureText(body: ErrorBody, fallback: string): string {
+  return body.message || body.error || fallback;
+}
+
+async function serverFailureMessage(response: Response): Promise<string> {
+  const body = (await response.json().catch(() => ({}))) as ErrorBody;
+  return failureText(body, `Request failed with status ${response.status}`);
+}
+
+async function postConfiguredReplace<T>(
+  url: string,
+  body: Record<string, unknown>,
+  backend: BackendId = HOME_BACKEND,
+): Promise<T> {
   const response = await apiFetch(
     url,
     {
@@ -31,14 +46,9 @@ async function postConfiguredReplace<T>(url: string, body: Record<string, unknow
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
     },
-    { backend: HOME_BACKEND },
+    { backend },
   );
-  if (!response.ok) {
-    const error = await response.json().catch(() => ({}));
-    throw new Error(
-      error.message || error.error || `Request failed with status ${response.status}`,
-    );
-  }
+  if (!response.ok) throw new Error(await serverFailureMessage(response));
   return response.json() as Promise<T>;
 }
 
@@ -236,6 +246,7 @@ export class ProjectsHttpApi implements ProjectsPageApi {
   async loadUpgradePreview(
     projectId: string,
     targetVersion: string,
+    backend: BackendId = HOME_BACKEND,
   ): Promise<SetupPreviewResponse> {
     const response = await apiFetch(
       `/api/projects/${encodeURIComponent(projectId)}/upgrade-template/preview`,
@@ -244,25 +255,28 @@ export class ProjectsHttpApi implements ProjectsPageApi {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ targetVersion }),
       },
-      { backend: HOME_BACKEND },
+      { backend },
     );
-    const result = (await response.json().catch(() => ({
-      success: false,
-      mutationStarted: false,
-      error: 'Failed to load upgrade preview',
-    }))) as SetupPreviewResponse | ProjectPreMutationFailure;
+    const result = (await response.json().catch(() => ({}))) as
+      | SetupPreviewResponse
+      | ProjectPreMutationFailure
+      | ErrorBody;
     if (isProjectPreMutationFailure(result)) throw new Error(result.error);
-    if (!response.ok) throw new Error('Failed to load upgrade preview');
-    return result;
+    if (!response.ok) {
+      throw new Error(failureText(result as ErrorBody, 'Failed to load upgrade preview'));
+    }
+    return result as SetupPreviewResponse;
   }
 
   runImportDryRun(
     projectId: string,
     input: Record<string, unknown>,
+    backend?: BackendId,
   ): Promise<ImportDryRunResponse> {
     return postConfiguredReplace(
       `/api/projects/${encodeURIComponent(projectId)}/import?dryRun=true`,
       input,
+      backend,
     );
   }
 
@@ -273,11 +287,22 @@ export class ProjectsHttpApi implements ProjectsPageApi {
   commitUpgrade(
     projectId: string,
     input: Record<string, unknown>,
+    backend?: BackendId,
   ): Promise<UpgradeProjectResponse> {
     return postConfiguredReplace(
       `/api/projects/${encodeURIComponent(projectId)}/upgrade-template`,
       input,
+      backend,
     );
+  }
+
+  async pullRemoteProject(projectId: string): Promise<void> {
+    const response = await apiFetch(
+      `/api/remotes/bindings/${encodeURIComponent(projectId)}/pull`,
+      { method: 'POST' },
+      { backend: HOME_BACKEND },
+    );
+    if (!response.ok) throw new Error(await serverFailureMessage(response));
   }
 
   async listRemoteOwners(): Promise<ProjectRemoteOwner[]> {

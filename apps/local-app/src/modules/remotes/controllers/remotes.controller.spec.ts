@@ -1,6 +1,7 @@
 import { RemoteApiKeyManagementService } from '../auth/remote-api-key-management.service';
 import { RemoteApiKeyService } from '../auth/remote-api-key.service';
 import { RemoteFileSyncService } from '../sync/remote-file-sync.service';
+import { RemoteLiveSyncService } from '../sync/remote-live-sync.service';
 import { Test, TestingModule } from '@nestjs/testing';
 import { ZodError } from 'zod';
 import { NotFoundError } from '../../../common/errors/error-types';
@@ -45,6 +46,7 @@ describe('RemotesController', () => {
   let hostClient: { setInstanceLabel: jest.Mock; discoverRuntime: jest.Mock };
   let familyWriteback: { pullFamiliesNow: jest.Mock };
   let runner: { supersedeFailedVmOperation: jest.Mock };
+  let liveSync: { pullNow: jest.Mock };
 
   const offlineHealth: RemoteHealthState = {
     online: false,
@@ -147,6 +149,7 @@ describe('RemotesController', () => {
       pullFamiliesNow: jest.fn().mockResolvedValue({ pulled: false, families: [] }),
     };
     runner = { supersedeFailedVmOperation: jest.fn().mockResolvedValue(null) };
+    liveSync = { pullNow: jest.fn().mockResolvedValue(undefined) };
 
     const module: TestingModule = await Test.createTestingModule({
       controllers: [RemotesController],
@@ -161,6 +164,7 @@ describe('RemotesController', () => {
           useValue: { save: jest.fn().mockResolvedValue(undefined) },
         },
         { provide: RemoteFileSyncService, useValue: files },
+        { provide: RemoteLiveSyncService, useValue: liveSync },
         { provide: STORAGE_SERVICE, useValue: storage },
         { provide: REMOTE_HEALTH_PORT, useValue: remoteHealth },
         { provide: RemoteHostClient, useValue: hostClient },
@@ -239,6 +243,33 @@ describe('RemotesController', () => {
       const result = await controller.listRemotes();
 
       expect(result.items[0].userName).toBeNull();
+    });
+  });
+
+  describe('POST /api/remotes/bindings/:projectId/pull', () => {
+    it('answers only after the pull for the given project settles', async () => {
+      let settle!: () => void;
+      liveSync.pullNow.mockReturnValue(new Promise<void>((resolve) => (settle = resolve)));
+      let answered = false;
+
+      const answer = controller.pullBinding(mockBinding.projectId).then(() => (answered = true));
+      await Promise.resolve();
+
+      expect(liveSync.pullNow).toHaveBeenCalledWith(mockBinding.projectId);
+      expect(answered).toBe(false);
+      settle();
+      await answer;
+      expect(answered).toBe(true);
+    });
+
+    // pullNow returns at once for a home-owned project and logs, then settles, on a failed pull.
+    it('answers success when pullNow settles without a pull', async () => {
+      await expect(controller.pullBinding(mockBinding.projectId)).resolves.toBeUndefined();
+    });
+
+    it('rejects an invalid project id without pulling', async () => {
+      await expect(controller.pullBinding('not-a-uuid')).rejects.toBeInstanceOf(ZodError);
+      expect(liveSync.pullNow).not.toHaveBeenCalled();
     });
   });
 

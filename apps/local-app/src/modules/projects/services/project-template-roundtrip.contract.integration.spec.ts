@@ -782,7 +782,7 @@ function createRealStorageUpgradeService(
 
   const service = new ProjectTemplateUpgradeService(
     projectsFacade,
-    { getTemplate: jest.fn().mockResolvedValue({ content: targetTemplate }) } as never,
+    { getOrDownloadTemplate: jest.fn().mockResolvedValue({ content: targetTemplate }) } as never,
     {} as never,
     h.settings,
     sessions as never,
@@ -1048,7 +1048,7 @@ describe('template round-trip contract safety net (real storage)', () => {
       const upgradeService = new ProjectTemplateUpgradeService(
         projectsFacade,
         {
-          getTemplate: jest.fn().mockResolvedValue({ content: targetTemplate }),
+          getOrDownloadTemplate: jest.fn().mockResolvedValue({ content: targetTemplate }),
         } as never,
         {} as never,
         h.settings,

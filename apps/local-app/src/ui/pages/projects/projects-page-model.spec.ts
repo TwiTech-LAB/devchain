@@ -176,22 +176,40 @@ describe('projects-page-model', () => {
     expect(actions.upgradeProject).toHaveBeenCalledWith(projects[0], '2.0.0');
   });
 
-  // Per-state lock messages belong to describeRemoteLock's own test; one owner covers the branch.
-  it('locks notice updates on a remote-owned project', () => {
-    const owner = {
-      projectId: 'beta',
-      remoteId: 'remote-1',
-      remoteName: 'VM',
-      state: 'remote' as const,
-    };
-    const [item] = buildTemplateUpdateNoticeItems(
+  const ownerIn = (state: 'attaching' | 'remote' | 'detaching' | 'failed') => ({
+    projectId: 'beta',
+    remoteId: 'remote-1',
+    remoteName: 'VM',
+    state,
+  });
+
+  it('enables notice updates for a connected project and locks every other binding state', () => {
+    const [connected] = buildTemplateUpdateNoticeItems(
       projects,
       templates,
-      new Map([['beta', owner]]),
+      new Map([['beta', ownerIn('remote')]]),
       actions,
     );
+    expect(connected.update).toBeDefined();
+    expect(connected.lockMessage).toBeNull();
+
+    for (const state of ['attaching', 'detaching', 'failed'] as const) {
+      const owner = ownerIn(state);
+      const [item] = buildTemplateUpdateNoticeItems(
+        projects,
+        templates,
+        new Map([['beta', owner]]),
+        actions,
+      );
+      expect(item.update).toBeUndefined();
+      expect(item.lockMessage).toBe(describeRemoteLock(owner));
+    }
+  });
+
+  it('locks notice updates until the remote bindings have loaded', () => {
+    const [item] = buildTemplateUpdateNoticeItems(projects, templates, new Map(), actions, false);
     expect(item.update).toBeUndefined();
-    expect(item.lockMessage).toBe(describeRemoteLock(owner));
+    expect(item.lockMessage).toBe('Checking remote connections…');
   });
 
   it('builds loading, unavailable, and grouped ready states', () => {
@@ -295,7 +313,7 @@ describe('projects-page-model', () => {
     expect(row.actionsButtonId).toBe('project-actions-beta');
   });
 
-  it('locks delete, move, import and upgrade on a remote-owned project', () => {
+  it('locks delete, move and import but not the upgrade on a connected project', () => {
     const owned = projects[0];
     const model = build({
       data: { items: [owned] },
@@ -313,9 +331,32 @@ describe('projects-page-model', () => {
       message: 'Connected to remote "vm-1"; change this project there.',
     });
     expect(row.moveTargets).toEqual([]);
-    expect(row.upgrade).toBeUndefined();
+    expect(row.upgradeLock).toBeNull();
+    row.upgrade?.();
+    expect(actions.upgradeProject).toHaveBeenCalledWith(owned, '2.0.0');
     model.requestProjectMove(owned.id, 'default');
     expect(actions.requestProjectMove).not.toHaveBeenCalled();
+  });
+
+  it.each(['attaching', 'detaching', 'failed'] as const)(
+    'keeps the upgrade locked with the current message while the binding is %s',
+    (state) => {
+      const owned = projects[0];
+      const owner = { projectId: owned.id, remoteId: 'remote-1', remoteName: 'vm-1', state };
+      const model = build({ data: { items: [owned] }, remoteOwners: new Map([[owned.id, owner]]) });
+      if (model.content.kind !== 'ready') throw new Error('expected ready');
+      const [row] = model.content.groups[1]!.rows;
+      expect(row.upgrade).toBeUndefined();
+      expect(row.upgradeLock).toEqual({ message: describeRemoteLock(owner) });
+    },
+  );
+
+  it('keeps the upgrade locked until the remote bindings have loaded', () => {
+    const model = build({ data: { items: [projects[0]] }, remoteOwnersLoaded: false });
+    if (model.content.kind !== 'ready') throw new Error('expected ready');
+    const [row] = model.content.groups[1]!.rows;
+    expect(row.upgrade).toBeUndefined();
+    expect(row.upgradeLock).toEqual({ message: 'Checking remote connections…' });
   });
 
   it('describes each remote-owned state', () => {

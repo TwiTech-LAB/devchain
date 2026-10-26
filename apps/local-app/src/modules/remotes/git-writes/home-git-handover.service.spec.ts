@@ -266,6 +266,26 @@ describe('HomeGitHandoverService', () => {
     expect(calls.filter((call) => call === 'need:code:p')).toHaveLength(2);
   });
 
+  it('reverts the idle Git folder here once while VM items are pending, and passes after they arrive', async () => {
+    // Syncthing answers the revert first; the items arrive three polls later.
+    let pollsAfterRevert = -1;
+    files.revertLocalChanges.mockImplementation(async () => {
+      pollsAfterRevert = 0;
+    });
+    host.syncRemoteNeedThrough.mockImplementation(async (_r, folderId: string) => {
+      if (folderId !== 'git:p') return [];
+      if (pollsAfterRevert >= 0) pollsAfterRevert += 1;
+      return pollsAfterRevert <= 3 ? ['objects/ab/cd'] : [];
+    });
+    files.status.mockResolvedValue(synced({ receiveOnlyChangedFiles: 2, fileErrors: [] }));
+    vm = handover('draining');
+    await service.handover(context(structuredClone(vm)));
+    expect(files.revertLocalChanges).toHaveBeenCalledTimes(1);
+    expect(files.revertLocalChanges).toHaveBeenCalledWith('git:p');
+    expect(pollsAfterRevert).toBe(4);
+    expect(calls).toEqual([...flip, ...finish]);
+  });
+
   it('renews the lease while it waits before the flip', async () => {
     host.syncRemoteNeedThrough.mockImplementation(async () =>
       host.handoverRenew.mock.calls.length ? [] : ['src/app.ts'],

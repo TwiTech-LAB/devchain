@@ -858,6 +858,86 @@ describe('ProjectReplicaApplier (integration)', () => {
     expect(count(host, "SELECT 1 FROM epics WHERE id = 'epic-1'")).toBe(1);
   });
 
+  describe('project settings slices', () => {
+    const v1 = { templateSlug: 'kit', installedVersion: '1.0.0' };
+    const v2 = { templateSlug: 'kit', installedVersion: '2.0.0' };
+    const setMap = (db: Database.Database, key: string, map: Record<string, unknown>) =>
+      db
+        .prepare(
+          `INSERT INTO settings (id, key, value, created_at, updated_at) VALUES (?, ?, ?, ?, ?)
+           ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+        )
+        .run(randomUUID(), key, JSON.stringify(map), T, T);
+    const settingMaps = (db: Database.Database): Record<string, unknown> =>
+      Object.fromEntries(
+        (
+          db
+            .prepare(
+              `SELECT key, value FROM settings WHERE key IN (
+                 'initialSessionPromptIds', 'autoClean.statusIds', 'messagePool.projects',
+                 'registryTemplates', 'projectPresets', 'projectActivePresets') ORDER BY key`,
+            )
+            .all() as Array<{ key: string; value: string }>
+        ).map((row) => [row.key, JSON.parse(row.value)]),
+      );
+
+    beforeEach(async () => {
+      setMap(home, 'initialSessionPromptIds', { A: 'prompt-a' });
+      setMap(home, 'registryTemplates', { A: v1, B: v1 });
+      await applier.apply(await build('attach'), { mode: 'full', remoteId: null, cursor: null });
+      setMap(host, 'registryTemplates', { A: v2 });
+      setMap(host, 'projectPresets', {});
+      setMap(host, 'projectActivePresets', { A: 'Fast' });
+      setMap(host, 'autoClean.statusIds', { A: ['A-status-2'] });
+      setMap(host, 'initialSessionPromptIds', { A: 'prompt-global' });
+      setMap(host, 'messagePool.projects', { A: { enabled: true } });
+    });
+
+    it('takes only the template slices on a live pull, and every slice on detach', async () => {
+      await homeApplier.apply(await build('live', hostBuilder), {
+        mode: 'live',
+        remoteId: 'remote-1',
+        cursor: T,
+      });
+
+      expect(settingMaps(home)).toEqual({
+        registryTemplates: { A: v2, B: v1 },
+        projectPresets: { B: [] },
+        projectActivePresets: { A: 'Fast' },
+        'autoClean.statusIds': { A: ['A-status'] },
+        initialSessionPromptIds: { A: 'prompt-a' },
+      });
+
+      await homeApplier.apply(await build('detach', hostBuilder), {
+        mode: 'full',
+        remoteId: 'remote-1',
+        cursor: T,
+      });
+
+      expect(settingMaps(home)).toEqual({
+        registryTemplates: { A: v2, B: v1 },
+        projectPresets: { B: [] },
+        projectActivePresets: { A: 'Fast' },
+        'autoClean.statusIds': { A: ['A-status-2'] },
+        initialSessionPromptIds: { A: 'prompt-global' },
+        'messagePool.projects': { A: { enabled: true } },
+      });
+    });
+
+    it('leaves every slice alone on a live replica without project settings', async () => {
+      const before = settingMaps(home);
+      const replica = await build('live', hostBuilder);
+      const { project_settings: _settings, ...tables } = replica.tables;
+
+      await homeApplier.apply(
+        { ...replica, tables },
+        { mode: 'live', remoteId: 'remote-1', cursor: T },
+      );
+
+      expect(settingMaps(home)).toEqual(before);
+    });
+  });
+
   it('a home resnapshot ignores VM env and scope rows', async () => {
     await applier.apply(await build('attach'), { mode: 'full', remoteId: null, cursor: null });
     const state = () => ({

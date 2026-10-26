@@ -5,7 +5,8 @@ import type { PromptReferenceValidationFailure } from '../../../common/prompt-re
 import { PROMPT_TRANSFER_POLICY, type PromptTransferCounts } from '../../../common/prompt-transfer';
 import { buildActiveSessionReadiness, type ImportReadiness } from '../helpers/project-import';
 import type { SetupPreviewResponse } from '../dtos/setup-preview.dto';
-import { TemplateCacheService } from '../../registry/services/template-cache.service';
+import { RegistryOrchestrationService } from '../../registry/services/registry-orchestration.service';
+import type { CachedTemplate } from '../../registry/services/template-cache.service';
 import { UnifiedTemplateService } from '../../registry/services/unified-template.service';
 import { SessionsService } from '../../sessions/services/sessions.service';
 import { SettingsService } from '../../settings/services/settings.service';
@@ -109,7 +110,7 @@ export class ProjectTemplateUpgradeService implements OnModuleInit, OnModuleDest
 
   constructor(
     private readonly projectsService: ProjectsService,
-    private readonly cacheService: TemplateCacheService,
+    private readonly registryOrchestration: RegistryOrchestrationService,
     private readonly unifiedTemplateService: UnifiedTemplateService,
     private readonly settingsService: SettingsService,
     private readonly sessionsService: SessionsService,
@@ -226,14 +227,29 @@ export class ProjectTemplateUpgradeService implements OnModuleInit, OnModuleDest
         return this.targetFailure(`Bundled template "${metadata.templateSlug}" is invalid`);
       }
     } else {
-      const cached = await this.cacheService.getTemplate(metadata.templateSlug, targetVersion);
+      let cached: CachedTemplate | null;
+      try {
+        cached = await this.registryOrchestration.getOrDownloadTemplate(
+          metadata.templateSlug,
+          targetVersion,
+        );
+      } catch (error) {
+        logger.warn(
+          { projectId, templateSlug: metadata.templateSlug, targetVersion, error },
+          'Upgrade target download failed',
+        );
+        const reason = error instanceof Error ? error.message : String(error);
+        return this.targetFailure(
+          `Failed to download template "${metadata.templateSlug}" version ${targetVersion}: ${reason}`,
+        );
+      }
       if (!cached) {
         logger.warn(
           { projectId, templateSlug: metadata.templateSlug, targetVersion },
-          'Upgrade attempted with uncached version',
+          'Downloaded upgrade target is missing from the cache',
         );
         return this.targetFailure(
-          `Version ${targetVersion} is not cached. Please download it first from the Registry page.`,
+          `Template "${metadata.templateSlug}" version ${targetVersion} could not be read after download`,
         );
       }
       content = cached.content as Record<string, unknown>;

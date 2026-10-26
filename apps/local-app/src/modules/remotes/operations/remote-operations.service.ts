@@ -48,12 +48,15 @@ import { ConnectChoicesStore } from '../connect-choices.store';
 import { RemoteFileSyncService } from '../sync/remote-file-sync.service';
 import type { ForceSyncSource } from './remote-operation.dto';
 import { GitOwnerStore } from '../git-owner.store';
+import { HomeGitWriteService } from '../git-writes/home-git-write.service';
 import { RemoteHostClient } from './remote-host.client';
 import { findBatchChild, type DisconnectAllDetails } from './disconnect-all.operation';
 import { isSharedVmGuardedKind, type SharedVmRetryConfirmation } from '../dtos/shared-vm.dto';
 import type { GitOwnerStatus } from './git-owner.dto';
 
 const logger = createLogger('RemoteOperationsService');
+
+const STUCK_HOME_WRITE_MS = 60_000;
 
 @Injectable()
 export class RemoteOperationsService {
@@ -71,6 +74,7 @@ export class RemoteOperationsService {
     private readonly files: RemoteFileSyncService,
     private readonly gitOwners: GitOwnerStore,
     private readonly host: RemoteHostClient,
+    private readonly homeWrites: HomeGitWriteService,
   ) {}
 
   /** The VM record is the authority; this PC's cached owner and generation answer when it cannot be read. */
@@ -104,6 +108,9 @@ export class RemoteOperationsService {
         return null;
       });
     if (record?.closed) warnings.push('The project is disconnecting; new Git writes wait.');
+    const unconfirmed = record?.homeWrites ?? {};
+    const stuck = this.stuckHomeWrites(projectId, unconfirmed);
+    if (stuck) warnings.push(stuck);
     return {
       connected: true,
       remoteId: binding.remoteId,
@@ -111,7 +118,7 @@ export class RemoteOperationsService {
       owner: record?.owner ?? this.gitOwners.get(projectId),
       generation: record?.generation ?? this.gitOwners.generation(projectId),
       live: record !== null,
-      homeWrites: Object.keys(record?.homeWrites ?? {}).length,
+      homeWrites: Object.keys(unconfirmed).length,
       vmHolds: Object.keys(record?.vmHolds ?? {}).length,
       transition: record?.transition
         ? { kind: record.transition.kind, phase: record.transition.phase }
@@ -119,6 +126,15 @@ export class RemoteOperationsService {
       checkpoint: record?.checkpoint ?? null,
       warnings,
     };
+  }
+
+  /** Home writes the VM has held unconfirmed past `STUCK_HOME_WRITE_MS`; the VM record carries the time. */
+  private stuckHomeWrites(projectId: string, homeWrites: Record<string, number>): string | null {
+    const oldest = Math.min(...Object.values(homeWrites));
+    if (!Number.isFinite(oldest) || Date.now() - oldest <= STUCK_HOME_WRITE_MS) return null;
+    const since = `Home Git writes have waited for the VM since ${new Date(oldest).toISOString()}`;
+    const reason = this.homeWrites.lastError(projectId);
+    return reason ? `${since}: ${reason}.` : `${since}.`;
   }
 
   /**

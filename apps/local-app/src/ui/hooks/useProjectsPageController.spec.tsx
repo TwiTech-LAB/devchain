@@ -9,6 +9,7 @@ import type {
   ProjectWorkspace,
   SetupPreviewResponse,
 } from '@/ui/pages/projects/lib/project-contracts';
+import { HOME_BACKEND } from '@/ui/lib/api-transport';
 import { projectsQueryKeys } from '@/ui/pages/projects/lib/project-query-keys';
 import { InMemoryProjectsPageApi } from '../../../test/helpers/in-memory-projects-page-api';
 import { useProjectsPageController } from './useProjectsPageController';
@@ -20,9 +21,14 @@ const mockSetSelectedProjectId = jest.fn();
 const mockActivateProject = jest.fn();
 let mockSelectedProjectId: string | undefined;
 let mockBindings = new Map<string, { projectId: string; remoteId: string; state: string }>();
+let mockBindingsLoaded = true;
 const mockRemotes = [{ id: 'remote-1', name: 'vm-1' }];
 jest.mock('@/ui/hooks/useRemotes', () => ({
-  useRemotes: () => ({ bindingByProjectId: mockBindings, remotes: mockRemotes }),
+  useRemotes: () => ({
+    bindingByProjectId: mockBindings,
+    bindingsLoaded: mockBindingsLoaded,
+    remotes: mockRemotes,
+  }),
 }));
 
 jest.mock('@/ui/hooks/use-toast', () => ({ useToast: () => ({ toast: mockToast }) }));
@@ -229,6 +235,7 @@ async function submitCreate(
 describe('useProjectsPageController semantic presentation', () => {
   beforeEach(() => {
     mockBindings = new Map();
+    mockBindingsLoaded = true;
     mockSelectedProjectId = undefined;
     mockToast.mockReset();
     mockNavigate.mockReset();
@@ -787,6 +794,162 @@ describe('useProjectsPageController semantic presentation', () => {
     expect(api.calls.commitUpgrade).toEqual([
       ['one', expect.objectContaining({ targetVersion: '2.0.0' })],
     ]);
+  });
+
+  describe('template upgrade of a connected project', () => {
+    const upgradeApi = (overrides: ConstructorParameters<typeof InMemoryProjectsPageApi>[0] = {}) =>
+      new InMemoryProjectsPageApi({
+        upgradePreview: emptyPreview(),
+        importDryRunResult: {
+          dryRun: true,
+          readiness: { ready: true, issues: [] },
+          missingProviders: [],
+          counts: { toImport: {}, toDelete: {} },
+        },
+        ...overrides,
+        overrides: { listProjects: () => ({ items: [outdatedProject()] }), ...overrides.overrides },
+      });
+
+    async function submitUpgrade(result: ReturnType<typeof renderController>['result']) {
+      const [row] = await readyRows(result);
+      act(() => row.upgrade?.());
+      await waitFor(() => expect(result.current.dialogs.upgrade.wizard.isLoading).toBe(false));
+      await advanceWizard(
+        () => result.current.dialogs.upgrade.wizard.controller,
+        result.current.dialogs.upgrade.wizard.controller.totalSteps,
+      );
+      await waitFor(() =>
+        expect(result.current.dialogs.upgrade.wizard.controller.canProceed).toBe(true),
+      );
+      act(() => result.current.dialogs.upgrade.wizard.controller.submit());
+      await waitFor(() => expect(result.current.dialogs.upgrade.result).not.toBeNull());
+    }
+
+    it('loads a fresh preview from the VM after the project connects', async () => {
+      const api = upgradeApi();
+      const { result, rerender } = renderController(api);
+
+      const [homeRow] = await readyRows(result);
+      act(() => homeRow.upgrade?.());
+      await waitFor(() => expect(api.upgradeBackends.loadUpgradePreview).toEqual([HOME_BACKEND]));
+      act(() => result.current.dialogs.upgrade.wizard.onOpenChange(false));
+
+      mockBindings = new Map([
+        ['one', { projectId: 'one', remoteId: 'remote-1', state: 'remote' }],
+      ]);
+      rerender();
+      const [remoteRow] = await readyRows(result);
+      act(() => remoteRow.upgrade?.());
+
+      await waitFor(() =>
+        expect(api.upgradeBackends.loadUpgradePreview).toEqual([HOME_BACKEND, 'remote-1']),
+      );
+    });
+
+    it('runs every wizard call on the VM, then pulls without holding the result dialog', async () => {
+      mockBindings.set('one', { projectId: 'one', remoteId: 'remote-1', state: 'remote' });
+      let finishPull!: () => void;
+      const api = upgradeApi({
+        overrides: {
+          commitUpgrade: { success: true, newVersion: '2.0.0' },
+          pullRemoteProject: () => new Promise<void>((resolve) => (finishPull = resolve)),
+        },
+      });
+      const { result } = renderController(api);
+
+      await submitUpgrade(result);
+
+      expect(api.upgradeBackends.loadUpgradePreview).toEqual(['remote-1']);
+      expect(api.upgradeBackends.runImportDryRun.every((b) => b === 'remote-1')).toBe(true);
+      expect(api.upgradeBackends.commitUpgrade).toEqual(['remote-1']);
+      expect(api.calls.pullRemoteProject).toEqual([['one']]);
+      expect(result.current.dialogs.upgrade.result?.backend).toBe('remote-1');
+
+      const listedBefore = api.calls.listProjects.length;
+      await act(async () => finishPull());
+      await waitFor(() => expect(api.calls.listProjects.length).toBeGreaterThan(listedBefore));
+    });
+
+    it('still refreshes the projects list when the pull fails', async () => {
+      mockBindings.set('one', { projectId: 'one', remoteId: 'remote-1', state: 'remote' });
+      const api = upgradeApi({
+        overrides: {
+          commitUpgrade: { success: true, newVersion: '2.0.0' },
+          pullRemoteProject: new Error('host unreachable'),
+        },
+      });
+      const { result } = renderController(api);
+
+      await readyRows(result);
+      const listedBefore = api.calls.listProjects.length;
+      await submitUpgrade(result);
+
+      await waitFor(() => expect(api.calls.pullRemoteProject).toHaveLength(1));
+      await waitFor(() => expect(api.calls.listProjects.length).toBeGreaterThan(listedBefore));
+    });
+
+    it('pulls after an automatic restore on the VM', async () => {
+      mockBindings.set('one', { projectId: 'one', remoteId: 'remote-1', state: 'remote' });
+      const api = upgradeApi({
+        overrides: {
+          commitUpgrade: { success: false, error: 'Import failed', restored: true },
+        },
+      });
+      const { result } = renderController(api);
+
+      await submitUpgrade(result);
+
+      expect(api.calls.pullRemoteProject).toEqual([['one']]);
+    });
+
+    it('pulls after a manual restore of a VM upgrade', async () => {
+      mockBindings.set('one', { projectId: 'one', remoteId: 'remote-1', state: 'remote' });
+      const api = upgradeApi({
+        overrides: {
+          commitUpgrade: {
+            success: false,
+            error: 'Import failed',
+            restored: false,
+            backupId: 'backup-1',
+          },
+        },
+      });
+      const { result } = renderController(api);
+
+      await submitUpgrade(result);
+      expect(api.calls.pullRemoteProject).toEqual([]);
+      act(() => result.current.dialogs.upgrade.result?.restored());
+
+      expect(api.calls.pullRemoteProject).toEqual([['one']]);
+    });
+
+    it('keeps a home project on home and never pulls', async () => {
+      const api = upgradeApi({
+        overrides: { commitUpgrade: { success: true, newVersion: '2.0.0' } },
+      });
+      const { result } = renderController(api);
+
+      await submitUpgrade(result);
+
+      expect(api.upgradeBackends.loadUpgradePreview).toEqual(['home']);
+      expect(api.upgradeBackends.commitUpgrade).toEqual(['home']);
+      expect(result.current.dialogs.upgrade.result?.backend).toBe('home');
+      expect(api.calls.pullRemoteProject).toEqual([]);
+    });
+
+    it('keeps the Upgrade action locked until the remote bindings have loaded', async () => {
+      mockBindingsLoaded = false;
+      const { result } = renderController(upgradeApi());
+
+      const [row] = await readyRows(result);
+      expect(row.upgrade).toBeUndefined();
+      expect(row.upgradeLock).toEqual({ message: 'Checking remote connections…' });
+      await waitFor(() =>
+        expect(result.current.table.notice?.items[0].lockMessage).toBe(
+          'Checking remote connections…',
+        ),
+      );
+    });
   });
 
   // The runtime cache is the controller's real boot signal; useRuntime.spec owns socket-to-runtime.

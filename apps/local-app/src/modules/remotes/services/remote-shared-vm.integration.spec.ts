@@ -160,6 +160,7 @@ describe('Home shared VM destructive-operation guard', () => {
       {} as never,
       {} as never,
       host,
+      {} as never,
     );
     const vm = new VmOperationsService(
       storage,

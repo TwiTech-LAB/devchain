@@ -5,7 +5,7 @@ import type {
 } from '../../interfaces/storage.interface';
 import { effectiveSourceSwitches, registeredSourceNames } from '../helpers/skill-source-switches';
 import { isAlwaysEnabledSkillSource } from '../../../../common/constants/built-in-skill-sources';
-import { PROJECT_REPLICA_SETTING_KEYS } from '@devchain/shared';
+import { PROJECT_REPLICA_LIVE_SETTING_KEYS, PROJECT_REPLICA_SETTING_KEYS } from '@devchain/shared';
 import type { ReplicaInstanceSettings } from '@devchain/shared';
 import {
   DEFAULT_ACTIVITY_IDLE_TIMEOUT_MS,
@@ -189,13 +189,16 @@ export class ProjectReplicaReadStorageDelegate
         'source_project_enabled',
         'project_id, source_name',
       );
-      source.settings = this.selectIn(
-        'SELECT key, value FROM settings WHERE key IN',
-        [...PROJECT_REPLICA_SETTING_KEYS],
-        'ORDER BY key',
-      );
       source.instanceSettings = this.readInstanceSettings();
     }
+
+    source.settings = this.selectIn(
+      'SELECT key, value FROM settings WHERE key IN',
+      options.includeConfiguration
+        ? [...PROJECT_REPLICA_SETTING_KEYS]
+        : [...PROJECT_REPLICA_LIVE_SETTING_KEYS],
+      'ORDER BY key',
+    );
 
     if (options.includeSessions) {
       source.sessions = this.selectIn(

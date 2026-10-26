@@ -181,6 +181,16 @@ export function senderTransferred(sender: FolderSyncStatus, receiver: FolderSync
 }
 
 /**
+ * The receiver is idle and pulls nothing, so a receive-only Revert cannot race a pull. Upkeep
+ * and the change barrier revert receive-only Git changes only then.
+ */
+export function receiverIdle(
+  receiver: Pick<FolderSyncStatus, 'state' | 'needTotalItems'>,
+): boolean {
+  return receiver.state === 'idle' && receiver.needTotalItems === 0;
+}
+
+/**
  * A folder is in sync when the sender sees the receiver's copy complete and
  * valid, both sides are idle, and the receiver holds exactly the sender's
  * files and directories. The sender's completion alone only reflects the

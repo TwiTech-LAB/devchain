@@ -401,12 +401,17 @@ describe('ProjectReplicaBuilder (integration)', () => {
         'epic_time_segments',
         'epics',
         'profile_provider_configs',
+        'project_settings',
         'projects',
         'providers',
         'statuses',
         'tags',
       ].sort(),
     );
+    // The seeded `autoClean.statusIds` slice is not a live key.
+    expect(tables.project_settings).toEqual([
+      { project_id: 'A', key: 'projectPresets', value: [{ name: 'Fast', agentConfigs: [] }] },
+    ]);
     expect(ids(tables.tags)).toEqual(['tag-a']);
     expect(ids(tables.epic_time_segments)).toEqual(['segment-settled']);
     expect(ids(tables.agent_profiles)).toEqual(['profile-a', 'profile-global']);

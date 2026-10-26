@@ -20,7 +20,7 @@ import { RemoteHostClient, RemoteHostRequestError } from '../operations/remote-h
 import { hostErrorCode } from '../transport/host-transport';
 import { GitOwnerStore } from '../git-owner.store';
 import { RemoteBindingsService } from '../services/remote-bindings.service';
-import { scanSequences, waitForChangeBarrier } from './change-barrier';
+import { ChangeBarrierTimeoutError, scanSequences, waitForChangeBarrier } from './change-barrier';
 import { HomeGitTransitions, gitReclaimPending } from './home-git-transitions';
 import { HomeGitWriteStore, type HomeGitWrite } from './home-git-write.store';
 
@@ -67,6 +67,8 @@ export class HomeGitWriteService implements OnApplicationBootstrap, OnModuleDest
   private readonly jobs = new Map<string, Promise<void>>();
   /** Projects whose VM record home must settle before their writes are tracked: project → remote. */
   private readonly recovering = new Map<string, string>();
+  /** Why write-through last failed, per project; cleared once the writes confirm or are gone. */
+  private readonly lastErrors = new Map<string, string>();
   private readonly stop = new AbortController();
   private stepDownTimer?: NodeJS.Timeout;
   private polling = false;
@@ -101,6 +103,11 @@ export class HomeGitWriteService implements OnApplicationBootstrap, OnModuleDest
     clearInterval(this.stepDownTimer);
     this.stop.abort();
     await Promise.allSettled(this.jobs.values());
+  }
+
+  /** One line on why the project's home writes are still unconfirmed, if write-through failed. */
+  lastError(projectId: string): string | null {
+    return this.lastErrors.get(projectId) ?? null;
   }
 
   /** The registered project containing `path`, with its VM when Git writes need the VM. */
@@ -187,23 +194,28 @@ export class HomeGitWriteService implements OnApplicationBootstrap, OnModuleDest
   }
 
   /** Ends once a batch confirmed the write or the VM no longer knows it. */
-  private async writeThrough({ writeId }: HomeGitWrite): Promise<void> {
+  private async writeThrough({ writeId, projectId }: HomeGitWrite): Promise<void> {
     let delay = this.timings.retryMinMs;
     try {
       for (;;) {
         this.stop.signal.throwIfAborted();
         // Acquire may re-register the write under a newer generation after a move.
         const write = this.store.get(writeId);
-        if (!write) return;
+        if (!write) {
+          this.forgetErrorWithoutWrites(projectId);
+          return;
+        }
         if (!(await this.gitGone(write))) {
           await this.sleep(this.timings.pidPollMs);
           continue;
         }
         try {
           await this.capture.runExclusive(write.projectId, () => this.confirmBatch(writeId));
+          this.lastErrors.delete(write.projectId);
           delay = this.timings.retryMinMs;
         } catch (error) {
           if (error instanceof Stopped || this.stop.signal.aborted) throw error;
+          this.lastErrors.set(write.projectId, failureReason(error));
           logger.warn(
             { error, projectId: write.projectId, writeId: write.writeId },
             'Home Git write is not confirmed on the VM yet; retrying',
@@ -251,6 +263,7 @@ export class HomeGitWriteService implements OnApplicationBootstrap, OnModuleDest
         'Dropping home Git writes for a project that is no longer connected to its VM',
       );
       for (const member of members) this.store.delete(member.writeId);
+      this.forgetErrorWithoutWrites(write.projectId);
       return;
     }
     await this.changeBarrier(write.projectId, write.remoteId);
@@ -280,8 +293,14 @@ export class HomeGitWriteService implements OnApplicationBootstrap, OnModuleDest
         // A write registered again under a newer generation stays for the next batch.
         if (this.store.get(member.writeId)?.generation === member.generation)
           this.store.delete(member.writeId);
+        this.forgetErrorWithoutWrites(member.projectId);
       }
     }
+  }
+
+  private forgetErrorWithoutWrites(projectId: string): void {
+    if (!this.store.list().some((write) => write.projectId === projectId))
+      this.lastErrors.delete(projectId);
   }
 
   /**
@@ -320,12 +339,15 @@ export class HomeGitWriteService implements OnApplicationBootstrap, OnModuleDest
   /**
    * Scans both folders, records each one's local sequence, then waits until every item changed
    * up to that sequence is at the VM or in the VM's failed items. Failed items already show in
-   * the file sync warning; for `.git`, the VM's refs and object checks still decide.
+   * the file sync warning; for `.git`, the VM's refs and object checks still decide. While the
+   * PC owns Git, receive-only changes in the VM's `.git` are stray writes, so the barrier reverts
+   * them.
    */
   private async changeBarrier(projectId: string, remoteId: string): Promise<void> {
     const folders = await this.files.projectFolders(projectId);
     const self = this.files.device().deviceId;
     const code = folders.find((folder) => folder.kind === 'code');
+    const git = folders.find((folder) => folder.kind === 'git');
     const vmDevice = code
       ? (await this.files.folderConfiguration(code.id)).devices.find(
           (device) => device.deviceID !== self,
@@ -342,11 +364,12 @@ export class HomeGitWriteService implements OnApplicationBootstrap, OnModuleDest
     await waitForChangeBarrier({
       sequences,
       needed: (folderId, sequence) => this.files.remoteNeedThrough(folderId, vmDevice, sequence),
-      failed: async (folderId) =>
-        (
-          (await this.host.syncStatus(remoteId, folderId, undefined, { allErrors: true }))
-            .fileErrors ?? []
-        ).map((error) => error.path),
+      receiver: (folderId) =>
+        this.host.syncStatus(remoteId, folderId, undefined, { allErrors: true }),
+      revert: git && {
+        folderId: git.id,
+        send: () => this.host.syncRevert(remoteId, git.id, this.owners.fence(projectId)),
+      },
       timeoutMs: this.timings.barrierMs,
       pollMs: this.timings.barrierPollMs,
       sleep: (ms) => this.sleep(ms),
@@ -558,3 +581,16 @@ const GIT_MOVED = ['GIT_GENERATION_MISMATCH', 'GIT_HANDOVER_REQUIRED'];
  * while a home write is pending, so a changed generation means the same.
  */
 const WRITE_NOT_REGISTERED = ['GIT_HOME_WRITE_UNKNOWN', 'GIT_GENERATION_MISMATCH'];
+
+/** A single line without request bodies or URLs: the host's code and HTTP status, else the barrier wait. */
+function failureReason(error: unknown): string {
+  if (error instanceof RemoteHostRequestError) {
+    const code = error.hostCode;
+    const status = error.status === null ? null : `HTTP ${error.status}`;
+    return code && status
+      ? `${code} (${status})`
+      : (code ?? status ?? 'the VM could not be reached');
+  }
+  if (error instanceof ChangeBarrierTimeoutError) return error.message;
+  return error instanceof AppError ? error.code : 'unexpected error';
+}

@@ -16,6 +16,7 @@ import type {
   UpgradeProjectSuccess,
 } from '@/ui/pages/projects/lib/project-contracts';
 import type { ProjectsPageApi } from '@/ui/pages/projects/lib/projects-page-api';
+import { HOME_BACKEND, type BackendId } from '@/ui/lib/api-transport';
 import { projectsHttpApi } from '@/ui/pages/projects/lib/projects-http-api';
 import { projectsQueryKeys } from '@/ui/pages/projects/lib/project-query-keys';
 import {
@@ -43,6 +44,8 @@ type ToastFn = (args: { title: string; description: string; variant?: 'destructi
 export interface ImportWizardTarget {
   id: string;
   name: string;
+  /** Instance that owns the project; omitted means home. */
+  backend?: BackendId;
 }
 
 export interface UpgradeWizardTarget extends ImportWizardTarget {
@@ -227,7 +230,11 @@ function useConfiguredReplaceWizard<
     setIsDryRunPending(true);
     setPreflightFailure(null);
     try {
-      const result: ImportDryRunResponse = await api.runImportDryRun(target.id, body);
+      const result: ImportDryRunResponse = await api.runImportDryRun(
+        target.id,
+        body,
+        target.backend,
+      );
       if (result.dryRun !== true || !result.counts) {
         throw new Error('Precheck returned an invalid result');
       }
@@ -430,9 +437,15 @@ function upgradeAdapter(
 ): ReplaceFlowAdapter<UpgradeWizardTarget, UpgradeProjectSuccess> {
   return {
     name: actionName,
-    previewQueryKey: (target) => projectsQueryKeys.upgradePreview(target.id, target.targetVersion),
+    previewQueryKey: (target) =>
+      projectsQueryKeys.upgradePreview(
+        target.id,
+        target.targetVersion,
+        target.backend ?? HOME_BACKEND,
+      ),
     canLoadPreview: () => true,
-    loadPreview: (target) => api.loadUpgradePreview(target.id, target.targetVersion),
+    loadPreview: (target) =>
+      api.loadUpgradePreview(target.id, target.targetVersion, target.backend),
     buildCommitBody: (target, preview, state) =>
       withStatusMappings(
         {
@@ -441,7 +454,7 @@ function upgradeAdapter(
         },
         state.statusMappings,
       ),
-    commit: (target, body) => api.commitUpgrade(target.id, body),
+    commit: (target, body) => api.commitUpgrade(target.id, body, target.backend),
     isTerminalFailure: (failure) => failure.mutationStarted !== false,
     successDescription: (target, result) => {
       return `${target.name} ${actionName === 'Upgrade' ? 'upgraded' : 'updated'} to v${result.newVersion}.${formatPromptSummary(result.promptTransfer)}`;

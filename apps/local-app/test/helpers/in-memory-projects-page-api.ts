@@ -1,3 +1,4 @@
+import { HOME_BACKEND, type BackendId } from '@/ui/lib/api-transport';
 import type {
   CreateFromTemplateInput,
   CreateFromTemplateResponse,
@@ -47,6 +48,7 @@ export interface InMemoryProjectsPageApiOverrides {
   commitImport?: Override<[string, Record<string, unknown>], ImportProjectResponse>;
   commitUpgrade?: Override<[string, Record<string, unknown>], UpgradeProjectResponse>;
   listRemoteOwners?: Override<[], ProjectRemoteOwner[]>;
+  pullRemoteProject?: Override<[string], void>;
 }
 
 export interface InMemoryProjectsPageApiSeed {
@@ -88,6 +90,14 @@ export class InMemoryProjectsPageApi implements ProjectsPageApi {
     commitImport: [] as Array<readonly [string, Record<string, unknown>]>,
     commitUpgrade: [] as Array<readonly [string, Record<string, unknown>]>,
     listRemoteOwners: [] as Array<readonly []>,
+    pullRemoteProject: [] as Array<readonly [string]>,
+  };
+
+  /** Backend each upgrade call named, in call order; calls keep their home-shaped tuples. */
+  readonly upgradeBackends = {
+    loadUpgradePreview: [] as string[],
+    runImportDryRun: [] as string[],
+    commitUpgrade: [] as string[],
   };
 
   readonly overrides: InMemoryProjectsPageApiOverrides;
@@ -360,8 +370,10 @@ export class InMemoryProjectsPageApi implements ProjectsPageApi {
   async loadUpgradePreview(
     projectId: string,
     targetVersion: string,
+    backend: BackendId = HOME_BACKEND,
   ): Promise<SetupPreviewResponse> {
     this.calls.loadUpgradePreview.push([projectId, targetVersion]);
+    this.upgradeBackends.loadUpgradePreview.push(backend);
     return this.resolveRequired(
       this.overrides.loadUpgradePreview,
       [projectId, targetVersion],
@@ -373,8 +385,10 @@ export class InMemoryProjectsPageApi implements ProjectsPageApi {
   async runImportDryRun(
     projectId: string,
     input: Record<string, unknown>,
+    backend: BackendId = HOME_BACKEND,
   ): Promise<ImportDryRunResponse> {
     this.calls.runImportDryRun.push([projectId, input]);
+    this.upgradeBackends.runImportDryRun.push(backend);
     return this.resolveRequired(
       this.overrides.runImportDryRun,
       [projectId, input],
@@ -399,14 +413,21 @@ export class InMemoryProjectsPageApi implements ProjectsPageApi {
   async commitUpgrade(
     projectId: string,
     input: Record<string, unknown>,
+    backend: BackendId = HOME_BACKEND,
   ): Promise<UpgradeProjectResponse> {
     this.calls.commitUpgrade.push([projectId, input]);
+    this.upgradeBackends.commitUpgrade.push(backend);
     return this.resolveRequired(
       this.overrides.commitUpgrade,
       [projectId, input],
       this.upgradeResult,
       'upgrade result',
     );
+  }
+
+  async pullRemoteProject(projectId: string): Promise<void> {
+    this.calls.pullRemoteProject.push([projectId]);
+    return this.resolve(this.overrides.pullRemoteProject, [projectId], undefined);
   }
 
   private async resolve<TArgs extends unknown[], TResult>(

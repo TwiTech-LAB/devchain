@@ -9,6 +9,7 @@ import { SkillsSettingsDelegate } from '../../../settings/local/delegates/skills
 import { randomUUID } from 'node:crypto';
 import type Database from 'better-sqlite3';
 import {
+  PROJECT_REPLICA_LIVE_SETTING_KEYS,
   PROJECT_REPLICA_SETTING_KEYS,
   ProjectReplicaV1Schema,
   validateClaudeLaunchSettingsJson,
@@ -421,9 +422,17 @@ class ReplicaApplyRun {
     };
   }
 
-  /** Sets this project's slice of each project-keyed settings map. */
+  /**
+   * Sets this project's slice of each project-keyed settings map the scope
+   * carries; an absent entry removes the slice. Keys outside the scope's set
+   * are left untouched.
+   */
   private applySettings(entries: ProjectReplicaTables['project_settings']): void {
-    for (const key of PROJECT_REPLICA_SETTING_KEYS) {
+    const keys =
+      this.replica.scope === 'live'
+        ? PROJECT_REPLICA_LIVE_SETTING_KEYS
+        : PROJECT_REPLICA_SETTING_KEYS;
+    for (const key of keys) {
       const row = this.get<{ value: string }>('SELECT value FROM settings WHERE key = ?', key);
       let map: Record<string, unknown> = {};
       if (row) {

@@ -92,10 +92,15 @@ export const HomeWriteBeginSchema = GitFenceSchema.extend({
   writeId: IdSchema,
   homeName: z.string().trim().min(1).max(255),
 }).strict();
+/** Content type of the `home-write-end` body, whose index snapshot outgrows the default JSON limit. */
+export const GIT_CHECKPOINT_CONTENT_TYPE = 'application/vnd.devchain.git-checkpoint+json';
+export const GIT_CHECKPOINT_MAX_INDEX_BASE64_LENGTH = 64 * 1024 * 1024;
+// A repeated-group regex overflows the stack on multi-MiB input, so only the alphabet is a regex.
 const IndexBase64Schema = z
   .string()
-  .max(64 * 1024 * 1024)
-  .regex(/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/);
+  .max(GIT_CHECKPOINT_MAX_INDEX_BASE64_LENGTH)
+  .regex(/^[A-Za-z0-9+/]*={0,2}$/)
+  .refine((value) => value.length % 4 === 0);
 /** A self-contained root index; empty when the repository has none. */
 export const GitIndexSnapshotSchema = z.object({ indexBase64: IndexBase64Schema }).strict();
 export const HomeWriteEndSchema = GitFenceSchema.extend({

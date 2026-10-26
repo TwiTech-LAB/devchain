@@ -1,6 +1,6 @@
 {
   "name": "devchain-cli",
-  "version": "0.26.3",
+  "version": "0.26.4",
   "description": "AI driven development platform",
   "homepage": "https://devchain.cc/",
   "repository": {
@@ -8,6 +8,11 @@
     "url": "https://github.com/twitech-lab/devchain.git"
   },
   "changelog": {
+    "0.26.4": [
+      "Remote VMs: upgrade the template of a connected project without disconnecting it",
+      "Remote VMs: fixed Git writes from this PC that stayed unconfirmed and blocked Disconnect",
+      "Dev Template: the Code Reviewer takes over the epics it is asked to review"
+    ],
     "0.26.3": [
       "Remote VMs: fixed the Syncthing install on your own VMs",
       "Terminal: retry when a message gets stuck in an agent's input box",
@@ -71,14 +76,6 @@
       "[New] Skills: \"Project skill review\" suggests which skills to enable or disable, based on usage",
       "[Perf] MCP: smaller responses use less agent context; epic lists return description previews by default",
       "[Fix] Skills: agents no longer load disabled skills, and edits to any local skill file now sync"
-    ],
-    "0.23.3": [
-      "[Perf] Sessions: lower CPU and memory use with many agents running",
-      "[New] Terminal: \"Send now\" delivers queued messages without waiting",
-      "[Fix] Terminal: finished agents no longer stay marked busy",
-      "[Fix] Chat: model and context size no longer disappear while an agent works",
-      "[New] Integrations: import the same ClickUp or Jira task into several projects",
-      "[Fix] Integrations: \"Reload remote\" works again after a remote change"
     ]
   },
   "publishConfig": {

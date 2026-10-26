@@ -132,6 +132,11 @@ describe('ProjectReplicaV1Schema', () => {
       { ...envelope, scope: 'live', tables: liveTables },
       {
         ...envelope,
+        scope: 'live',
+        tables: { ...liveTables, project_settings: configurationTables.project_settings },
+      },
+      {
+        ...envelope,
         scope: 'attach',
         tables: {
           ...liveTables,
@@ -230,6 +235,21 @@ describe('ProjectReplicaV1Schema', () => {
     expect(ProjectReplicaV1Schema.safeParse(liveWithSkillSwitches).success).toBe(false);
     expect(ProjectReplicaV1Schema.safeParse(attachWithoutSessions).success).toBe(false);
     expect(ProjectReplicaV1Schema.safeParse(detachWithEnv).success).toBe(false);
+
+    const { project_settings: projectSettings, ...configurationWithoutSettings } =
+      configurationTables;
+    expect(projectSettings).toHaveLength(1);
+    const detachWithoutSettings = {
+      ...envelope,
+      scope: 'detach',
+      tables: {
+        ...liveTables,
+        ...configurationWithoutSettings,
+        sessions: [],
+        epic_time_session_watermarks: [],
+      },
+    };
+    expect(ProjectReplicaV1Schema.safeParse(detachWithoutSettings).success).toBe(false);
   });
 
   it('requires sender skill slugs in attach and detach replicas', () => {

@@ -37,8 +37,8 @@ const unreachable = () =>
     status: null,
     hostCode: null,
   });
-const refused = (hostCode: string) =>
-  new RemoteHostRequestError('refused', { remoteId: 'r', path: '/x', status: 409, hostCode });
+const refused = (hostCode: string | null, status = 409) =>
+  new RemoteHostRequestError('refused', { remoteId: 'r', path: '/x', status, hostCode });
 const saved = (n: number, overrides: Partial<HomeGitWrite> = {}): HomeGitWrite => ({
   writeId: `hw-${n}`,
   projectId: 'p',
@@ -60,6 +60,7 @@ describe('HomeGitWriteService', () => {
     homeWriteBegin: jest.fn(),
     homeWriteEnd: jest.fn(),
     syncStatus: jest.fn(),
+    syncRevert: jest.fn(),
   };
   const files = {
     folderPath: jest.fn(),
@@ -126,6 +127,10 @@ describe('HomeGitWriteService', () => {
           useValue: {
             get: (id: string) => owners.get(id)?.owner ?? 'vm',
             generation: (id: string) => owners.get(id)?.generation ?? 0,
+            fence: (id: string) => ({
+              expectedGeneration: owners.get(id)?.generation ?? 0,
+              transitionId: null,
+            }),
             remember: (id: string, { owner, generation }: GitCoordinatorRecord) =>
               owners.set(id, { owner, generation }),
           },
@@ -264,16 +269,76 @@ describe('HomeGitWriteService', () => {
     expect(writes.size).toBe(0);
   });
 
-  it('retries a confirmation the VM did not answer until it lands', async () => {
+  it.each([
+    ['the revert succeeds', null],
+    ['the revert fails', refused('GIT_GENERATION_MISMATCH')],
+  ])(
+    'reverts the idle VM Git folder once while its items are pending, and passes after they arrive (%s)',
+    async (_case, failure) => {
+      processes.read.mockResolvedValueOnce('boot:1').mockResolvedValue(false);
+      // Syncthing answers the revert first; the items arrive three polls later.
+      let pollsAfterRevert = -1;
+      host.syncRevert.mockImplementation(async () => {
+        pollsAfterRevert = 0;
+        if (failure) throw failure;
+      });
+      files.remoteNeedThrough.mockImplementation(async (folderId: string) => {
+        if (folderId === 'code:p') return pollsAfterRevert < 0 ? ['src/app.ts'] : [];
+        if (pollsAfterRevert >= 0) pollsAfterRevert += 1;
+        return pollsAfterRevert <= 3 ? ['objects/ab/cd'] : [];
+      });
+      host.syncStatus.mockResolvedValue({
+        state: 'idle',
+        needTotalItems: 0,
+        receiveOnlyChangedFiles: 301,
+        fileErrors: [],
+      });
+      await service.acquire('p', 77, signal);
+      await jest.advanceTimersByTimeAsync(300);
+      expect(host.syncRevert).toHaveBeenCalledTimes(1);
+      expect(host.syncRevert).toHaveBeenCalledWith('r', 'git:p', {
+        expectedGeneration: 3,
+        transitionId: null,
+      });
+      expect(host.homeWriteEnd).not.toHaveBeenCalled();
+      await jest.advanceTimersByTimeAsync(500);
+      expect(pollsAfterRevert).toBe(4);
+      expect(host.syncRevert).toHaveBeenCalledTimes(1);
+      expect(host.homeWriteEnd).toHaveBeenCalledTimes(1);
+      expect(writes.size).toBe(0);
+    },
+  );
+
+  it('retries a confirmation the VM did not answer until it lands, remembering why it failed', async () => {
     processes.read.mockResolvedValueOnce('boot:1').mockResolvedValue(false);
-    host.homeWriteEnd.mockRejectedValueOnce(unreachable());
+    host.homeWriteEnd
+      .mockRejectedValueOnce(unreachable())
+      .mockRejectedValueOnce(refused(null, 413));
     await service.acquire('p', 77, signal);
     await jest.advanceTimersByTimeAsync(300);
     expect(host.homeWriteEnd).toHaveBeenCalledTimes(1);
     expect(writes.size).toBe(1);
+    expect(service.lastError('p')).toBe('the VM could not be reached');
     await jest.advanceTimersByTimeAsync(1_300);
     expect(host.homeWriteEnd).toHaveBeenCalledTimes(2);
+    expect(service.lastError('p')).toBe('HTTP 413');
+    await jest.advanceTimersByTimeAsync(3_000);
+    expect(host.homeWriteEnd).toHaveBeenCalledTimes(3);
     expect(writes.size).toBe(0);
+    expect(service.lastError('p')).toBeNull();
+  });
+
+  it('forgets the last error once no saved write of the project remains', async () => {
+    processes.read.mockResolvedValueOnce('boot:1').mockResolvedValue(false);
+    host.homeWriteEnd.mockRejectedValue(refused('GIT_CHECKPOINT_INCOMPLETE'));
+    await service.acquire('p', 77, signal);
+    await jest.advanceTimersByTimeAsync(300);
+    expect(service.lastError('p')).toBe('GIT_CHECKPOINT_INCOMPLETE (HTTP 409)');
+
+    writes.clear();
+    await jest.advanceTimersByTimeAsync(2_000);
+
+    expect(service.lastError('p')).toBeNull();
   });
 
   it.each(['GIT_HOME_WRITE_UNKNOWN', 'GIT_GENERATION_MISMATCH'])(

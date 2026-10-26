@@ -380,8 +380,10 @@ export function ProjectsDialogs({ model }: ProjectsDialogsProps) {
           targetVersion={upgradeResult.targetVersion}
           source={upgradeResult.source}
           result={upgradeResult.result}
+          backend={upgradeResult.backend}
           open={true}
           onClose={upgradeResult.close}
+          onRestored={upgradeResult.restored}
         />
       )}
 

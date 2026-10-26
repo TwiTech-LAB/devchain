@@ -1,3 +1,4 @@
+import { HOME_BACKEND, type BackendId } from '@/ui/lib/api-transport';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useLocation, useNavigate } from 'react-router-dom';
@@ -156,7 +157,7 @@ export function useProjectsPageController(
   const workspaces = useMemo(() => workspacesQuery.data ?? [], [workspacesQuery.data]);
   const defaultWorkspace = workspaces.find((workspace) => workspace.isDefault) ?? workspaces[0];
 
-  const { bindingByProjectId, remotes } = useRemotes();
+  const { bindingByProjectId, bindingsLoaded, remotes } = useRemotes();
   const remoteOwners = useMemo(
     () =>
       new Map<string, ProjectRemoteOwner>(
@@ -183,6 +184,7 @@ export function useProjectsPageController(
   const [upgradeTarget, setUpgradeTarget] = useState<{
     project: ProjectWithStats;
     targetVersion: string;
+    backend: BackendId;
   } | null>(null);
   const [upgradeResult, setUpgradeResult] = useState<UpgradeProjectResponse | null>(null);
   const [exportTarget, setExportTarget] = useState<ProjectWithStats | null>(null);
@@ -665,11 +667,29 @@ export function useProjectsPageController(
     invalidateUpgradeSources();
   }, [invalidateUpgradeSources]);
 
+  // The pull is not awaited: the result dialog must not wait for a host that may take
+  // up to two minutes to answer. A pull changes only home's project rows.
+  const pullUpgradedProject = useCallback(() => {
+    if (!upgradeTarget || upgradeTarget.backend === HOME_BACKEND) return;
+    void api
+      .pullRemoteProject(upgradeTarget.project.id)
+      .catch(() => undefined)
+      .finally(() => void queryClient.invalidateQueries({ queryKey: projectsQueryKeys.list() }));
+  }, [api, queryClient, upgradeTarget]);
+
+  const handleUpgradeFinished = useCallback(
+    (result: UpgradeProjectResponse) => {
+      setUpgradeResult(result);
+      if (result.success || result.restored) pullUpgradedProject();
+    },
+    [pullUpgradedProject],
+  );
+
   const upgradeActionName =
     upgradeTarget?.project.templateMetadata?.source === 'bundled' ? 'Update' : 'Upgrade';
   const upgradeWizard = useUpgradeProjectWizard({
     actionName: upgradeActionName,
-    onFinished: setUpgradeResult,
+    onFinished: handleUpgradeFinished,
     onClosed: closeUpgradeTarget,
     toast,
     api,
@@ -682,6 +702,7 @@ export function useProjectsPageController(
       id: upgradeTarget.project.id,
       name: upgradeTarget.project.name,
       targetVersion: upgradeTarget.targetVersion,
+      backend: upgradeTarget.backend,
     });
   }, [upgradeResult, upgradeTarget, openUpgradeWizard]);
 
@@ -743,17 +764,33 @@ export function useProjectsPageController(
     void Promise.all([projectsQuery.refetch(), workspacesQuery.refetch()]);
   }, [projectsQuery, workspacesQuery]);
 
-  const openUpgrade = useCallback((project: ProjectWithStats, targetVersion: string) => {
-    setUpgradeResult(null);
-    setUpgradeTarget({ project, targetVersion });
-  }, []);
+  // The VM owns a `remote` project and holds its upgrade backup, so every call of one
+  // upgrade (including a later restore) goes there.
+  const openUpgrade = useCallback(
+    (project: ProjectWithStats, targetVersion: string) => {
+      const owner = remoteOwners.get(project.id);
+      setUpgradeResult(null);
+      setUpgradeTarget({
+        project,
+        targetVersion,
+        backend: owner?.state === 'remote' ? owner.remoteId : HOME_BACKEND,
+      });
+    },
+    [remoteOwners],
+  );
 
   const noticeItems = useMemo(
     () =>
       projectsQuery.isSuccess && templatesForUpgradeReady
-        ? buildTemplateUpdateNoticeItems(projectsQuery.data.items, allTemplates, remoteOwners, {
-            upgradeProject: openUpgrade,
-          })
+        ? buildTemplateUpdateNoticeItems(
+            projectsQuery.data.items,
+            allTemplates,
+            remoteOwners,
+            {
+              upgradeProject: openUpgrade,
+            },
+            bindingsLoaded,
+          )
         : [],
     [
       projectsQuery.isSuccess,
@@ -761,6 +798,7 @@ export function useProjectsPageController(
       templatesForUpgradeReady,
       allTemplates,
       remoteOwners,
+      bindingsLoaded,
       openUpgrade,
     ],
   );
@@ -896,6 +934,7 @@ export function useProjectsPageController(
     projectDrag,
     statusMessage: moveStatus,
     remoteOwners,
+    remoteOwnersLoaded: bindingsLoaded,
     actions: {
       changeSearch: setSearch,
       toggleSort,
@@ -931,6 +970,8 @@ export function useProjectsPageController(
           targetVersion: upgradeTarget.targetVersion,
           source: upgradeTarget.project.templateMetadata.source,
           result: upgradeResult,
+          backend: upgradeTarget.backend,
+          restored: pullUpgradedProject,
           close: closeUpgradeResult,
         }
       : null;

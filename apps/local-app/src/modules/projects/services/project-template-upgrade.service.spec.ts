@@ -1,6 +1,6 @@
 import { ValidationError, NotFoundError } from '../../../common/errors/error-types';
 import { ProjectTemplateUpgradeService } from './project-template-upgrade.service';
-import { TemplateCacheService } from '../../registry/services/template-cache.service';
+import { RegistryOrchestrationService } from '../../registry/services/registry-orchestration.service';
 import { UnifiedTemplateService } from '../../registry/services/unified-template.service';
 import { SettingsService } from '../../settings/services/settings.service';
 import { ProjectsService } from './projects.service';
@@ -34,16 +34,16 @@ const createMockImportResult = (): any => ({
 
 describe('ProjectTemplateUpgradeService', () => {
   let service: ProjectTemplateUpgradeService;
-  let mockCacheService: jest.Mocked<TemplateCacheService>;
+  let mockRegistryOrchestration: jest.Mocked<RegistryOrchestrationService>;
   let mockUnifiedTemplateService: jest.Mocked<UnifiedTemplateService>;
   let mockSettingsService: jest.Mocked<SettingsService>;
   let mockProjectsService: jest.Mocked<ProjectsService>;
   let mockSessionsService: jest.Mocked<SessionsService>;
 
   beforeEach(() => {
-    mockCacheService = {
-      getTemplate: jest.fn(),
-    } as unknown as jest.Mocked<TemplateCacheService>;
+    mockRegistryOrchestration = {
+      getOrDownloadTemplate: jest.fn(),
+    } as unknown as jest.Mocked<RegistryOrchestrationService>;
 
     mockUnifiedTemplateService = {
       getBundledTemplate: jest.fn(),
@@ -69,7 +69,7 @@ describe('ProjectTemplateUpgradeService', () => {
 
     service = new ProjectTemplateUpgradeService(
       mockProjectsService,
-      mockCacheService,
+      mockRegistryOrchestration,
       mockUnifiedTemplateService,
       mockSettingsService,
       mockSessionsService,
@@ -159,7 +159,7 @@ describe('ProjectTemplateUpgradeService', () => {
         installedAt: new Date().toISOString(),
       });
       const content = { _manifest: { version: '2.0.0' }, prompts: [] };
-      mockCacheService.getTemplate.mockResolvedValue({
+      mockRegistryOrchestration.getOrDownloadTemplate.mockResolvedValue({
         content,
         metadata: {
           slug: 'test-template',
@@ -174,7 +174,10 @@ describe('ProjectTemplateUpgradeService', () => {
       await expect(
         service.previewUpgrade({ projectId: 'project-123', targetVersion: '2.0.0' }),
       ).resolves.toBe(preview);
-      expect(mockCacheService.getTemplate).toHaveBeenCalledWith('test-template', '2.0.0');
+      expect(mockRegistryOrchestration.getOrDownloadTemplate).toHaveBeenCalledWith(
+        'test-template',
+        '2.0.0',
+      );
       expect(mockProjectsService.setupPreview).toHaveBeenCalledWith({ rawContent: content });
       expect(mockUnifiedTemplateService.getBundledTemplate).not.toHaveBeenCalled();
     });
@@ -199,7 +202,7 @@ describe('ProjectTemplateUpgradeService', () => {
         service.previewUpgrade({ projectId: 'project-123', targetVersion: '2.0.0' }),
       ).resolves.toBe(preview);
       expect(mockProjectsService.setupPreview).toHaveBeenCalledWith({ rawContent: content });
-      expect(mockCacheService.getTemplate).not.toHaveBeenCalled();
+      expect(mockRegistryOrchestration.getOrDownloadTemplate).not.toHaveBeenCalled();
     });
 
     it('rejects a cached payload whose manifest version differs from the requested target', async () => {
@@ -210,7 +213,7 @@ describe('ProjectTemplateUpgradeService', () => {
         registryUrl: 'https://test.com',
         installedAt: new Date().toISOString(),
       });
-      mockCacheService.getTemplate.mockResolvedValue({
+      mockRegistryOrchestration.getOrDownloadTemplate.mockResolvedValue({
         content: { _manifest: { version: '1.5.0' }, prompts: [] },
         metadata: {
           slug: 'test-template',
@@ -239,7 +242,7 @@ describe('ProjectTemplateUpgradeService', () => {
         registryUrl: 'https://test.com',
         installedAt: new Date().toISOString(),
       });
-      mockCacheService.getTemplate.mockResolvedValue({
+      mockRegistryOrchestration.getOrDownloadTemplate.mockResolvedValue({
         content: { _manifest: { version: '2.0.0' } },
         metadata: {
           slug: 'test-template',
@@ -289,13 +292,13 @@ describe('ProjectTemplateUpgradeService', () => {
         mutationStarted: false,
         error: 'File-based templates cannot be upgraded',
       });
-      mockCacheService.getTemplate.mockResolvedValueOnce(null);
+      mockRegistryOrchestration.getOrDownloadTemplate.mockResolvedValueOnce(null);
       await expect(
         service.upgradeProject({ projectId: 'project-123', targetVersion: '9.0.0' }),
       ).resolves.toEqual({
         success: false,
         mutationStarted: false,
-        error: 'Version 9.0.0 is not cached. Please download it first from the Registry page.',
+        error: 'Template "test-template" version 9.0.0 could not be read after download',
       });
       expect(mockProjectsService.exportProject).not.toHaveBeenCalled();
     });
@@ -308,7 +311,7 @@ describe('ProjectTemplateUpgradeService', () => {
         installedAt: new Date().toISOString(),
       });
       mockProjectsService.exportProject.mockResolvedValue(createMockExportData());
-      mockCacheService.getTemplate.mockResolvedValue({
+      mockRegistryOrchestration.getOrDownloadTemplate.mockResolvedValue({
         content: { _manifest: { version: '2.0.0' }, prompts: [{ id: '1' }] },
         metadata: { slug: 'test', version: '2.0.0', checksum: 'abc', cachedAt: '', size: 0 },
       });
@@ -360,7 +363,7 @@ describe('ProjectTemplateUpgradeService', () => {
         ],
       };
       mockProjectsService.exportProject.mockResolvedValue(backupPayload);
-      mockCacheService.getTemplate.mockResolvedValue({
+      mockRegistryOrchestration.getOrDownloadTemplate.mockResolvedValue({
         content: { _manifest: { version: '2.0.0' }, prompts: [] },
         metadata: { slug: 'test', version: '2.0.0', checksum: 'abc', cachedAt: '', size: 0 },
       });
@@ -395,7 +398,7 @@ describe('ProjectTemplateUpgradeService', () => {
         installedAt: new Date().toISOString(),
       });
       mockProjectsService.exportProject.mockResolvedValue(createMockExportData());
-      mockCacheService.getTemplate.mockResolvedValue({
+      mockRegistryOrchestration.getOrDownloadTemplate.mockResolvedValue({
         content: { _manifest: { version: '2.0.0' }, prompts: [] },
         metadata: { slug: 'test', version: '2.0.0', checksum: 'abc', cachedAt: '', size: 0 },
       });
@@ -444,24 +447,66 @@ describe('ProjectTemplateUpgradeService', () => {
       expect(result.error).toContain('already at this version');
     });
 
-    it('should return error if version not cached (before backup)', async () => {
+    it('should return a non-mutating failure naming slug and version when the download fails (before backup)', async () => {
       mockSettingsService.getProjectTemplateMetadata.mockReturnValue({
         templateSlug: 'test-template',
         installedVersion: '1.0.0',
         registryUrl: 'https://test.com',
         installedAt: new Date().toISOString(),
       });
-      mockCacheService.getTemplate.mockResolvedValue(null);
+      mockRegistryOrchestration.getOrDownloadTemplate.mockRejectedValue(new Error('ECONNREFUSED'));
 
       const result = await service.upgradeProject({
         projectId: 'project-123',
         targetVersion: '2.0.0',
       });
 
-      expect(result.success).toBe(false);
-      expect(result.error).toContain('not cached');
-      // Should NOT have created a backup since validation failed early
+      expect(result).toEqual({
+        success: false,
+        mutationStarted: false,
+        error: 'Failed to download template "test-template" version 2.0.0: ECONNREFUSED',
+      });
       expect(mockProjectsService.exportProject).not.toHaveBeenCalled();
+      expect(mockProjectsService.importProject).not.toHaveBeenCalled();
+    });
+
+    it('should download once for a preview followed by a commit of the same version', async () => {
+      mockSettingsService.getProjectTemplateMetadata.mockReturnValue({
+        templateSlug: 'test-template',
+        source: 'registry',
+        installedVersion: '1.0.0',
+        registryUrl: 'https://test.com',
+        installedAt: new Date().toISOString(),
+      });
+      // Mirrors the orchestration contract: the first call downloads, later calls hit the cache.
+      let cachedContent: Record<string, unknown> | null = null;
+      const download = jest.fn();
+      mockRegistryOrchestration.getOrDownloadTemplate.mockImplementation(async () => {
+        if (!cachedContent) {
+          download();
+          cachedContent = { _manifest: { version: '2.0.0' }, prompts: [] };
+        }
+        return {
+          content: cachedContent,
+          metadata: {
+            slug: 'test-template',
+            version: '2.0.0',
+            checksum: 'abc',
+            cachedAt: '',
+            size: 0,
+          },
+        };
+      });
+      mockProjectsService.exportProject.mockResolvedValue({} as never);
+
+      await service.previewUpgrade({ projectId: 'project-123', targetVersion: '2.0.0' });
+      const result = await service.upgradeProject({
+        projectId: 'project-123',
+        targetVersion: '2.0.0',
+      });
+
+      expect(result.success).toBe(true);
+      expect(download).toHaveBeenCalledTimes(1);
     });
 
     it('should return error if backup creation fails', async () => {
@@ -471,7 +516,7 @@ describe('ProjectTemplateUpgradeService', () => {
         registryUrl: 'https://test.com',
         installedAt: new Date().toISOString(),
       });
-      mockCacheService.getTemplate.mockResolvedValue({
+      mockRegistryOrchestration.getOrDownloadTemplate.mockResolvedValue({
         content: { _manifest: { version: '2.0.0' }, prompts: [] },
         metadata: { slug: 'test', version: '2.0.0', checksum: 'abc', cachedAt: '', size: 0 },
       });
@@ -495,7 +540,7 @@ describe('ProjectTemplateUpgradeService', () => {
         installedAt: new Date().toISOString(),
       });
       mockProjectsService.exportProject.mockResolvedValue(createMockExportData());
-      mockCacheService.getTemplate.mockResolvedValue({
+      mockRegistryOrchestration.getOrDownloadTemplate.mockResolvedValue({
         content: { _manifest: { version: '2.0.0' }, prompts: [] },
         metadata: { slug: 'test', version: '2.0.0', checksum: 'abc', cachedAt: '', size: 0 },
       });
@@ -520,7 +565,7 @@ describe('ProjectTemplateUpgradeService', () => {
         installedAt: new Date().toISOString(),
       });
       mockProjectsService.exportProject.mockResolvedValue(createMockExportData());
-      mockCacheService.getTemplate.mockResolvedValue({
+      mockRegistryOrchestration.getOrDownloadTemplate.mockResolvedValue({
         content: { _manifest: { version: '2.0.0' }, prompts: [] },
         metadata: { slug: 'test', version: '2.0.0', checksum: 'abc', cachedAt: '', size: 0 },
       });
@@ -547,7 +592,7 @@ describe('ProjectTemplateUpgradeService', () => {
       });
       mockProjectsService.exportProject.mockResolvedValue(createMockExportData());
       const content = { _manifest: { version: '2.0.0' }, prompts: [] };
-      mockCacheService.getTemplate.mockResolvedValue({
+      mockRegistryOrchestration.getOrDownloadTemplate.mockResolvedValue({
         content,
         metadata: { slug: 'test', version: '2.0.0', checksum: 'abc', cachedAt: '', size: 0 },
       });
@@ -580,7 +625,7 @@ describe('ProjectTemplateUpgradeService', () => {
         registryUrl: 'https://test.com',
         installedAt: new Date().toISOString(),
       });
-      mockCacheService.getTemplate.mockResolvedValue({
+      mockRegistryOrchestration.getOrDownloadTemplate.mockResolvedValue({
         content: { _manifest: { version: '2.0.0' }, prompts: [] },
         metadata: { slug: 'test', version: '2.0.0', checksum: 'abc', cachedAt: '', size: 0 },
       });
@@ -613,7 +658,7 @@ describe('ProjectTemplateUpgradeService', () => {
         installedAt: new Date().toISOString(),
       });
       mockProjectsService.exportProject.mockResolvedValue(createMockExportData());
-      mockCacheService.getTemplate.mockResolvedValue({
+      mockRegistryOrchestration.getOrDownloadTemplate.mockResolvedValue({
         content: { _manifest: { version: '2.0.0' }, prompts: [] },
         metadata: { slug: 'test', version: '2.0.0', checksum: 'abc', cachedAt: '', size: 0 },
       });
@@ -659,7 +704,7 @@ describe('ProjectTemplateUpgradeService', () => {
         installedAt: new Date().toISOString(),
       });
       mockProjectsService.exportProject.mockResolvedValue(createMockExportData());
-      mockCacheService.getTemplate.mockResolvedValue({
+      mockRegistryOrchestration.getOrDownloadTemplate.mockResolvedValue({
         content: {
           _manifest: { version: '2.0.0' },
           prompts: [],
@@ -692,7 +737,7 @@ describe('ProjectTemplateUpgradeService', () => {
         installedAt: new Date().toISOString(),
       });
       mockProjectsService.exportProject.mockResolvedValue(createMockExportData());
-      mockCacheService.getTemplate.mockResolvedValue({
+      mockRegistryOrchestration.getOrDownloadTemplate.mockResolvedValue({
         content: { _manifest: { version: '2.0.0' }, prompts: [], agents: [] }, // Reviewer dropped from new template
         metadata: { slug: 'dev-team', version: '2.0.0', checksum: 'abc', cachedAt: '', size: 0 },
       });
@@ -721,7 +766,7 @@ describe('ProjectTemplateUpgradeService', () => {
         installedAt: new Date().toISOString(),
       });
       mockProjectsService.exportProject.mockResolvedValue(createMockExportData());
-      mockCacheService.getTemplate.mockResolvedValue({
+      mockRegistryOrchestration.getOrDownloadTemplate.mockResolvedValue({
         content: { _manifest: { version: '2.0.0' }, prompts: [] },
         metadata: { slug: 'test', version: '2.0.0', checksum: 'abc', cachedAt: '', size: 0 },
       });
@@ -751,7 +796,7 @@ describe('ProjectTemplateUpgradeService', () => {
         installedAt: new Date().toISOString(),
       });
       mockProjectsService.exportProject.mockResolvedValue(createMockExportData());
-      mockCacheService.getTemplate.mockResolvedValue({
+      mockRegistryOrchestration.getOrDownloadTemplate.mockResolvedValue({
         content: { _manifest: { version: '2.0.0' }, prompts: [] },
         metadata: { slug: 'test', version: '2.0.0', checksum: 'abc', cachedAt: '', size: 0 },
       });
@@ -811,7 +856,7 @@ describe('ProjectTemplateUpgradeService', () => {
         expect(mockUnifiedTemplateService.getBundledTemplate).toHaveBeenCalledWith(
           'bundled-template',
         );
-        expect(mockCacheService.getTemplate).not.toHaveBeenCalled();
+        expect(mockRegistryOrchestration.getOrDownloadTemplate).not.toHaveBeenCalled();
       });
 
       it('should return error when bundled template not found', async () => {
@@ -1155,7 +1200,7 @@ describe('ProjectTemplateUpgradeService', () => {
 
       serviceWithFakeTimers = new ProjectTemplateUpgradeService(
         mockProjectsService,
-        mockCacheService,
+        mockRegistryOrchestration,
         mockUnifiedTemplateService,
         mockSettingsService,
         mockSessionsService,

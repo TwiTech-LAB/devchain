@@ -221,8 +221,8 @@ function ProjectRow({ row, drag }: { row: ProjectTableRowModel; drag: ProjectsTa
                 size="sm"
                 className="h-5 px-1.5 text-xs text-status-ok hover:bg-accent hover:text-foreground"
                 onClick={row.upgrade}
-                disabled={row.remoteLock !== null}
-                title={row.remoteLock?.message ?? `Upgrade to v${row.template.upgradeVersion}`}
+                disabled={row.upgradeLock !== null}
+                title={row.upgradeLock?.message ?? `Upgrade to v${row.template.upgradeVersion}`}
               >
                 <ArrowUp className="mr-0.5 h-3 w-3" aria-hidden="true" />v
                 {row.template.upgradeVersion}

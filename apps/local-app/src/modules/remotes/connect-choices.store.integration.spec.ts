@@ -125,6 +125,7 @@ it.each([false, true])(
       {} as never,
       {} as never,
       {} as never,
+      {} as never,
     );
     await service.attach(
       remoteId,
@@ -159,6 +160,7 @@ it('does not overwrite choices when attach creation is refused', async () => {
     {} as never,
     {} as never,
     store,
+    {} as never,
     {} as never,
     {} as never,
     {} as never,

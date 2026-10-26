@@ -113,7 +113,7 @@ export class HomeGitHandoverService extends HomeGitTransitions {
               continue;
             }
             const sequences = transition.sequences;
-            await steps.run('barrier', () => this.barrier(remoteId, sequences));
+            await steps.run('barrier', () => this.barrier(remoteId, projectId, sequences));
             // The last moment a lost supervisor can still abort: after this, finish forward.
             signal.throwIfAborted();
             record = await steps.run('vm-receiving', () =>
@@ -179,17 +179,23 @@ export class HomeGitHandoverService extends HomeGitTransitions {
     }
   }
 
-  /** Every VM change up to the recorded sequences is on this PC or failed here. */
-  private barrier(remoteId: string, sequences: Record<string, number>): Promise<void> {
+  /**
+   * Every VM change up to the recorded sequences is on this PC or failed here. Receive-only
+   * changes in this PC's `.git` are reverted so they do not hold the barrier.
+   */
+  private barrier(
+    remoteId: string,
+    projectId: string,
+    sequences: Record<string, number>,
+  ): Promise<void> {
     const self = this.files.device().deviceId;
+    const gitId = projectFolderId(projectId, 'git');
     return waitForChangeBarrier({
       sequences,
       needed: (folderId, sequence) =>
         this.host.syncRemoteNeedThrough(remoteId, folderId, self, sequence),
-      failed: async (folderId) =>
-        ((await this.files.status(folderId, undefined, { allErrors: true })).fileErrors ?? []).map(
-          (error) => error.path,
-        ),
+      receiver: (folderId) => this.files.status(folderId, undefined, { allErrors: true }),
+      revert: { folderId: gitId, send: () => this.files.revertLocalChanges(gitId) },
       timeoutMs: this.timings.barrierMs,
       pollMs: this.timings.barrierPollMs,
       sleep,

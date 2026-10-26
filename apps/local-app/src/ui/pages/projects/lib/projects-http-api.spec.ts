@@ -362,4 +362,62 @@ describe('ProjectsHttpApi', () => {
     await expect(api.commitImport('one', {})).rejects.toThrow('Secondary');
     await expect(api.commitImport('one', {})).rejects.toThrow('Request failed with status 503');
   });
+
+  describe('VM-owned upgrade calls', () => {
+    const remoteId = '9b2f6f0e-1111-4222-8333-444455556666';
+
+    it('sends preview, dry run and commit through the remote proxy and restores nothing on home', async () => {
+      const fetchMock = jest
+        .fn()
+        .mockResolvedValueOnce(response(setupPreview))
+        .mockResolvedValueOnce(
+          response({ dryRun: true, missingProviders: [], counts: { toImport: {}, toDelete: {} } }),
+        )
+        .mockResolvedValueOnce(response({ success: true, newVersion: '2.0.0' }));
+      window.fetch = fetchMock as unknown as typeof fetch;
+
+      await api.loadUpgradePreview('p1', '2.0.0', remoteId);
+      await api.runImportDryRun('p1', { version: 1 }, remoteId);
+      await api.commitUpgrade('p1', { targetVersion: '2.0.0' }, remoteId);
+
+      expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
+        `/r/${remoteId}/api/projects/p1/upgrade-template/preview`,
+        `/r/${remoteId}/api/projects/p1/import?dryRun=true`,
+        `/r/${remoteId}/api/projects/p1/upgrade-template`,
+      ]);
+    });
+
+    it('shows the server message when the upgrade preview is refused', async () => {
+      window.fetch = jest
+        .fn()
+        .mockResolvedValueOnce(
+          response({ message: 'Remote is offline' }, { ok: false, status: 503 }),
+        )
+        .mockResolvedValueOnce(response({ error: 'Needs an update' }, { ok: false, status: 409 }))
+        .mockResolvedValueOnce(rejectedJson({ ok: false, status: 502 })) as jest.MockedFunction<
+        typeof fetch
+      >;
+
+      await expect(api.loadUpgradePreview('p1', '2.0.0', remoteId)).rejects.toThrow(
+        'Remote is offline',
+      );
+      await expect(api.loadUpgradePreview('p1', '2.0.0', remoteId)).rejects.toThrow(
+        'Needs an update',
+      );
+      await expect(api.loadUpgradePreview('p1', '2.0.0', remoteId)).rejects.toThrow(
+        'Failed to load upgrade preview',
+      );
+    });
+
+    it('asks home to pull a connected project now', async () => {
+      const fetchMock = jest.fn().mockResolvedValue(response(undefined));
+      window.fetch = fetchMock as unknown as typeof fetch;
+
+      await api.pullRemoteProject('a/b');
+
+      expect(fetchMock).toHaveBeenCalledWith('/api/remotes/bindings/a%2Fb/pull', {
+        method: 'POST',
+      });
+    });
+  });
 });

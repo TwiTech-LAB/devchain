@@ -255,6 +255,7 @@ describe('claim and update_host operations', () => {
       {} as never,
       {} as never,
       {} as never,
+      {} as never,
     );
   }
 
@@ -400,6 +401,7 @@ describe('claim and update_host operations', () => {
       health,
       {} as RemotesService,
       { warning: () => null } as never,
+      {} as never,
     );
     const response = await controller.listRemotes();
     expect(response.items.find((remote) => remote.id === done.remoteId)).toMatchObject({

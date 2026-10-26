@@ -37,7 +37,7 @@ describe('RemoteOperationsService.gitOwnerStatus', () => {
     owner: 'home',
     generation: 7,
     homeName: 'pc',
-    homeWrites: { w1: 1, w2: 2 },
+    homeWrites: { w1: Date.now(), w2: Date.now() },
     checkpoint: { writeId: 'w0', generation: 6, refsDigest: 'abc', at: 1 },
     vmHolds: { h1: { pid: 1, processStartTime: 't', startedAt: 1 } },
     transition: { kind: 'reclaim', id: 't1', phase: 'sending', lease: null },
@@ -50,6 +50,7 @@ describe('RemoteOperationsService.gitOwnerStatus', () => {
     } | null,
     status = jest.fn().mockResolvedValue(record),
     warning = null as string | null,
+    lastError = null as string | null,
   } = {}) {
     const storage = {
       getProject: jest.fn(),
@@ -70,6 +71,7 @@ describe('RemoteOperationsService.gitOwnerStatus', () => {
       { warning: () => warning } as never,
       owners as never,
       { gitCoordinatorStatus: status } as never,
+      { lastError: () => lastError } as never,
     );
     return { service, storage, status };
   }
@@ -89,6 +91,47 @@ describe('RemoteOperationsService.gitOwnerStatus', () => {
       transition: { kind: 'reclaim', phase: 'sending' },
       checkpoint: record.checkpoint,
       warnings: ['Git guard was not installed.'],
+    });
+  });
+
+  describe('stuck home writes', () => {
+    const now = Date.parse('2026-10-26T12:00:00.000Z');
+    const withWrites = (...ages: number[]) =>
+      jest.fn().mockResolvedValue({
+        ...record,
+        homeWrites: Object.fromEntries(ages.map((age, n) => [`w${n}`, now - age])),
+      });
+
+    beforeEach(() => jest.useFakeTimers({ now }));
+    afterEach(() => jest.useRealTimers());
+
+    it.each([
+      ['with the last error', 'HTTP 413', ': HTTP 413.'],
+      ['without a known reason', null, '.'],
+    ])('warns when the oldest write waited over a minute, %s', async (_name, lastError, end) => {
+      const { service } = serviceFor({ status: withWrites(5_000, 61_000), lastError });
+
+      const { warnings } = await service.gitOwnerStatus('project-1');
+
+      expect(warnings).toEqual([
+        `Home Git writes have waited for the VM since 2026-10-26T11:58:59.000Z${end}`,
+      ]);
+    });
+
+    it.each([[[]], [[5_000, 60_000]]])('stays quiet for writes %j', async (ages) => {
+      const { service } = serviceFor({ status: withWrites(...ages), lastError: 'HTTP 413' });
+
+      expect((await service.gitOwnerStatus('project-1')).warnings).toEqual([]);
+    });
+
+    it('clears once the VM record has no writes', async () => {
+      const status = withWrites(90_000);
+      const { service } = serviceFor({ status, lastError: 'HTTP 413' });
+      expect((await service.gitOwnerStatus('project-1')).warnings).toHaveLength(1);
+
+      status.mockResolvedValue({ ...record, homeWrites: {} });
+
+      expect((await service.gitOwnerStatus('project-1')).warnings).toEqual([]);
     });
   });
 
@@ -146,6 +189,7 @@ it('refuses to connect a provisioning remote without an address', async () => {
     {} as never,
     {} as never,
     noChoices,
+    {} as never,
     {} as never,
     {} as never,
     {} as never,
@@ -264,6 +308,7 @@ describe('RemoteOperationsService.detach', () => {
       {} as never,
       {} as never,
       noChoices,
+      {} as never,
       {} as never,
       {} as never,
       {} as never,
@@ -430,6 +475,7 @@ describe('RemoteOperationsService.installHost credentials', () => {
       {} as never,
       {} as never,
       {} as never,
+      {} as never,
     );
     const ssh = {
       user: 'vm-admin',
@@ -504,6 +550,7 @@ describe('RemoteOperationsService.installHost credentials', () => {
       {} as never,
       {} as never,
       {} as never,
+      {} as never,
     );
     const ssh = { user: 'vm-admin', keyName: 'id_rsa' };
 
@@ -566,6 +613,7 @@ describe('RemoteOperationsService.installHost account validation', () => {
       {} as never,
       {} as never,
       {} as never,
+      {} as never,
     );
     return { service, runner, storage, installOperation, sshKeys };
   }
@@ -615,6 +663,7 @@ describe('RemoteOperationsService.installHost account validation', () => {
       {} as never,
       {} as never,
       noChoices,
+      {} as never,
       {} as never,
       {} as never,
       {} as never,
@@ -683,6 +732,7 @@ describe('RemoteOperationsService updateLogins', () => {
         {} as never,
         {} as never,
         {} as never,
+        {} as never,
       );
       const result = await service.updateLogins('remote-1', {
         providerAuth: { claude: 'reuse:new' },
@@ -735,6 +785,7 @@ describe('RemoteOperationsService updateLogins', () => {
       {} as never,
       {} as never,
       {} as never,
+      {} as never,
     );
     await service.retry(current.id, { codex: 'reuse:new' });
     expect(storage.updateRemoteOperation).toHaveBeenCalledWith(current.id, {
@@ -768,6 +819,7 @@ it('persists public keys when claiming an own VM', async () => {
     {} as never,
     {} as never,
     noChoices,
+    {} as never,
     {} as never,
     {} as never,
     {} as never,
@@ -820,6 +872,7 @@ describe('RemoteOperationsService.claim by address', () => {
       {} as never,
       {} as never,
       noChoices,
+      {} as never,
       {} as never,
       {} as never,
       {} as never,
@@ -958,6 +1011,7 @@ describe('RemoteOperationsService.updateHost registry', () => {
       {} as never,
       { refresh: async () => ({ version: '0.0.1' }) } as never,
       noChoices,
+      {} as never,
       {} as never,
       {} as never,
       {} as never,

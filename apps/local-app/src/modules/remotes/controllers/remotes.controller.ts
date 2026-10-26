@@ -1,6 +1,17 @@
 import { RemoteFileSyncService } from '../sync/remote-file-sync.service';
+import { RemoteLiveSyncService } from '../sync/remote-live-sync.service';
 import type { FileSyncFailedCounts } from '../sync/remote-file-sync.dto';
-import { Body, Controller, Delete, Get, Inject, Param, Patch, Post } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Delete,
+  Get,
+  HttpCode,
+  Inject,
+  Param,
+  Patch,
+  Post,
+} from '@nestjs/common';
 import { z } from 'zod';
 import { createLogger } from '../../../common/logging/logger';
 import { getEnvConfig } from '../../../common/config/env.config';
@@ -33,7 +44,7 @@ import { RemotesService } from '../services/remotes.service';
 
 const logger = createLogger('RemotesController');
 
-const RemoteIdSchema = z.string().uuid();
+const UuidSchema = z.string().uuid();
 
 /** The per-provider choice and entry ids of a claim-kind record; nothing else leaves it. */
 function recordedLogins(operation: RemoteOperation): RemoteLoginsDto {
@@ -58,6 +69,7 @@ export class RemotesController {
     @Inject(REMOTE_HEALTH_PORT) private readonly remoteHealth: RemoteHealthPort,
     private readonly remotes: RemotesService,
     private readonly files: RemoteFileSyncService,
+    private readonly liveSync: RemoteLiveSyncService,
   ) {}
 
   @Get()
@@ -96,10 +108,22 @@ export class RemotesController {
     };
   }
 
+  /**
+   * Answers once the pull settles. A failed pull is logged by the sync service and
+   * still answers success, so the caller must not add a shorter timeout: the host
+   * `changes` call can legitimately wait up to REPLICA_TIMEOUT_MS.
+   */
+  @Post('bindings/:projectId/pull')
+  @HttpCode(200)
+  async pullBinding(@Param('projectId') projectId: string): Promise<void> {
+    logger.info({ projectId }, 'POST /api/remotes/bindings/:projectId/pull');
+    await this.liveSync.pullNow(UuidSchema.parse(projectId));
+  }
+
   @Get(':id/stats/history')
   async getStatsHistory(@Param('id') id: string): Promise<RemoteStatsHistoryDto> {
     logger.info({ remoteId: id }, 'GET /api/remotes/:id/stats/history');
-    const remoteId = RemoteIdSchema.parse(id);
+    const remoteId = UuidSchema.parse(id);
     // Unknown ids 404 through the storage NotFoundError; a known remote that has
     // not produced a sample yet legitimately returns an empty list.
     await this.storage.getRemote(remoteId);
@@ -126,7 +150,7 @@ export class RemotesController {
   @Patch(':id')
   updateRemoteName(@Param('id') id: string, @Body() body: unknown): Promise<Remote> {
     logger.info({ remoteId: id }, 'PATCH /api/remotes/:id');
-    const remoteId = RemoteIdSchema.parse(id);
+    const remoteId = UuidSchema.parse(id);
     const { name } = UpdateRemoteNameSchema.parse(body);
     return this.remotes.rename(remoteId, name);
   }
@@ -134,7 +158,7 @@ export class RemotesController {
   @Delete(':id')
   async deleteRemote(@Param('id') id: string): Promise<void> {
     logger.info({ remoteId: id }, 'DELETE /api/remotes/:id');
-    const remoteId = RemoteIdSchema.parse(id);
+    const remoteId = UuidSchema.parse(id);
     await this.remotes.delete(remoteId);
   }
 

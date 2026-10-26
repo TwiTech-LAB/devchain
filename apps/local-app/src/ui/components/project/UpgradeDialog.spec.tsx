@@ -125,6 +125,26 @@ describe('UpgradeDialog', () => {
     expect(props.onClose).toHaveBeenCalled();
   });
 
+  it('restores on the instance that ran the upgrade and reports the restore', async () => {
+    global.fetch = jest.fn(async () => ({
+      ok: true,
+      json: async () => ({ success: true }),
+    })) as unknown as typeof fetch;
+    const onRestored = jest.fn();
+    renderDialog(
+      { success: false, error: 'Import failed', restored: false, backupId: 'backup-123' },
+      { backend: 'remote-1', onRestored },
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: /restore backup/i }));
+
+    await waitFor(() => expect(onRestored).toHaveBeenCalledTimes(1));
+    expect(global.fetch).toHaveBeenCalledWith(
+      '/r/remote-1/api/projects/proj-123/restore-backup',
+      expect.objectContaining({ method: 'POST' }),
+    );
+  });
+
   it('keeps manual restore actionable when the restore request fails', async () => {
     global.fetch = jest.fn(async () => ({
       ok: false,

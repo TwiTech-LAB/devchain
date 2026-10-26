@@ -182,6 +182,7 @@ describe('Disconnect all child lifecycle', () => {
       {} as never,
       {} as never,
       {} as never,
+      {} as never,
     );
   }
 
