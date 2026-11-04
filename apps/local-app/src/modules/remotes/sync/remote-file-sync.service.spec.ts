@@ -81,6 +81,7 @@ function setup() {
   const git = {
     mirroredHead: jest.fn(async () => 'head1'),
     refreshIndexFromHead: jest.fn(async () => undefined),
+    headReflogSignature: jest.fn(async () => null as { size: number; mtimeMs: number } | null),
   };
   const guard = {
     install: jest.fn(async () => undefined),
@@ -824,6 +825,7 @@ describe('remote file maintenance', () => {
     ['a Disconnect', { closed: true }],
   ])('holds Git maintenance during %s on the VM', async (_, activity) => {
     const s = setup();
+    s.git.headReflogSignature.mockResolvedValue({ size: 1, mtimeMs: 1 });
     await s.tick();
     await s.tick();
     const rebuilds = s.git.refreshIndexFromHead.mock.calls.length;
@@ -834,9 +836,16 @@ describe('remote file maintenance', () => {
     });
     s.files.receiveOnlyChanges.set('git:p', { count: 1, sample: ['refs/heads/home-edit'] });
     s.git.mirroredHead.mockResolvedValue('head2');
+    s.host.syncFolderType.mockClear();
+    const homePatch = jest.spyOn(s.files, 'updateFolder');
+    await s.tick();
     await s.tick();
     expect(s.files.receiveOnlyChanges.has('git:p')).toBe(true);
     expect(s.git.refreshIndexFromHead).toHaveBeenCalledTimes(rebuilds);
+    // The reflog was read once before the hold and is stable since, but no code folder restarts.
+    expect(s.git.headReflogSignature).toHaveBeenCalledTimes(1);
+    expect(s.host.syncFolderType).not.toHaveBeenCalled();
+    expect(homePatch).not.toHaveBeenCalled();
   });
 
   it('leaves a VM that reclaimed Git alone when this PC restarts with a stale cache', async () => {
@@ -1383,5 +1392,150 @@ describe('worktree metadata ignore upkeep', () => {
     await s.tick();
     for (const files of [s.files, s.hostFiles])
       expect((await files.installedIgnores('git:p')).ignore).toContain('/worktrees');
+  });
+});
+
+describe('code folder watch heal', () => {
+  const signature = (size: number) => ({ size, mtimeMs: 1000 + size });
+  /** Records code-folder pauses and resumes on both sides, in call order. */
+  const record = (s: ReturnType<typeof setup>) => {
+    const events: string[] = [];
+    const vmPatch = s.host.syncFolderType.getMockImplementation()!;
+    s.host.syncFolderType.mockImplementation(async (...args) => {
+      if (args[1] === 'code:p' && 'paused' in args[2]) events.push(`vm:${args[2].paused}`);
+      return vmPatch(...args);
+    });
+    const homePatch = s.files.updateFolder.bind(s.files);
+    jest.spyOn(s.files, 'updateFolder').mockImplementation(async (id, patch) => {
+      if (id === 'code:p' && 'paused' in patch) events.push(`home:${patch.paused}`);
+      return homePatch(id, patch);
+    });
+    return events;
+  };
+  const restart = (side: string) => [`${side}:true`, `${side}:false`];
+  /** Finishes the layout move so that later ticks run ordinary upkeep. */
+  const ready = async (owner: GitOwner = 'vm') => {
+    const s = setup();
+    s.owner.value = owner;
+    await s.tick();
+    return { ...s, events: record(s) };
+  };
+
+  it.each([
+    ['vm', 'home'],
+    ['home', 'vm'],
+  ] as const)(
+    'restarts the %s owner, then the %s receiver, once the HEAD reflog stops changing',
+    async (owner, receiver) => {
+      const s = await ready(owner);
+      s.git.headReflogSignature.mockResolvedValue(signature(1));
+      await s.tick();
+      expect(s.events).toEqual([]);
+      await s.tick();
+      expect(s.events).toEqual([...restart(owner), ...restart(receiver)]);
+      await s.tick();
+      expect(s.events).toHaveLength(4);
+      // A commit only appends to the reflog; it still counts once it settles.
+      s.git.headReflogSignature.mockResolvedValue(signature(2));
+      await s.tick();
+      s.git.headReflogSignature.mockResolvedValue(signature(3));
+      await s.tick();
+      expect(s.events).toHaveLength(4);
+      await s.tick();
+      expect(s.events.slice(4)).toEqual([...restart(owner), ...restart(receiver)]);
+      // `forget` starts a new lifetime, whose first read counts as a change.
+      s.service.forget('p');
+      await s.tick();
+      s.events.length = 0;
+      await s.tick();
+      await s.tick();
+      expect(s.events).toEqual([...restart(owner), ...restart(receiver)]);
+      expect(s.files.folders.get('code:p')!.paused).toBe(false);
+      expect(s.hostFiles.folders.get('code:p')!.paused).toBe(false);
+      expect(s.service.warning('p')).toBeNull();
+    },
+  );
+
+  it('restarts nothing without a reflog', async () => {
+    const s = await ready();
+    await s.tick();
+    await s.tick();
+    expect(s.git.headReflogSignature).toHaveBeenCalledWith('/checkout');
+    expect(s.events).toEqual([]);
+  });
+
+  it('restarts the owner at once and the receiver only after both code folders are idle', async () => {
+    const s = await ready();
+    s.git.headReflogSignature.mockResolvedValue(signature(1));
+    s.files.need.set('code:p', { needItems: 2, needBytes: 10 });
+    await s.tick();
+    await s.tick();
+    expect(s.events).toEqual(restart('vm'));
+    s.files.need.delete('code:p');
+    const status = s.host.syncStatus.getMockImplementation()!;
+    s.host.syncStatus.mockImplementation(async (...args) => ({
+      ...(await status(...args)),
+      state: 'scanning',
+    }));
+    await s.tick();
+    expect(s.events).toEqual(restart('vm'));
+    s.host.syncStatus.mockImplementation(status);
+    await s.tick();
+    expect(s.events).toEqual([...restart('vm'), ...restart('home')]);
+  });
+
+  it.each(['vm', 'home'] as const)(
+    'leaves a paused %s code folder paused and does not restart it later',
+    async (side) => {
+      const s = await ready();
+      const folder = (side === 'vm' ? s.hostFiles : s.files).folders.get('code:p')!;
+      s.git.headReflogSignature.mockResolvedValue(signature(1));
+      folder.paused = true;
+      await s.tick();
+      await s.tick();
+      expect(folder.paused).toBe(true);
+      folder.paused = false;
+      await s.tick();
+      expect(s.events.filter((event) => event.startsWith(side))).toEqual([]);
+    },
+  );
+
+  it('keeps a failed resume owed and resumes the folder on the next tick', async () => {
+    const s = await ready();
+    s.git.headReflogSignature.mockResolvedValue(signature(1));
+    await s.tick();
+    const patch = s.host.syncFolderType.getMockImplementation()!;
+    s.host.syncFolderType.mockImplementationOnce(patch).mockImplementationOnce(async () => {
+      throw new Error('network down');
+    });
+    await s.tick();
+    expect(s.hostFiles.folders.get('code:p')!.paused).toBe(true);
+    expect(s.events).toEqual(['vm:true']);
+    await s.tick();
+    expect(s.hostFiles.folders.get('code:p')!.paused).toBe(false);
+    // The owner stayed due, so it restarts again before the receiver.
+    expect(s.events).toEqual(['vm:true', 'vm:false', ...restart('vm'), ...restart('home')]);
+    expect(s.service.warning('p')).toBeNull();
+  });
+
+  it('logs a failed restart without a warning and still runs Git receiver upkeep', async () => {
+    const s = await ready();
+    s.git.headReflogSignature.mockResolvedValue(signature(1));
+    await s.tick();
+    s.host.syncFolderType.mockImplementationOnce(async () => {
+      throw new Error('VM busy');
+    });
+    s.files.receiveOnlyChanges.set('git:p', { count: 1, sample: ['refs/heads/home-edit'] });
+    const revert = jest.spyOn(s.files, 'revertLocalChanges');
+    await s.tick();
+    expect(s.service.warning('p')).toBeNull();
+    expect(revert).toHaveBeenCalledWith('git:p');
+    expect(s.hostFiles.folders.get('code:p')!.paused).toBe(false);
+    expect(s.events).toEqual(['vm:false']);
+    s.git.headReflogSignature.mockRejectedValueOnce(new Error('EACCES'));
+    await s.tick();
+    expect(s.service.warning('p')).toBeNull();
+    await s.tick();
+    expect(s.events.slice(1)).toEqual([...restart('vm'), ...restart('home')]);
   });
 });

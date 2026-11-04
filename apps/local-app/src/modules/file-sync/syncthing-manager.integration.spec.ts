@@ -105,12 +105,14 @@ describe('SyncthingManager', () => {
     launcher.folders = [
       { id: 'tx:claude:p1', path: folder },
       { id: 'tx:other:p2', path: folder },
-      { id: 'code:p1' },
+      { id: 'code:p1', rescanIntervalS: 300 },
     ];
     const { moduleRef, manager } = await createHarness(openDb(), join(root, 'st-home'));
     await moduleRef.init();
     await waitFor(() => manager.getState().running);
-    expect(launcher.folders).toEqual([{ id: 'code:p1', copyOwnershipFromParent: false }]);
+    expect(launcher.folders).toEqual([
+      { id: 'code:p1', rescanIntervalS: 300, copyOwnershipFromParent: false },
+    ]);
     expect(readFileSync(join(folder, 'session.jsonl'), 'utf8')).toBe('kept');
     expect(launcher.last.requests.filter((r) => r.method === 'DELETE').map((r) => r.path)).toEqual([
       '/rest/config/folders/tx%3Aclaude%3Ap1',

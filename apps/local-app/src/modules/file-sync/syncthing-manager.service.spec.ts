@@ -36,7 +36,7 @@ const managerLogger = jest
 describe('SyncthingManager ownership', () => {
   let moduleRef: TestingModule;
   let manager: SyncthingManager;
-  let folders: Array<{ id: string; copyOwnershipFromParent?: boolean }>;
+  let folders: Array<{ id: string; copyOwnershipFromParent?: boolean; rescanIntervalS?: number }>;
   let worker: SyncthingProcess;
   let exited: () => void;
   let alive: boolean;
@@ -63,9 +63,9 @@ describe('SyncthingManager ownership', () => {
       exited();
     });
     folders = [
-      { id: 'code:p1', copyOwnershipFromParent: false },
-      { id: 'git:p1' },
-      { id: 'other', copyOwnershipFromParent: false },
+      { id: 'code:p1', copyOwnershipFromParent: false, rescanIntervalS: 300 },
+      { id: 'git:p1', rescanIntervalS: 10 },
+      { id: 'other', copyOwnershipFromParent: false, rescanIntervalS: 3600 },
     ];
     jest
       .spyOn(SyncthingRestClient.prototype, 'request')
@@ -124,18 +124,39 @@ describe('SyncthingManager ownership', () => {
     ).toBeLessThan(launcher.hasOwnershipCapabilities.mock.invocationCallOrder[0]);
     expect(manager.getState().privileged).toBe(true);
     expect(folders).toEqual([
-      { id: 'code:p1', copyOwnershipFromParent: true },
-      { id: 'git:p1', copyOwnershipFromParent: true },
-      { id: 'other', copyOwnershipFromParent: false },
+      { id: 'code:p1', copyOwnershipFromParent: true, rescanIntervalS: 300 },
+      { id: 'git:p1', copyOwnershipFromParent: true, rescanIntervalS: 10 },
+      { id: 'other', copyOwnershipFromParent: false, rescanIntervalS: 3600 },
     ]);
     launcher.hasOwnershipCapabilities.mockResolvedValue(false);
     await crash();
     expect(manager.getState()).toMatchObject({ running: true, privileged: false });
     expect(launcher.hasOwnershipCapabilities).toHaveBeenCalledTimes(2);
     expect(folders).toEqual([
-      { id: 'code:p1', copyOwnershipFromParent: false },
-      { id: 'git:p1', copyOwnershipFromParent: false },
-      { id: 'other', copyOwnershipFromParent: false },
+      { id: 'code:p1', copyOwnershipFromParent: false, rescanIntervalS: 300 },
+      { id: 'git:p1', copyOwnershipFromParent: false, rescanIntervalS: 10 },
+      { id: 'other', copyOwnershipFromParent: false, rescanIntervalS: 3600 },
+    ]);
+  });
+
+  it('moves a code folder from a 3600 s to a 300 s rescan in the ownership PATCH', async () => {
+    const request = jest.mocked(SyncthingRestClient.prototype.request);
+    const patches = () => request.mock.calls.filter(([method]) => method === 'PATCH');
+    folders[0].rescanIntervalS = 3600;
+    await manager.ensureRunning();
+    expect(patches()).toEqual([
+      [
+        'PATCH',
+        '/rest/config/folders/code%3Ap1',
+        { copyOwnershipFromParent: true, rescanIntervalS: 300 },
+      ],
+      ['PATCH', '/rest/config/folders/git%3Ap1', { copyOwnershipFromParent: true }],
+    ]);
+    request.mockClear();
+    folders[0].rescanIntervalS = 3600;
+    await crash();
+    expect(patches()).toEqual([
+      ['PATCH', '/rest/config/folders/code%3Ap1', { rescanIntervalS: 300 }],
     ]);
   });
 

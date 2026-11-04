@@ -81,7 +81,12 @@ export class FakeSyncthingLauncher extends SyncthingLauncher {
   /** Answers to successive GET /rest/config/restart-required; false once exhausted. */
   restartRequired: boolean[] = [];
   privileged = false;
-  folders: Array<{ id: string; path?: string; copyOwnershipFromParent?: boolean }> = [];
+  folders: Array<{
+    id: string;
+    path?: string;
+    copyOwnershipFromParent?: boolean;
+    rescanIntervalS?: number;
+  }> = [];
   readonly runs: FakeSyncthingRun[] = [];
   readonly kills: number[] = [];
   private nextPid = 40_000;
@@ -102,6 +107,9 @@ export class FakeSyncthingLauncher extends SyncthingLauncher {
     const server = createServer();
     const run = new FakeSyncthingRun(this.nextPid++, this.nextPid++, args, env, server);
     server.on('request', (req, res) => {
+      // The client shares this process's fetch pool. A kept-alive connection outlives a stopped
+      // run, and the next run on the same port can get it and fail with ECONNRESET.
+      res.shouldKeepAlive = false;
       void readBody(req).then((body) => {
         const path = (req.url ?? '').split('?')[0];
         run.requests.push({ method: req.method ?? '', path, body });

@@ -80,6 +80,12 @@ interface ProjectState {
   ownershipScan?: { attemptedAt: number; inspectedSequence?: number };
   /** Sides whose code folder a restart paused and has not yet resumed. */
   resume?: Set<'home' | 'vm'>;
+  /** The HEAD reflog signature read by the previous tick. */
+  reflog?: string;
+  /** The last HEAD reflog signature that made both code folders due for a restart. */
+  healedReflog?: string;
+  /** Sides whose code folder must restart so that Syncthing watches re-created folders again. */
+  heal?: Set<'home' | 'vm'>;
 }
 
 /** File upkeep shares live sync's queue; persisted operations can hold it across restarts. */
@@ -304,26 +310,82 @@ export class RemoteFileSyncService {
     const codeId = projectFolderId(projectId, 'code');
     try {
       if (!active()) return;
-      const status =
-        side === 'vm'
-          ? await this.host.syncStatus(remoteId, codeId)
-          : await this.files.status(codeId);
+      const status = await this.folderStatus(side, remoteId, codeId);
       if (!active() || (status.pullErrors ?? 0) <= 0) return;
-      const state = this.projects.get(projectId);
-      // Owed until a resume succeeds; `tick` retries it, so a lost resume never strands a pause.
-      if (state) (state.resume ??= new Set()).add(side);
-      // Resume even if pausing reports an error: the remote response may have been lost.
-      try {
-        await this.pauseCode(codeId, side, remoteId, true);
-      } finally {
-        await this.pauseCode(codeId, side, remoteId, false);
-        state?.resume?.delete(side);
-      }
+      await this.restartCode(projectId, side, remoteId);
     } catch (error) {
       logger.warn(
         { error, projectId, side },
         'File sync folder restart failed after applying ignores',
       );
+    }
+  }
+
+  private async restartCode(
+    projectId: string,
+    side: 'home' | 'vm',
+    remoteId: string,
+  ): Promise<void> {
+    const codeId = projectFolderId(projectId, 'code');
+    const state = this.projects.get(projectId);
+    // Owed until a resume succeeds; `tick` retries it, so a lost resume never strands a pause.
+    if (state) (state.resume ??= new Set()).add(side);
+    // Resume even if pausing reports an error: the remote response may have been lost.
+    try {
+      await this.pauseCode(codeId, side, remoteId, true);
+    } finally {
+      await this.pauseCode(codeId, side, remoteId, false);
+      state?.resume?.delete(side);
+    }
+  }
+
+  /**
+   * Restarts both code folders once the HEAD reflog stops changing, so that Syncthing watches
+   * folders a HEAD move re-created (see `RESCAN_INTERVAL_S` in file-sync.dto.ts). The
+   * receiver waits until it has pulled the re-created folders; a failed restart stays due.
+   */
+  private async healWatches(
+    projectId: string,
+    remoteId: string,
+    state: ProjectState,
+    owner: GitOwner,
+    active: () => boolean,
+  ): Promise<void> {
+    const receiver: GitOwner = owner === 'vm' ? 'home' : 'vm';
+    try {
+      const read = await this.git.headReflogSignature(await this.files.folderPath(projectId));
+      const signature = read ? `${read.size}:${read.mtimeMs}` : undefined;
+      const previous = state.reflog;
+      state.reflog = signature;
+      if (!signature) return;
+      if (signature === previous && signature !== state.healedReflog) {
+        (state.heal ??= new Set()).add(owner).add(receiver);
+        state.healedReflog = signature;
+      }
+      if (!state.heal?.size || !active()) return;
+      const heal = state.heal;
+      const codeId = projectFolderId(projectId, 'code');
+      // A paused folder watches everything again when it resumes, and the pause is someone
+      // else's to undo, so it leaves the due set without a restart.
+      if (heal.has(owner)) {
+        const { paused } = await this.folderConfig(owner, remoteId, codeId);
+        if (!paused) await this.restartCode(projectId, owner, remoteId);
+        heal.delete(owner);
+      }
+      if (!heal.has(receiver) || !active()) return;
+      if ((await this.folderConfig(receiver, remoteId, codeId)).paused) {
+        heal.delete(receiver);
+        return;
+      }
+      const [ownerStatus, receiverStatus] = await Promise.all([
+        this.folderStatus(owner, remoteId, codeId),
+        this.folderStatus(receiver, remoteId, codeId),
+      ]);
+      if (!active() || ownerStatus.state !== 'idle' || !receiverIdle(receiverStatus)) return;
+      await this.restartCode(projectId, receiver, remoteId);
+      heal.delete(receiver);
+    } catch (error) {
+      logger.warn({ error, projectId }, 'File sync code folder restart will retry');
     }
   }
 
@@ -336,6 +398,16 @@ export class RemoteFileSyncService {
     return side === 'vm'
       ? this.host.syncFolderType(remoteId, codeId, { paused })
       : this.files.updateFolder(codeId, { paused });
+  }
+
+  private folderConfig(side: 'home' | 'vm', remoteId: string, folderId: string) {
+    return side === 'vm'
+      ? this.host.syncFolderConfiguration(remoteId, folderId)
+      : this.files.folderConfiguration(folderId);
+  }
+
+  private folderStatus(side: 'home' | 'vm', remoteId: string, folderId: string) {
+    return side === 'vm' ? this.host.syncStatus(remoteId, folderId) : this.files.status(folderId);
   }
 
   /** Completes resumes that a failed request left owed; each side stays owed until one succeeds. */
@@ -403,6 +475,8 @@ export class RemoteFileSyncService {
         await this.protectLaneBranches(projectId, remoteId, state, vm.worktreeBranches);
         if (!active()) return;
       }
+      await this.healWatches(projectId, remoteId, state, owner, active);
+      if (!active()) return;
       // Receiver maintenance only: it never changes the owner's side or the VM index.
       const id = projectFolderId(projectId, 'git');
       const config =

@@ -1,5 +1,6 @@
 import { Injectable, Inject } from '@nestjs/common';
 import { existsSync, statSync } from 'fs';
+import { stat } from 'fs/promises';
 import { join, resolve, relative, isAbsolute } from 'path';
 import { STORAGE_SERVICE, type ProjectStorage } from '../../storage/interfaces/storage.interface';
 import { createLogger } from '../../../common/logging/logger';
@@ -449,6 +450,22 @@ export class GitService {
     );
     const sha = output.trim();
     return sha === '' ? null : sha;
+  }
+
+  /**
+   * The size and mtime of `<root>/.git/logs/HEAD`, or null when the file does not exist. Every
+   * HEAD move appends a line, commits included, so a changed value means HEAD moved. The file
+   * syncs with the git folder, so home's copy also reflects the VM's HEAD moves.
+   */
+  async headReflogSignature(rootPath: string): Promise<{ size: number; mtimeMs: number } | null> {
+    try {
+      const { size, mtimeMs } = await stat(join(rootPath, '.git', 'logs', 'HEAD'));
+      return { size, mtimeMs };
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code === 'ENOENT' || code === 'ENOTDIR') return null;
+      throw error;
+    }
   }
 
   /**

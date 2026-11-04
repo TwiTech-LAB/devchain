@@ -1,6 +1,6 @@
 {
   "name": "devchain-cli",
-  "version": "0.26.4",
+  "version": "0.26.5",
   "description": "AI driven development platform",
   "homepage": "https://devchain.cc/",
   "repository": {
@@ -8,6 +8,11 @@
     "url": "https://github.com/twitech-lab/devchain.git"
   },
   "changelog": {
+    "0.26.5": [
+      "Remote VMs: files sync right away again after a branch switch or rebase on the VM",
+      "Dev Template: stronger code reviews, and epics with open defects stay in Review",
+      "Mobile app 1.12.1: Back returns to the agent list, and the Updating pill no longer covers new messages"
+    ],
     "0.26.4": [
       "Remote VMs: upgrade the template of a connected project without disconnecting it",
       "Remote VMs: fixed Git writes from this PC that stayed unconfirmed and blocked Disconnect",
@@ -67,15 +72,6 @@
       "Look: Dark is the default theme, and Ocean has higher contrast",
       "Dev Template: renamed to DevChain Development Flow",
       "Mobile app 1.10.0: one project list across home and your VMs, and the last chat reopens at launch"
-    ],
-    "0.23.4": [
-      "[New] MCP: agents can patch epic descriptions and add several relations on create",
-      "[New] Board: remove an epic relation from the Board preview",
-      "[Fix] Automation: \"Coder reset\" can wait while epics are in chosen statuses, so it keeps coders other phases still need",
-      "[Impr] Dev Template: GPT-6 family models, a skill review prompt, and better bundled skills",
-      "[New] Skills: \"Project skill review\" suggests which skills to enable or disable, based on usage",
-      "[Perf] MCP: smaller responses use less agent context; epic lists return description previews by default",
-      "[Fix] Skills: agents no longer load disabled skills, and edits to any local skill file now sync"
     ]
   },
   "publishConfig": {

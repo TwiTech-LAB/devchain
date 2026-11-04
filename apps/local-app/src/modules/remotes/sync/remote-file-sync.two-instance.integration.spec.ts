@@ -275,4 +275,50 @@ real('connected file layout migration', () => {
       await rest.request('PATCH', path, { paused: false });
     }
   });
+
+  // Syncthing never watches a deleted and re-created folder again; only a folder restart does.
+  it('watches a folder that a VM branch switch re-created again on both sides', async () => {
+    const codeId = `code:${projectId}`;
+    git(hostRoot, 'branch', 'without-d');
+    mkdirSync(join(hostRoot, 'd'));
+    writeFileSync(join(hostRoot, 'd/a.txt'), 'tracked\n');
+    git(hostRoot, 'add', 'd/a.txt');
+    git(hostRoot, 'commit', '-m', 'add d');
+    await waitForValue(async () => read(homeRoot, 'd/a.txt') === 'tracked\n', 30_000);
+    git(hostRoot, 'checkout', '-q', 'without-d');
+    // The receiver keeps its watch unless it applies the delete before the re-creation.
+    await waitForValue(async () => !existsSync(join(homeRoot, 'd')), 30_000);
+    git(hostRoot, 'checkout', '-q', 'main');
+    await waitForValue(
+      async () =>
+        read(homeRoot, 'd/a.txt') === 'tracked\n' &&
+        read(homeRoot, '.git/logs/HEAD') === read(hostRoot, '.git/logs/HEAD'),
+      30_000,
+    );
+    const resumed = new Set<string>();
+    const hostPatch = client.syncFolderType.bind(client);
+    jest.spyOn(client, 'syncFolderType').mockImplementation(async (...args) => {
+      await hostPatch(...args);
+      if (args[1] === codeId && args[2].paused === false) resumed.add('vm');
+    });
+    const homePatch = home.updateFolder.bind(home);
+    jest.spyOn(home, 'updateFolder').mockImplementation(async (...args) => {
+      await homePatch(...args);
+      if (args[0] === codeId && args[1].paused === false) resumed.add('home');
+    });
+    await waitForValue(
+      async () => {
+        await tick();
+        return resumed.size === 2;
+      },
+      30_000,
+      500,
+    );
+    writeFileSync(join(hostRoot, 'd/a.txt'), 'vm edit\n');
+    await waitForValue(async () => read(homeRoot, 'd/a.txt') === 'vm edit\n', 10_000);
+    writeFileSync(join(homeRoot, 'd/b.txt'), 'home edit\n');
+    await waitForValue(async () => read(hostRoot, 'd/b.txt') === 'home edit\n', 10_000);
+    expect(maintenance.warning(projectId)).toBeNull();
+    jest.restoreAllMocks();
+  });
 });

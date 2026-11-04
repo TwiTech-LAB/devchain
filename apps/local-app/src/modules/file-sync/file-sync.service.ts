@@ -28,6 +28,7 @@ import {
   type ForceCopyBackupRequest,
   type ForceCopyBackup,
   type ReceiveOnlyChanges,
+  projectFolderRescanIntervalS,
 } from './file-sync.dto';
 import { projectRepository } from './project-repository';
 import { FileSyncIgnoresStore } from './file-sync-ignores.store';
@@ -40,13 +41,6 @@ import { captureFileSyncConflictBaseline, scanFileSyncConflicts } from './file-s
  * to 10 s, which would slow every change after a direction flip.
  */
 export const FOLDER_WATCHER_DELAY_S = 1;
-const RESCAN_INTERVAL_S = 3600;
-/**
- * Syncthing's watcher stops watching a directory that is deleted and created again, and a
- * folder restart does not watch it again while the code folder watches the parent. Git
- * changes there are found only by the periodic full scan, so Git folders scan often.
- */
-const GIT_RESCAN_INTERVAL_S = 10;
 const COMPLETION_POLL_MS = 500;
 /** How many failed files a folder status names; `errors` counts all of them. */
 const FILE_ERROR_SAMPLE = 3;
@@ -403,7 +397,7 @@ export class FileSyncService {
       copyOwnershipFromParent: this.syncthing.getState().privileged,
       fsWatcherEnabled: true,
       fsWatcherDelayS: FOLDER_WATCHER_DELAY_S,
-      rescanIntervalS: request.kind === 'git' ? GIT_RESCAN_INTERVAL_S : RESCAN_INTERVAL_S,
+      rescanIntervalS: projectFolderRescanIntervalS(request.kind),
       ...(backupPath
         ? {
             maxConflicts: -1,

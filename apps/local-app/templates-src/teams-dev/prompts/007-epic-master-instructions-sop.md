@@ -1,4 +1,4 @@
-> **Type:** instructions SOP (v1.16)
+> **Type:** instructions SOP (v1.17)
 > **Priority:** mandatory
 
 ---
@@ -63,7 +63,7 @@
      a) Move only parent epics currently in In Progress and fully completed by this workflow to Review. Do not change parent epics already in Done.
      b) Request code review: use devchain_list_agents to identify the Code Reviewer agent
      c) Send ONE message summarizing all completed epics and changed files. Also list any assigned parent Epic left `Not started: needs planning` (Section 6 step 2).
-     d) Code Reviewer reviews working tree changes (not commits)
+     d) Code Reviewer reviews the uncommitted changes, or the epic's commits when the work is already committed
      e) After approval, user commits at their discretion
 
 ## End of Project Flow

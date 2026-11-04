@@ -12,7 +12,7 @@ import { createServer } from 'net';
 import { join } from 'path';
 import { getEnvConfig } from '../../common/config/env.config';
 import { createLogger } from '../../common/logging/logger';
-import { isProjectFolderId } from './file-sync.dto';
+import { projectFolderKind, projectFolderRescanIntervalS } from './file-sync.dto';
 import { FILE_SYNC_PATHS, type FileSyncPaths } from './file-sync-paths';
 import { SyncthingLauncher, type SyncthingProcess } from './syncthing-launcher';
 import { SyncthingRestClient, SyncthingRestError } from './syncthing-rest.client';
@@ -277,15 +277,30 @@ export class SyncthingManager implements OnApplicationBootstrap, BeforeApplicati
       throw new Error('Syncthing needs a restart to apply its options');
     }
     const folders = z
-      .array(z.object({ id: z.string(), copyOwnershipFromParent: z.boolean().optional() }))
+      .array(
+        z.object({
+          id: z.string(),
+          copyOwnershipFromParent: z.boolean().optional(),
+          rescanIntervalS: z.number().optional(),
+        }),
+      )
       .parse(await instance.client.request('GET', '/rest/config/folders'));
     for (const folder of folders) {
-      if (isProjectFolderId(folder.id)) {
-        if (folder.copyOwnershipFromParent !== privileged) {
+      const kind = projectFolderKind(folder.id);
+      if (kind) {
+        // A PATCH keeps omitted fields, so folders created earlier keep their old interval.
+        const rescanIntervalS = projectFolderRescanIntervalS(kind);
+        const patch = {
+          ...(folder.copyOwnershipFromParent !== privileged && {
+            copyOwnershipFromParent: privileged,
+          }),
+          ...(folder.rescanIntervalS !== rescanIntervalS && { rescanIntervalS }),
+        };
+        if (Object.keys(patch).length) {
           await instance.client.request(
             'PATCH',
             `/rest/config/folders/${encodeURIComponent(folder.id)}`,
-            { copyOwnershipFromParent: privileged },
+            patch,
           );
         }
       } else if (!this.transcriptFoldersRemoved && folder.id.startsWith('tx:')) {

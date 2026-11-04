@@ -2,7 +2,9 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { GitService } from './git.service';
 import { STORAGE_SERVICE } from '../../storage/interfaces/storage.interface';
 import { ValidationError, IOError } from '../../../common/errors/error-types';
-import { existsSync, statSync } from 'fs';
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, rmSync, statSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
 import { ProcessExecutor } from '../../terminal/services/process-executor/process-executor.port';
 import { FakeProcessExecutor } from '../../terminal/services/process-executor/fake-process-executor';
 
@@ -702,6 +704,21 @@ describe('GitService', () => {
       });
 
       await expect(service.mirroredHead('project-1')).rejects.toThrow(IOError);
+    });
+
+    it('signs the HEAD reflog by size and mtime, and returns null without one', async () => {
+      const root = mkdtempSync(join(tmpdir(), 'git-reflog-'));
+      try {
+        await expect(service.headReflogSignature(root)).resolves.toBeNull();
+        mkdirSync(join(root, '.git', 'logs'), { recursive: true });
+        appendFileSync(join(root, '.git', 'logs', 'HEAD'), 'checkout\n');
+        const first = await service.headReflogSignature(root);
+        expect(first).toEqual({ size: 9, mtimeMs: expect.any(Number) });
+        appendFileSync(join(root, '.git', 'logs', 'HEAD'), 'commit\n');
+        await expect(service.headReflogSignature(root)).resolves.toMatchObject({ size: 16 });
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
     });
 
     it('rebuilds the index from HEAD and tolerates a dirty worktree refresh', async () => {

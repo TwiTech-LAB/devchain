@@ -2,6 +2,12 @@
 
 Release notes for each published `devchain-cli` version, newest first. The `changelog` field in `package.json` keeps the newest 10 versions for the CLI update notice.
 
+## 0.26.5 — 2026-11-04
+
+- Remote VMs: files sync right away again after a branch switch or rebase on the VM
+- Dev Template: stronger code reviews, and epics with open defects stay in Review
+- Mobile app 1.12.1: Back returns to the agent list, and the Updating pill no longer covers new messages
+
 ## 0.26.4 — 2026-10-27
 
 - Remote VMs: upgrade the template of a connected project without disconnecting it

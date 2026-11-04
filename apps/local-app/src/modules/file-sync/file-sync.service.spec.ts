@@ -48,7 +48,7 @@ const PEER_DONE = {
 describe('FileSyncService.ensureFolder ownership', () => {
   // Unit: the full folder PUT is the contract; disk and REST are boundary mocks.
   it.each(['code', 'git'] as const)(
-    'sets ownership copying both ways on every %s folder PUT',
+    'sets ownership copying both ways and the rescan interval on every %s folder PUT',
     async (kind) => {
       const mkdir = jest.spyOn(fs, 'mkdir').mockResolvedValue(undefined);
       const stat = jest.spyOn(fs, 'stat').mockRejectedValue(new Error('no Git directory'));
@@ -93,7 +93,11 @@ describe('FileSyncService.ensureFolder ownership', () => {
           expect(request).toHaveBeenCalledWith(
             'PUT',
             `/rest/config/folders/${kind}%3Ap1`,
-            expect.objectContaining({ copyOwnershipFromParent: value, paused: true }),
+            expect.objectContaining({
+              copyOwnershipFromParent: value,
+              paused: true,
+              rescanIntervalS: kind === 'code' ? 300 : 10,
+            }),
           );
           request.mockClear();
         }

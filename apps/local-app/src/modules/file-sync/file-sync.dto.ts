@@ -22,9 +22,27 @@ export const FolderIdSchema = z
   .max(200)
   .regex(/^((?:code|git):[^:\s]+|tx:[a-z0-9-]+:[^:\s]+)$/);
 
-/** A code or git folder: the kinds of folder DevChain syncs for a project. */
-export function isProjectFolderId(id: string): boolean {
-  return /^(?:code|git):/.test(id);
+/** The kind of a code or git folder id, the kinds of folder DevChain syncs for a project. */
+export function projectFolderKind(id: string): 'code' | 'git' | null {
+  if (id.startsWith('code:')) return 'code';
+  if (id.startsWith('git:')) return 'git';
+  return null;
+}
+
+/**
+ * Syncthing's watcher never watches a folder again after it is deleted and created again. Until a
+ * folder restart watches it again, only this full scan finds edits there.
+ */
+const RESCAN_INTERVAL_S = 300;
+/**
+ * A Git-folder restart does not watch `.git` again while the code folder watches the parent, so
+ * Git changes there are found only by the periodic full scan, and Git folders scan often.
+ */
+const GIT_RESCAN_INTERVAL_S = 10;
+
+/** The full rescan interval DevChain sets on a project folder. */
+export function projectFolderRescanIntervalS(kind: 'code' | 'git'): number {
+  return kind === 'git' ? GIT_RESCAN_INTERVAL_S : RESCAN_INTERVAL_S;
 }
 
 /** The cap of each ignore list: the user's own, and the patterns DevChain manages. */
