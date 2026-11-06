@@ -19,6 +19,13 @@ export interface ProviderAuthEnvSpec {
   kind: 'static';
   payloadKind: 'env';
   envKey: string;
+  /**
+   * Optional login file the claim materializes alongside the env var, derived
+   * from the stored value — for CLIs whose env var alone does not create login
+   * state (Devin's `WINDSURF_API_KEY` is only a session-identity override on top
+   * of `~/.local/share/devin/credentials.toml`).
+   */
+  claimFile?: { path: string; render: (value: string) => string };
 }
 
 /** A whole login file (`~/.codex/auth.json`) held by one VM at a time. */
@@ -46,8 +53,27 @@ export const PROVIDER_AUTH_ADAPTERS: Record<string, ProviderAuthAdapterSpec> = {
   copilot: { kind: 'static', payloadKind: 'env', envKey: 'COPILOT_GITHUB_TOKEN' },
   // Devin honors WINDSURF_API_KEY as its session identity (it prints
   // "WINDSURF_API_KEY controls this session's identity, so /login is not
-  // available"); the local value lives in the host's devin credentials.toml.
-  devin: { kind: 'static', payloadKind: 'env', envKey: 'WINDSURF_API_KEY' },
+  // available"), but the env var alone does NOT log the CLI in — `devin -p`
+  // still requires ~/.local/share/devin/credentials.toml. The claim writes that
+  // file from the same key so a fresh VM passes verification.
+  devin: {
+    kind: 'static',
+    payloadKind: 'env',
+    envKey: 'WINDSURF_API_KEY',
+    claimFile: {
+      path: '.local/share/devin/credentials.toml',
+      render: (value) =>
+        [
+          // JSON.stringify is a TOML basic string literal: it escapes all C0
+          // controls plus quotes/backslash; DEL (0x7f) needs a \u007f escape.
+          `windsurf_api_key = ${JSON.stringify(value).replace(/\u007f/g, '\\u007f')}`,
+          'api_server_url = "https://server.codeium.com"',
+          'devin_webapp_host = "app.devin.ai"',
+          'devin_api_url = "https://api.devin.ai"',
+          '',
+        ].join('\n'),
+    },
+  },
   codex: { kind: 'family', payloadKind: 'files', filePath: '.codex/auth.json' },
   agy: { kind: 'family', payloadKind: 'files', filePath: AGY_TOKEN_FILE_PATH },
   opencode: { payloadKind: 'opencode-entry' },

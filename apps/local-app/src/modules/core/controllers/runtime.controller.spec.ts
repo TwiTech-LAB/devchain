@@ -137,6 +137,7 @@ describe('RuntimeController', () => {
         claude: cliStatus,
         codex: cliStatus,
         copilot: cliStatus,
+        devin: cliStatus,
         opencode: cliStatus,
       },
       build: null,

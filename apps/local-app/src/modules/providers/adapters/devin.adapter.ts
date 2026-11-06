@@ -38,9 +38,10 @@ import { devinTranscriptPath } from '../../../common/devin-transcript-paths';
  *   interactive session; the prompt must come after `--`, at the end of argv.
  * - **Workspace trust.** `--respect-workspace-trust false` skips the trust
  *   prompt on every launch/restore — no pre-written trust file needed.
- * - **Terminal behavior is a hypothesis**: `terminalOutputBehavior` is left
- *   unset (alt-screen off, the broader default) since there is no tmux on this
- *   host to verify whether the CLI is a full-screen TUI.
+ * - **Terminal verification.** Interactive launch and restore were exercised
+ *   in tmux on Ubuntu/WSL and an Ubuntu Remote VM with v3000.11.234.
+ *   `terminalOutputBehavior` remains unset (the default); these checks do not
+ *   establish alternate-screen behavior or exhaustive browser rendering.
  * - **MCP is config-file mode, NOT CLI mode.** `devin mcp list`/`get` redact
  *   URLs in ALL output (`URL: <redacted>`), so the endpoint can never be
  *   verified through CLI output — every ensure would see a phantom mismatch.
@@ -83,9 +84,9 @@ export class DevinAdapter
   readonly mcpConfigRootKey = 'mcpServers' as const;
 
   // ── HookCapability (3rd adopter; Claude-compatible hook JSON) ─────────────
-  // Devin's lifecycle hooks are a LIFECYCLE precision feature, NOT discovery —
-  // the transcript is already bound by `--export` at launch, so the hook
-  // listener is an idempotent confirmation (same posture as Copilot).
+  // Hooks provide the native provider session id before the first export
+  // exists. Discovery derives the path from `--export` and retries on idle
+  // because Devin may only materialize the file after a turn completes.
   readonly hooksEnabled = true as const;
   // Devin's stdin payload carries no `transcript_path`; the reader derives it.
   readonly hooksProvideTranscriptPath = false;

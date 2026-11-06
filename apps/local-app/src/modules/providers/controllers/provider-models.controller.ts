@@ -56,7 +56,11 @@ function parseDevinModelsJson(stdout: string): string[] {
     const names: string[] = [];
     for (const family of doc.families ?? []) {
       for (const variant of family.variants ?? []) {
-        if (typeof variant.model_uid === 'string' && variant.model_uid && !seen.has(variant.model_uid)) {
+        if (
+          typeof variant.model_uid === 'string' &&
+          variant.model_uid &&
+          !seen.has(variant.model_uid)
+        ) {
           seen.add(variant.model_uid);
           names.push(variant.model_uid);
         }

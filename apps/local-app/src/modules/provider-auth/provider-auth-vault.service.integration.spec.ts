@@ -232,6 +232,70 @@ describe('ProviderAuthVaultService', () => {
     }
   });
 
+  it('composes a Devin static entry into env plus its derived credentials.toml', async () => {
+    // The env var alone does not log the CLI in; the claim must also write the
+    // credentials.toml `devin -p` requires (remote acceptance proved this gap).
+    const devin = await service.createStatic({
+      provider: 'devin',
+      label: 'Devin key',
+      token: 'ws-key-test',
+    });
+
+    const bundle = await service.buildClaimBundle({
+      entryIds: [devin.id],
+      homePath: '/home/dev',
+    });
+    expect(bundle.env).toEqual({ WINDSURF_API_KEY: 'ws-key-test' });
+    expect(bundle.files).toHaveLength(1);
+    expect(bundle.files[0]).toMatchObject({
+      path: '/home/dev/.local/share/devin/credentials.toml',
+      mode: '0600',
+    });
+    const toml = Buffer.from(bundle.files[0].contentBase64, 'base64').toString('utf8');
+    expect(toml).toBe(
+      [
+        'windsurf_api_key = "ws-key-test"',
+        'api_server_url = "https://server.codeium.com"',
+        'devin_webapp_host = "app.devin.ai"',
+        'devin_api_url = "https://api.devin.ai"',
+        '',
+      ].join('\n'),
+    );
+  });
+
+  it('escapes quotes and backslashes in the derived credentials.toml', async () => {
+    const devin = await service.createStatic({
+      provider: 'devin',
+      label: 'Devin key',
+      token: 'a"b\\c',
+    });
+
+    const bundle = await service.buildClaimBundle({
+      entryIds: [devin.id],
+      homePath: '/home/dev',
+    });
+    const toml = Buffer.from(bundle.files[0].contentBase64, 'base64').toString('utf8');
+    expect(toml).toContain('windsurf_api_key = "a\\"b\\\\c"');
+  });
+
+  it('escapes control characters in the derived credentials.toml as TOML escapes', async () => {
+    // C0 controls + DEL are invalid inside a TOML basic string; they must be
+    // written as escape sequences, never as raw bytes.
+    const devin = await service.createStatic({
+      provider: 'devin',
+      label: 'Devin key',
+      token: 'a\tb\bc\fd\x01e\x7f"g\\h',
+    });
+
+    const bundle = await service.buildClaimBundle({
+      entryIds: [devin.id],
+      homePath: '/home/dev',
+    });
+    const toml = Buffer.from(bundle.files[0].contentBase64, 'base64').toString('utf8');
+    expect(toml).toContain('windsurf_api_key = "a\\tb\\bc\\fd\\u0001e\\u007f\\"g\\\\h"');
+    expect(toml).not.toMatch(/[\x00-\x08\x0b\x0e-\x1f\x7f]/);
+  });
+
   it('imports three OpenCode providers as one encrypted static group and reports refused/missing ids', async () => {
     const auth = {
       'zai-coding-plan': { type: 'api', key: 'sk-zai-test' },

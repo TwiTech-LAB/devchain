@@ -65,15 +65,12 @@ if [ -z "$TMUX_SESSION" ]; then
   exit 0
 fi
 
-# Hook time in epoch ms orders turn hooks that arrive out of order. BSD date has no %N, so
-# use perl there, and whole seconds as the last resort.
+# Hook time in epoch ms orders turn hooks that arrive out of order. BSD date has no %N —
+# and non-GNU date (e.g. uutils) can emit untruncated nanoseconds for %3N, which is still
+# all digits. Accept only exactly 13 decimal digits, then perl, then whole seconds.
 FIRED_AT_MS="$(date +%s%3N 2>/dev/null || true)"
-case "$FIRED_AT_MS" in
-  ''|*[!0-9]*) FIRED_AT_MS="$(perl -MTime::HiRes=time -e 'printf("%d", time() * 1000)' 2>/dev/null || true)" ;;
-esac
-case "$FIRED_AT_MS" in
-  ''|*[!0-9]*) FIRED_AT_MS="$(( $(date +%s) * 1000 ))" ;;
-esac
+[[ "$FIRED_AT_MS" =~ ^[0-9]{13}$ ]] || FIRED_AT_MS="$(perl -MTime::HiRes=time -e 'printf("%d", time() * 1000)' 2>/dev/null || true)"
+[[ "$FIRED_AT_MS" =~ ^[0-9]{13}$ ]] || FIRED_AT_MS="$(( $(date +%s) * 1000 ))"
 
 # Build combined payload: Claude Code fields + DevChain env vars.
 # Tool fields (PreToolUse/PostToolUse) are forwarded with --argjson so the

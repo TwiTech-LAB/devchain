@@ -31,6 +31,7 @@ import type {
 } from '../adapters/session-reader-adapter.interface';
 import type { ClaudeHooksSessionStartedEventPayload } from '../../events/catalog/claude.hooks.session.started';
 import type { SessionStartedEventPayload } from '../../events/catalog/session.started';
+import type { SessionActivityChangedEventPayload } from '../../events/catalog/session.activity.changed';
 
 /** Max retries for auto-discovery when file doesn't exist yet */
 const DISCOVERY_MAX_RETRIES = 6;
@@ -96,6 +97,8 @@ interface ProviderSessionIdBackfillInput {
 export class TranscriptPersistenceListener {
   private readonly logger = new Logger(TranscriptPersistenceListener.name);
   private readonly sqlite: Database.Database;
+  private readonly discoveryInFlight = new Set<string>();
+  private readonly discoveryPending = new Set<string>();
 
   constructor(
     @Inject(DB_CONNECTION) db: BetterSQLite3Database,
@@ -137,12 +140,62 @@ export class TranscriptPersistenceListener {
   @OnCatalogEvent('session.started', { async: true })
   async handleSessionStarted(payload: SessionStartedEventPayload): Promise<void> {
     try {
-      await this.discoverTranscriptWithRetry(payload.sessionId, payload.agentId);
+      await this.runDiscoveryOnce(payload.sessionId, payload.agentId);
     } catch (error) {
       this.logger.error(
         { error, sessionId: payload.sessionId },
         'Failed to auto-discover transcript — continuing silently',
       );
+    }
+  }
+
+  /**
+   * Turn end is the earliest reliable signal that a late-materialized
+   * transcript exists: providers like Devin only write their export after a
+   * turn completes, so the launch-time backoff can exhaust before the file
+   * appears. Re-run discovery once the turn ends — cheap because the gate
+   * skips sessions whose binding is already complete.
+   */
+  @OnCatalogEvent('session.activity.changed', { async: true })
+  async handleActivityChanged(payload: SessionActivityChangedEventPayload): Promise<void> {
+    try {
+      if (payload.state !== 'idle') return;
+      if (!this.getDiscoveryGate(payload.sessionId).needsAny) return;
+      const scope = this.sessionRows.getSessionProjectScope(payload.sessionId);
+      if (!scope?.agentId) return;
+      await this.runDiscoveryOnce(payload.sessionId, scope.agentId, true);
+    } catch (error) {
+      this.logger.error(
+        { error, sessionId: payload.sessionId },
+        'Failed idle-triggered transcript discovery — continuing silently',
+      );
+    }
+  }
+
+  /**
+   * Skip overlapping discovery loops for the same session. `retryWhenBusy`
+   * signals (turn end) preserve exactly one pending rerun so an idle event
+   * that arrives during the last still-unsuccessful attempt is not dropped;
+   * launch signals arriving while a loop owns the session are not queued.
+   */
+  private async runDiscoveryOnce(
+    sessionId: string,
+    agentId: string,
+    retryWhenBusy = false,
+  ): Promise<void> {
+    if (this.discoveryInFlight.has(sessionId)) {
+      if (retryWhenBusy) this.discoveryPending.add(sessionId);
+      return;
+    }
+    this.discoveryInFlight.add(sessionId);
+    try {
+      do {
+        this.discoveryPending.delete(sessionId);
+        await this.discoverTranscriptWithRetry(sessionId, agentId);
+      } while (this.discoveryPending.has(sessionId) && this.getDiscoveryGate(sessionId).needsAny);
+    } finally {
+      this.discoveryInFlight.delete(sessionId);
+      this.discoveryPending.delete(sessionId);
     }
   }
 
@@ -158,7 +211,7 @@ export class TranscriptPersistenceListener {
     // binding. Legacy default: absent providerName → 'claude' → bind (identical).
     // Unresolvable or non-hook-capable adapter → confirm-only (fail-safe).
     if (!this.hooksBindTranscriptPath(providerName)) {
-      this.confirmProviderHookLifecycle(payload, providerName);
+      await this.confirmProviderHookLifecycle(payload, providerName);
       return;
     }
 
@@ -247,18 +300,21 @@ export class TranscriptPersistenceListener {
    * Provider hook lifecycle CONFIRMATION (Copilot — HookCapability adopter #2).
    *
    * Unlike Claude (whose transcript binding comes FROM the hook), providers that
-   * bind deterministically at launch already have `transcript_path` +
-   * `provider_session_id` set by Phase-1 by the time the hook fires. So this path
-   * NEVER (re)binds: it verifies the hook's ids/path agree with the bound session
-   * and WARNS on mismatch, leaving the row untouched (a rebind primitive is
-   * deliberately out of scope — backlog). Copilot `SessionStart` carries no
+   * bind deterministically usually have `transcript_path` + `provider_session_id`
+   * set by discovery by the time the hook fires. So this path never REbinds: it
+   * verifies the hook's ids/path agree with the bound session and WARNS on
+   * mismatch (a rebind primitive is deliberately out of scope — backlog). One
+   * exception: when `provider_session_id` is still NULL it is backfilled from the
+   * hook — the hook's id is authoritative and providers like Devin don't write
+   * their transcript file until a turn completes, so waiting on discovery would
+   * leave restore without an id. Copilot `SessionStart` carries no
    * `transcriptPath` (confirm by provider session id only); `Stop` carries it
-   * (confirm both). Idempotent and side-effect-free on the happy path.
+   * (confirm both).
    */
-  private confirmProviderHookLifecycle(
+  private async confirmProviderHookLifecycle(
     payload: ClaudeHooksSessionStartedEventPayload,
     providerName: string,
-  ): void {
+  ): Promise<void> {
     const { sessionId, transcriptPath } = payload;
     const incomingProviderSessionId = payload.providerSessionId ?? payload.claudeSessionId ?? null;
 
@@ -310,6 +366,45 @@ export class TranscriptPersistenceListener {
         'Provider hook transcript_path mismatch — NOT overwriting bound session (rebind unsupported)',
       );
       return;
+    }
+
+    // Backfill the id when it is still unbound — but only for adapters that
+    // are confirm-only BY DESIGN (hook-capable, hooksProvideTranscriptPath ===
+    // false like Devin): the hook carries the authoritative provider session
+    // id well before such providers materialize a transcript file, so restore
+    // must not wait on discovery. Unknown or non-hook-capable adapters get no
+    // write, and this runs only after the path-mismatch guard so a
+    // contradictory hook can never mutate provider_session_id.
+    const adapter = this.resolveProviderAdapter(providerName);
+    if (
+      incomingProviderSessionId &&
+      !row.provider_session_id &&
+      adapter &&
+      isHookCapable(adapter) &&
+      adapter.hooksProvideTranscriptPath === false
+    ) {
+      const changes = this.sessionRows.bindProviderSessionIdIfAbsent({
+        sessionId,
+        providerSessionId: incomingProviderSessionId,
+        providerName,
+        updatedAt: new Date().toISOString(),
+      });
+      if (changes > 0) {
+        this.logger.log(
+          { sessionId, providerName, providerSessionId: incomingProviderSessionId },
+          'Backfilled provider_session_id from hook payload',
+        );
+        await this.events.publish('session.providerSessionId.discovered', {
+          sessionId,
+          providerSessionId: incomingProviderSessionId,
+          providerName,
+        });
+      } else {
+        this.logger.debug(
+          { sessionId, providerName, providerSessionId: incomingProviderSessionId },
+          'provider_session_id not bound from hook — concurrently set or provider mismatch',
+        );
+      }
     }
 
     this.logger.debug(

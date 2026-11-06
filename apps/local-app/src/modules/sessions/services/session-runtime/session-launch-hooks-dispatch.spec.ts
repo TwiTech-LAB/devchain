@@ -63,7 +63,13 @@ describe('SessionLaunchPipeline.setupHooksConfig — installer dispatch', () => 
     { providerName: 'copilot', hooksEnabled: true, copilotCalls: 1, devinCalls: 0, claudeCalls: 0 },
     { providerName: 'devin', hooksEnabled: true, copilotCalls: 0, devinCalls: 1, claudeCalls: 0 },
     { providerName: 'claude', hooksEnabled: true, copilotCalls: 0, devinCalls: 0, claudeCalls: 1 },
-    { providerName: 'copilot', hooksEnabled: false, copilotCalls: 0, devinCalls: 0, claudeCalls: 0 },
+    {
+      providerName: 'copilot',
+      hooksEnabled: false,
+      copilotCalls: 0,
+      devinCalls: 0,
+      claudeCalls: 0,
+    },
   ])(
     'dispatches $providerName hooks when enabled=$hooksEnabled',
     async ({ providerName, hooksEnabled, copilotCalls, devinCalls, claudeCalls }) => {

@@ -176,7 +176,13 @@ describe('ProviderCliVersionsService', () => {
       stubAllProviders('2.1.281', ['2.1.281', '2.1.280']);
       const results = await service.checkNow();
 
-      expect(Object.keys(results).sort()).toEqual(['claude', 'codex', 'copilot', 'devin', 'opencode']);
+      expect(Object.keys(results).sort()).toEqual([
+        'claude',
+        'codex',
+        'copilot',
+        'devin',
+        'opencode',
+      ]);
       expect(results.claude).toEqual({
         latestVersion: '2.1.281',
         versions: ['2.1.281', '2.1.280'],
@@ -285,7 +291,13 @@ describe('ProviderCliVersionsService', () => {
 
     it('returns a null lookup before the first check completes', () => {
       const overview = service.getOverview();
-      for (const provider of ['claude', 'codex', 'copilot', 'devin', 'opencode'] as ProviderCliName[]) {
+      for (const provider of [
+        'claude',
+        'codex',
+        'copilot',
+        'devin',
+        'opencode',
+      ] as ProviderCliName[]) {
         expect(overview.providers[provider].lookup).toBeNull();
       }
     });

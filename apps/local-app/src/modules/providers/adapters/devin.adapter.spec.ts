@@ -24,7 +24,11 @@ describe('DevinAdapter', () => {
 
   describe('static capability surface', () => {
     it('has stop-hook traits and first-match discovery; restore needs providerSessionId', () => {
-      expect(adapter.traits).toEqual({ activity: 'stop-hook', transcriptTurns: false, draftClearKeys: [] });
+      expect(adapter.traits).toEqual({
+        activity: 'stop-hook',
+        transcriptTurns: false,
+        draftClearKeys: [],
+      });
       expect(adapter.transcriptDiscoveryStrategy).toBe('first');
       expect(adapter.providerSessionIdRequiredForRestore).toBe(true);
       expect(adapter.initialPromptSeedMode).toBe('argv');
@@ -41,31 +45,42 @@ describe('DevinAdapter', () => {
         initialPrompt: 'do the thing',
       });
       expect(argv).toEqual([
-        '--export', exportPathFor('sess-1'),
-        '--respect-workspace-trust', 'false',
-        '--model', 'claude-fable-5-1-xhigh', '--permission-mode', 'dangerous',
-        '--', 'do the thing',
+        '--export',
+        exportPathFor('sess-1'),
+        '--respect-workspace-trust',
+        'false',
+        '--model',
+        'claude-fable-5-1-xhigh',
+        '--permission-mode',
+        'dangerous',
+        '--',
+        'do the thing',
       ]);
       expect(mkdirMock).toHaveBeenCalledWith(path.dirname(exportPathFor('sess-1')), {
-        recursive: true, mode: 0o700,
+        recursive: true,
+        mode: 0o700,
       });
     });
 
     it('omits -- <prompt> when no initial prompt is configured', () => {
       const { argv } = adapter.buildLaunchArgs({
-        mode: 'new', sessionId: 'sess-1', profileOptionArgs: [],
+        mode: 'new',
+        sessionId: 'sess-1',
+        profileOptionArgs: [],
       });
       expect(argv).toEqual([
-        '--export', exportPathFor('sess-1'),
-        '--respect-workspace-trust', 'false',
+        '--export',
+        exportPathFor('sess-1'),
+        '--respect-workspace-trust',
+        'false',
       ]);
       expect(argv).not.toContain('--');
     });
 
     it('throws a clear error when sessionId is missing', () => {
-      expect(() =>
-        adapter.buildLaunchArgs({ mode: 'new', profileOptionArgs: [] }),
-      ).toThrow(/sessionId/);
+      expect(() => adapter.buildLaunchArgs({ mode: 'new', profileOptionArgs: [] })).toThrow(
+        /sessionId/,
+      );
     });
   });
 
@@ -78,10 +93,14 @@ describe('DevinAdapter', () => {
         profileOptionArgs: ['--model', 'x'],
       });
       expect(argv).toEqual([
-        '--resume', 'functional-share',
-        '--export', exportPathFor('sess-9'),
-        '--respect-workspace-trust', 'false',
-        '--model', 'x',
+        '--resume',
+        'functional-share',
+        '--export',
+        exportPathFor('sess-9'),
+        '--respect-workspace-trust',
+        'false',
+        '--model',
+        'x',
       ]);
       expect(mkdirMock).toHaveBeenCalled();
     });
@@ -190,8 +209,11 @@ describe('DevinAdapter', () => {
   describe('HookCapability', () => {
     it('builds the DEVCHAIN_* env incl. DEVCHAIN_HOOK_PROVIDER=devin', () => {
       const env = adapter.buildHookEnv({
-        apiUrl: 'http://127.0.0.1:3000', projectId: 'p', agentId: 'a',
-        sessionId: 's', tmuxSessionName: 't',
+        apiUrl: 'http://127.0.0.1:3000',
+        projectId: 'p',
+        agentId: 'a',
+        sessionId: 's',
+        tmuxSessionName: 't',
       });
       expect(env).toEqual({
         DEVCHAIN_API_URL: 'http://127.0.0.1:3000',
