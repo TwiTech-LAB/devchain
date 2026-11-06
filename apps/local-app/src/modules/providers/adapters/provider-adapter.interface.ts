@@ -56,12 +56,13 @@ export interface BuildLaunchArgsInput {
   mode: 'new' | 'restore';
   providerSessionId?: string;
   /**
-   * The devchain `sessions.id` for a NEW launch. Supplied only for `mode:'new'`
-   * so a deterministic-binding adapter (e.g. Copilot) can pass it to the provider
-   * CLI as that session's own UUID (`--session-id <sessions.id>`), making the
-   * transcript path derivable pre-scan. Undefined for `mode:'restore'` (which
-   * binds via `providerSessionId`, e.g. `--resume`) and ignored by adapters that
-   * do not bind at launch — existing providers simply never read it.
+   * The devchain `sessions.id` of this launch. Supplied for BOTH modes so a
+   * deterministic-binding adapter can anchor its transcript to it: Copilot
+   * passes it as the provider session UUID on `mode:'new'` (`--session-id
+   * <sessions.id>`) and ignores it on restore; Devin derives its DevChain-owned
+   * `--export` path from it on new AND restore (a resume re-writes the full
+   * conversation to the fresh path). Adapters that do not bind at launch simply
+   * never read it.
    */
   sessionId?: string;
   profileOptionArgs: string[];

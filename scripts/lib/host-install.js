@@ -13,7 +13,7 @@ const { homedir, userInfo } = require("node:os");
 const { join, resolve } = require("node:path");
 const { StringDecoder } = require("node:string_decoder");
 
-const PROVIDERS = ["claude", "copilot", "codex", "agy", "opencode"];
+const PROVIDERS = ["claude", "copilot", "codex", "agy", "opencode", "devin"];
 const GENERATABLE_PROVIDERS = new Set(["copilot", "codex", "agy", "opencode"]);
 const REUSE_CHOICE = /^reuse:([0-9a-f-]{36})$/i;
 const USER_NAME = /^[a-z_][a-z0-9_-]{0,31}$/;

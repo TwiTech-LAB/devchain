@@ -6,10 +6,10 @@ import { MAX_RUNTIME_CONTEXT_WINDOW_TOKENS } from '../../runtime-context-capture
  * The relay augments the provider's hook JSON with env-derived fields.
  *
  * `hookEventName` is the discriminator. Six variants are accepted:
- *  - `SessionStart`  — session lifecycle start; requires `source`. Claude + Copilot.
- *  - `UserPromptSubmit` — Claude accepted a prompt; a turn starts (busy).
- *  - `Stop`          — agent finished a turn (Claude `Stop`, Copilot `agentStop`); the turn
- *                      ends (idle). Carries `transcriptPath` + `stopReason`.
+ *  - `SessionStart`  — session lifecycle start; requires `source`. Claude + Copilot + Devin.
+ *  - `UserPromptSubmit` — the provider accepted a prompt; a turn starts (busy). Claude + Devin.
+ *  - `Stop`          — agent finished a turn (Claude `Stop`, Copilot `agentStop`, Devin `Stop`);
+ *                      the turn ends (idle). Carries `transcriptPath` + `stopReason`.
  *  - `PreToolUse`    — matched to `AskUserQuestion`; carries the pending questions.
  *  - `PostToolUse`   — matched to `AskUserQuestion`; reconciliation (resolved).
  *  - `StatusLine`     — minimal direct-Claude runtime context report.
@@ -23,7 +23,7 @@ import { MAX_RUNTIME_CONTEXT_WINDOW_TOKENS } from '../../runtime-context-capture
 /**
  * Fields injected by the relay from DEVCHAIN_* env vars, shared by all variants.
  * Session identity is provider-neutral: legacy Claude relays send `claudeSessionId`
- * (added per-variant below); provider-neutral relays (Copilot) send `providerSessionId`.
+ * (added per-variant below); provider-neutral relays (Copilot, Devin) send `providerSessionId`.
  */
 const baseInjectedFields = {
   /** Provider that produced this hook (absent ⇒ `claude`, the legacy relay). */
@@ -48,8 +48,9 @@ const claudeSessionIdRequired = { claudeSessionId: z.string().min(1) } as const;
 
 /**
  * `claudeSessionId` optional — on the cross-provider lifecycle variants
- * (`SessionStart`/`Stop`). Copilot omits it and sends `providerSessionId` instead;
- * Claude still always sends it, so existing Claude payloads validate unchanged.
+ * (`SessionStart`/`Stop`). Copilot and Devin omit it and send `providerSessionId`
+ * instead; Claude still always sends it, so existing Claude payloads validate
+ * unchanged.
  */
 const claudeSessionIdOptional = { claudeSessionId: z.string().min(1).optional() } as const;
 
@@ -69,6 +70,7 @@ export const SessionStartHookSchema = z
     /**
      * Session source — how the session was initiated.
      * Claude: "startup" | "resume" | "clear" | "compact". Copilot: "new" | "resume" | "startup".
+     * Devin: "startup" | "resume".
      */
     source: z.string().min(1),
     ...claudeMetaFields,

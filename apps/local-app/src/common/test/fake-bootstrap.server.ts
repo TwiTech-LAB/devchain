@@ -11,7 +11,7 @@ function pinnedCliVersions(): Record<string, string> {
     readFileSync(resolve(__dirname, '../../../../../scripts/host-cli-pins.json'), 'utf8'),
   ) as Record<string, { version?: string }>;
   const versions: Record<string, string> = {};
-  for (const name of ['claude', 'codex', 'copilot', 'opencode']) {
+  for (const name of ['claude', 'codex', 'copilot', 'opencode', 'devin']) {
     versions[name] = String(pins[name].version);
   }
   versions.agy = 'agy 1.0.0';

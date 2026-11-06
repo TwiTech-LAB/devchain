@@ -3,5 +3,6 @@
   "codex": { "package": "@openai/codex", "version": "0.156.1" },
   "copilot": { "package": "@github/copilot", "version": "1.0.88" },
   "opencode": { "package": "@opencode/cli", "version": "2.0.31" },
-  "agy": { "installer": "https://antigravity.google/cli/install.sh" }
+  "agy": { "installer": "https://antigravity.google/cli/install.sh" },
+  "devin": { "package": "devin", "version": "3000.11.234" }
 }

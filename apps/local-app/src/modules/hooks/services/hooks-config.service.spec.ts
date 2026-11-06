@@ -219,6 +219,34 @@ describe('HooksConfigService', () => {
       ]);
     });
 
+    it('generates a relay with the DEVCHAIN_HOOK_PROVIDER owning-provider guard', async () => {
+      await service.ensureHooksConfig(tempDir);
+      const script = await readFile(
+        join(tempDir, '.claude', 'hooks', 'devchain-relay.sh'),
+        'utf-8',
+      );
+      // Devin also runs the project's .claude hooks — the guard keeps this
+      // relay quiet under a non-Claude launch while unset/==claude posts.
+      expect(script).toContain('DEVCHAIN_HOOK_PROVIDER');
+      expect(script).toMatch(
+        /DEVCHAIN_HOOK_PROVIDER:-\?\}?"? != "claude"|!= "claude"/,
+      );
+    });
+
+    it('refreshRelayScriptIfPresent rewrites only when the relay exists', async () => {
+      const scriptPath = join(tempDir, '.claude', 'hooks', 'devchain-relay.sh');
+      // No relay → no file created, no error.
+      await service.refreshRelayScriptIfPresent(tempDir);
+      await expect(stat(scriptPath)).rejects.toThrow();
+      // Existing relay → refreshed to current content (with the provider guard).
+      await mkdir(join(tempDir, '.claude', 'hooks'), { recursive: true });
+      await writeFile(scriptPath, '#!/bin/bash\necho stale\n');
+      await service.refreshRelayScriptIfPresent(tempDir);
+      const refreshed = await readFile(scriptPath, 'utf-8');
+      expect(refreshed).toContain('DEVCHAIN_HOOK_PROVIDER');
+      expect(refreshed).toContain('hook_event_name');
+    });
+
     it('should generate a relay script that forwards tool fields', async () => {
       await service.ensureHooksConfig(tempDir);
       const script = await readFile(

@@ -21,6 +21,7 @@ const providerSkips = [
   "codex=skip",
   "agy=skip",
   "opencode=skip",
+  "devin=skip",
 ];
 
 function outputCapture() {
@@ -538,7 +539,7 @@ describe("devchain host install command", () => {
     try {
       const exitCode = await runHostInstallCommand(
         nonInteractiveOptions(vmAddress(server.baseUrl), {
-          providerAuth: ["agy=skip", "opencode=skip"],
+          providerAuth: ["agy=skip", "opencode=skip", "devin=skip"],
         }),
         {
           getLocalApiBaseUrl: async () => server.baseUrl,

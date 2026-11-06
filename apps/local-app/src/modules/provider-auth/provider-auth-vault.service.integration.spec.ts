@@ -10,6 +10,7 @@ import type {
   ClaudeAdapter,
   CodexAdapter,
   CopilotAdapter,
+  DevinAdapter,
   OpencodeAdapter,
 } from '../providers/adapters';
 import type { AntigravityAdapter } from '../providers/adapters/antigravity.adapter';
@@ -144,6 +145,7 @@ describe('ProviderAuthVaultService', () => {
       opencode: {} as OpencodeAdapter,
       agy: {} as AntigravityAdapter,
       copilot: {} as CopilotAdapter,
+      devin: {} as DevinAdapter,
     };
     const factory = new ProviderAdapterFactory(
       {} as StorageService,
@@ -152,6 +154,7 @@ describe('ProviderAuthVaultService', () => {
       fakeAdapters.opencode,
       fakeAdapters.agy,
       fakeAdapters.copilot,
+      fakeAdapters.devin,
     );
     expect([...factory.getSupportedProviders()].sort()).toEqual(
       Object.keys(PROVIDER_AUTH_ADAPTERS).sort(),

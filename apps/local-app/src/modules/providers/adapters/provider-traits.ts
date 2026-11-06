@@ -1,6 +1,7 @@
 import { CLAUDE_TRAITS } from './claude.traits';
 import { CODEX_TRAITS } from './codex.traits';
 import { COPILOT_TRAITS } from './copilot.traits';
+import { DEVIN_TRAITS } from './devin.traits';
 import { OPENCODE_TRAITS } from './opencode.traits';
 import { ANTIGRAVITY_TRAITS } from './antigravity.traits';
 import type { ProviderTraits } from '../provider-traits.types';
@@ -9,6 +10,7 @@ export const PROVIDER_TRAITS = Object.freeze({
   claude: CLAUDE_TRAITS,
   codex: CODEX_TRAITS,
   copilot: COPILOT_TRAITS,
+  devin: DEVIN_TRAITS,
   opencode: OPENCODE_TRAITS,
   agy: ANTIGRAVITY_TRAITS,
 });

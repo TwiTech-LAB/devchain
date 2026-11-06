@@ -130,8 +130,14 @@ export class ProviderRuntimePreparationService {
     const shimBin = await this.connectedShimBin(input.projectId);
     const baseInput: Readonly<LaunchConfigInput> = Object.freeze({
       mode: input.mode,
+      // `sessionId` flows for BOTH modes: deterministic-binding adapters that
+      // own their transcript path (e.g. Devin `--export <sessions.id>.json`)
+      // need it on restore too — restore re-binds the export to the SAME
+      // devchain session id. `initialPrompt` stays new-only; `providerSessionId`
+      // stays restore-only.
+      sessionId: input.sessionId,
       ...(input.mode === 'new'
-        ? { sessionId: input.sessionId, initialPrompt: input.initialPrompt }
+        ? { initialPrompt: input.initialPrompt }
         : { providerSessionId: input.providerSessionId }),
       adapter: input.adapter,
       profileOptions: input.profileOptions,

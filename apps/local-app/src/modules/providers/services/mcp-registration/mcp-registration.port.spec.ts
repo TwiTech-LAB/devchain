@@ -4,6 +4,7 @@ import { ProviderAdapterFactory, ClaudeAdapter, CodexAdapter } from '../../../pr
 import { OpencodeAdapter } from '../../../providers/adapters/opencode.adapter';
 import { AntigravityAdapter } from '../../../providers/adapters/antigravity.adapter';
 import { CopilotAdapter } from '../../../providers/adapters/copilot.adapter';
+import { DevinAdapter } from '../../../providers/adapters/devin.adapter';
 import { FakeProcessExecutor } from '../../../terminal/services/process-executor/fake-process-executor';
 import { McpRegistrationPort } from './mcp-registration.port';
 import { CliMcpRegistrationAdapter } from './cli-mcp-registration.adapter';
@@ -100,6 +101,7 @@ describe('McpRegistrationPort', () => {
       // MCP methods don't use the injected trust/auth services, so stub them.
       new AntigravityAdapter(undefined as never),
       new CopilotAdapter(undefined as never, undefined as never),
+      new DevinAdapter(),
     );
     fakeExecutor = new FakeProcessExecutor();
     const cliAdapter = new CliMcpRegistrationAdapter(factory, fakeExecutor);

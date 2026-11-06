@@ -42,6 +42,13 @@ const COPILOT_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"
   <path fill-rule="evenodd" clip-rule="evenodd" d="M8 2 H16 A6 6 0 0 1 22 8 V16 A6 6 0 0 1 16 22 H8 A6 6 0 0 1 2 16 V8 A6 6 0 0 1 8 2 Z M12 7 C12 9.762 9.762 12 7 12 C9.762 12 12 14.238 12 17 C12 14.238 14.238 12 17 12 C14.238 12 12 9.762 12 7 Z"/>
 </svg>`;
 
+// Devin badge — an ORIGINAL stylized mark (not the official Devin logo): a "D"
+// bowl knocked out of a rounded square via fill-rule evenodd. Single fill
+// #E11D48 (rose), distinct from every other badge on the same 24×24 grid.
+const DEVIN_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="#E11D48">
+  <path fill-rule="evenodd" clip-rule="evenodd" d="M5 3 H19 A2 2 0 0 1 21 5 V19 A2 2 0 0 1 19 21 H5 A2 2 0 0 1 3 19 V5 A2 2 0 0 1 5 3 Z M8 7 H12.5 A5 5 0 0 1 12.5 17 H8 Z M10 9.5 V14.5 H12.5 A2.5 2.5 0 0 0 12.5 9.5 Z"/>
+</svg>`;
+
 // Map provider names to their SVG icons
 const PROVIDER_ICONS: Record<string, string> = {
   claude: CLAUDE_SVG,
@@ -53,6 +60,7 @@ const PROVIDER_ICONS: Record<string, string> = {
   agy: ANTIGRAVITY_SVG,
   antigravity: ANTIGRAVITY_SVG,
   copilot: COPILOT_SVG,
+  devin: DEVIN_SVG,
 };
 
 // Cache for data URIs
@@ -79,6 +87,9 @@ function normalizeProviderName(name: string | null | undefined): string | null {
   }
   if (normalized === 'copilot') {
     return 'copilot';
+  }
+  if (normalized.includes('devin')) {
+    return 'devin';
   }
   return normalized;
 }
@@ -145,6 +156,7 @@ export function getProviderIconAltText(name: string | null | undefined): string 
     agy: 'Antigravity CLI',
     antigravity: 'Antigravity CLI',
     copilot: 'Copilot CLI',
+    devin: 'Devin CLI',
   };
 
   return `${displayNames[normalized] ?? normalized} icon`;

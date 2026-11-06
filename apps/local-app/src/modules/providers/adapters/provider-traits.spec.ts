@@ -4,6 +4,7 @@ import { CodexAdapter } from './codex.adapter';
 import { OpencodeAdapter } from './opencode.adapter';
 import { AntigravityAdapter } from './antigravity.adapter';
 import { CopilotAdapter } from './copilot.adapter';
+import { DevinAdapter } from './devin.adapter';
 import { PROVIDER_TRAITS, providerTraits } from './provider-traits';
 import { SessionReaderAdapterFactory } from '../../session-reader/adapters/session-reader-adapter.factory';
 import { ClaudeSessionReaderAdapter } from '../../session-reader/adapters/claude-session-reader.adapter';
@@ -11,6 +12,7 @@ import { CodexSessionReaderAdapter } from '../../session-reader/adapters/codex-s
 import { OpenCodeSessionReaderAdapter } from '../../session-reader/adapters/opencode-session-reader.adapter';
 import { AntigravitySessionReaderAdapter } from '../../session-reader/adapters/antigravity-session-reader.adapter';
 import { CopilotSessionReaderAdapter } from '../../session-reader/adapters/copilot-session-reader.adapter';
+import { DevinSessionReaderAdapter } from '../../session-reader/adapters/devin-session-reader.adapter';
 import { SessionReaderModule } from '../../session-reader/session-reader.module';
 
 // Unit coverage compares the real adapter registries without booting Nest or reading transcripts.
@@ -26,6 +28,7 @@ describe('provider traits consistency', () => {
       new OpencodeAdapter(),
       new AntigravityAdapter({ ensure: jest.fn() } as never),
       new CopilotAdapter({ ensure: jest.fn() } as never, { isAuthenticated: jest.fn() } as never),
+      new DevinAdapter(),
     );
     readerFactory = new SessionReaderAdapterFactory();
     new SessionReaderModule(
@@ -35,6 +38,7 @@ describe('provider traits consistency', () => {
       new OpenCodeSessionReaderAdapter({} as never),
       new AntigravitySessionReaderAdapter({} as never),
       new CopilotSessionReaderAdapter({} as never),
+      new DevinSessionReaderAdapter({} as never),
     ).onModuleInit();
   });
 

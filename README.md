@@ -10,7 +10,7 @@
   <b><a href="#quick-start">Quick Start</a></b> · <b><a href="#remote-vms">Remote VMs</a></b> · <b><a href="https://devchain.cc/docs/quick-start-guide/">Docs</a></b> · <b><a href="#mobile-app">Mobile App</a></b> · <b><a href="https://github.com/twitech-lab/devchain/releases">Releases</a></b>
 </p>
 
-DevChain runs a team of AI coding agents on your own hardware. Claude Code, Codex, OpenCode, Antigravity, and GitHub Copilot work as coordinated teams, each agent in its own real terminal, with a shared board, chat, and code review.
+DevChain runs a team of AI coding agents on your own hardware. Claude Code, Codex, OpenCode, Antigravity, GitHub Copilot, and Devin work as coordinated teams, each agent in its own real terminal, with a shared board, chat, and code review.
 
 You describe the work. The agents plan it, build it in parallel, and hand it to you for review. Run them on your PC, or move a project to your own VM and let your laptop sleep.
 
@@ -21,7 +21,7 @@ You describe the work. The agents plan it, build it in parallel, and hand it to 
 - **A board agents use.** Agents pick up epics and sub-epics and update their status themselves through MCP tools.
 - **Built-in code review.** A live pre-commit diff with inline comments, `@mentions`, and threads, wired into the agent workflow.
 - **Remote VMs.** Move a project to a Proxmox VM or any Ubuntu or Debian VM you own. The agents keep working when you close the laptop.
-- **Transcripts and costs.** A session reader for all five providers, with token usage, cost, and a live context bar for every agent.
+- **Transcripts and costs.** A session reader for all six providers, with token usage, cost, and a live context bar for every agent.
 - **ClickUp and Jira.** Import assigned tasks as epics, keep statuses and subtasks in sync, and log time without leaving the app.
 - **Skills and MCP.** Sync community skill packs (Anthropic, OpenAI, Vercel, and more) for your agents. DevChain configures its MCP tools before each session.
 - **Local-first.** Your data stays in a local SQLite database on your machines, and agents use your own provider accounts.
@@ -72,6 +72,7 @@ Before you start:
 | [OpenCode](https://opencode.ai)                         | `opencode` |
 | [Antigravity](https://antigravity.google)               | `agy`      |
 | [GitHub Copilot](https://github.com/github/copilot-cli) | `copilot`  |
+| [Devin CLI](https://github.com/CognitionAI/devin-cli)      | `devin`    |
 
 Every provider gets live terminal sessions and full transcripts. Model families such as GLM are available through provider configs, and you can switch the provider or model of any agent at any time.
 
@@ -82,7 +83,7 @@ graph LR
     Browser["Web UI<br/>(React)"] -->|HTTP + Socket.IO| App["Local App<br/>(NestJS + Fastify)"]
     App --> DB[("SQLite<br/>local storage")]
     App <-->|tmux / PTY| Sessions["Agent terminal sessions"]
-    Sessions --- CLIs["Provider CLIs<br/>claude · codex · opencode · agy · copilot"]
+    Sessions --- CLIs["Provider CLIs<br/>claude · codex · opencode · agy · copilot · devin"]
     CLIs <-->|MCP tools| App
     Mobile["Mobile app<br/>(iOS / Android)"] <-->|E2EE relay<br/>sealed data only| App
     App <-->|pinned TLS + Syncthing| VM["Remote VM<br/>(DevChain host)"]

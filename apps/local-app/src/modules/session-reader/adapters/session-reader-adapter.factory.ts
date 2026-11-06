@@ -15,6 +15,7 @@ import { SessionReaderAdapter } from './session-reader-adapter.interface';
  * | `codex`   | CodexSessionReaderAdapter      | JSONL (`~/.codex/sessions/`)  |
  * | `agy`     | AntigravitySessionReaderAdapter | DB+JSONL (`~/.gemini/antigravity-cli/`) |
  * | `copilot` | CopilotSessionReaderAdapter     | JSONL (`~/.copilot/session-state/`) |
+ * | `devin`   | DevinSessionReaderAdapter       | ATIF JSON (`~/.devchain/provider-transcripts/devin/`) |
  *
  * ## Adding a new provider adapter
  *

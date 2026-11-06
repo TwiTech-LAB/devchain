@@ -1,0 +1,14 @@
+{
+  "schema_version": "ATIF-v1.7",
+  "session_id": "functional-share",
+  "agent": { "name": "devin", "version": "3000.11.234", "model_name": "SWE-2 Flash Max" },
+  "steps": [
+    { "step_id": 1, "timestamp": "2026-11-05T20:26:54.537344600+00:00", "source": "system", "message": "You are Devin, a helpful coding agent." },
+    { "step_id": 2, "timestamp": "2026-11-05T20:26:55.000000000+00:00", "source": "user", "message": "Reply with just: hi" },
+    { "step_id": 3, "timestamp": "2026-11-05T20:26:58.100000000+00:00", "source": "agent", "message": "hi", "model_name": "swe-2-max",
+      "reasoning_content": "thinking about the reply",
+      "metrics": { "prompt_tokens": 176189, "completion_tokens": 936, "cached_tokens": 175872, "extra": { "cache_creation_input_tokens": 25993 } },
+      "extra": { "generation_model": "swe-2-max" } }
+  ],
+  "final_metrics": { "total_prompt_tokens": 176189, "total_completion_tokens": 936, "total_cached_tokens": 175872, "total_steps": 3 }
+}

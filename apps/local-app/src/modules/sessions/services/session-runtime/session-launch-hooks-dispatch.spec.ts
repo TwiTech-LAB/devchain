@@ -60,20 +60,26 @@ describe('SessionLaunchPipeline.setupHooksConfig — installer dispatch', () => 
   });
 
   it.each([
-    { providerName: 'copilot', hooksEnabled: true, copilotCalls: 1, claudeCalls: 0 },
-    { providerName: 'claude', hooksEnabled: true, copilotCalls: 0, claudeCalls: 1 },
-    { providerName: 'copilot', hooksEnabled: false, copilotCalls: 0, claudeCalls: 0 },
+    { providerName: 'copilot', hooksEnabled: true, copilotCalls: 1, devinCalls: 0, claudeCalls: 0 },
+    { providerName: 'devin', hooksEnabled: true, copilotCalls: 0, devinCalls: 1, claudeCalls: 0 },
+    { providerName: 'claude', hooksEnabled: true, copilotCalls: 0, devinCalls: 0, claudeCalls: 1 },
+    { providerName: 'copilot', hooksEnabled: false, copilotCalls: 0, devinCalls: 0, claudeCalls: 0 },
   ])(
     'dispatches $providerName hooks when enabled=$hooksEnabled',
-    async ({ providerName, hooksEnabled, copilotCalls, claudeCalls }) => {
+    async ({ providerName, hooksEnabled, copilotCalls, devinCalls, claudeCalls }) => {
       h.mocks.providerAdapterFactory.getAdapter.mockReturnValue({ providerName, hooksEnabled });
       await setupHooksConfig(h, providerName, '/proj/root');
       expect(h.mocks.copilotHooksConfigService.ensureHooksConfig).toHaveBeenCalledTimes(
         copilotCalls,
       );
+      expect(h.mocks.devinHooksConfigService.ensureHooksConfig).toHaveBeenCalledTimes(devinCalls);
       expect(h.mocks.hooksConfigService.ensureHooksConfig).toHaveBeenCalledTimes(claudeCalls);
       if (copilotCalls)
         expect(h.mocks.copilotHooksConfigService.ensureHooksConfig).toHaveBeenCalledWith(
+          '/proj/root',
+        );
+      if (devinCalls)
+        expect(h.mocks.devinHooksConfigService.ensureHooksConfig).toHaveBeenCalledWith(
           '/proj/root',
         );
       if (claudeCalls)

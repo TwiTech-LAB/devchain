@@ -36,6 +36,8 @@ function getManualCommand(providerName: string, endpoint: string): string {
       return `claude mcp add --transport http ${alias} ${endpoint}`;
     case 'copilot':
       return `copilot mcp add --transport http ${alias} ${endpoint}`;
+    case 'devin':
+      return `devin mcp add --transport http ${alias} ${endpoint}`;
     case 'codex':
       return `codex mcp add --url ${endpoint} ${alias}`;
     case 'opencode':
