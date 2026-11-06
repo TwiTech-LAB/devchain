@@ -10,7 +10,7 @@ import type {
   McpServerEntry,
 } from './provider-adapter.interface';
 import type {
-  McpCliCapability,
+  ConfigFileMcpCapability,
   TranscriptDiscoveryCapability,
   HookCapability,
   HookEnvContext,
@@ -41,6 +41,15 @@ import { devinTranscriptPath } from '../../../common/devin-transcript-paths';
  * - **Terminal behavior is a hypothesis**: `terminalOutputBehavior` is left
  *   unset (alt-screen off, the broader default) since there is no tmux on this
  *   host to verify whether the CLI is a full-screen TUI.
+ * - **MCP is config-file mode, NOT CLI mode.** `devin mcp list`/`get` redact
+ *   URLs in ALL output (`URL: <redacted>`), so the endpoint can never be
+ *   verified through CLI output — every ensure would see a phantom mismatch.
+ *   Worse, `devin mcp remove` refuses entries owned by FOREIGN configs (devin
+ *   aggregates other tools' files, e.g. the project's `opencode.json`), so the
+ *   drift-repair remove aborts the whole launch. We therefore read/write the
+ *   project-local `<cwd>/.devin/mcp_config.local.json` directly — the exact
+ *   file `devin mcp add` (default local scope) produces:
+ *   `{ "mcpServers": { "<name>": { "url": "…", "transport": "http" } } }`.
  *
  * No `provider-cli-policy` entry: Devin exposes no flag/env to disable
  * auto-update, so the default (no-op) branch applies. No EffortCapability —
@@ -48,7 +57,7 @@ import { devinTranscriptPath } from '../../../common/devin-transcript-paths';
  */
 @Injectable()
 export class DevinAdapter
-  implements ProviderAdapter, McpCliCapability, TranscriptDiscoveryCapability, HookCapability
+  implements ProviderAdapter, ConfigFileMcpCapability, TranscriptDiscoveryCapability, HookCapability
 {
   readonly providerName = 'devin';
   readonly traits = DEVIN_TRAITS;
@@ -62,10 +71,16 @@ export class DevinAdapter
   readonly transcriptDiscoveryStrategy = 'first' as const;
   readonly providerSessionIdRequiredForRestore = true;
 
-  // Registration uses the DEFAULT list-then-add strategy (NOT 'upsert'):
-  // `devin mcp add` is slow (~18s when the URL is unreachable) and writes the
-  // project-local scope (`<cwd>/.devin/mcp_config.local.json`), so we list
-  // first and only add/remove when drift requires it.
+  // ── ConfigFileMcpCapability ──────────────────────────────────────────────
+  // `mcpMode = 'project_config'` routes MCP ensure/preflight through
+  // ConfigFileMcpRegistrationAdapter (file IO) instead of the CLI adapter —
+  // see the class docblock for why `devin mcp list`/`remove` cannot be used.
+  // `configFileName` is relative to the project root (path.join handles the
+  // `.devin/` subdir); `.local.json` is devin's uncommitted local scope, the
+  // same file `devin mcp add` writes by default.
+  readonly mcpMode = 'project_config' as const;
+  readonly configFileName = '.devin/mcp_config.local.json';
+  readonly mcpConfigRootKey = 'mcpServers' as const;
 
   // ── HookCapability (3rd adopter; Claude-compatible hook JSON) ─────────────
   // Devin's lifecycle hooks are a LIFECYCLE precision feature, NOT discovery —
@@ -135,57 +150,46 @@ export class DevinAdapter
     return { argv };
   }
 
-  // ── McpCliCapability ───────────────────────────────────────────────────────
-  // `devin mcp add` defaults to the project-local scope (`<cwd>/.devin/
-  // mcp_config.local.json`); the ensure path supplies cwd = project root.
+  /**
+   * Parse MCP entries from `.devin/mcp_config.local.json` content.
+   * Caller is responsible for handling JSON parse errors.
+   *
+   * Only URL-bearing entries are returned: devin's file mixes transports under
+   * one `mcpServers` map — remote servers carry `{ "url": …, "transport": … }`
+   * while stdio servers carry `{ "command": …, "args": […] }` with no `url`,
+   * and stdio entries have no endpoint to compare against the devchain URL.
+   */
+  parseProjectConfig(content: string): McpServerEntry[] {
+    const config = JSON.parse(content);
+    const servers = config?.mcpServers;
+    if (!servers || typeof servers !== 'object') return [];
 
-  addMcpServer(options: AddMcpServerOptions): string[] {
-    const alias = options.alias ?? this.providerName;
-    const args = ['mcp', 'add', '--transport', 'http', alias, options.endpoint];
-    if (options.extraArgs?.length) {
-      args.push(...options.extraArgs);
-    }
-    return args;
-  }
-
-  listMcpServers(): string[] {
-    // `mcp list` has no machine-readable mode — fast, pipe-safe text output.
-    return ['mcp', 'list'];
-  }
-
-  removeMcpServer(alias: string): string[] {
-    return ['mcp', 'remove', alias];
-  }
-
-  parseListOutput(stdout: string, _stderr?: string): McpServerEntry[] {
-    // `devin mcp list` prints bullet blocks:
-    //   Configured MCP servers
-    //     • <alias>
-    //       Command: <stdio command>   (stdio servers — skipped)
-    //       URL: <http url>            (http servers — returned)
-    //       Source: <config file>
-    // Command-only (stdio) entries are skipped; only URL entries are returned.
     const entries: McpServerEntry[] = [];
-    const bulletRe = /^\s*[•*\-]\s+(\S+)\s*$/;
-    let alias: string | null = null;
-
-    for (const line of stdout.split(/\r?\n/)) {
-      const bullet = bulletRe.exec(line);
-      if (bullet) {
-        alias = bullet[1];
-        continue;
+    for (const [alias, serverConfig] of Object.entries(servers)) {
+      const cfg = serverConfig as Record<string, unknown> | null;
+      if (typeof cfg?.url === 'string') {
+        entries.push({
+          alias,
+          endpoint: cfg.url,
+          transport: typeof cfg.transport === 'string' ? cfg.transport.toUpperCase() : 'HTTP',
+        });
       }
-      if (alias === null) continue;
-      const url = /^\s*URL:\s*(\S+)\s*$/i.exec(line);
-      if (url) {
-        entries.push({ alias, endpoint: url[1], transport: 'HTTP' });
-        alias = null;
-        continue;
-      }
-      // A Command/Source line (or any other detail) leaves the block open for a
-      // later URL line; nothing else to do.
     }
-
     return entries;
+  }
+
+  /**
+   * Build the MCP config entry written under the file's `mcpServers` map —
+   * byte-identical to what `devin mcp add --transport http <name> <url>`
+   * produces for the local project scope.
+   */
+  buildMcpConfigEntry(options: AddMcpServerOptions): {
+    key: string;
+    value: Record<string, unknown>;
+  } {
+    return {
+      key: options.alias ?? 'devchain',
+      value: { url: options.endpoint, transport: 'http' },
+    };
   }
 }

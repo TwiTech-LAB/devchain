@@ -93,38 +93,97 @@ describe('DevinAdapter', () => {
     });
   });
 
-  describe('McpCliCapability', () => {
-    it('builds the mcp add/list/remove argv shapes', () => {
-      expect(adapter.addMcpServer({ endpoint: 'http://127.0.0.1:3000/mcp', alias: 'devchain' }))
-        .toEqual(['mcp', 'add', '--transport', 'http', 'devchain', 'http://127.0.0.1:3000/mcp']);
-      expect(adapter.addMcpServer({ endpoint: 'http://x/mcp', alias: 'a', extraArgs: ['--k', 'v'] }))
-        .toEqual(['mcp', 'add', '--transport', 'http', 'a', 'http://x/mcp', '--k', 'v']);
-      expect(adapter.listMcpServers()).toEqual(['mcp', 'list']);
-      expect(adapter.removeMcpServer('devchain')).toEqual(['mcp', 'remove', 'devchain']);
+  describe('ConfigFileMcpCapability (project_config — NOT CLI mode)', () => {
+    it('declares project_config mode targeting .devin/mcp_config.local.json under mcpServers', () => {
+      // `devin mcp list`/`get` redact URLs and `mcp remove` cannot touch
+      // foreign-config entries, so MCP must go through the config file.
+      expect(adapter.mcpMode).toBe('project_config');
+      expect(adapter.configFileName).toBe('.devin/mcp_config.local.json');
+      expect(adapter.mcpConfigRootKey).toBe('mcpServers');
     });
 
-    it('parses `mcp list` bullet blocks — URL entries only (stdio skipped), CRLF-tolerant', () => {
-      const out = [
-        'Configured MCP servers',
-        '',
-        '  • code-review-graph',
-        '    Command: C:\\tools\\code-review-graph.exe serve',
-        '    Source: ~\\AppData\\Roaming\\devin\\mcp_config.json',
-        '',
-        '  • devchain',
-        '    URL: http://127.0.0.1:3000/mcp',
-        '    Source: ~\\AppData\\Local\\Temp\\x\\.devin\\mcp_config.local.json',
-      ].join('\r\n');
-      expect(adapter.parseListOutput(out)).toEqual([
+    it('exposes no CLI MCP methods (addMcpServer/listMcpServers/removeMcpServer/parseListOutput)', () => {
+      const cliSurface = adapter as unknown as Record<string, unknown>;
+      expect(cliSurface.addMcpServer).toBeUndefined();
+      expect(cliSurface.listMcpServers).toBeUndefined();
+      expect(cliSurface.removeMcpServer).toBeUndefined();
+      expect(cliSurface.parseListOutput).toBeUndefined();
+    });
+  });
+
+  describe('parseProjectConfig (.devin/mcp_config.local.json)', () => {
+    it('parses the real devin file shape — url entries only, stdio skipped', () => {
+      // Shape verified against `devin mcp add` (v3000.11.234): http servers carry
+      // { url, transport: 'http' }; stdio servers carry { command, args } with
+      // no url and must be skipped.
+      const content = JSON.stringify({
+        mcpServers: {
+          devchain: { url: 'http://127.0.0.1:3000/mcp', transport: 'http' },
+          teststdio: { command: 'echo', args: ['hello'], transport: 'stdio' },
+        },
+      });
+
+      expect(adapter.parseProjectConfig(content)).toEqual([
         { alias: 'devchain', endpoint: 'http://127.0.0.1:3000/mcp', transport: 'HTTP' },
       ]);
     });
 
-    it('accepts * and - bullets and returns [] for header-only output', () => {
-      expect(
-        adapter.parseListOutput('  * a\n    URL: http://x/mcp\n  - b\n    Command: foo'),
-      ).toEqual([{ alias: 'a', endpoint: 'http://x/mcp', transport: 'HTTP' }]);
-      expect(adapter.parseListOutput('Configured MCP servers\n')).toEqual([]);
+    it('returns multiple url entries with uppercased transport', () => {
+      const content = JSON.stringify({
+        mcpServers: {
+          a: { url: 'http://x/mcp', transport: 'http' },
+          b: { url: 'http://y/sse', transport: 'sse' },
+        },
+      });
+
+      expect(adapter.parseProjectConfig(content)).toEqual([
+        { alias: 'a', endpoint: 'http://x/mcp', transport: 'HTTP' },
+        { alias: 'b', endpoint: 'http://y/sse', transport: 'SSE' },
+      ]);
+    });
+
+    it('defaults transport to HTTP when missing and skips non-object/url-less values', () => {
+      const content = JSON.stringify({
+        mcpServers: {
+          bare: { url: 'http://z/mcp' },
+          stdio: { command: 'foo', args: [] },
+          weird: 'not-an-object',
+          nil: null,
+        },
+      });
+
+      expect(adapter.parseProjectConfig(content)).toEqual([
+        { alias: 'bare', endpoint: 'http://z/mcp', transport: 'HTTP' },
+      ]);
+    });
+
+    it('returns [] when mcpServers is missing or not an object', () => {
+      expect(adapter.parseProjectConfig(JSON.stringify({ other: 1 }))).toEqual([]);
+      expect(adapter.parseProjectConfig(JSON.stringify({ mcpServers: {} }))).toEqual([]);
+      expect(adapter.parseProjectConfig(JSON.stringify({ mcpServers: 'oops' }))).toEqual([]);
+      expect(adapter.parseProjectConfig('null')).toEqual([]);
+    });
+
+    it('throws on malformed JSON (caller responsibility)', () => {
+      expect(() => adapter.parseProjectConfig('not valid json')).toThrow(SyntaxError);
+    });
+  });
+
+  describe('buildMcpConfigEntry', () => {
+    it('returns the devin mcp add shape under mcpServers', () => {
+      expect(adapter.buildMcpConfigEntry({ endpoint: 'http://127.0.0.1:3000/mcp' })).toEqual({
+        key: 'devchain',
+        value: { url: 'http://127.0.0.1:3000/mcp', transport: 'http' },
+      });
+    });
+
+    it('honours a custom alias', () => {
+      expect(adapter.buildMcpConfigEntry({ endpoint: 'http://x/mcp', alias: 'my-server' })).toEqual(
+        {
+          key: 'my-server',
+          value: { url: 'http://x/mcp', transport: 'http' },
+        },
+      );
     });
   });
 

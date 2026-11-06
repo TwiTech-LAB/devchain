@@ -1,3 +1,4 @@
+import * as path from 'path';
 import type { Provider } from '../../../storage/models/domain.models';
 import type { StorageService } from '../../../storage/interfaces/storage.interface';
 import { ProviderAdapterFactory, ClaudeAdapter, CodexAdapter } from '../../../providers/adapters';
@@ -80,6 +81,20 @@ describe('McpRegistrationPort', () => {
     id: 'p-copilot',
     name: 'copilot',
     binPath: '/usr/local/bin/copilot',
+    mcpConfigured: false,
+    mcpEndpoint: null,
+    mcpRegisteredAt: null,
+    autoCompactThreshold: null,
+    claudeLaunchSettingsJson: null,
+    env: null,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  };
+
+  const devinProvider: Provider = {
+    id: 'p-devin',
+    name: 'devin',
+    binPath: '/usr/local/bin/devin',
     mcpConfigured: false,
     mcpEndpoint: null,
     mcpRegisteredAt: null,
@@ -273,6 +288,80 @@ describe('McpRegistrationPort', () => {
 
       expect(result.success).toBe(true);
       expect(result.action).toBe('added');
+    });
+  });
+
+  describe('ConfigFile adapter routing (Devin — .devin/mcp_config.local.json)', () => {
+    // Devin declares mcpMode='project_config' → isMcpCli=false → the port must
+    // route it to ConfigFileMcpRegistrationAdapter, never the CLI adapter
+    // (`devin mcp list` redacts URLs; `mcp remove` can't touch foreign configs).
+    const devinConfigPath = path.join('/projects/myapp', '.devin', 'mcp_config.local.json');
+
+    it('register writes mcpServers.<alias> under .devin/ with mkdir, zero CLI calls', async () => {
+      const enoent = new Error('ENOENT') as NodeJS.ErrnoException;
+      enoent.code = 'ENOENT';
+      readFileMock.mockRejectedValue(enoent);
+
+      const result = await port.register(
+        devinProvider,
+        { endpoint: 'http://127.0.0.1:3000/mcp', alias: 'devchain' },
+        { cwd: '/projects/myapp' },
+      );
+
+      expect(result.success).toBe(true);
+      expect(fakeExecutor.calls).toHaveLength(0);
+      expect(mkdirMock).toHaveBeenCalledWith(path.dirname(devinConfigPath), {
+        recursive: true,
+      });
+      expect(writeFileMock).toHaveBeenCalledWith(
+        devinConfigPath + '.tmp',
+        expect.any(String),
+        'utf-8',
+      );
+      expect(renameMock).toHaveBeenCalledWith(devinConfigPath + '.tmp', devinConfigPath);
+      const written = JSON.parse(writeFileMock.mock.calls[0][1] as string);
+      expect(written.mcpServers.devchain).toEqual({
+        url: 'http://127.0.0.1:3000/mcp',
+        transport: 'http',
+      });
+      expect(written.mcp).toBeUndefined();
+    });
+
+    it('ensure reports already_configured when the file entry endpoint matches', async () => {
+      readFileMock.mockResolvedValue(
+        JSON.stringify({
+          mcpServers: {
+            devchain: { url: 'http://127.0.0.1:3000/mcp', transport: 'http' },
+          },
+        }),
+      );
+
+      const result = await port.ensure(
+        devinProvider,
+        { endpoint: 'http://127.0.0.1:3000/mcp', alias: 'devchain' },
+        { cwd: '/projects/myapp' },
+      );
+
+      expect(result.success).toBe(true);
+      expect(result.action).toBe('already_configured');
+      expect(fakeExecutor.calls).toHaveLength(0);
+      expect(writeFileMock).not.toHaveBeenCalled();
+    });
+
+    it('ensure adds the entry when the file is missing (no devin CLI involved)', async () => {
+      const enoent = new Error('ENOENT') as NodeJS.ErrnoException;
+      enoent.code = 'ENOENT';
+      readFileMock.mockRejectedValue(enoent);
+
+      const result = await port.ensure(
+        devinProvider,
+        { endpoint: 'http://127.0.0.1:3000/mcp', alias: 'devchain' },
+        { cwd: '/projects/myapp' },
+      );
+
+      expect(result.success).toBe(true);
+      expect(result.action).toBe('added');
+      expect(fakeExecutor.calls).toHaveLength(0);
     });
   });
 
