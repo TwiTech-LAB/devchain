@@ -33,6 +33,15 @@ const RELAY_SCRIPT_CONTENT = `#!/bin/bash
 
 set -euo pipefail
 
+# ── Owning-provider guard ────────────────────────────────────────────────────
+# Devin also executes the project's .claude hook config. When the session was
+# launched by a different provider, that provider's own relay reports the event
+# — exit so this Claude relay never double-posts it. Unset (or "claude") means
+# a Claude session: post as usual.
+if [ -n "\${DEVCHAIN_HOOK_PROVIDER:-}" ] && [ "\${DEVCHAIN_HOOK_PROVIDER:-}" != "claude" ]; then
+  exit 0
+fi
+
 # Read Claude Code hook JSON from stdin
 INPUT="$(cat)"
 
@@ -56,15 +65,12 @@ if [ -z "$TMUX_SESSION" ]; then
   exit 0
 fi
 
-# Hook time in epoch ms orders turn hooks that arrive out of order. BSD date has no %N, so
-# use perl there, and whole seconds as the last resort.
+# Hook time in epoch ms orders turn hooks that arrive out of order. BSD date has no %N —
+# and non-GNU date (e.g. uutils) can emit untruncated nanoseconds for %3N, which is still
+# all digits. Accept only exactly 13 decimal digits, then perl, then whole seconds.
 FIRED_AT_MS="$(date +%s%3N 2>/dev/null || true)"
-case "$FIRED_AT_MS" in
-  ''|*[!0-9]*) FIRED_AT_MS="$(perl -MTime::HiRes=time -e 'printf("%d", time() * 1000)' 2>/dev/null || true)" ;;
-esac
-case "$FIRED_AT_MS" in
-  ''|*[!0-9]*) FIRED_AT_MS="$(( $(date +%s) * 1000 ))" ;;
-esac
+[[ "$FIRED_AT_MS" =~ ^[0-9]{13}$ ]] || FIRED_AT_MS="$(perl -MTime::HiRes=time -e 'printf("%d", time() * 1000)' 2>/dev/null || true)"
+[[ "$FIRED_AT_MS" =~ ^[0-9]{13}$ ]] || FIRED_AT_MS="$(( $(date +%s) * 1000 ))"
 
 # Build combined payload: Claude Code fields + DevChain env vars.
 # Tool fields (PreToolUse/PostToolUse) are forwarded with --argjson so the
@@ -178,6 +184,22 @@ export class HooksConfigService {
     } catch (error) {
       logger.error({ error, projectRootPath }, 'Failed to ensure hooks config (non-fatal)');
     }
+  }
+
+  /**
+   * Rewrite {projectRoot}/.claude/hooks/devchain-relay.sh ONLY when it already
+   * exists — never creates the .claude dir or the file. Other hook installers
+   * (Devin) call this so projects whose relay predates the current script get
+   * the latest guards without waiting for a Claude launch.
+   */
+  async refreshRelayScriptIfPresent(projectRootPath: string): Promise<void> {
+    const scriptPath = join(projectRootPath, '.claude', 'hooks', 'devchain-relay.sh');
+    try {
+      await readFile(scriptPath, 'utf-8');
+    } catch {
+      return; // No relay installed — nothing to refresh.
+    }
+    await this.materializeRelayScript(projectRootPath);
   }
 
   /**

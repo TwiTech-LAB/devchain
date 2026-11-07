@@ -21,6 +21,7 @@ const PROVIDER_DISPLAY_NAMES: Record<string, string> = {
   agy: 'Antigravity',
   antigravity: 'Antigravity',
   copilot: 'Copilot',
+  devin: 'Devin',
 };
 
 /** Short, copy-light explanations keyed by lowercase provider name. */
@@ -34,6 +35,7 @@ const PROVIDER_DESCRIPTIONS: Record<string, string> = {
   agy: 'Google Antigravity agent.',
   antigravity: 'Google Antigravity agent.',
   copilot: 'GitHub Copilot agent.',
+  devin: 'Cognition Devin agent.',
 };
 
 function displayName(name: string): string {

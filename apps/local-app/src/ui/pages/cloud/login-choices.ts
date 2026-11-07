@@ -1,7 +1,7 @@
 import type { ProviderAuthEntryItem } from './lib/remote-vm-contracts';
 
 /** Every provider a VM gets a login choice for, in display order. */
-export const LOGIN_PROVIDERS = ['claude', 'copilot', 'codex', 'agy', 'opencode'] as const;
+export const LOGIN_PROVIDERS = ['claude', 'copilot', 'codex', 'agy', 'opencode', 'devin'] as const;
 
 /** How each login provider is named on screen. */
 export const PROVIDER_NAMES: Readonly<Record<(typeof LOGIN_PROVIDERS)[number], string>> = {
@@ -10,6 +10,7 @@ export const PROVIDER_NAMES: Readonly<Record<(typeof LOGIN_PROVIDERS)[number], s
   codex: 'Codex',
   agy: 'Antigravity',
   opencode: 'OpenCode',
+  devin: 'Devin',
 };
 
 /** A provider's on-screen name; a provider without one shows its id. */

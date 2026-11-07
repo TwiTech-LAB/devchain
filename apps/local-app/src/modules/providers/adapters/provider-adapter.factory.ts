@@ -5,6 +5,7 @@ import { CodexAdapter } from './codex.adapter';
 import { OpencodeAdapter } from './opencode.adapter';
 import { AntigravityAdapter } from './antigravity.adapter';
 import { CopilotAdapter } from './copilot.adapter';
+import { DevinAdapter } from './devin.adapter';
 import { UnsupportedProviderError } from '../../../common/errors/error-types';
 import {
   STORAGE_SERVICE,
@@ -16,7 +17,7 @@ import {
 /**
  * Factory for resolving ProviderAdapter instances by provider name
  *
- * Supports known providers only (claude, codex, opencode, agy, copilot).
+ * Supports known providers only (claude, codex, opencode, agy, copilot, devin).
  * Throws an error for unsupported provider names.
  */
 @Injectable()
@@ -33,6 +34,7 @@ export class ProviderAdapterFactory {
     opencodeAdapter: OpencodeAdapter,
     antigravityAdapter: AntigravityAdapter,
     copilotAdapter: CopilotAdapter,
+    devinAdapter: DevinAdapter,
   ) {
     this.adapters = new Map<string, ProviderAdapter>([
       ['claude', claudeAdapter],
@@ -40,6 +42,7 @@ export class ProviderAdapterFactory {
       ['opencode', opencodeAdapter],
       ['agy', antigravityAdapter],
       ['copilot', copilotAdapter],
+      ['devin', devinAdapter],
     ]);
   }
 

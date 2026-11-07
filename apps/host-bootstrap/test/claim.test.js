@@ -273,7 +273,7 @@ test("the claim record holds no credentials", async (t) => {
   assert.doesNotMatch(raw, /token-1/);
 });
 
-test("a claim installs all five CLIs between DevChain install and activation", async (t) => {
+test("a claim installs all six CLIs between DevChain install and activation", async (t) => {
   const { sys, root, calls, cleanup } = fakeSystem();
   t.after(cleanup);
   const steps = [];
@@ -308,6 +308,7 @@ test("a claim installs all five CLIs between DevChain install and activation", a
       `@openai/codex@${pins.codex.version}`,
       `@github/copilot@${pins.copilot.version}`,
       `@opencode/cli@${pins.opencode.version}`,
+      `devin@${pins.devin.version}`,
     ],
   );
   for (const call of installs.slice(2)) {

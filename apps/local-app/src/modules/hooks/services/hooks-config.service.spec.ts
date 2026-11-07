@@ -219,6 +219,32 @@ describe('HooksConfigService', () => {
       ]);
     });
 
+    it('generates a relay with the DEVCHAIN_HOOK_PROVIDER owning-provider guard', async () => {
+      await service.ensureHooksConfig(tempDir);
+      const script = await readFile(
+        join(tempDir, '.claude', 'hooks', 'devchain-relay.sh'),
+        'utf-8',
+      );
+      // Devin also runs the project's .claude hooks — the guard keeps this
+      // relay quiet under a non-Claude launch while unset/==claude posts.
+      expect(script).toContain('DEVCHAIN_HOOK_PROVIDER');
+      expect(script).toMatch(/DEVCHAIN_HOOK_PROVIDER:-\?\}?"? != "claude"|!= "claude"/);
+    });
+
+    it('refreshRelayScriptIfPresent rewrites only when the relay exists', async () => {
+      const scriptPath = join(tempDir, '.claude', 'hooks', 'devchain-relay.sh');
+      // No relay → no file created, no error.
+      await service.refreshRelayScriptIfPresent(tempDir);
+      await expect(stat(scriptPath)).rejects.toThrow();
+      // Existing relay → refreshed to current content (with the provider guard).
+      await mkdir(join(tempDir, '.claude', 'hooks'), { recursive: true });
+      await writeFile(scriptPath, '#!/bin/bash\necho stale\n');
+      await service.refreshRelayScriptIfPresent(tempDir);
+      const refreshed = await readFile(scriptPath, 'utf-8');
+      expect(refreshed).toContain('DEVCHAIN_HOOK_PROVIDER');
+      expect(refreshed).toContain('hook_event_name');
+    });
+
     it('should generate a relay script that forwards tool fields', async () => {
       await service.ensureHooksConfig(tempDir);
       const script = await readFile(
@@ -261,7 +287,10 @@ describe('HooksConfigService', () => {
     /** Runs the relay; `curlDelaySec` makes the stubbed POST slow, `elapsedMs` times the relay. */
     async function runRelayTimed(
       hookJson: unknown,
-      { curlDelaySec = 0 }: { curlDelaySec?: number } = {},
+      {
+        curlDelaySec = 0,
+        fakeNsDate = false,
+      }: { curlDelaySec?: number; fakeNsDate?: boolean } = {},
     ): Promise<{ payload: Record<string, unknown>; elapsedMs: number } | null> {
       if (!toolsAvailable) return null;
 
@@ -283,6 +312,18 @@ exit 0
 
       await mkdir(binDir, { recursive: true });
       await writeFile(join(binDir, 'curl'), fakeCurl, { mode: 0o755 });
+
+      if (fakeNsDate) {
+        // Non-GNU date (e.g. uutils) emits untruncated 19-digit NANOSECONDS for
+        // `+%s%3N`; `+%s` still returns real epoch seconds via the real date.
+        const fakeDate = `#!/bin/bash
+case "$1" in
+  +%s%3N) echo "9999999999999999999" ;;
+  *) /usr/bin/date "$@" ;;
+esac
+`;
+        await writeFile(join(binDir, 'date'), fakeDate, { mode: 0o755 });
+      }
 
       const startedAt = Date.now();
       execFileSync('bash', [scriptPath], {
@@ -402,6 +443,28 @@ exit 0
           sessionId: '33333333-3333-3333-3333-333333333333',
         });
         expect(result.payload).not.toHaveProperty('prompt');
+        expect(Math.abs((result.payload.firedAtMs as number) - Date.now())).toBeLessThan(60_000);
+        expect(HookEventSchema.safeParse(result.payload).success).toBe(true);
+      },
+    );
+
+    it.each(['UserPromptSubmit', 'Stop'])(
+      'posts a %s with a valid hook time even when date emits untruncated nanoseconds for %3N',
+      async (hookEventName) => {
+        await service.ensureHooksConfig(tempDir);
+
+        const result = await runRelayTimed(
+          {
+            hook_event_name: hookEventName,
+            session_id: 'claude-session-1',
+            transcript_path: '/tmp/transcript.jsonl',
+          },
+          { fakeNsDate: true },
+        );
+        if (result === null) return;
+
+        // 19-digit nanoseconds must NOT be accepted as ms: the relay falls back
+        // to perl/seconds and still posts a real epoch-ms hook time.
         expect(Math.abs((result.payload.firedAtMs as number) - Date.now())).toBeLessThan(60_000);
         expect(HookEventSchema.safeParse(result.payload).success).toBe(true);
       },

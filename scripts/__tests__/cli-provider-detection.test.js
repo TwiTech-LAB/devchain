@@ -56,11 +56,12 @@ describe('detectInstalledProviders', () => {
       opencode: '/usr/bin/opencode',
       agy: '/usr/local/bin/agy',
       copilot: '/usr/local/bin/copilot',
+      devin: '/usr/local/bin/devin',
     });
     const detected = detectInstalledProviders();
-    expect(detected.size).toBe(5);
+    expect(detected.size).toBe(6);
     expect(Array.from(detected.keys()).sort()).toEqual(
-      ['agy', 'claude', 'codex', 'copilot', 'opencode'],
+      ['agy', 'claude', 'codex', 'copilot', 'devin', 'opencode'],
     );
   });
 
@@ -70,6 +71,12 @@ describe('detectInstalledProviders', () => {
     expect(detected.has('gemini')).toBe(false);
     expect(detected.get('agy')).toBe('/usr/local/bin/agy');
     expect(detected.size).toBe(1);
+  });
+
+  it('detects and maps devin to its absolute (trimmed) path', () => {
+    setInstalled({ devin: '/usr/local/bin/devin' });
+    const detected = detectInstalledProviders();
+    expect(detected.get('devin')).toBe('/usr/local/bin/devin');
   });
 
   it('omits copilot when it is not installed (only codex on PATH)', () => {

@@ -46,6 +46,32 @@ const ProviderModelCreateRequestSchema = z.union([
   ProviderModelBulkCreateSchema,
 ]);
 
+/** Flatten `devin models list --format json` → `families[].variants[].model_uid` in order, deduped. */
+function parseDevinModelsJson(stdout: string): string[] {
+  try {
+    const doc = JSON.parse(stdout) as {
+      families?: Array<{ variants?: Array<{ model_uid?: unknown }> }>;
+    };
+    const seen = new Set<string>();
+    const names: string[] = [];
+    for (const family of doc.families ?? []) {
+      for (const variant of family.variants ?? []) {
+        if (
+          typeof variant.model_uid === 'string' &&
+          variant.model_uid &&
+          !seen.has(variant.model_uid)
+        ) {
+          seen.add(variant.model_uid);
+          names.push(variant.model_uid);
+        }
+      }
+    }
+    return names;
+  } catch {
+    throw new BadRequestException('Unable to parse devin models list output as JSON');
+  }
+}
+
 @Controller('api/providers/:id/models')
 export class ProviderModelsController {
   constructor(
@@ -125,9 +151,9 @@ export class ProviderModelsController {
     // Pricing correlation is handled separately by the shared `mapAgyModelToPricing`
     // family rules (P1-4) on the metrics-decoded id/display name, not by this list.
     const providerName = provider.name.toLowerCase();
-    if (providerName !== 'opencode' && providerName !== 'agy') {
+    if (providerName !== 'opencode' && providerName !== 'agy' && providerName !== 'devin') {
       throw new BadRequestException(
-        'Model discovery is only supported for the opencode and agy providers',
+        'Model discovery is only supported for the opencode, agy and devin providers',
       );
     }
 
@@ -136,7 +162,10 @@ export class ProviderModelsController {
       throw new BadRequestException(resolution.message ?? 'Unable to resolve provider binary');
     }
 
-    let argv = [resolution.binaryPath, 'models'];
+    let argv =
+      providerName === 'devin'
+        ? [resolution.binaryPath, 'models', 'list', '--format', 'json']
+        : [resolution.binaryPath, 'models'];
     let env: Record<string, string> | undefined;
     if (providerName === 'opencode') {
       const version = assertSupportedOpencodeVersion(
@@ -175,10 +204,16 @@ export class ProviderModelsController {
       });
     }
 
-    const modelNames = execResult.stdout
-      .split(/\r?\n/)
-      .map((line) => line.trim())
-      .filter((line) => line.length > 0);
+    // Devin emits `{ families: [{ variants: [{ model_uid, … }] }] }` — flatten
+    // variants in catalog order and dedupe. Other providers list one selectable
+    // model per line.
+    const modelNames =
+      providerName === 'devin'
+        ? parseDevinModelsJson(execResult.stdout)
+        : execResult.stdout
+            .split(/\r?\n/)
+            .map((line) => line.trim())
+            .filter((line) => line.length > 0);
 
     const result = await this.storage.bulkCreateProviderModels(providerId, modelNames);
     return {

@@ -210,6 +210,11 @@ export function createLaunchPipelineHarness() {
     ensureHooksConfig: jest.fn().mockResolvedValue(undefined),
   };
 
+  const devinHooksConfigService = {
+    providerName: 'devin',
+    ensureHooksConfig: jest.fn().mockResolvedValue(undefined),
+  };
+
   const preflightService = {
     runChecks: jest.fn().mockResolvedValue({
       overall: 'pass',
@@ -282,6 +287,7 @@ export function createLaunchPipelineHarness() {
     terminalSessionRegistry, // TerminalSessionRegistry
     hooksConfigService, // HooksConfigService
     copilotHooksConfigService, // CopilotHooksConfigService
+    devinHooksConfigService, // DevinHooksConfigService
     preflightService, // PreflightService
     mcpEnsureService, // ProviderMcpEnsureService
     eventsService, // EventsService
@@ -304,6 +310,7 @@ export function createLaunchPipelineHarness() {
       terminalSessionRegistry,
       hooksConfigService,
       copilotHooksConfigService,
+      devinHooksConfigService,
       preflightService,
       mcpEnsureService,
       eventsService,

@@ -10,14 +10,15 @@ import {
 } from './provider-clis.js';
 
 describe('PROVIDER_CLI_NPM_PACKAGES', () => {
-  it('maps the four managed providers to their npm packages', () => {
+  it('maps the five managed providers to their npm packages', () => {
     expect(PROVIDER_CLI_NPM_PACKAGES).toEqual({
       claude: '@anthropic-ai/claude-code',
       codex: '@openai/codex',
       copilot: '@github/copilot',
+      devin: 'devin',
       opencode: '@opencode/cli',
     });
-    expect([...PROVIDER_CLI_NAMES]).toEqual(['claude', 'codex', 'copilot', 'opencode']);
+    expect([...PROVIDER_CLI_NAMES]).toEqual(['claude', 'codex', 'copilot', 'devin', 'opencode']);
   });
 
   it('points at the public npm registry, not a DevChain-internal one', () => {
@@ -26,9 +27,12 @@ describe('PROVIDER_CLI_NPM_PACKAGES', () => {
 });
 
 describe('isExactStableSemver', () => {
-  it.each(['0.0.1', '1.2.3', '0.156.1', '2.1.281', '10.20.30'])('accepts %s', (version) => {
-    expect(isExactStableSemver(version)).toBe(true);
-  });
+  it.each(['0.0.1', '1.2.3', '0.156.1', '2.1.281', '10.20.30', '3000.11.234'])(
+    'accepts %s',
+    (version) => {
+      expect(isExactStableSemver(version)).toBe(true);
+    },
+  );
 
   it.each([
     'latest',
@@ -43,6 +47,10 @@ describe('isExactStableSemver', () => {
     '1.2.03',
     '',
     '1.2.x',
+    // npm platform-tag variants (e.g. devin's per-arch builds) are not pinnable.
+    '3000.11.234-linux-x64',
+    '3000.11.234-darwin-arm64',
+    '3000.11.234-win32-x64',
   ])('rejects %s', (version) => {
     expect(isExactStableSemver(version)).toBe(false);
   });

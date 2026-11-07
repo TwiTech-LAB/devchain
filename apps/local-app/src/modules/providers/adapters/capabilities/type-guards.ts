@@ -57,6 +57,13 @@ export function isAuthProbeCapable(
 
 export interface ConfigFileMcpCapability {
   readonly configFileName: string;
+  /**
+   * Root key of the MCP server map inside the config file. Defaults to `'mcp'`
+   * (opencode-flat `{ "mcp": { … } }`); providers whose config nests servers
+   * under a different key declare it here — devin uses `'mcpServers'`
+   * (`{ "mcpServers": { "<name>": { "url": …, "transport": "http" } } }`).
+   */
+  readonly mcpConfigRootKey?: string;
   parseProjectConfig(content: string): McpServerEntry[];
   buildMcpConfigEntry(options: AddMcpServerOptions): {
     key: string;

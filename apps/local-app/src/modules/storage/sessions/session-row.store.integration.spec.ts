@@ -268,4 +268,110 @@ describe('SessionRowStore queries', () => {
       { sessionId: 'other', providerNameAtLaunch: null },
     ]);
   });
+
+  describe('bindProviderSessionIdIfAbsent', () => {
+    function insertUnbound(id: string, providerAtLaunch: string | null): void {
+      sqlite
+        .prepare(
+          `INSERT INTO sessions (id, agent_id, status, started_at, created_at, updated_at)
+           VALUES (?, NULL, 'running', ?, ?, ?)`,
+        )
+        .run(id, T2, T0, T0);
+      if (providerAtLaunch !== null) {
+        sqlite
+          .prepare(`UPDATE sessions SET provider_name_at_launch = ? WHERE id = ?`)
+          .run(providerAtLaunch, id);
+      }
+    }
+
+    const row = (id: string) =>
+      sqlite
+        .prepare(
+          `SELECT provider_session_id, transcript_path, updated_at FROM sessions WHERE id = ?`,
+        )
+        .get(id) as {
+        provider_session_id: string | null;
+        transcript_path: string | null;
+        updated_at: string;
+      };
+
+    it('binds a NULL provider_session_id for a case-insensitive provider match once', () => {
+      insertUnbound('bindable', 'DEVIN');
+
+      const changes = store.bindProviderSessionIdIfAbsent({
+        sessionId: 'bindable',
+        providerSessionId: 'first-echidna',
+        providerName: 'devin',
+        updatedAt: T4,
+      });
+
+      expect(changes).toBe(1);
+      const after = row('bindable');
+      expect(after.provider_session_id).toBe('first-echidna');
+      expect(after.transcript_path).toBeNull();
+      expect(after.updated_at).toBe(T4);
+    });
+
+    it('keeps the first binding when a different id arrives later', () => {
+      insertUnbound('bindable', 'devin');
+      store.bindProviderSessionIdIfAbsent({
+        sessionId: 'bindable',
+        providerSessionId: 'first-echidna',
+        providerName: 'devin',
+        updatedAt: T3,
+      });
+
+      const changes = store.bindProviderSessionIdIfAbsent({
+        sessionId: 'bindable',
+        providerSessionId: 'second-id',
+        providerName: 'devin',
+        updatedAt: T4,
+      });
+
+      expect(changes).toBe(0);
+      const after = row('bindable');
+      expect(after.provider_session_id).toBe('first-echidna');
+      expect(after.updated_at).toBe(T3);
+    });
+
+    it('writes nothing for a different provider', () => {
+      insertUnbound('bindable', 'claude');
+
+      const changes = store.bindProviderSessionIdIfAbsent({
+        sessionId: 'bindable',
+        providerSessionId: 'first-echidna',
+        providerName: 'devin',
+        updatedAt: T4,
+      });
+
+      expect(changes).toBe(0);
+      const after = row('bindable');
+      expect(after.provider_session_id).toBeNull();
+      expect(after.updated_at).toBe(T0);
+    });
+
+    it('writes nothing for an unknown session', () => {
+      const changes = store.bindProviderSessionIdIfAbsent({
+        sessionId: 'no-such-session',
+        providerSessionId: 'first-echidna',
+        providerName: 'devin',
+        updatedAt: T4,
+      });
+      expect(changes).toBe(0);
+    });
+
+    it('allows binding for legacy rows with NULL provider_name_at_launch', () => {
+      insertUnbound('legacy', null);
+
+      const changes = store.bindProviderSessionIdIfAbsent({
+        sessionId: 'legacy',
+        providerSessionId: 'first-echidna',
+        providerName: 'devin',
+        updatedAt: T4,
+      });
+
+      expect(changes).toBe(1);
+      expect(row('legacy').provider_session_id).toBe('first-echidna');
+    });
+  });
 });

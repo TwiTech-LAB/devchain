@@ -27,6 +27,9 @@ export const PROVIDER_ROOTS: Record<string, string[]> = {
   // Copilot stores one append-only JSONL transcript per session at
   // `~/.copilot/session-state/<sessionId>/events.jsonl`; the broad root covers it.
   copilot: ['.copilot/'],
+  // Devin's transcript is DevChain-owned: the CLI writes its ATIF export to
+  // `~/.devchain/provider-transcripts/devin/<sessions.id>.json` (launch `--export`).
+  devin: ['.devchain/provider-transcripts/devin/'],
 };
 
 export const TRANSCRIPT_PROVIDER_ROOTS = Symbol('TRANSCRIPT_PROVIDER_ROOTS');

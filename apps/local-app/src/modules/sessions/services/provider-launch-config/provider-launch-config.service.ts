@@ -30,9 +30,11 @@ export interface LaunchConfigInput {
   mode: 'new' | 'restore';
   providerSessionId?: string;
   /**
-   * The devchain `sessions.id` for a NEW launch, threaded into `buildLaunchArgs`
-   * so deterministic-binding adapters (e.g. Copilot) can emit it as the provider
-   * session UUID (`--session-id <sessions.id>`). Undefined on restore.
+   * The devchain `sessions.id`, threaded into `buildLaunchArgs` for BOTH modes
+   * so deterministic-binding adapters can anchor their transcript to it:
+   * Copilot emits it as the provider session UUID on new (`--session-id
+   * <sessions.id>`) and ignores it on restore; Devin derives its `--export`
+   * path from it on new and restore.
    */
   sessionId?: string;
   adapter: ProviderAdapter;

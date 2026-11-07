@@ -26,7 +26,14 @@ import { GenerateLoginDialog } from './GenerateLoginDialog';
 import { PROVIDER_NAMES } from './login-choices';
 
 /** A provider of the dialog; `other` stores any environment key for any provider. */
-export type AddLoginProvider = 'claude' | 'codex' | 'copilot' | 'agy' | 'opencode' | 'other';
+export type AddLoginProvider =
+  | 'claude'
+  | 'codex'
+  | 'copilot'
+  | 'agy'
+  | 'opencode'
+  | 'devin'
+  | 'other';
 
 type Method = 'token' | 'sign-in' | 'import' | 'key';
 
@@ -36,6 +43,7 @@ const PROVIDER_ORDER: AddLoginProvider[] = [
   'copilot',
   'agy',
   'opencode',
+  'devin',
   'other',
 ];
 
@@ -51,6 +59,7 @@ const METHODS: Record<AddLoginProvider, Method[]> = {
   codex: ['sign-in'],
   agy: ['sign-in'],
   opencode: ['import', 'sign-in'],
+  devin: ['token'],
   other: ['key'],
 };
 
@@ -64,11 +73,19 @@ const METHOD_LABELS: Record<Method, string> = {
 const TOKEN_KEYS: Partial<Record<AddLoginProvider, string>> = {
   claude: 'CLAUDE_CODE_OAUTH_TOKEN',
   copilot: 'COPILOT_GITHUB_TOKEN',
+  devin: 'WINDSURF_API_KEY',
 };
 
 /** The command that creates a provider's token, shown under the token field. */
 const TOKEN_COMMANDS: Partial<Record<AddLoginProvider, string>> = {
   claude: 'claude setup-token',
+};
+
+/** Guidance text under the token field where no CLI command creates the token. */
+const TOKEN_HINTS: Partial<Record<AddLoginProvider, string>> = {
+  // Devin stores the key as `windsurf_api_key` in its credentials file
+  // (~/.config/devin/credentials.toml or %APPDATA%\devin\credentials.toml).
+  devin: "Paste the `windsurf_api_key` value from Devin's credentials.toml",
 };
 
 /** The entry a method stored, for a caller that selects it. */
@@ -163,6 +180,9 @@ function TokenForm({
             Run <span className="font-mono">{TOKEN_COMMANDS[provider]}</span> on a PC where you are
             signed in to {PROVIDER_LABELS[provider]}, then paste the token here.
           </p>
+        )}
+        {!generic && TOKEN_HINTS[provider] && (
+          <p className="text-xs text-muted-foreground">{TOKEN_HINTS[provider]}</p>
         )}
         {!generic && TOKEN_KEYS[provider] && (
           <p className="text-xs text-muted-foreground">

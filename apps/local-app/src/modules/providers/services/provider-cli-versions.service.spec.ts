@@ -41,6 +41,7 @@ function defaultSettingsMap() {
     claude: { version: 'latest', homeManaged: false },
     codex: { version: 'latest', homeManaged: false },
     copilot: { version: 'latest', homeManaged: false },
+    devin: { version: 'latest', homeManaged: false },
     opencode: { version: 'latest', homeManaged: false },
   };
 }
@@ -101,7 +102,7 @@ describe('ProviderCliVersionsService', () => {
       service.onModuleInit();
 
       // Init returned while the check is still pending: startup never waits.
-      expect(lookup.fetchLatestVersion).toHaveBeenCalledTimes(4);
+      expect(lookup.fetchLatestVersion).toHaveBeenCalledTimes(5);
       gate.resolve('2.1.281');
       await flushMicrotasks();
       expect(service.getLookup('claude')?.latestVersion).toBe('2.1.281');
@@ -136,7 +137,7 @@ describe('ProviderCliVersionsService', () => {
       expect(lookup.fetchLatestVersion).not.toHaveBeenCalled();
 
       await service.checkNow();
-      expect(lookup.fetchLatestVersion).toHaveBeenCalledTimes(4);
+      expect(lookup.fetchLatestVersion).toHaveBeenCalledTimes(5);
     });
   });
 
@@ -146,15 +147,15 @@ describe('ProviderCliVersionsService', () => {
       stubAllProviders('1.0.0', ['1.0.0']);
       service.onModuleInit();
       await flushMicrotasks();
-      expect(lookup.fetchLatestVersion).toHaveBeenCalledTimes(4);
+      expect(lookup.fetchLatestVersion).toHaveBeenCalledTimes(5);
 
       jest.advanceTimersByTime(PROVIDER_CLI_CHECK_INTERVAL_MS - 1);
       await flushMicrotasks();
-      expect(lookup.fetchLatestVersion).toHaveBeenCalledTimes(4);
+      expect(lookup.fetchLatestVersion).toHaveBeenCalledTimes(5);
 
       jest.advanceTimersByTime(1);
       await flushMicrotasks();
-      expect(lookup.fetchLatestVersion).toHaveBeenCalledTimes(8);
+      expect(lookup.fetchLatestVersion).toHaveBeenCalledTimes(10);
     });
 
     it('stops checking after onModuleDestroy', async () => {
@@ -166,7 +167,7 @@ describe('ProviderCliVersionsService', () => {
       service.onModuleDestroy();
       jest.advanceTimersByTime(PROVIDER_CLI_CHECK_INTERVAL_MS * 3);
       await flushMicrotasks();
-      expect(lookup.fetchLatestVersion).toHaveBeenCalledTimes(4);
+      expect(lookup.fetchLatestVersion).toHaveBeenCalledTimes(5);
     });
   });
 
@@ -175,7 +176,13 @@ describe('ProviderCliVersionsService', () => {
       stubAllProviders('2.1.281', ['2.1.281', '2.1.280']);
       const results = await service.checkNow();
 
-      expect(Object.keys(results).sort()).toEqual(['claude', 'codex', 'copilot', 'opencode']);
+      expect(Object.keys(results).sort()).toEqual([
+        'claude',
+        'codex',
+        'copilot',
+        'devin',
+        'opencode',
+      ]);
       expect(results.claude).toEqual({
         latestVersion: '2.1.281',
         versions: ['2.1.281', '2.1.280'],
@@ -191,7 +198,7 @@ describe('ProviderCliVersionsService', () => {
 
       const first = service.checkNow();
       const second = service.checkNow();
-      expect(lookup.fetchLatestVersion).toHaveBeenCalledTimes(4);
+      expect(lookup.fetchLatestVersion).toHaveBeenCalledTimes(5);
 
       gate.resolve('1.2.3');
       const [a, b] = await Promise.all([first, second]);
@@ -284,7 +291,13 @@ describe('ProviderCliVersionsService', () => {
 
     it('returns a null lookup before the first check completes', () => {
       const overview = service.getOverview();
-      for (const provider of ['claude', 'codex', 'copilot', 'opencode'] as ProviderCliName[]) {
+      for (const provider of [
+        'claude',
+        'codex',
+        'copilot',
+        'devin',
+        'opencode',
+      ] as ProviderCliName[]) {
         expect(overview.providers[provider].lookup).toBeNull();
       }
     });
@@ -334,7 +347,7 @@ describe('ProviderCliVersionsService', () => {
 
       await service.setVersion('claude', { version: 'latest', homeManaged: true });
       await flushMicrotasks();
-      expect(lookup.fetchLatestVersion).toHaveBeenCalledTimes(4);
+      expect(lookup.fetchLatestVersion).toHaveBeenCalledTimes(5);
     });
   });
 });

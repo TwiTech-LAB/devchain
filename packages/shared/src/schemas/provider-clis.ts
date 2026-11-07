@@ -5,7 +5,7 @@ import { z } from 'zod';
  * `scripts/host-cli-pins.json`; a provider missing here (e.g. agy) has no npm
  * package and is out of version management entirely.
  */
-export const PROVIDER_CLI_NAMES = ['claude', 'codex', 'copilot', 'opencode'] as const;
+export const PROVIDER_CLI_NAMES = ['claude', 'codex', 'copilot', 'devin', 'opencode'] as const;
 
 export type ProviderCliName = (typeof PROVIDER_CLI_NAMES)[number];
 
@@ -13,6 +13,7 @@ export const PROVIDER_CLI_NPM_PACKAGES: Readonly<Record<ProviderCliName, string>
   claude: '@anthropic-ai/claude-code',
   codex: '@openai/codex',
   copilot: '@github/copilot',
+  devin: 'devin',
   opencode: '@opencode/cli',
 };
 

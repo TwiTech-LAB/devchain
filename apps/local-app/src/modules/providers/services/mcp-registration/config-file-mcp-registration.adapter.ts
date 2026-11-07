@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import { readFile, writeFile, rename } from 'fs/promises';
+import { readFile, writeFile, rename, mkdir } from 'fs/promises';
 import * as path from 'path';
 import type { Provider } from '../../../storage/models/domain.models';
 import { createLogger } from '../../../../common/logging/logger';
@@ -80,21 +80,27 @@ export class ConfigFileMcpRegistrationAdapter implements McpRegistrationAdapter 
       }
     }
 
+    // Providers may nest the server map under a non-'mcp' root key
+    // (devin: 'mcpServers'); default stays 'mcp' (opencode-flat shape).
+    const rootKey = provAdapter.mcpConfigRootKey ?? 'mcp';
     const entry = provAdapter.buildMcpConfigEntry(options);
-    if (config.mcp !== undefined && !isPlainRecord(config.mcp)) {
+    if (config[rootKey] !== undefined && !isPlainRecord(config[rootKey])) {
       return {
         success: false,
-        message: `${provAdapter.configFileName} has invalid "mcp" field (expected object) — please fix it manually`,
+        message: `${provAdapter.configFileName} has invalid "${rootKey}" field (expected object) — please fix it manually`,
         stdout: '',
         stderr: '',
         exitCode: null,
       };
     }
-    const mcp = (config.mcp as Record<string, unknown>) ?? {};
+    const mcp = (config[rootKey] as Record<string, unknown>) ?? {};
     mcp[entry.key] = entry.value;
-    config.mcp = mcp;
+    config[rootKey] = mcp;
 
     const tmpPath = configPath + '.tmp';
+    // The config may live in a subdirectory that does not exist yet on fresh
+    // projects (devin's `<cwd>/.devin/`); create it before the atomic write.
+    await mkdir(path.dirname(configPath), { recursive: true });
     await writeFile(tmpPath, JSON.stringify(config, null, 2) + '\n', 'utf-8');
     await rename(tmpPath, configPath);
 
@@ -220,16 +226,17 @@ export class ConfigFileMcpRegistrationAdapter implements McpRegistrationAdapter 
       throw error;
     }
 
-    if (config.mcp !== undefined && !isPlainRecord(config.mcp)) {
+    const rootKey = provAdapter.mcpConfigRootKey ?? 'mcp';
+    if (config[rootKey] !== undefined && !isPlainRecord(config[rootKey])) {
       return {
         success: false,
-        message: `${provAdapter.configFileName} has invalid "mcp" field (expected object) — please fix it manually`,
+        message: `${provAdapter.configFileName} has invalid "${rootKey}" field (expected object) — please fix it manually`,
         stdout: '',
         stderr: '',
         exitCode: null,
       };
     }
-    const mcp = config.mcp as Record<string, unknown> | undefined;
+    const mcp = config[rootKey] as Record<string, unknown> | undefined;
     if (!mcp || !(alias in mcp)) {
       return {
         success: true,
@@ -241,9 +248,10 @@ export class ConfigFileMcpRegistrationAdapter implements McpRegistrationAdapter 
     }
 
     delete mcp[alias];
-    config.mcp = mcp;
+    config[rootKey] = mcp;
 
     const tmpPath = configPath + '.tmp';
+    await mkdir(path.dirname(configPath), { recursive: true });
     await writeFile(tmpPath, JSON.stringify(config, null, 2) + '\n', 'utf-8');
     await rename(tmpPath, configPath);
 

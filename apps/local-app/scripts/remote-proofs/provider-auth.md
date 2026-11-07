@@ -40,6 +40,7 @@ CLI versions (PC / second host):
 | OpenCode `api` | n/a | one entry of the PC's `auth.json` | entry in composed `~/.local/share/opencode/auth.json` 0600 | n/a | `static` |
 | OpenCode `oauth` | `XDG_DATA_HOME` | one entry of the isolated `auth.json` | entry in composed `auth.json` | rewritten; `refresh` rotates | `family` |
 | Copilot | `GH_CONFIG_DIR` + `--insecure-storage` | `gh auth token` output (`gho_…`) | `COPILOT_GITHUB_TOKEN` env | n/a (no file) | `static` |
+| Devin | none needed (paste from `credentials.toml`) | `windsurf_api_key` value | `WINDSURF_API_KEY` env | n/a (no file) | `static` |
 
 ## Claude
 
@@ -169,6 +170,18 @@ CLI versions (PC / second host):
   `firstLaunchAt`; no copy of the token in `~/.copilot`.
 - Kind: `static` (no refresh; revocable from GitHub settings).
 
+## Devin
+
+- Isolation: none needed. Devin honors `WINDSURF_API_KEY` as the session
+  identity — with it set, the binary prints "`WINDSURF_API_KEY` controls this
+  session's identity, so `/login` is not available".
+- Captured: the `windsurf_api_key` value pasted from Devin's `credentials.toml`
+  on a signed-in PC (`%APPDATA%\devin\credentials.toml` on Windows).
+- Verification (VM, `WINDSURF_API_KEY` exported):
+  `devin -p "Reply with exactly: OK" --respect-workspace-trust false` → `OK`.
+- Files produced: none by the login — the env var alone carries the session.
+- Kind: `static` (no refresh).
+
 ## PC logins after the proof
 
 Each CLI was run on the PC after all VM refreshes:
@@ -186,9 +199,9 @@ before the proof and was not touched.
 
 ## Recommendations for Phase 6
 
-- Vault entries: `static` = Claude setup-token, Copilot `gho_` token, OpenCode
-  `api` entries; `family` = Codex `auth.json`, agy `antigravity-oauth-token`,
-  OpenCode `oauth` entries.
+- Vault entries: `static` = Claude setup-token, Copilot `gho_` token, Devin
+  `windsurf_api_key`, OpenCode `api` entries; `family` = Codex `auth.json`, agy
+  `antigravity-oauth-token`, OpenCode `oauth` entries.
 - Place static tokens through the provider env (`providers.env` /
   config env), never as files.
 - Watch these files on the VM for write-back: `~/.codex/auth.json`,
