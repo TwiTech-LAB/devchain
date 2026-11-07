@@ -60,4 +60,20 @@ describe('SyncthingRestClient.request abort handling', () => {
       globalThis.fetch = original;
     }
   });
+
+  it('passes a dispatcher with raised timeouts, so long scans survive the 300s default', async () => {
+    const original = globalThis.fetch;
+    const fetchMock = jest.fn().mockResolvedValue(new Response('{}'));
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+    try {
+      const client = new SyncthingRestClient('http://127.0.0.1:8384', 'key');
+
+      await client.request('POST', '/rest/db/scan?folder=code%3Ap1');
+
+      const init = fetchMock.mock.calls[0][1] as RequestInit & { dispatcher?: unknown };
+      expect(init.dispatcher).toBeDefined();
+    } finally {
+      globalThis.fetch = original;
+    }
+  });
 });

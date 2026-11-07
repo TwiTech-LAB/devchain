@@ -1,7 +1,20 @@
+import { Agent } from 'undici';
 import { z } from 'zod';
 import { AppError } from '../../common/errors/error-types';
+import { SCAN_TIMEOUT_MS } from './file-sync.dto';
 
 const DEFAULT_TIMEOUT_MS = 5_000;
+
+/**
+ * Whole-folder scans (POST /rest/db/scan) hold one request open until the scan
+ * ends, which on a large project can exceed undici's default headersTimeout
+ * (~300s) and fail mid-scan with a bare "fetch failed". This dispatcher leaves
+ * headroom past the largest per-request timeout so the caller's own abort wins.
+ */
+const dispatcher = new Agent({
+  headersTimeout: SCAN_TIMEOUT_MS + 60_000,
+  bodyTimeout: SCAN_TIMEOUT_MS + 60_000,
+});
 
 const VersionSchema = z.object({ version: z.string() });
 const StatusSchema = z.object({ myID: z.string() });
@@ -92,17 +105,28 @@ export class SyncthingRestClient {
       response = await fetch(`${this.baseUrl}${path}`, {
         method,
         signal: requestSignal,
+        // Undici extension absent from the DOM RequestInit type: the dispatcher
+        // carries the raised headers/body timeouts this call site needs.
+        dispatcher,
         headers: {
           'X-API-Key': this.apiKey,
           ...(body !== undefined && { 'content-type': 'application/json' }),
         },
         ...(body !== undefined && { body: JSON.stringify(body) }),
-      });
+      } as RequestInit);
       text = await response.text();
     } catch (error) {
       if (signal?.aborted) throw signal.reason;
+      // fetch collapses socket/timeout failures into a bare "fetch failed"; the
+      // real reason lives on the cause chain (e.g. UND_ERR_HEADERS_TIMEOUT), so
+      // surface it here instead of dropping it.
+      const reasons: string[] = [];
+      for (let e: unknown = error; e instanceof Error; e = e.cause) {
+        const code = (e as { code?: string }).code;
+        reasons.push(code ? `${code}: ${e.message}` : e.message);
+      }
       throw new SyncthingRestError(
-        `Syncthing is unreachable (${method} ${route}): ${error instanceof Error ? error.message : String(error)}`,
+        `Syncthing is unreachable (${method} ${route}): ${reasons.join(' <= ') || String(error)}`,
         { path: route, status: null },
       );
     } finally {
