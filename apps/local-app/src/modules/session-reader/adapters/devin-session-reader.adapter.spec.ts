@@ -5,6 +5,13 @@ import { DevinSessionReaderAdapter } from './devin-session-reader.adapter';
 import { DEVIN_TRANSCRIPTS_ROOT } from '../../../common/devin-transcript-paths';
 import type { PricingServiceInterface } from '../services/pricing.interface';
 
+jest.mock('node:os', () => {
+  const actual = jest.requireActual<typeof import('node:os')>('node:os');
+  return { ...actual, homedir: jest.fn(actual.homedir) };
+});
+const realHomedir = jest.requireActual<typeof import('node:os')>('node:os').homedir;
+const homedirMock = os.homedir as jest.Mock;
+
 const homeDir = os.homedir();
 const pricing: PricingServiceInterface = {
   calculateMessageCost: jest.fn().mockReturnValue(0),
@@ -41,6 +48,24 @@ describe('DevinSessionReaderAdapter', () => {
     expect(adapter.incrementalMode).toBe('snapshot');
     expect(adapter.allowedRoots).toEqual([path.join(homeDir, DEVIN_TRANSCRIPTS_ROOT)]);
     expect(adapter.getWatchPaths('/any')).toEqual([path.join(homeDir, DEVIN_TRANSCRIPTS_ROOT)]);
+  });
+
+  it('onModuleInit creates the export folder with mode 0700 and keeps existing exports', async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'devin-home-'));
+    homedirMock.mockReturnValue(home);
+    try {
+      const reader = new DevinSessionReaderAdapter(pricing);
+      const root = path.join(home, DEVIN_TRANSCRIPTS_ROOT);
+      await reader.onModuleInit();
+      expect(fs.statSync(root).mode & 0o777).toBe(0o700);
+
+      fs.writeFileSync(path.join(root, 'sess-1.json'), ATIF);
+      await reader.onModuleInit();
+      expect(fs.readFileSync(path.join(root, 'sess-1.json'), 'utf8')).toBe(ATIF);
+    } finally {
+      homedirMock.mockImplementation(realHomedir);
+      fs.rmSync(home, { recursive: true, force: true });
+    }
   });
 
   it('derives the export path from context.sessionId; [] when missing on disk', async () => {
@@ -119,7 +144,7 @@ describe('DevinSessionReaderAdapter', () => {
     }
   });
 
-  it('parseFullSession ids by export session_id; extractCandidateMetadata works', async () => {
+  it('parseFullSession ids by export session_id', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'devin-full-'));
     const file = path.join(dir, 'x.json');
     fs.writeFileSync(file, ATIF);
@@ -127,9 +152,6 @@ describe('DevinSessionReaderAdapter', () => {
       const s = await adapter.parseFullSession(file);
       expect(s.id).toBe('functional-share');
       expect(s.providerName).toBe('devin');
-      const meta = adapter.extractCandidateMetadata(ATIF);
-      expect(meta?.providerSessionId).toBe('functional-share');
-      expect(adapter.extractContentTimestamp(ATIF)?.getUTCFullYear()).toBe(2026);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }

@@ -41,6 +41,7 @@ describe('type-guards', () => {
     it.each([
       { adapter: claude, commands: { compact: '/compact' } },
       { adapter: codex, commands: { compact: '/compact' } },
+      { adapter: devin, commands: undefined },
       { adapter: opencode, commands: undefined },
       { adapter: antigravity, commands: undefined },
       { adapter: copilot, commands: undefined },
@@ -99,8 +100,8 @@ describe('type-guards', () => {
       { name: 'claude', expected: true },
       { name: 'codex', expected: true },
       { name: 'opencode', expected: false },
-      // devin is project_config too: `devin mcp list` redacts URLs and
-      // `mcp remove` cannot touch foreign-config entries — CLI mode is unusable.
+      // devin is project_config too: `devin mcp remove` cannot touch
+      // foreign-config entries — CLI mode is unusable.
       { name: 'devin', expected: false },
     ])('classifies $name MCP mode', ({ name, expected }) => {
       expect(isMcpCli(adaptersByName[name])).toBe(expected);

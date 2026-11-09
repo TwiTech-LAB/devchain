@@ -89,7 +89,7 @@ describe('ProviderMcpEnsureService', () => {
         }
         if (name === 'devin') {
           // Devin is project_config too (.devin/mcp_config.local.json) — CLI MCP
-          // is unusable because `devin mcp list` redacts URLs.
+          // is unusable because `devin mcp remove` cannot touch foreign configs.
           return { providerName: 'devin', mcpMode: 'project_config' };
         }
         if (name === 'agy') {

@@ -1,7 +1,11 @@
 import { Injectable } from '@nestjs/common';
+import { randomBytes } from 'crypto';
 import { mkdir, readFile, writeFile, rename, unlink, chmod } from 'fs/promises';
-import { join } from 'path';
+import { dirname, join } from 'path';
+import { addToGitExclude } from '../../../common/git-exclude';
+import { parseJsonc, setJsoncValue } from '../../../common/jsonc';
 import { createLogger } from '../../../common/logging/logger';
+import { ProcessExecutor } from '../../terminal/services/process-executor/process-executor.port';
 import { HooksConfigService } from './hooks-config.service';
 import type { HookConfigInstaller } from './copilot-hooks-config.service';
 
@@ -13,6 +17,21 @@ const SCRIPT_FILE_MODE = 0o755;
 const SESSION_START_TIMEOUT_SEC = 10;
 /** Devin's wait cap for the UserPromptSubmit and Stop relay entries, in seconds. */
 const TURN_HOOK_TIMEOUT_SEC = 2;
+const RELAY_MARKER = 'devchain-relay.sh';
+/** Project-relative files that this installer writes. */
+const DEVIN_CONFIG_FILE = '.devin/config.local.json';
+const DEVIN_RELAY_FILE = `.devin/hooks/${RELAY_MARKER}`;
+
+/**
+ * Project-relative files that DevChain writes under `.devin/` and adds to the
+ * git exclude file. Devin excludes its MCP file only when `devin mcp add`
+ * writes it, and DevChain writes that file itself.
+ */
+const DEVCHAIN_DEVIN_FILES = [
+  DEVIN_CONFIG_FILE,
+  DEVIN_RELAY_FILE,
+  '.devin/mcp_config.local.json',
+] as const;
 
 /**
  * DevChain Devin relay, materialized to `<project>/.devin/hooks/devchain-relay.sh`.
@@ -144,17 +163,21 @@ curl -s -f -o /dev/null -X POST \\
 exit 0
 `;
 
-interface DevinConfigLocal {
-  hooks?: Record<string, unknown>;
-  [key: string]: unknown;
+interface DevinHookEntry {
+  type: 'command';
+  command: string;
+  timeout: number;
 }
+
+type HookMergeResult = { ok: true; text: string } | { ok: false; reason: string };
 
 /**
  * DevinHooksConfigService — Devin's parallel to the Claude `HooksConfigService`.
  *
  * Writes a Claude-compatible hook config + relay at the PROJECT level:
  *  - `<project>/.devin/hooks/devchain-relay.sh`   (the normalizing bash relay, chmod +x)
- *  - `<project>/.devin/config.local.json`         (`"hooks"` deep-merged, user keys preserved)
+ *  - `<project>/.devin/config.local.json`         (JSON with comments; only the relay
+ *    entries are edited in place, so user keys, hooks and comments stay)
  *
  * Devin's config schema matches Claude's `settings.local.json` (`command` +
  * `timeout` entries grouped by event name, no matcher) — it reads
@@ -170,18 +193,21 @@ export class DevinHooksConfigService implements HookConfigInstaller {
   /** Stable provider identity used by the launch pipeline to select this installer. */
   readonly providerName = 'devin';
 
-  constructor(private readonly claudeHooksConfig: HooksConfigService) {}
+  constructor(
+    private readonly claudeHooksConfig: HooksConfigService,
+    private readonly executor: ProcessExecutor,
+  ) {}
 
   private hooksDir(projectRootPath: string): string {
-    return join(projectRootPath, '.devin', 'hooks');
+    return dirname(this.relayScriptPath(projectRootPath));
   }
 
   private relayScriptPath(projectRootPath: string): string {
-    return join(this.hooksDir(projectRootPath), 'devchain-relay.sh');
+    return join(projectRootPath, DEVIN_RELAY_FILE);
   }
 
   private configPath(projectRootPath: string): string {
-    return join(projectRootPath, '.devin', 'config.local.json');
+    return join(projectRootPath, DEVIN_CONFIG_FILE);
   }
 
   /**
@@ -197,6 +223,7 @@ export class DevinHooksConfigService implements HookConfigInstaller {
       // Claude relay so it carries the DEVCHAIN_HOOK_PROVIDER guard (a fresh
       // .claude install is left to the Claude path — never create it here).
       await this.claudeHooksConfig.refreshRelayScriptIfPresent(projectRootPath);
+      await this.excludeDevchainFilesFromGit(projectRootPath);
       logger.info('Devin hooks config ensured successfully');
     } catch (error) {
       logger.error({ error }, 'Failed to ensure devin hooks config (non-fatal)');
@@ -214,99 +241,70 @@ export class DevinHooksConfigService implements HookConfigInstaller {
   }
 
   /**
-   * Deep-merge the DevChain hook groups into `<project>/.devin/config.local.json`.
-   * Same idempotent, marker-based merge as the Claude installer: existing keys
-   * and user hooks are preserved, and re-running updates our entries in place.
-   * Missing/invalid JSON starts fresh; the write is atomic.
+   * Install the DevChain relay entries into `<project>/.devin/config.local.json`.
+   * The file is JSON with comments, so it is edited in place, never
+   * re-serialized. A file that cannot be merged without losing user content
+   * stays untouched (warning logged); the launch continues without hooks.
    */
   private async mergeHooksConfig(projectRootPath: string): Promise<void> {
-    const devinDir = join(projectRootPath, '.devin');
     const configPath = this.configPath(projectRootPath);
     const relayScriptPath = this.relayScriptPath(projectRootPath);
 
-    await mkdir(devinDir, { recursive: true });
+    await mkdir(join(projectRootPath, '.devin'), { recursive: true });
 
-    // Read existing config or start fresh
-    let config: DevinConfigLocal;
+    let original: string | null;
     try {
-      const content = await readFile(configPath, 'utf-8');
-      config = JSON.parse(content);
-      if (typeof config !== 'object' || config === null || Array.isArray(config)) {
-        logger.warn({ configPath }, 'Invalid config.local.json (not an object) — creating fresh');
-        config = {};
-      }
+      original = await readFile(configPath, 'utf-8');
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
-        config = {};
-      } else if (error instanceof SyntaxError) {
-        logger.warn({ configPath }, 'Invalid JSON in config.local.json — creating fresh');
-        config = {};
-      } else {
-        throw error;
-      }
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      original = null;
     }
 
     // Turn hooks run on every prompt and turn end, so the relay posts in the
     // background and returns at once; devin stops waiting after the short cap.
-    const sessionStartHook = {
-      type: 'command' as const,
+    const sessionStartHook: DevinHookEntry = {
+      type: 'command',
       command: `"${relayScriptPath}"`,
       timeout: SESSION_START_TIMEOUT_SEC,
     };
-    const turnHook = { ...sessionStartHook, timeout: TURN_HOOK_TIMEOUT_SEC };
-
-    if (!config.hooks || typeof config.hooks !== 'object') {
-      config.hooks = {};
-    }
+    const turnHook: DevinHookEntry = { ...sessionStartHook, timeout: TURN_HOOK_TIMEOUT_SEC };
 
     // Devin's lifecycle hooks only — no PreToolUse/PostToolUse matcher groups.
-    const hooks = config.hooks as Record<string, unknown>;
-    this.mergeHookGroup(hooks, 'SessionStart', sessionStartHook);
-    this.mergeHookGroup(hooks, 'UserPromptSubmit', turnHook);
-    this.mergeHookGroup(hooks, 'Stop', turnHook);
+    const result = mergeDevchainHooks(original ?? '{}\n', {
+      SessionStart: sessionStartHook,
+      UserPromptSubmit: turnHook,
+      Stop: turnHook,
+    });
+    if (!result.ok) {
+      logger.warn(
+        { configPath, reason: result.reason },
+        `Left ${configPath} unchanged (${result.reason}); DevChain hooks are not installed`,
+      );
+      return;
+    }
+    if (result.text === original) return;
 
-    const output = JSON.stringify(config, null, 2) + '\n';
-    await this.atomicWrite(configPath, output, CONFIG_FILE_MODE);
+    await this.atomicWrite(configPath, result.text, CONFIG_FILE_MODE);
     logger.debug({ configPath }, 'Devin hooks config merged');
   }
 
   /**
-   * Idempotently merge the DevChain relay hook into one event group, preserving
-   * any user-authored groups for the same event (no matchers in devin config —
-   * a group is "ours" when it contains the relay marker).
+   * In a git repository, add the DevChain-written `.devin` files to the shared
+   * exclude file once, so `git add -A` never commits their absolute paths.
+   * Non-fatal: a project outside git (or without git) is skipped silently.
    */
-  private mergeHookGroup(
-    hooks: Record<string, unknown>,
-    eventName: string,
-    devchainHook: { type: 'command'; command: string; timeout: number },
-  ): void {
-    const existing = Array.isArray(hooks[eventName]) ? (hooks[eventName] as unknown[]) : [];
-    const devchainMarker = 'devchain-relay.sh';
-    let devchainGroupFound = false;
-
-    const updated = existing.map((entry: unknown) => {
-      if (!isHookGroup(entry)) return entry;
-      const hasDevchain = entry.hooks?.some(
-        (h: unknown) =>
-          isHookEntry(h) && typeof h.command === 'string' && h.command.includes(devchainMarker),
-      );
-      if (hasDevchain) {
-        devchainGroupFound = true;
-        return { hooks: [devchainHook] };
-      }
-      return entry;
-    });
-
-    if (!devchainGroupFound) {
-      updated.push({ hooks: [devchainHook] });
+  private async excludeDevchainFilesFromGit(projectRootPath: string): Promise<void> {
+    try {
+      const added = await addToGitExclude(this.executor, projectRootPath, DEVCHAIN_DEVIN_FILES);
+      if (added.length > 0) logger.debug({ added }, 'Devin files added to git exclude');
+    } catch (error) {
+      logger.warn({ error, projectRootPath }, 'Failed to update git exclude for Devin files');
     }
-
-    hooks[eventName] = updated;
   }
 
   /** Atomic write: write a uniquely-named temp file then rename into place. */
   private async atomicWrite(filePath: string, content: string, mode: number): Promise<void> {
-    const tmpPath = `${filePath}.tmp.${process.pid}.${Date.now()}`;
+    const tmpPath = `${filePath}.tmp.${process.pid}.${randomBytes(8).toString('hex')}`;
     try {
       await writeFile(tmpPath, content, { encoding: 'utf-8', mode });
       await rename(tmpPath, filePath);
@@ -321,10 +319,66 @@ export class DevinHooksConfigService implements HookConfigInstaller {
   }
 }
 
-function isHookGroup(value: unknown): value is { hooks?: unknown[] } {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
+/**
+ * Set the DevChain relay entry of each event in the config text. A relay entry
+ * that exists is updated key by key, so its group and sibling user hooks stay;
+ * an event without one gets a new group appended. Fails when the text is not
+ * valid JSON with comments or `hooks` has an unexpected shape.
+ */
+function mergeDevchainHooks(
+  text: string,
+  hooksByEvent: Record<string, DevinHookEntry>,
+): HookMergeResult {
+  let config: unknown;
+  try {
+    config = parseJsonc(text);
+  } catch {
+    return { ok: false, reason: 'not valid JSON with comments' };
+  }
+  if (!isPlainRecord(config)) return { ok: false, reason: 'root is not an object' };
+  // Only an absent key starts empty: `"hooks": null` cannot hold the edits.
+  const hooks = config.hooks === undefined ? {} : config.hooks;
+  if (!isPlainRecord(hooks)) return { ok: false, reason: '"hooks" is not an object' };
+
+  let output = text;
+  for (const [eventName, devchainHook] of Object.entries(hooksByEvent)) {
+    const groups = hooks[eventName];
+    if (groups === undefined) {
+      output = setJsoncValue(output, ['hooks', eventName], [{ hooks: [devchainHook] }]);
+      continue;
+    }
+    if (!Array.isArray(groups)) {
+      return { ok: false, reason: `"hooks.${eventName}" is not an array` };
+    }
+
+    let relayFound = false;
+    groups.forEach((group: unknown, groupIndex) => {
+      if (!isPlainRecord(group) || !Array.isArray(group.hooks)) return;
+      group.hooks.forEach((entry: unknown, entryIndex) => {
+        if (!isRelayEntry(entry)) return;
+        relayFound = true;
+        for (const [key, value] of Object.entries(devchainHook)) {
+          if (entry[key] === value) continue;
+          const path = ['hooks', eventName, groupIndex, 'hooks', entryIndex, key];
+          output = setJsoncValue(output, path, value);
+        }
+      });
+    });
+    if (!relayFound) {
+      output = setJsoncValue(output, ['hooks', eventName, -1], { hooks: [devchainHook] });
+    }
+  }
+  return { ok: true, text: output };
 }
 
-function isHookEntry(value: unknown): value is { type?: string; command?: string } {
+function isRelayEntry(value: unknown): value is Record<string, unknown> {
+  return (
+    isPlainRecord(value) &&
+    typeof value.command === 'string' &&
+    value.command.includes(RELAY_MARKER)
+  );
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }

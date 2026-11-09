@@ -5,20 +5,19 @@ import { DevinAdapter } from './devin.adapter';
 import type { ProviderAdapter } from './provider-adapter.interface';
 import { devinTranscriptPath } from '../../../common/devin-transcript-paths';
 
-jest.mock('node:fs', () => {
-  const actual = jest.requireActual('node:fs');
-  return { ...actual, mkdirSync: jest.fn() };
+jest.mock('node:os', () => {
+  const actual = jest.requireActual<typeof import('node:os')>('node:os');
+  return { ...actual, homedir: jest.fn(actual.homedir) };
 });
+const realHomedir = jest.requireActual<typeof import('node:os')>('node:os').homedir;
+const homedirMock = os.homedir as jest.Mock;
 
 const HOME = os.homedir();
 const exportPathFor = (sid: string) => devinTranscriptPath(HOME, sid);
 
 describe('DevinAdapter', () => {
   let adapter: DevinAdapter;
-  const mkdirMock = fs.mkdirSync as jest.Mock;
-
   beforeEach(() => {
-    mkdirMock.mockClear();
     adapter = new DevinAdapter();
   });
 
@@ -27,10 +26,12 @@ describe('DevinAdapter', () => {
       expect(adapter.traits).toEqual({
         activity: 'stop-hook',
         transcriptTurns: false,
-        draftClearKeys: [],
+        draftClearKeys: ['C-c'],
       });
+      expect(adapter.runtimePromptBehavior).toEqual({ inputPromptMarker: '❭' });
       expect(adapter.transcriptDiscoveryStrategy).toBe('first');
       expect(adapter.providerSessionIdRequiredForRestore).toBe(true);
+      expect(adapter.transcriptAppearsAfterTurn).toBe(true);
       expect(adapter.initialPromptSeedMode).toBe('argv');
       expect((adapter as ProviderAdapter).terminalOutputBehavior).toBeUndefined();
     });
@@ -56,10 +57,6 @@ describe('DevinAdapter', () => {
         '--',
         'do the thing',
       ]);
-      expect(mkdirMock).toHaveBeenCalledWith(path.dirname(exportPathFor('sess-1')), {
-        recursive: true,
-        mode: 0o700,
-      });
     });
 
     it('omits -- <prompt> when no initial prompt is configured', () => {
@@ -102,7 +99,6 @@ describe('DevinAdapter', () => {
         '--model',
         'x',
       ]);
-      expect(mkdirMock).toHaveBeenCalled();
     });
 
     it('still requires sessionId (the export path is devchain-owned)', () => {
@@ -112,10 +108,32 @@ describe('DevinAdapter', () => {
     });
   });
 
+  it('buildLaunchArgs creates nothing on disk in either mode', () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'devin-home-'));
+    homedirMock.mockReturnValue(home);
+    try {
+      adapter.buildLaunchArgs({
+        mode: 'new',
+        sessionId: 's1',
+        profileOptionArgs: [],
+      });
+      adapter.buildLaunchArgs({
+        mode: 'restore',
+        providerSessionId: 'functional-share',
+        sessionId: 's2',
+        profileOptionArgs: [],
+      });
+      expect(fs.readdirSync(home)).toEqual([]);
+    } finally {
+      homedirMock.mockImplementation(realHomedir);
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+  });
+
   describe('ConfigFileMcpCapability (project_config — NOT CLI mode)', () => {
     it('declares project_config mode targeting .devin/mcp_config.local.json under mcpServers', () => {
-      // `devin mcp list`/`get` redact URLs and `mcp remove` cannot touch
-      // foreign-config entries, so MCP must go through the config file.
+      // `devin mcp remove` cannot touch foreign-config entries, so MCP must go
+      // through the config file.
       expect(adapter.mcpMode).toBe('project_config');
       expect(adapter.configFileName).toBe('.devin/mcp_config.local.json');
       expect(adapter.mcpConfigRootKey).toBe('mcpServers');

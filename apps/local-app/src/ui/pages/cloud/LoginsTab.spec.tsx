@@ -587,10 +587,11 @@ describe('LoginsTab sections', () => {
       'Copilot',
       'Antigravity',
       'OpenCode',
+      'Devin',
       'Other keys',
     ]);
     expect(within(screen.getByRole('list', { name: 'Other keys' })).getByText('Gemini key'));
-    expect(screen.getAllByText('No login yet.')).toHaveLength(4);
+    expect(screen.getAllByText('No login yet.')).toHaveLength(5);
 
     await userEvent.click(screen.getByRole('button', { name: 'Add a Codex login' }));
     const dialog = await screen.findByRole('dialog', { name: 'Add login' });

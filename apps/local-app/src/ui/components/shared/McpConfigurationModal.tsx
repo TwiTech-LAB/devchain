@@ -37,9 +37,9 @@ function getManualCommand(providerName: string, endpoint: string): string {
     case 'copilot':
       return `copilot mcp add --transport http ${alias} ${endpoint}`;
     case 'devin':
-      // Devin MCP is project-config mode: devin's own CLI list/get redact URLs
-      // and `mcp remove` cannot touch foreign-config entries, so DevChain reads
-      // and writes .devin/mcp_config.local.json directly.
+      // Devin MCP is project-config mode: `devin mcp remove` cannot touch
+      // foreign-config entries, so DevChain reads and writes
+      // .devin/mcp_config.local.json directly.
       return `# Add to .devin/mcp_config.local.json in your project:\n# "mcpServers": { "${alias}": { "url": "${endpoint}", "transport": "http" } }`;
     case 'codex':
       return `codex mcp add --url ${endpoint} ${alias}`;

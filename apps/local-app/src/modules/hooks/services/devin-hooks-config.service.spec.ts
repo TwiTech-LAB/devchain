@@ -1,14 +1,23 @@
 import { mkdtemp, readFile, rm, stat, mkdir, writeFile } from 'fs/promises';
 import { execFileSync } from 'child_process';
+import { closeSync, openSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { DevinHooksConfigService } from './devin-hooks-config.service';
 import { HooksConfigService } from './hooks-config.service';
+import { ChildProcessExecutor } from '../../terminal/services/process-executor/child-process-executor';
 import { HookEventSchema } from '../dtos/hook-event.dto';
+import { parseJsonc } from '../../../common/jsonc';
 
-jest.mock('../../../common/logging/logger', () => ({
-  createLogger: () => ({ info: jest.fn(), error: jest.fn(), warn: jest.fn(), debug: jest.fn() }),
-}));
+jest.mock('../../../common/logging/logger', () => {
+  const instance = { info: jest.fn(), error: jest.fn(), warn: jest.fn(), debug: jest.fn() };
+  return { createLogger: () => instance };
+});
+
+const logger = jest.requireMock('../../../common/logging/logger').createLogger() as Record<
+  'info' | 'error' | 'warn' | 'debug',
+  jest.Mock
+>;
 
 describe('DevinHooksConfigService', () => {
   let service: DevinHooksConfigService;
@@ -19,8 +28,9 @@ describe('DevinHooksConfigService', () => {
 
   beforeEach(async () => {
     claude = new HooksConfigService();
-    service = new DevinHooksConfigService(claude);
+    service = new DevinHooksConfigService(claude, new ChildProcessExecutor());
     tempDir = await mkdtemp(join(tmpdir(), 'devin-hooks-'));
+    jest.clearAllMocks();
   });
   afterEach(async () => {
     await rm(tempDir, { recursive: true, force: true });
@@ -48,6 +58,9 @@ describe('DevinHooksConfigService', () => {
     expect(config.hooks.UserPromptSubmit[0].hooks[0].timeout).toBe(2);
     expect(config.hooks.Stop[0].hooks[0].timeout).toBe(2);
     expect(config.hooks.PreToolUse).toBeUndefined();
+    // Outside a git repository the exclude step is skipped without a warning.
+    expect(logger.warn).not.toHaveBeenCalled();
+    expect(logger.error).not.toHaveBeenCalled();
   });
 
   it('preserves user keys + user hooks and stays idempotent across runs', async () => {
@@ -68,12 +81,126 @@ describe('DevinHooksConfigService', () => {
     expect(config.hooks.Stop).toHaveLength(1);
   });
 
-  it('handles invalid JSON config.local.json gracefully', async () => {
+  it('keeps comments, user settings and user hooks of a commented config', async () => {
+    const original = `{
+  // Team permissions — keep.
+  "permissions": { "allow": ["Bash(ls)"] },
+  "read_config_from": { "claude": false }, /* local only */
+  "hooks": {
+    "SessionStart": [{ "hooks": [{ "type": "command", "command": "/u/h.sh" }] }],
+  },
+}
+`;
     await mkdir(join(tempDir, '.devin'), { recursive: true });
-    await writeFile(configPath(), '{nope');
+    await writeFile(configPath(), original);
+
+    await service.ensureHooksConfig(tempDir);
+
+    const text = await readFile(configPath(), 'utf-8');
+    expect(text).toContain('// Team permissions — keep.');
+    expect(text).toContain('/* local only */');
+    const config = parseJsonc(text) as {
+      permissions: unknown;
+      read_config_from: unknown;
+      hooks: Record<string, Array<{ hooks: Array<{ command?: string }> }>>;
+    };
+    expect(config.permissions).toEqual({ allow: ['Bash(ls)'] });
+    expect(config.read_config_from).toEqual({ claude: false });
+    expect(config.hooks.SessionStart[0]).toEqual({
+      hooks: [{ type: 'command', command: '/u/h.sh' }],
+    });
+    for (const event of ['SessionStart', 'UserPromptSubmit', 'Stop']) {
+      const relayEntries = config.hooks[event].flatMap((group) => group.hooks);
+      expect(relayEntries).toContainEqual(expect.objectContaining({ command: `"${relayPath()}"` }));
+    }
+  });
+
+  it('two concurrent runs in the same millisecond both write a valid config', async () => {
+    const now = jest.spyOn(Date, 'now').mockReturnValue(1_700_000_000_000);
+    try {
+      await Promise.all([service.ensureHooksConfig(tempDir), service.ensureHooksConfig(tempDir)]);
+    } finally {
+      now.mockRestore();
+    }
+    expect(logger.error).not.toHaveBeenCalled();
+    const config = parseJsonc(await readFile(configPath(), 'utf-8')) as {
+      hooks: Record<string, unknown[]>;
+    };
+    expect(config.hooks.SessionStart).toHaveLength(1);
+  });
+
+  it('keeps a user hook and extra keys added to the DevChain hook group', async () => {
     await service.ensureHooksConfig(tempDir);
     const config = JSON.parse(await readFile(configPath(), 'utf-8'));
-    expect(config.hooks.SessionStart).toHaveLength(1);
+    config.hooks.Stop[0].description = 'user note';
+    config.hooks.Stop[0].hooks.push({ type: 'command', command: '/u/stop.sh' });
+    config.hooks.Stop[0].hooks[0].timeout = 99;
+    await writeFile(configPath(), JSON.stringify(config, null, 2));
+
+    await service.ensureHooksConfig(tempDir);
+
+    const after = JSON.parse(await readFile(configPath(), 'utf-8'));
+    expect(after.hooks.Stop).toEqual([
+      {
+        description: 'user note',
+        hooks: [
+          { type: 'command', command: `"${relayPath()}"`, timeout: 2 },
+          { type: 'command', command: '/u/stop.sh' },
+        ],
+      },
+    ]);
+  });
+
+  it.each([
+    ['invalid JSON with comments', '{nope // broken\n'],
+    ['a non-object root', '[1, 2]\n'],
+    ['a non-object "hooks"', '{ "hooks": "off" }\n'],
+    ['a null "hooks"', '{ "hooks": null }\n'],
+  ])('leaves a config with %s byte-identical and names it in a warning', async (_, content) => {
+    await mkdir(join(tempDir, '.devin'), { recursive: true });
+    await writeFile(configPath(), content);
+
+    await service.ensureHooksConfig(tempDir);
+
+    expect(await readFile(configPath(), 'utf-8')).toBe(content);
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ configPath: configPath() }),
+      expect.stringContaining(configPath()),
+    );
+    // The relay is still in place; the launch continues.
+    expect(await readFile(relayPath(), 'utf-8')).toContain('#!/bin/bash');
+  });
+
+  it.each([
+    ['at the repository root', ''],
+    ['in a repository subdirectory', 'sub/project/'],
+  ])('excludes the DevChain .devin files from git once, %s', async (_, prefix) => {
+    try {
+      execFileSync('git', ['init', '-q', tempDir]);
+    } catch {
+      return; // git unavailable on this platform
+    }
+    const projectRoot = join(tempDir, prefix);
+    await mkdir(join(projectRoot, '.devin'), { recursive: true });
+    await writeFile(join(projectRoot, '.devin', 'mcp_config.local.json'), '{}\n');
+
+    await service.ensureHooksConfig(projectRoot);
+    await service.ensureHooksConfig(projectRoot);
+
+    const exclude = await readFile(join(tempDir, '.git', 'info', 'exclude'), 'utf-8');
+    const lines = exclude.split('\n');
+    for (const file of [
+      '.devin/config.local.json',
+      '.devin/hooks/devchain-relay.sh',
+      '.devin/mcp_config.local.json',
+    ]) {
+      expect(lines.filter((line) => line === `${prefix}${file}`)).toHaveLength(1);
+    }
+    const status = execFileSync('git', ['status', '--porcelain', '--untracked-files=all'], {
+      cwd: tempDir,
+      encoding: 'utf-8',
+    });
+    expect(status).not.toContain('.devin');
   });
 
   it('refreshes an existing Claude relay (provider guard) but never creates one', async () => {
@@ -149,14 +276,23 @@ esac
         await writeFile(join(binDir, 'date'), fakeDate, { mode: 0o755 });
       }
 
-      execFileSync('bash', [scriptPath], {
-        input: JSON.stringify(hookJson),
-        env: {
-          ...devchainEnv(),
-          ...extraEnv,
-          PATH: `${binDir}:${process.env.PATH ?? ''}`,
-        },
-      });
+      // stdin comes from a file, not a pipe: a guarded relay exits before it
+      // reads stdin, and writing to its closed pipe fails with EPIPE.
+      const inputFile = join(tempDir, `hook-input-${Date.now()}.json`);
+      await writeFile(inputFile, JSON.stringify(hookJson));
+      const stdinFd = openSync(inputFile, 'r');
+      try {
+        execFileSync('bash', [scriptPath], {
+          stdio: [stdinFd, 'pipe', 'pipe'],
+          env: {
+            ...devchainEnv(),
+            ...extraEnv,
+            PATH: `${binDir}:${process.env.PATH ?? ''}`,
+          },
+        });
+      } finally {
+        closeSync(stdinFd);
+      }
 
       for (let attempt = 0; attempt < 200; attempt++) {
         try {

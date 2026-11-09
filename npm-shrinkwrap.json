@@ -1,12 +1,12 @@
 {
   "name": "devchain-cli",
-  "version": "0.25.0",
+  "version": "0.26.5",
   "lockfileVersion": 3,
   "requires": true,
   "packages": {
     "": {
       "name": "devchain-cli",
-      "version": "0.25.0",
+      "version": "0.26.5",
       "dependencies": {
         "@fastify/http-proxy": "9.5.0",
         "@fastify/send": "2.1.0",
@@ -65,6 +65,7 @@
         "hterm": "2.0.2",
         "hterm-umd": "1.0.1",
         "jose": "^5.10.0",
+        "jsonc-parser": "^3.3.1",
         "lucide-react": "0.545.0",
         "node-pty": "1.2.0-beta.2",
         "open": "^8.4.2",
@@ -4194,6 +4195,12 @@
       "version": "0.4.1",
       "resolved": "https://registry.npmjs.org/json-schema-traverse/-/json-schema-traverse-0.4.1.tgz",
       "integrity": "sha512-xbbCH5dCYU5T8LcEhhuh7HJ88HXuW3qsI3Y0zOZFKfZEHcpWiHU/Jxzk629Brsab/mMiHQti9wMP+845RPe3Vg==",
+      "license": "MIT"
+    },
+    "node_modules/jsonc-parser": {
+      "version": "3.3.1",
+      "resolved": "https://registry.npmjs.org/jsonc-parser/-/jsonc-parser-3.3.1.tgz",
+      "integrity": "sha512-HUgH65KyejrUFPvHFPbqOY0rsFip3Bo5wb4ngvdi1EpCYWUQDC5V+Y7mZws+DLkr4M//zQJoanu1SP+87Dv1oQ==",
       "license": "MIT"
     },
     "node_modules/kind-of": {

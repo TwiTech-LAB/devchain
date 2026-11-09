@@ -1,4 +1,4 @@
-import { Inject, Injectable, Logger } from '@nestjs/common';
+import { Inject, Injectable, Logger, type OnModuleInit } from '@nestjs/common';
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import * as os from 'node:os';
@@ -9,16 +9,12 @@ import type {
   SessionSourceRef,
   ParseOptions,
   IncrementalResult,
-  TranscriptCandidateMetadata,
   AdapterSummaryResult,
 } from './session-reader-adapter.interface';
 import { EXACT_SUMMARY_FIELDS } from './session-reader-adapter.interface';
+import type { TokenUsage } from '../dtos/unified-message.types';
 import type { UnifiedSession } from '../dtos/unified-session.types';
-import {
-  parseDevinAtif,
-  extractAtifSessionId,
-  extractAtifFirstTimestamp,
-} from '../parsers/devin-atif.parser';
+import { parseDevinAtif, extractAtifSessionId } from '../parsers/devin-atif.parser';
 import { PRICING_SERVICE, type PricingServiceInterface } from '../services/pricing.interface';
 import { mapDevinModelToPricing } from '../readers/devin-model-pricing';
 import {
@@ -36,7 +32,7 @@ import {
  * top-level `session_id`.
  */
 @Injectable()
-export class DevinSessionReaderAdapter implements SessionReaderAdapter {
+export class DevinSessionReaderAdapter implements SessionReaderAdapter, OnModuleInit {
   readonly providerName = 'devin';
   // SNAPSHOT (not delta): ATIF is a whole-document rewrite, not an append log —
   // `parseIncremental` re-reads the file and the cache REPLACES, the same
@@ -46,10 +42,27 @@ export class DevinSessionReaderAdapter implements SessionReaderAdapter {
   readonly allowedRoots: string[];
   private readonly logger = new Logger(DevinSessionReaderAdapter.name);
   private readonly homeDir: string;
+  /** Export root: every Devin session's file, named by devchain session id. */
+  private readonly exportRoot: string;
 
   constructor(@Inject(PRICING_SERVICE) private readonly pricingService: PricingServiceInterface) {
     this.homeDir = os.homedir();
-    this.allowedRoots = [path.join(this.homeDir, DEVIN_TRANSCRIPTS_ROOT)];
+    this.exportRoot = path.join(this.homeDir, DEVIN_TRANSCRIPTS_ROOT);
+    this.allowedRoots = [this.exportRoot];
+  }
+
+  /**
+   * `devin --export` fails when the parent folder is missing, and launch
+   * argument building must stay free of filesystem effects — so the folder
+   * exists from app start. It is never deleted: it holds the exports.
+   */
+  async onModuleInit(): Promise<void> {
+    const root = this.exportRoot;
+    try {
+      await fs.mkdir(root, { recursive: true, mode: 0o700 });
+    } catch (error) {
+      this.logger.warn({ error, root }, 'Failed to create the Devin export folder');
+    }
   }
 
   /**
@@ -106,19 +119,7 @@ export class DevinSessionReaderAdapter implements SessionReaderAdapter {
    * cache REPLACES, not appends.
    */
   async parseIncremental(filePath: string, options: ParseOptions): Promise<IncrementalResult> {
-    const result = await parseDevinAtif(filePath, {
-      includeToolCalls: options.includeToolCalls ?? true,
-      pricingService: this.pricingService,
-    });
-
-    return {
-      hasMore: false,
-      nextByteOffset: result.bytesRead,
-      messageCount: result.messages.length,
-      entries: result.messages,
-      metrics: result.metrics,
-      warnings: result.warnings,
-    };
+    return this.parseSessionFile(filePath, { includeToolCalls: options.includeToolCalls });
   }
 
   /**
@@ -126,16 +127,14 @@ export class DevinSessionReaderAdapter implements SessionReaderAdapter {
    * session (files are named by devchain session id, not by project).
    */
   getWatchPaths(_projectRoot: string): string[] {
-    return [path.join(this.homeDir, DEVIN_TRANSCRIPTS_ROOT)];
+    return [this.exportRoot];
   }
 
   calculateCost(entries: unknown[], model: string): number {
     let totalCost = 0;
     const pricingKey = mapDevinModelToPricing(model) ?? model;
     for (const entry of entries) {
-      const msg = entry as {
-        usage?: { input: number; output: number; cacheRead: number; cacheCreation: number };
-      };
+      const msg = entry as { usage?: TokenUsage };
       if (msg.usage) {
         totalCost += this.pricingService.calculateMessageCost(
           pricingKey,
@@ -179,17 +178,6 @@ export class DevinSessionReaderAdapter implements SessionReaderAdapter {
       warnings: result.warnings,
       exactFields: EXACT_SUMMARY_FIELDS,
     };
-  }
-
-  extractCandidateMetadata(content: string): TranscriptCandidateMetadata | undefined {
-    const providerSessionId = extractAtifSessionId(content);
-    const timestamp = extractAtifFirstTimestamp(content);
-    if (!providerSessionId && !timestamp) return undefined;
-    return { providerSessionId, timestamp: timestamp?.toISOString() };
-  }
-
-  extractContentTimestamp(content: string): Date | null {
-    return extractAtifFirstTimestamp(content);
   }
 
   // ---------------------------------------------------------------------------

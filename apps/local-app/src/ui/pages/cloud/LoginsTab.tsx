@@ -19,9 +19,9 @@ import { useProviderAuth } from '@/ui/hooks/useProviderAuth';
 import type { ProviderAuthEntryItem } from './lib/remote-vm-contracts';
 import { getErrorMessage } from '@/ui/lib/toast-helpers';
 import { AddLoginDialog, type AddLoginProvider } from './AddLoginDialog';
-import { LOGIN_PROVIDERS, PROVIDER_NAMES } from './login-choices';
+import { LOGIN_PROVIDERS, LOGIN_SECTION_ORDER, PROVIDER_NAMES } from './login-choices';
 
-const SECTION_ORDER = ['claude', 'codex', 'copilot', 'agy', 'opencode'] as const;
+const SECTION_ORDER = LOGIN_SECTION_ORDER;
 type SectionProvider = (typeof SECTION_ORDER)[number];
 
 function usesEntry(remote: RemoteListItemDto, entryId: string): boolean {

@@ -328,6 +328,7 @@ describe('TranscriptPersistenceListener', () => {
             hooksProvideTranscriptPath: false,
             transcriptDiscoveryStrategy: 'first',
             providerSessionIdRequiredForRestore: true,
+            transcriptAppearsAfterTurn: true,
           };
         }
         if (name === 'acme') {
@@ -701,8 +702,8 @@ describe('TranscriptPersistenceListener', () => {
   });
 
   // -------------------------------------------------------------------------
-  // Idle-triggered re-discovery: Devin's --export file only appears after a
-  // turn completes, which can outlast the session.started backoff window.
+  // Idle-triggered re-discovery: only for adapters whose transcript appears
+  // after a turn (Devin's --export), which can outlast the launch backoff.
   // -------------------------------------------------------------------------
 
   describe('handleActivityChanged (idle-triggered re-discovery)', () => {
@@ -779,6 +780,19 @@ describe('TranscriptPersistenceListener', () => {
       expect(mockStore.getSessionProjectScope).not.toHaveBeenCalled();
       expect(mockAdapter.discoverSessionFile).not.toHaveBeenCalled();
     });
+
+    it.each(['codex', 'claude'])(
+      'skips %s: its transcript does not appear after the turn',
+      async (providerName) => {
+        mockStorage.getProvider.mockResolvedValue(
+          createMockProvider({ id: 'provider-1', name: providerName, binPath: null }),
+        );
+
+        await listener.handleActivityChanged(idlePayload);
+
+        expect(mockAdapter.discoverSessionFile).not.toHaveBeenCalled();
+      },
+    );
 
     it('skips when the session has no agent scope', async () => {
       mockStore.getSessionProjectScope.mockReturnValue(null);

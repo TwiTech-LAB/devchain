@@ -8,9 +8,10 @@ import { PendingAskUserQuestionService } from './services/pending-ask-user-quest
 import { StorageModule } from '../storage/storage.module';
 import { EventsCoreModule } from '../events/events-core.module';
 import { RuntimeContextCaptureModule } from '../runtime-context-capture/runtime-context-capture.module';
+import { ProcessExecutorModule } from '../terminal/services/process-executor/process-executor.module';
 
 @Module({
-  imports: [StorageModule, EventsCoreModule, RuntimeContextCaptureModule],
+  imports: [StorageModule, EventsCoreModule, RuntimeContextCaptureModule, ProcessExecutorModule],
   controllers: [HooksController],
   providers: [
     HooksService,

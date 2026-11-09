@@ -3,6 +3,7 @@ import * as path from 'node:path';
 import * as os from 'node:os';
 import * as fs from 'node:fs/promises';
 import { ValidationError } from '../../../common/errors/error-types';
+import { DEVIN_TRANSCRIPTS_ROOT } from '../../../common/devin-transcript-paths';
 
 /** Control character regex (C0 controls except tab/newline/carriage-return) */
 const CONTROL_CHAR_RE = /[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/;
@@ -29,7 +30,7 @@ export const PROVIDER_ROOTS: Record<string, string[]> = {
   copilot: ['.copilot/'],
   // Devin's transcript is DevChain-owned: the CLI writes its ATIF export to
   // `~/.devchain/provider-transcripts/devin/<sessions.id>.json` (launch `--export`).
-  devin: ['.devchain/provider-transcripts/devin/'],
+  devin: [DEVIN_TRANSCRIPTS_ROOT],
 };
 
 export const TRANSCRIPT_PROVIDER_ROOTS = Symbol('TRANSCRIPT_PROVIDER_ROOTS');

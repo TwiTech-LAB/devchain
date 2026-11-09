@@ -151,10 +151,10 @@ export class TranscriptPersistenceListener {
 
   /**
    * Turn end is the earliest reliable signal that a late-materialized
-   * transcript exists: providers like Devin only write their export after a
-   * turn completes, so the launch-time backoff can exhaust before the file
-   * appears. Re-run discovery once the turn ends — cheap because the gate
-   * skips sessions whose binding is already complete.
+   * transcript exists: adapters declaring `transcriptAppearsAfterTurn` write
+   * their transcript only after a turn completes, so the launch-time backoff
+   * can exhaust before the file appears. Other providers never re-run here —
+   * an unbound session would otherwise rescan after every turn.
    */
   @OnCatalogEvent('session.activity.changed', { async: true })
   async handleActivityChanged(payload: SessionActivityChangedEventPayload): Promise<void> {
@@ -163,6 +163,8 @@ export class TranscriptPersistenceListener {
       if (!this.getDiscoveryGate(payload.sessionId).needsAny) return;
       const scope = this.sessionRows.getSessionProjectScope(payload.sessionId);
       if (!scope?.agentId) return;
+      const resolution = await this.resolveProviderChain(scope.agentId);
+      if (!resolution || !this.transcriptAppearsAfterTurn(resolution.providerName)) return;
       await this.runDiscoveryOnce(payload.sessionId, scope.agentId, true);
     } catch (error) {
       this.logger.error(
@@ -297,7 +299,7 @@ export class TranscriptPersistenceListener {
   }
 
   /**
-   * Provider hook lifecycle CONFIRMATION (Copilot — HookCapability adopter #2).
+   * Provider hook lifecycle CONFIRMATION (Copilot and Devin — HookCapability adopters #2 and #3).
    *
    * Unlike Claude (whose transcript binding comes FROM the hook), providers that
    * bind deterministically usually have `transcript_path` + `provider_session_id`
@@ -368,13 +370,11 @@ export class TranscriptPersistenceListener {
       return;
     }
 
-    // Backfill the id when it is still unbound — but only for adapters that
-    // are confirm-only BY DESIGN (hook-capable, hooksProvideTranscriptPath ===
-    // false like Devin): the hook carries the authoritative provider session
-    // id well before such providers materialize a transcript file, so restore
-    // must not wait on discovery. Unknown or non-hook-capable adapters get no
-    // write, and this runs only after the path-mismatch guard so a
-    // contradictory hook can never mutate provider_session_id.
+    // Backfill an unbound id (see the docblock): only for adapters that are
+    // confirm-only BY DESIGN (hook-capable, hooksProvideTranscriptPath ===
+    // false). Unknown or non-hook-capable adapters get no write, and this runs
+    // only after the path-mismatch guard, so a contradictory hook can never
+    // mutate provider_session_id.
     const adapter = this.resolveProviderAdapter(providerName);
     if (
       incomingProviderSessionId &&
@@ -985,6 +985,15 @@ export class TranscriptPersistenceListener {
     const resolved = await this.safeRealpath(filePath);
     cache.set(filePath, resolved);
     return resolved;
+  }
+
+  private transcriptAppearsAfterTurn(providerName: string): boolean {
+    const provAdapter = this.resolveProviderAdapter(providerName.toLowerCase());
+    return (
+      !!provAdapter &&
+      isTranscriptDiscoveryCapable(provAdapter) &&
+      provAdapter.transcriptAppearsAfterTurn === true
+    );
   }
 
   private requiresProviderSessionIdForRestore(providerName: string): boolean {

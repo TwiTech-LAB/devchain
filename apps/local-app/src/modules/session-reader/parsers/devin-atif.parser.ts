@@ -8,17 +8,19 @@ import type {
   UnifiedMetrics,
   PhaseTokenBreakdown,
 } from '../dtos/unified-session.types';
+import type { TokenUsage } from '../dtos/unified-message.types';
 import type { PricingServiceInterface } from '../services/pricing.interface';
 import { estimateMessageTokens } from '../adapters/utils/estimate-content-tokens';
-import { calculateDevinMessageCost, mapDevinModelToPricing } from '../readers/devin-model-pricing';
+import { calculateDevinMessageCost, resolveDevinPricingKey } from '../readers/devin-model-pricing';
 
 const logger = createLogger('DevinAtifParser');
 
 // ---------------------------------------------------------------------------
 // Raw ATIF-v1.7 types (defensive — all fields optional)
 // ---------------------------------------------------------------------------
-// The export is a single JSON document rewritten after each turn, so a read can
-// race a write and observe a partial file — the parser must never throw.
+// The export is a single JSON document that Devin rewrites after each turn
+// (temp file + rename, so a reader sees a whole document). The parser never
+// throws: a malformed export gives an empty result.
 
 interface AtifStep {
   step_id?: number;
@@ -94,7 +96,6 @@ export interface DevinParseResult {
 
 export interface DevinParseOptions {
   maxMessages?: number;
-  byteOffset?: number;
   includeToolCalls?: boolean;
   pricingService?: PricingServiceInterface;
   /** Metrics-only scan: preserve current-turn state without retaining all messages. */
@@ -102,39 +103,29 @@ export interface DevinParseOptions {
 }
 
 /**
- * Extract the provider session id from raw ATIF content without a full parse —
- * used by discovery (`extractCandidateMetadata`) and by the adapter to stamp
- * `providerSessionId` on a discovered file. Tolerates partial JSON via a
- * top-level `"session_id"` fallback regex.
+ * Extract the provider session id from raw ATIF content — used by the adapter
+ * to stamp `providerSessionId` on a discovered file. Tolerates malformed JSON
+ * through a text scan for the top-level `"session_id"`.
  */
 export function extractAtifSessionId(content: string): string | undefined {
   try {
     const doc = JSON.parse(content) as AtifExport;
     if (typeof doc.session_id === 'string' && doc.session_id) return doc.session_id;
   } catch {
-    // Partial/malformed export — fall through to the head scan.
+    // Malformed export — fall through to the text scan.
   }
+  return scanAtifSessionId(content);
+}
+
+/** Text scan for a `"session_id"` string value, with no JSON parse. */
+function scanAtifSessionId(content: string): string | undefined {
   const match = /"session_id"\s*:\s*"([^"\\]*)"/.exec(content);
   return match?.[1] ?? undefined;
 }
 
-/**
- * Timestamp of the first step in raw ATIF content, or null when none parses.
- * ATIF timestamps carry 9-digit fractional seconds — `Date` accepts and
- * truncates them to ms precision.
- */
-export function extractAtifFirstTimestamp(content: string): Date | null {
-  try {
-    const doc = JSON.parse(content) as AtifExport;
-    const ts = doc.steps?.[0]?.timestamp;
-    if (typeof ts === 'string') {
-      const parsed = new Date(ts);
-      if (!Number.isNaN(parsed.getTime())) return parsed;
-    }
-  } catch {
-    // Partial/malformed export — no timestamp.
-  }
-  return null;
+/** The value when it is a non-empty string, else undefined. */
+function nonEmptyString(value: unknown): string | undefined {
+  return typeof value === 'string' && value ? value : undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -151,7 +142,7 @@ interface AssistantBuffer {
   content: UnifiedContentBlock[];
   toolCalls: UnifiedToolCall[];
   toolResults: UnifiedToolResult[];
-  usage: { input: number; output: number; cacheRead: number; cacheCreation: number };
+  usage: TokenUsage;
 }
 
 // ---------------------------------------------------------------------------
@@ -189,6 +180,11 @@ export async function parseDevinAtif(
   let costUsd = 0;
   /** Context occupied by the LAST agent step's API call (latest-state snapshot). */
   let totalContextTokens = 0;
+  // Each step's `prompt_tokens` already carries the full context sent to the
+  // model, so context use is the last step's value — summing steps overcounts.
+  let lastPromptTokens = 0;
+  /** Estimated tokens of the message content only (no system prompt or tool definitions). */
+  let visibleContextTokens = 0;
 
   // Timestamp tracking
   let firstTimestamp: Date | undefined;
@@ -199,9 +195,6 @@ export async function parseDevinAtif(
 
   // Turn state: which conversational step closed the file.
   let lastConversationalSource: 'user' | 'agent' | null = null;
-
-  // Visible context estimate
-  let visibleContextTokens = 0;
 
   // Byte tracking
   let bytesRead = 0;
@@ -227,14 +220,16 @@ export async function parseDevinAtif(
   try {
     doc = JSON.parse(raw) as AtifExport;
   } catch {
-    // The CLI rewrites the file per turn; a mid-write read is partial. Never
-    // throw — report an empty result so the watcher retries on the next write.
+    // A malformed export (Devin writes through temp file + rename, so not a
+    // half-written one). Never throw: report an empty result; the watcher reads
+    // the file again on its next change.
     logger.debug({ filePath }, 'Devin ATIF export is partial/malformed — empty result this pass');
     return {
       messages: [],
       metrics: emptyMetrics(),
       bytesRead,
-      sessionId: extractAtifSessionId(raw),
+      // JSON.parse(raw) just failed, so only the text scan can find the id.
+      sessionId: scanAtifSessionId(raw),
       warnings: ['Devin transcript is mid-rewrite or malformed — metrics deferred to next pass'],
     };
   }
@@ -245,6 +240,7 @@ export async function parseDevinAtif(
   }
 
   function pushMessage(message: UnifiedMessage): void {
+    visibleContextTokens += estimateMessageTokens(message.content);
     if (maxMessages !== undefined && messageCount >= maxMessages) {
       truncatedByMax = true;
       return;
@@ -277,7 +273,6 @@ export async function parseDevinAtif(
       stopReason: 'end_turn',
     };
     pushMessage(msg);
-    visibleContextTokens += estimateMessageTokens(msg.content);
   }
 
   function ensureAssistantBuffer(ts: Date, model: string): AssistantBuffer {
@@ -339,18 +334,13 @@ export async function parseDevinAtif(
         isSidechain: false,
       };
       pushMessage(msg);
-      visibleContextTokens += estimateMessageTokens(msg.content);
       continue;
     }
 
     // source === 'agent' — one model call.
     lastConversationalSource = 'agent';
     const model =
-      typeof step.model_name === 'string' && step.model_name
-        ? step.model_name
-        : typeof step.extra?.generation_model === 'string'
-          ? step.extra.generation_model
-          : '';
+      nonEmptyString(step.model_name) ?? nonEmptyString(step.extra?.generation_model) ?? '';
     if (model) {
       primaryModel = model;
       modelsSet.add(model);
@@ -383,11 +373,9 @@ export async function parseDevinAtif(
         if (!callId) continue;
         const rawContent = res.content;
         const resultContent: string | unknown[] =
-          typeof rawContent === 'string'
+          typeof rawContent === 'string' || Array.isArray(rawContent)
             ? rawContent
-            : Array.isArray(rawContent)
-              ? rawContent
-              : JSON.stringify(rawContent ?? '');
+            : JSON.stringify(rawContent ?? '');
         const isError = res.is_error === true || res.isError === true;
         buf.content.push({
           type: 'tool_result',
@@ -428,6 +416,7 @@ export async function parseDevinAtif(
       );
       // Latest-state context snapshot from the LAST agent step's API call.
       totalContextTokens = prompt + output;
+      lastPromptTokens = prompt;
     }
   }
 
@@ -441,24 +430,17 @@ export async function parseDevinAtif(
   // prompt (or nothing conversational was written yet).
   const isOngoing = lastConversationalSource !== 'agent';
 
-  // `primaryModel` is a variant uid (e.g. `claude-fable-5-1-xhigh`) — resolve
-  // the pricing FAMILY key before the context-window lookup.
   const contextWindowTokens =
     pricing && primaryModel
-      ? pricing.getContextWindowSize(mapDevinModelToPricing(primaryModel) ?? primaryModel)
+      ? pricing.getContextWindowSize(resolveDevinPricingKey(primaryModel, pricing) ?? primaryModel)
       : 200_000;
 
   const modelsUsed = modelsSet.size > 1 ? Array.from(modelsSet) : undefined;
 
-  // Devin reports no per-phase context data; single-phase contribution placeholder.
+  // Devin reports no per-phase context data; single-phase placeholder.
   const phases: PhaseTokenBreakdown[] = [
-    {
-      phaseNumber: 1,
-      contribution: inputTokens + cacheReadTokens,
-      peakTokens: inputTokens + cacheReadTokens,
-    },
+    { phaseNumber: 1, contribution: lastPromptTokens, peakTokens: lastPromptTokens },
   ];
-  const totalContextConsumption = phases.reduce((sum, p) => sum + p.contribution, 0);
   const totalTokens = inputTokens + outputTokens + cacheReadTokens + cacheCreationTokens;
 
   const metricsResult: UnifiedMetrics = {
@@ -467,7 +449,7 @@ export async function parseDevinAtif(
     cacheReadTokens,
     cacheCreationTokens,
     totalTokens,
-    totalContextConsumption,
+    totalContextConsumption: lastPromptTokens,
     compactionCount,
     phaseBreakdowns: phases,
     visibleContextTokens,

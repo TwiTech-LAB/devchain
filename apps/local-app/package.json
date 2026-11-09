@@ -100,6 +100,7 @@
     "gray-matter": "4.0.3",
     "handlebars": "^4.7.9",
     "jose": "^5.10.0",
+    "jsonc-parser": "^3.3.1",
     "lucide-react": "0.545.0",
     "node-pty": "1.2.0-beta.2",
     "pino": "^8.19.0",

@@ -104,7 +104,11 @@ describe('McpProviderRegistrationService', () => {
     );
     fakeExecutor = new FakeProcessExecutor();
     const cliAdapter = new CliMcpRegistrationAdapter(factory, fakeExecutor);
-    const configFileAdapter = new ConfigFileMcpRegistrationAdapter(factory);
+    // A separate executor: the git-exclude lookup is not a provider CLI call.
+    const configFileAdapter = new ConfigFileMcpRegistrationAdapter(
+      factory,
+      new FakeProcessExecutor(),
+    );
     const antigravityAdapter = new AntigravityMcpRegistrationAdapter(factory);
     const port = new McpRegistrationPort(
       cliAdapter,
@@ -591,9 +595,9 @@ describe('McpProviderRegistrationService', () => {
   });
 
   // ── Devin config-file mode (.devin/mcp_config.local.json, mcpServers root) ──
-  // Devin switched from CLI MCP to config-file mode: `devin mcp list` redacts
-  // URLs and `mcp remove` cannot touch foreign-config entries, so the CLI
-  // adapter could never verify endpoints. These tests pin the file-IO path.
+  // Devin uses config-file mode: `devin mcp remove` cannot touch foreign-config
+  // entries, so CLI drift repair would abort a launch. These tests pin the
+  // file-IO path.
 
   describe('devin config-file mode', () => {
     const devinConfigPath = path.join('/projects/myapp', '.devin', 'mcp_config.local.json');

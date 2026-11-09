@@ -1,6 +1,4 @@
 import { Injectable } from '@nestjs/common';
-import { mkdirSync } from 'node:fs';
-import { dirname } from 'node:path';
 import * as os from 'node:os';
 import { DEVIN_TRAITS } from './devin.traits';
 import type {
@@ -8,6 +6,7 @@ import type {
   AddMcpServerOptions,
   BuildLaunchArgsInput,
   McpServerEntry,
+  RuntimePromptBehavior,
 } from './provider-adapter.interface';
 import type {
   ConfigFileMcpCapability,
@@ -16,6 +15,7 @@ import type {
   HookEnvContext,
 } from './capabilities';
 import { devinTranscriptPath } from '../../../common/devin-transcript-paths';
+import { parseJsonc } from '../../../common/jsonc';
 
 /**
  * Adapter for the Devin CLI (`devin`, npm package `devin`, verified
@@ -38,23 +38,21 @@ import { devinTranscriptPath } from '../../../common/devin-transcript-paths';
  *   interactive session; the prompt must come after `--`, at the end of argv.
  * - **Workspace trust.** `--respect-workspace-trust false` skips the trust
  *   prompt on every launch/restore — no pre-written trust file needed.
- * - **Terminal verification.** Interactive launch and restore were exercised
- *   in tmux on Ubuntu/WSL and an Ubuntu Remote VM with v3000.11.234.
- *   `terminalOutputBehavior` remains unset (the default); these checks do not
- *   establish alternate-screen behavior or exhaustive browser rendering.
- * - **MCP is config-file mode, NOT CLI mode.** `devin mcp list`/`get` redact
- *   URLs in ALL output (`URL: <redacted>`), so the endpoint can never be
- *   verified through CLI output — every ensure would see a phantom mismatch.
- *   Worse, `devin mcp remove` refuses entries owned by FOREIGN configs (devin
- *   aggregates other tools' files, e.g. the project's `opencode.json`), so the
- *   drift-repair remove aborts the whole launch. We therefore read/write the
- *   project-local `<cwd>/.devin/mcp_config.local.json` directly — the exact
- *   file `devin mcp add` (default local scope) produces:
+ * - **Terminal.** Interactive Devin uses no alternate screen (proof P7 in
+ *   `scripts/remote-proofs/devin.md`), so `terminalOutputBehavior` stays unset.
+ * - **MCP is config-file mode, NOT CLI mode.** `devin mcp remove` refuses
+ *   entries owned by FOREIGN configs (devin aggregates other tools' files, e.g.
+ *   the project's `opencode.json`), so a drift-repair remove would abort the
+ *   whole launch. We therefore read/write the project-local
+ *   `<cwd>/.devin/mcp_config.local.json` directly — the exact file
+ *   `devin mcp add` (default local scope) produces:
  *   `{ "mcpServers": { "<name>": { "url": "…", "transport": "http" } } }`.
  *
- * No `provider-cli-policy` entry: Devin exposes no flag/env to disable
- * auto-update, so the default (no-op) branch applies. No EffortCapability —
- * Devin encodes effort in the model id itself (`…-xhigh`, `…-max`).
+ * No `provider-cli-policy` entry: Devin has no flag or env that switches its
+ * updater off (only `auto_update` in the user config), and DevChain-managed
+ * npm installs do not update themselves (proof P11), so the default (no-op)
+ * branch applies. No EffortCapability — Devin encodes effort in the model id
+ * itself (`…-xhigh`, `…-max`).
  */
 @Injectable()
 export class DevinAdapter
@@ -71,17 +69,26 @@ export class DevinAdapter
   // first (only) derived candidate.
   readonly transcriptDiscoveryStrategy = 'first' as const;
   readonly providerSessionIdRequiredForRestore = true;
+  // The export is written after each turn (and only after the Stop hook).
+  readonly transcriptAppearsAfterTurn = true;
+  readonly runtimePromptBehavior: RuntimePromptBehavior = { inputPromptMarker: '❭' };
 
   // ── ConfigFileMcpCapability ──────────────────────────────────────────────
   // `mcpMode = 'project_config'` routes MCP ensure/preflight through
   // ConfigFileMcpRegistrationAdapter (file IO) instead of the CLI adapter —
-  // see the class docblock for why `devin mcp list`/`remove` cannot be used.
+  // see the class docblock for why `devin mcp remove` cannot be used.
   // `configFileName` is relative to the project root (path.join handles the
   // `.devin/` subdir); `.local.json` is devin's uncommitted local scope, the
   // same file `devin mcp add` writes by default.
   readonly mcpMode = 'project_config' as const;
   readonly configFileName = '.devin/mcp_config.local.json';
   readonly mcpConfigRootKey = 'mcpServers' as const;
+  // Devin documents comments in its config files.
+  readonly configFileAllowsComments = true;
+  // The file holds DevChain's loopback URL. Devin itself excludes it from git
+  // only when `devin mcp add` writes it; DevChain writes it at project create,
+  // import and launch, so it adds the same exclude after each write.
+  readonly excludeConfigFileFromGit = true;
 
   // ── HookCapability (3rd adopter; Claude-compatible hook JSON) ─────────────
   // Hooks provide the native provider session id before the first export
@@ -117,34 +124,25 @@ export class DevinAdapter
         'Devin launch requires the devchain sessionId to bind its --export transcript path',
       );
     }
-    // `--export` errors when the parent dir is missing — create it up front.
+    // The session reader creates the export folder at app start.
     const exportPath = devinTranscriptPath(os.homedir(), sessionId);
-    mkdirSync(dirname(exportPath), { recursive: true, mode: 0o700 });
 
-    if (mode === 'restore') {
-      // `devin -r <id> --export <newpath>` re-writes the FULL conversation (old
-      // + new turns) to the fresh path — the restore re-binds deterministically.
-      return {
-        argv: [
-          '--resume',
-          providerSessionId!,
-          '--export',
-          exportPath,
-          '--respect-workspace-trust',
-          'false',
-          ...profileOptionArgs,
-        ],
-      };
-    }
-
-    // New: interactive launch with an optional prompt seeded after `--`.
-    const argv = [
+    const commonArgs = [
       '--export',
       exportPath,
       '--respect-workspace-trust',
       'false',
       ...profileOptionArgs,
     ];
+
+    if (mode === 'restore') {
+      // `devin -r <id> --export <newpath>` re-writes the FULL conversation (old
+      // + new turns) to the fresh path — the restore re-binds deterministically.
+      return { argv: ['--resume', providerSessionId!, ...commonArgs] };
+    }
+
+    // New: interactive launch with an optional prompt seeded after `--`.
+    const argv = commonArgs;
     if (initialPrompt) {
       argv.push('--', initialPrompt);
     }
@@ -152,8 +150,8 @@ export class DevinAdapter
   }
 
   /**
-   * Parse MCP entries from `.devin/mcp_config.local.json` content.
-   * Caller is responsible for handling JSON parse errors.
+   * Parse MCP entries from `.devin/mcp_config.local.json` content (JSON with
+   * comments). Throws `SyntaxError` on invalid content; the caller handles it.
    *
    * Only URL-bearing entries are returned: devin's file mixes transports under
    * one `mcpServers` map — remote servers carry `{ "url": …, "transport": … }`
@@ -161,8 +159,8 @@ export class DevinAdapter
    * and stdio entries have no endpoint to compare against the devchain URL.
    */
   parseProjectConfig(content: string): McpServerEntry[] {
-    const config = JSON.parse(content);
-    const servers = config?.mcpServers;
+    const config = parseJsonc(content) as Record<string, unknown> | null;
+    const servers = config?.[this.mcpConfigRootKey];
     if (!servers || typeof servers !== 'object') return [];
 
     const entries: McpServerEntry[] = [];

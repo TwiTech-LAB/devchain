@@ -10176,5 +10176,47 @@
     "input_cost_per_token": 0.000001,
     "output_cost_per_token": 0.000005,
     "cache_read_input_token_cost": 1e-7
+  },
+  "swe-1-6": {
+    "input_cost_per_token": 5e-7,
+    "output_cost_per_token": 0.0000025,
+    "cache_read_input_token_cost": 2e-7
+  },
+  "swe-1-6-slow": {
+    "input_cost_per_token": 5e-7,
+    "output_cost_per_token": 0.0000025,
+    "cache_read_input_token_cost": 2e-7,
+    "max_input_tokens": 200000
+  },
+  "swe-1-7": {
+    "input_cost_per_token": 5e-7,
+    "output_cost_per_token": 0.0000025,
+    "cache_read_input_token_cost": 2e-7
+  },
+  "swe-1-7-medium": {
+    "input_cost_per_token": 5e-7,
+    "output_cost_per_token": 0.0000025,
+    "cache_read_input_token_cost": 2e-7
+  },
+  "swe-2-medium-lightning": {
+    "input_cost_per_token": 0.000001,
+    "output_cost_per_token": 0.000005,
+    "cache_read_input_token_cost": 1e-7
+  },
+  "swe-2-high-lightning": {
+    "input_cost_per_token": 0.000001,
+    "output_cost_per_token": 0.000005,
+    "cache_read_input_token_cost": 1e-7
+  },
+  "swe-2-max-lightning": {
+    "input_cost_per_token": 0.000001,
+    "output_cost_per_token": 0.000005,
+    "cache_read_input_token_cost": 1e-7
+  },
+  "swe-2-flash-medium": {
+    "input_cost_per_token": 0,
+    "output_cost_per_token": 0,
+    "cache_read_input_token_cost": 0,
+    "max_input_tokens": 262144
   }
 }

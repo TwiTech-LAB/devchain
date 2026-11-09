@@ -83,9 +83,9 @@ const TOKEN_COMMANDS: Partial<Record<AddLoginProvider, string>> = {
 
 /** Guidance text under the token field where no CLI command creates the token. */
 const TOKEN_HINTS: Partial<Record<AddLoginProvider, string>> = {
-  // Devin stores the key as `windsurf_api_key` in its credentials file
-  // (~/.config/devin/credentials.toml or %APPDATA%\devin\credentials.toml).
-  devin: "Paste the `windsurf_api_key` value from Devin's credentials.toml",
+  // Devin keeps credentials.toml in its data folder: `$XDG_DATA_HOME/devin/`,
+  // which defaults to `~/.local/share/devin/`.
+  devin: 'Paste the `windsurf_api_key` value from `~/.local/share/devin/credentials.toml`',
 };
 
 /** The entry a method stored, for a caller that selects it. */
