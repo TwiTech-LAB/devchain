@@ -6,6 +6,9 @@ import { Layout } from './Layout';
 import { RuntimeProvider } from '../hooks/useRuntime';
 import type { WsEnvelope } from '../lib/socket';
 
+// The agent-request modal has its own spec; these suites mock fetch with other shapes.
+jest.mock('@/ui/pages/vault/VaultRequestModal', () => ({ VaultRequestModal: () => null }));
+
 const toastSpy = jest.fn();
 const useSelectedProjectMock = jest.fn();
 let wsMessageHandler: ((envelope: WsEnvelope) => void) | null = null;

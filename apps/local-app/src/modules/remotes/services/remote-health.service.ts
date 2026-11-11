@@ -1,9 +1,10 @@
 import { RemoteApiKeyService } from '../auth/remote-api-key.service';
 import { z } from 'zod';
-import { ProviderCliRuntimeReportSchema } from '@devchain/shared';
+import { HostVaultStatusSchema, ProviderCliRuntimeReportSchema } from '@devchain/shared';
 import { ProviderCliVersionsService } from '../../providers/services/provider-cli-versions.service';
 import { RemoteProviderCliSettingsService } from './remote-provider-cli-settings.service';
 import { RemoteProviderUsageSettingsService } from './remote-provider-usage-settings.service';
+import { RemoteVaultPushService } from './remote-vault-push.service';
 import {
   RemoteSkillSettingsService,
   type SkillSettingsPollCycle,
@@ -26,7 +27,11 @@ import {
   HostEnvOverridesSchema,
   type HostEnvOverrideEntry,
 } from '../host/host-env-override-report';
-import type { RemoteHealthPort, RemoteHealthState } from '../ports/remote-health.port';
+import type {
+  RemoteHealthPort,
+  RemoteHealthState,
+  RemotePollListener,
+} from '../ports/remote-health.port';
 import { matchesHomePath } from '../home-identity';
 import { isHostApiKeyRejection } from '../host-api-key';
 import { remoteFetch, requireRemoteTls } from '../transport/remote-tls';
@@ -70,6 +75,7 @@ interface RuntimeResponse {
   gid?: unknown;
   uidConflict?: unknown;
   providerEnvOverrides?: unknown;
+  vault?: unknown;
 }
 
 @Injectable()
@@ -83,6 +89,7 @@ export class RemoteHealthService implements RemoteHealthPort, OnModuleInit, OnMo
    * stale, so the timer skips these remotes and refreshes run one at a time.
    */
   private readonly refreshing = new Map<string, Promise<void>>();
+  private readonly listeners = new Set<RemotePollListener>();
   private unregisterCliCheck?: () => void;
   private timer: ReturnType<typeof setInterval> | null = null;
 
@@ -98,9 +105,11 @@ export class RemoteHealthService implements RemoteHealthPort, OnModuleInit, OnMo
     private readonly apiKeys: RemoteApiKeyService,
     private readonly sharedVm: RemoteSharedVmService,
     private readonly notices: HomeSharedVmNoticesService,
+    private readonly vaultPush: RemoteVaultPushService,
   ) {}
 
   onModuleInit(): void {
+    this.vaultPush.useHealth((remoteId) => this.getState(remoteId));
     this.unregisterCliCheck = this.cliVersions.registerRemoteCheck(async () => {
       const { items } = await this.storage.listRemotes({ limit: 500 });
       await Promise.all(
@@ -131,6 +140,11 @@ export class RemoteHealthService implements RemoteHealthPort, OnModuleInit, OnMo
     const state = this.state.get(remoteId) ?? OFFLINE_DEFAULT_STATE;
     const roster = this.sharedVm.lastRoster(remoteId);
     return roster ? { ...state, sharedVmRoster: roster } : state;
+  }
+
+  registerPollListener(listener: RemotePollListener): () => void {
+    this.listeners.add(listener);
+    return () => this.listeners.delete(listener);
   }
 
   getStatsHistory(remoteId: string): HostStats[] {
@@ -206,6 +220,7 @@ export class RemoteHealthService implements RemoteHealthPort, OnModuleInit, OnMo
         this.consecutiveFailures.delete(trackedId);
         this.statsHistory.delete(trackedId);
         this.pollVersions.delete(trackedId);
+        for (const listener of this.listeners) listener.lost(trackedId);
       }
     }
   }
@@ -283,9 +298,14 @@ export class RemoteHealthService implements RemoteHealthPort, OnModuleInit, OnMo
       // tolerated inside and never change the online/version state above.
       await this.familyWriteback.pullIfChanged(remoteId, baseUrl, certificate);
       if (versionMatches) {
+        for (const listener of this.listeners) listener.polled(remoteId);
         void this.skillSettings.pushIfChanged(remoteId, skillCycle);
         void this.cliSettings.pushIfChanged(remoteId);
         void this.usageSettings.pushIfChanged(remoteId);
+        void this.vaultPush.pushIfChanged(
+          remoteId,
+          HostVaultStatusSchema.safeParse(runtime.vault).data,
+        );
       }
     } catch (error) {
       if (this.pollVersions.get(remoteId) !== pollVersion) return;
@@ -333,6 +353,9 @@ export class RemoteHealthService implements RemoteHealthPort, OnModuleInit, OnMo
     // even when nothing meaningful changed; it is stored but excluded from the gate.
     const changed = !previous || !this.isEquivalentIgnoringLastSeenAt(previous, nextState);
     this.state.set(remoteId, nextState);
+    if (!nextState.online || !nextState.versionMatches || nextState.apiKeyRejected) {
+      for (const listener of this.listeners) listener.lost(remoteId);
+    }
     if (changed) {
       this.broadcaster.broadcastEvent('remotes', 'state', {
         remoteId,

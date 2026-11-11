@@ -1,3 +1,4 @@
+import { VaultUnavailableError } from '../../../common/errors/error-types';
 import { createTestDatabase } from '../../../common/test/test-database.helper';
 import Database from 'better-sqlite3';
 import { createHash, randomUUID } from 'node:crypto';
@@ -993,6 +994,27 @@ describe('ExternalSubtaskSyncSubscriber', () => {
       title: 'Retry {project:Subscriber project}/src/retry.ts',
     });
     expect((await managed()).operationPhase).toBe('confirmed');
+  });
+
+  it('keeps the row state when manual Retry meets a locked Vault', async () => {
+    await subscriber.reconcileEpic(childId);
+    const row = await managed();
+    await storage.updateExternalManagedSubtaskLink(row.id, {
+      operationPhase: 'needs_attention',
+      safeErrorCode: 'provider_request_rejected',
+      retryAt: null,
+    });
+    jest
+      .spyOn(storage, 'getIntegrationConnectionCredentialsById')
+      .mockRejectedValueOnce(new VaultUnavailableError('locked'));
+
+    await expect(subscriber.retryManagedLink(row.id)).rejects.toBeInstanceOf(VaultUnavailableError);
+
+    expect(await managed()).toMatchObject({
+      operationPhase: 'needs_attention',
+      safeErrorCode: 'provider_request_rejected',
+    });
+    expect(clickup.update).not.toHaveBeenCalled();
   });
 
   it('fails closed before provider writes when the owning project cannot be resolved', async () => {

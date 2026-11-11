@@ -56,6 +56,47 @@ export class StorageError extends AppError {
   }
 }
 
+/**
+ * The Vault cannot encrypt or decrypt now because it is not set up or still
+ * locked. Callers treat this as "not available now", never as absent or corrupt.
+ */
+export class VaultUnavailableError extends AppError {
+  constructor(state: string, message = 'The Vault is not available now.') {
+    super(message, 'vault_unavailable', 503, { state });
+  }
+}
+
+/**
+ * An agent with Vault grants cannot launch while the Vault is locked or not set up, or,
+ * on a claimed VM, while its value cache is not ready.
+ */
+export class VaultLockedError extends AppError {
+  constructor(
+    state: string,
+    message = 'The Vault is locked. Unlock the Vault to use Vault entries.',
+  ) {
+    super(message, 'VAULT_LOCKED', 409, { state });
+  }
+}
+
+/**
+ * The agent may not use the Vault: its project has no Vault access (`VAULT_NOT_ENABLED`),
+ * or the access does not cover its profile family (`VAULT_ACCESS_DENIED`).
+ */
+export class VaultAccessRefusedError extends AppError {
+  constructor(code: 'VAULT_NOT_ENABLED' | 'VAULT_ACCESS_DENIED') {
+    super(
+      code === 'VAULT_NOT_ENABLED'
+        ? 'The Vault is off for this project. The user can turn it on in the Vault settings of the project.'
+        : 'The Vault of this project is not available to agents of this role. The user can add the role in the Vault settings of the project.',
+      code,
+      403,
+      // `details.code` too, as other Vault refusals carry it.
+      { code },
+    );
+  }
+}
+
 export class IOError extends AppError {
   constructor(message: string, details?: Record<string, unknown>) {
     super(message, 'io_error', 500, details);

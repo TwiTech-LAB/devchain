@@ -26,13 +26,14 @@ import { SessionsReadModule } from './sessions-read.module';
 import { SessionLauncherFacade } from './services/session-launcher-facade.service';
 import { RuntimeContextCaptureModule } from '../runtime-context-capture/runtime-context-capture.module';
 import { ProviderRuntimePreparationService } from './services/provider-runtime-preparation';
-import { PROVIDER_LAUNCH_SCRIPT_ROOT } from './services/provider-runtime-preparation/launch-script';
-import { getRuntimeContextCaptureRoot } from '../runtime-context-capture/runtime-context-capture-files';
+import { RuntimeDirectoryModule } from '../runtime-directory/runtime-directory.module';
 import { EpicTimeStoreModule } from '../epic-time/epic-time-store.module';
 import { SessionTerminalRuntimeModule } from '../session-terminal-runtime/session-terminal-runtime.module';
+import { DEVCHAIN_CLI_PATH, findDevchainCli } from '../../common/devchain-cli-launcher';
 import { GIT_SHIM_BIN, GIT_SHIM_ON_VM, gitShimBin } from '../../common/git-shim-paths';
 import { getEnvConfig } from '../../common/config/env.config';
 import { isClaimedHost } from '../remotes/host-api-key';
+import { VaultModule } from '../vault/vault.module';
 
 @Module({
   imports: [
@@ -48,8 +49,10 @@ import { isClaimedHost } from '../remotes/host-api-key';
     ProviderAdaptersModule,
     ProvidersModule,
     RuntimeContextCaptureModule,
+    RuntimeDirectoryModule,
     SessionTerminalRuntimeModule,
     EpicTimeStoreModule,
+    VaultModule,
   ],
   providers: [
     SessionsService,
@@ -61,10 +64,13 @@ import { isClaimedHost } from '../remotes/host-api-key';
     SessionLaunchPipeline,
     SessionRestorePipeline,
     ProviderRuntimePreparationService,
-    { provide: PROVIDER_LAUNCH_SCRIPT_ROOT, useFactory: () => getRuntimeContextCaptureRoot() },
     {
       provide: GIT_SHIM_BIN,
       useFactory: () => (process.env.NODE_ENV === 'test' ? null : gitShimBin()),
+    },
+    {
+      provide: DEVCHAIN_CLI_PATH,
+      useFactory: () => (process.env.NODE_ENV === 'test' ? null : findDevchainCli()),
     },
     {
       provide: GIT_SHIM_ON_VM,

@@ -153,6 +153,14 @@ export function createMockAdapter(providerName = 'test-provider') {
 
 // ── Full harness for SessionLaunchPipeline ─────────────────────────────
 
+/** A Vault launch seam for an agent with no Vault access and no grants. */
+export function createVaultLaunchMock() {
+  return {
+    hasAccess: jest.fn().mockResolvedValue(false),
+    grantedEntryCount: jest.fn().mockResolvedValue(0),
+  };
+}
+
 export function createLaunchPipelineHarness() {
   const sqliteMock = createSqliteMock();
   const adapter = createMockAdapter();
@@ -262,6 +270,7 @@ export function createLaunchPipelineHarness() {
     createPlan: jest.fn().mockResolvedValue(providerRuntimePlan),
     materialize: jest.fn().mockResolvedValue(preparedProviderRuntime),
   };
+  const vaultLaunch = createVaultLaunchMock();
 
   // Build the pipeline via direct instantiation (bypass DI decorators)
   // Constructor order matches the @Injectable constructor parameter order.
@@ -295,11 +304,13 @@ export function createLaunchPipelineHarness() {
     sessionTerminalRuntime, // SessionTerminalRuntimeService
     providerRuntimePreparation, // ProviderRuntimePreparationService
     new SessionRowStore(sqliteMock.db as unknown as BetterSQLite3Database),
+    vaultLaunch, // VaultLaunchService
   );
 
   return {
     pipeline,
     mocks: {
+      vaultLaunch,
       sqliteMock,
       adapter,
       storage,

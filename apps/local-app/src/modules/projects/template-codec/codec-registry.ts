@@ -20,6 +20,7 @@ import { presetsCodec } from './codecs/presets.codec';
 import { providerSettingsCodec } from './codecs/provider-settings.codec';
 import { providerModelsCodec } from './codecs/provider-models.codec';
 import { providerEffortsCodec } from './codecs/provider-efforts.codec';
+import { vaultAccessCodec } from './codecs/vault-access.codec';
 import type { TemplateSectionCodec } from './template-section-codec';
 
 /**
@@ -31,7 +32,8 @@ import type { TemplateSectionCodec } from './template-section-codec';
  * requiresState `agentsPersisted`; scheduledEpics reads agentNameToId + the statuses map and
  * requiresState `epicsLoaded`; projectSettings reads createdPrompts/promptIdMap (prompts) and
  * templateLabelToStatusId (statuses); providerSettings reads nothing (resolved against live
- * provider storage). Stage numbers track docs/template-roundtrip-compatibility-matrix.md.
+ * provider storage); vaultAccess must stay last (see its codec header). Stage numbers track
+ * docs/template-roundtrip-compatibility-matrix.md.
  */
 export const REPLACE_MODE_CODECS: readonly TemplateSectionCodec[] = [
   statusesCodec,
@@ -47,6 +49,7 @@ export const REPLACE_MODE_CODECS: readonly TemplateSectionCodec[] = [
   providerSettingsCodec,
   providerModelsCodec,
   providerEffortsCodec,
+  vaultAccessCodec,
 ];
 
 /** Section ids that currently flow through the pipeline (replace mode). */

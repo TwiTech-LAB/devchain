@@ -262,6 +262,7 @@ module.exports = {
   MIN_CLAIM_UID,
   MAX_CLAIM_UID,
   REFUSED_HOME_FILES,
+  RESERVED_ENV_KEYS,
   validateClaim,
   validateHomePath,
   isSemver,

@@ -807,6 +807,11 @@ export class ExternalEditSessionService {
           return this.deleteRejected(this.currentView(sessionId), 'connection_superseded');
         }
 
+        // Read before the dispatch starts: a locked Vault must not reject the delete for good.
+        const credentials = (await this.storage.getIntegrationConnectionCredentials({
+          projectId,
+          provider,
+        }))!;
         const preflight = this.store.get(sessionId);
         if (!preflight.ok) {
           return this.deleteRejected(null, this.deleteFailure(preflight.reason));
@@ -845,7 +850,7 @@ export class ExternalEditSessionService {
 
         try {
           await adapter.ownedMutations!.deleteComment(
-            (await this.storage.getIntegrationConnectionCredentials({ projectId, provider }))!,
+            credentials,
             this.context(connection),
             session.value.remoteTaskId,
             session.value.remoteCommentId!,

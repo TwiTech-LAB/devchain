@@ -1,7 +1,10 @@
 export interface ProviderSessionArtifacts {
   cleanupSessionSync?(sessionId: string): void;
   cleanupSession?(sessionId: string): Promise<void>;
-  reconcileStartup?(nonLiveSessionIds: ReadonlySet<string>): Promise<void> | void;
+  reconcileStartup?(
+    nonLiveSessionIds: ReadonlySet<string>,
+    liveSessionIds: ReadonlySet<string>,
+  ): Promise<void> | void;
 }
 
 export interface ProviderPluginPolicyEntry {

@@ -61,3 +61,78 @@ describe('MCP worktree tool transport contracts', () => {
       expect(tool.inputSchema).toMatchObject({ additionalProperties: false });
   });
 });
+
+describe('MCP tool result layout through /mcp', () => {
+  let app: NestFastifyApplication;
+  const sop = `# SOP\n${'Step text. '.repeat(300)}\n## Last section\nQuote me.`;
+
+  beforeAll(async () => {
+    const registry = {
+      resolve: () => ({
+        paramsSchema: null,
+        invoke: async () => ({
+          success: true,
+          data: { agent: { name: 'Coder', profile: { instructionsResolved: { contentMd: sop } } } },
+        }),
+      }),
+    };
+    const module = await Test.createTestingModule({
+      controllers: [McpSdkController],
+      providers: [
+        McpService,
+        McpServerService,
+        { provide: STORAGE_SERVICE, useValue: {} },
+        { provide: McpToolBindingRegistry, useValue: registry },
+      ],
+    }).compile();
+    app = module.createNestApplication<NestFastifyApplication>(new FastifyAdapter());
+    await app.init();
+    await app.getHttpAdapter().getInstance().ready();
+  });
+
+  afterAll(async () => {
+    await app?.close();
+  });
+
+  it('returns a long field as a section with real line breaks', async () => {
+    const response = await app.inject({
+      method: 'POST',
+      url: '/mcp',
+      headers: { accept: 'application/json, text/event-stream' },
+      payload: {
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'tools/call',
+        params: { name: 'devchain_get_agent_by_name', arguments: {} },
+      },
+    });
+    expect(response.statusCode).toBe(200);
+    const body = JSON.parse(response.body) as {
+      result: { content: Array<{ type: string; text: string }> };
+    };
+    const path = 'agent.profile.instructionsResolved.contentMd';
+
+    expect(body.result.content).toHaveLength(1);
+    expect(body.result.content[0].text).toBe(
+      [
+        JSON.stringify(
+          {
+            agent: {
+              name: 'Coder',
+              profile: {
+                instructionsResolved: {
+                  contentMd: `[moved: full text in section «${path}» below]`,
+                },
+              },
+            },
+          },
+          null,
+          2,
+        ),
+        `===== ${path} =====`,
+        sop,
+        `===== end ${path} =====`,
+      ].join('\n'),
+    );
+  });
+});

@@ -158,6 +158,8 @@ describe('resolveBackend', () => {
     '/api/e2ee/devices',
     '/api/integrations/connections',
     '/api/provider-auth',
+    '/api/vault/status',
+    '/api/vault/unlock',
     '/api/provider-clis',
     '/api/provider-clis/check',
     '/api/provider-clis/claude',

@@ -7,6 +7,7 @@ import { ClaudeLaunchSettingsMaterializerService } from '../runtime-context-capt
 import { CodexPluginProfileMaterializerService } from '../runtime-context-capture/codex-plugin-profile-materializer.service';
 import { RuntimeContextCaptureService } from '../runtime-context-capture/runtime-context-capture.service';
 import type { ProviderSessionArtifacts } from '../runtime-context-capture/provider-artifacts.types';
+import { RuntimeDirectoryService } from '../runtime-directory/runtime-directory.service';
 import { DB_CONNECTION } from '../storage/db/db.provider';
 import { getRawSqliteClient } from '../storage/db/sqlite-raw';
 import type {
@@ -39,6 +40,7 @@ export class SessionTerminalRuntimeService {
     private readonly runtimeContextCapture: RuntimeContextCaptureService,
     claudeLaunchSettings: ClaudeLaunchSettingsMaterializerService,
     codexPluginProfiles: CodexPluginProfileMaterializerService,
+    runtimeDirectory: RuntimeDirectoryService,
     private readonly sessionRows: SessionRowStore,
   ) {
     this.sqlite = getRawSqliteClient(db);
@@ -52,6 +54,11 @@ export class SessionTerminalRuntimeService {
         artifacts: codexPluginProfiles,
         errorCode: 'CODEX_PROFILE_CLEANUP_FAILED',
         cleanupFailureMessage: 'Failed to clean Codex profile lifecycle after session termination',
+      },
+      {
+        artifacts: runtimeDirectory,
+        errorCode: 'RUNTIME_DIRECTORY_CLEANUP_FAILED',
+        cleanupFailureMessage: 'Failed to clean session runtime files after session termination',
       },
     ];
   }
@@ -124,9 +131,15 @@ export class SessionTerminalRuntimeService {
     return this.cleanupProviderArtifacts(sessionId);
   }
 
+  /** Call after dead sessions are retired: the remaining running rows are the live sessions. */
   async reconcileProviderStartup(nonLiveSessionIds: ReadonlySet<string>): Promise<void> {
+    const liveSessionIds = new Set(
+      this.listStartupSessions()
+        .map((entry) => entry.sessionId)
+        .filter((sessionId) => !nonLiveSessionIds.has(sessionId)),
+    );
     for (const owner of this.artifactOwners) {
-      await owner.artifacts.reconcileStartup?.(nonLiveSessionIds);
+      await owner.artifacts.reconcileStartup?.(nonLiveSessionIds, liveSessionIds);
     }
   }
 

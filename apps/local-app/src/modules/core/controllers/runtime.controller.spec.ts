@@ -50,6 +50,12 @@ const cliStatus = {
   checkedAt: null,
 };
 const providerClis = { getStatus: () => cliStatus } as never;
+const VM_VAULT = { appliedRevision: 'r'.repeat(64), cacheReady: false, cacheUnavailable: null };
+let claimedVm = false;
+const vaultCache = {
+  isClaimedHost: () => claimedVm,
+  status: async () => VM_VAULT,
+} as never;
 
 describe('RuntimeController', () => {
   const originalEnv = process.env;
@@ -66,7 +72,8 @@ describe('RuntimeController', () => {
     delete process.env.DEVCHAIN_CLOUD_UI_ENABLED;
     resetEnvConfig();
     const syncthing = { getState: () => fileSyncState } as unknown as SyncthingManager;
-    controller = new RuntimeController(syncthing, providerClis, makeStorage());
+    claimedVm = false;
+    controller = new RuntimeController(syncthing, providerClis, makeStorage(), vaultCache);
   });
 
   afterAll(() => {
@@ -173,6 +180,12 @@ describe('RuntimeController', () => {
     });
   });
 
+  it('reports the Vault cache state only on a claimed VM', async () => {
+    claimedVm = true;
+
+    expect((await controller.getRuntime()).vault).toEqual(VM_VAULT);
+  });
+
   it('includes runtimeToken when RUNTIME_TOKEN is set', async () => {
     process.env.RUNTIME_TOKEN = 'token-123';
     resetEnvConfig();
@@ -210,6 +223,7 @@ describe('RuntimeController', () => {
             offset: 0,
           }),
         }),
+        vaultCache,
       );
 
       const result = await controller.getRuntime();

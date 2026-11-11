@@ -47,6 +47,8 @@ import { integrationConnectionDeletedEvent } from './integration.connection.dele
 import { remoteProjectSyncedEvent } from './remote.project.synced';
 import { remoteBindingChangedEvent } from './remote.binding.changed';
 import { providerUsageUpdatedEvent } from './provider-usage.updated';
+import { vaultRequestPendingEvent } from './vault.request.pending';
+import { vaultRequestResolvedEvent } from './vault.request.resolved';
 
 // Re-export individual event definitions for direct import
 export { settingsTerminalChangedEvent } from './settings.terminal.changed';
@@ -58,6 +60,8 @@ export { agentMessageSentEvent } from './agent.message.sent';
 export { remoteProjectSyncedEvent } from './remote.project.synced';
 export type { RemoteProjectSyncedEventPayload } from './remote.project.synced';
 export { remoteBindingChangedEvent } from './remote.binding.changed';
+export type { VaultRequestPendingEventPayload } from './vault.request.pending';
+export type { VaultRequestResolvedEventPayload } from './vault.request.resolved';
 export type { RemoteBindingChangedEventPayload } from './remote.binding.changed';
 export type { AgentMessageSentEventPayload } from './agent.message.sent';
 export { sessionHumanPromptStateChangedEvent } from './session.human-prompt-state-changed';
@@ -120,6 +124,8 @@ export const eventCatalog = {
   [remoteProjectSyncedEvent.name]: remoteProjectSyncedEvent.schema,
   [remoteBindingChangedEvent.name]: remoteBindingChangedEvent.schema,
   [providerUsageUpdatedEvent.name]: providerUsageUpdatedEvent.schema,
+  [vaultRequestPendingEvent.name]: vaultRequestPendingEvent.schema,
+  [vaultRequestResolvedEvent.name]: vaultRequestResolvedEvent.schema,
 } as const;
 
 export type EventName = keyof typeof eventCatalog;

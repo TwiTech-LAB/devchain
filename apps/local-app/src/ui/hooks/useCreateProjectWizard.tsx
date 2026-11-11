@@ -8,10 +8,13 @@ import type {
 import { projectsQueryKeys } from '@/ui/pages/projects/lib/project-query-keys';
 import type { ProjectsPageApi } from '@/ui/pages/projects/lib/projects-page-api';
 import { projectsHttpApi } from '@/ui/pages/projects/lib/projects-http-api';
+import type { ExportVaultAccess } from '@devchain/shared';
 import {
   useProjectSetupWizard,
   type ProjectSetupWizardController,
+  type WizardStep,
 } from '@/ui/hooks/useProjectSetupWizard';
+import { TemplateVaultAccessNotice } from '@/ui/components/project/wizard/TemplateVaultAccessNotice';
 import {
   buildConfigEmission,
   buildConfigSteps,
@@ -59,6 +62,31 @@ function toPreviewRequest(payload: CreateFromTemplateInput): SetupPreviewRequest
 }
 
 /**
+ * Create has no Review step, so the template's Vault access line goes on the step that shows the
+ * final Create button.
+ */
+function withVaultAccessOnLastStep(
+  steps: WizardStep[],
+  vaultAccess: ExportVaultAccess | undefined,
+): WizardStep[] {
+  const last = steps.filter((step) => !step.skipped).at(-1);
+  if (!vaultAccess || !last) return steps;
+  return steps.map((step) =>
+    step === last
+      ? {
+          ...step,
+          render: () => (
+            <div className="space-y-3">
+              {step.render()}
+              <TemplateVaultAccessNotice vaultAccess={vaultAccess} />
+            </div>
+          ),
+        }
+      : step,
+  );
+}
+
+/**
  * Create-flow controller composing the flow-agnostic step machine (`useProjectSetupWizard`) with:
  *  - a ONCE-per-session setup-preview fetch (react-query, cached + shared to every step),
  *  - the shared Steps 1-3 config state + handlers + step registration (`useWizardConfig`), and
@@ -103,7 +131,11 @@ export function useCreateProjectWizard(
   const handlers = useWizardConfigHandlers(preview, setState);
 
   const steps = useMemo(
-    () => buildConfigSteps({ preview, state, handlers }).steps,
+    () =>
+      withVaultAccessOnLastStep(
+        buildConfigSteps({ preview, state, handlers }).steps,
+        preview?.payload.vaultAccess,
+      ),
     [preview, state, handlers],
   );
 

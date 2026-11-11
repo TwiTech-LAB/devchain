@@ -11,6 +11,7 @@ import type {
   ScheduledEpicStorage,
   StatusStorage,
   SubscriberStorage,
+  VaultEntryStorage,
   WatcherStorage,
 } from '../../storage/interfaces/storage.interface';
 import { resolveExportPresets } from './profile-mapping.helpers';
@@ -27,6 +28,7 @@ import { buildExportScheduledEpics } from '../template-codec/codecs/scheduled-ep
 import { buildExportWatchers } from '../template-codec/codecs/watchers.codec';
 import { buildExportSubscribers } from '../template-codec/codecs/subscribers.codec';
 import { buildProjectSettings } from '../template-codec/codecs/project-settings.codec';
+import { buildExportVaultAccess } from '../template-codec/codecs/vault-access.codec';
 
 const logger = createLogger('ProjectExport');
 
@@ -58,11 +60,11 @@ interface ExportProjectDeps {
     StatusStorage &
     SubscriberStorage &
     WatcherStorage &
+    Pick<VaultEntryStorage, 'listVaultFamilyAccess'> &
     Pick<
       StorageService,
       | 'getEpic'
       | 'getProvider'
-      | 'listEnvScopesByProviderIds'
       | 'listProviderEffortsByProviderIds'
       | 'listProviderModelsByProviderIds'
       | 'listProvidersByIds'
@@ -138,17 +140,16 @@ export async function exportProjectWithHelper(
     deps.storage,
   );
   const subscribers = buildExportSubscribers(state.subscribersRes);
-  const scopeMap = deps.storage.listEnvScopesByProviderIds([...profileContext.providersMap.keys()]);
-  const providerSettings = buildProviderSettings(profileContext.providersMap, projectId, scopeMap, {
-    filterEnvByScope,
-    sanitizeEnvMap,
-  });
+  const providerSettings = buildProviderSettings(profileContext.providersMap);
   const providerModels = await buildProviderModels(profileContext.providersMap, deps.storage);
   const providerEfforts = await buildProviderEfforts(profileContext.providersMap, deps.storage);
   const teams = deps.teamsService
     ? await buildExportTeams(state.project, deps.teamsService, deps.storage)
     : [];
   const scheduledEpics = await buildExportScheduledEpics(projectId, state, deps.storage);
+  const vaultAccess = buildExportVaultAccess(
+    await deps.storage.listVaultFamilyAccess({ projectId }),
+  );
 
   const manifest = buildManifest(
     state.project,
@@ -184,6 +185,7 @@ export async function exportProjectWithHelper(
     ...(teams.length > 0 && { teams }),
     ...(exportPresets !== undefined ? { presets: exportPresets } : {}),
     scheduledEpics,
+    ...(vaultAccess && { vaultAccess }),
   };
 }
 
@@ -297,21 +299,6 @@ async function loadProfileExportContext(
   const providersMap = new Map(providers.map((provider) => [provider.id, provider]));
 
   return { configIdToInfo, allConfigsByProfile, providersMap };
-}
-
-function filterEnvByScope(
-  env: Record<string, string>,
-  scopes: Record<string, string[]> | undefined,
-  sourceProjectId: string,
-): Record<string, string> | null {
-  const filtered: Record<string, string> = {};
-  for (const [key, value] of Object.entries(env)) {
-    const keyScopes = scopes?.[key];
-    if (!keyScopes || keyScopes.length === 0 || keyScopes.includes(sourceProjectId)) {
-      filtered[key] = value;
-    }
-  }
-  return Object.keys(filtered).length > 0 ? filtered : null;
 }
 
 function buildManifest(

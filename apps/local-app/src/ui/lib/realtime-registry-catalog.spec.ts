@@ -53,16 +53,16 @@ describe('broadcastRegistry clientReaction contract ↔ non-registry catalog', (
   // over this COMBINED set — they previously guarded the hand mirror and must not be lost.
   const combined: RegistryCatalogEntry[] = [...registryDerived, ...nonRegistryBroadcastCatalog];
 
-  it('coverage counts are stable (33 keys / 42 items / 41 static + 1 dynamic / 55 combined)', () => {
+  it('coverage counts are stable (35 keys / 44 items / 43 static + 1 dynamic / 57 combined)', () => {
     const keyCount = Object.keys(broadcastRegistry).length;
     const itemCount = Object.values(broadcastRegistry).reduce((n, arr) => n + arr.length, 0);
 
-    expect(keyCount).toBe(33);
-    expect(itemCount).toBe(42);
-    expect(registryDerived.length).toBe(41);
+    expect(keyCount).toBe(35);
+    expect(itemCount).toBe(44);
+    expect(registryDerived.length).toBe(43);
     expect(dynamicEntries.length).toBe(1);
     expect(nonRegistryBroadcastCatalog.length).toBe(14);
-    expect(combined.length).toBe(55);
+    expect(combined.length).toBe(57);
   });
 
   it('assigns all event-bus frames to the shared stream owner', () => {

@@ -7,6 +7,8 @@ import type {
   HostProviderCliSettingsStatus,
   HostSkillSettings,
   HostSkillSettingsStatus,
+  HostVaultPush,
+  HostVaultRequestResolve,
   ProjectReplicaChanges,
   ProjectReplicaOfScope,
   ProjectReplicaV1,
@@ -14,6 +16,7 @@ import type {
 import { getEnvConfig } from '../../../common/config/env.config';
 import { ConflictError } from '../../../common/errors/error-types';
 import { createLogger } from '../../../common/logging/logger';
+import type { VaultRequestPendingEventPayload } from '../../events/catalog/vault.request.pending';
 import { STORAGE_SERVICE } from '../../storage/interfaces/storage.interface';
 import type { FrozenProject, RemoteStorage } from '../../storage/interfaces/storage.interface';
 import { DockerEngineClient, DockerEngineError } from '../../core/controllers/docker-engine.client';
@@ -1177,6 +1180,26 @@ export class RemoteHostClient {
     const route = hostRoutes.putProviderUsageSettings;
     const response = await this.call(remoteId, route, {}, { body });
     checkSettingsRevision(remoteId, route.path({}), response, body.revision);
+  }
+
+  /** `body` holds Vault values: errors name the route only, never the body. */
+  async putVault(remoteId: string, body: HostVaultPush): Promise<void> {
+    const route = hostRoutes.putVault;
+    const response = await this.call(remoteId, route, {}, { body });
+    checkSettingsRevision(remoteId, route.path({}), response, body.revision);
+  }
+
+  async listVaultRequests(remoteId: string): Promise<VaultRequestPendingEventPayload[]> {
+    return (await this.call(remoteId, hostRoutes.listVaultRequests, {})).body.requests;
+  }
+
+  /** A session-only answer carries its value: never log `answer`. */
+  async resolveVaultRequest(
+    remoteId: string,
+    requestId: string,
+    answer: HostVaultRequestResolve,
+  ): Promise<void> {
+    await this.call(remoteId, hostRoutes.resolveVaultRequest, { requestId }, { body: answer });
   }
 
   async getSkillSettingsStatus(remoteId: string): Promise<HostSkillSettingsStatus> {

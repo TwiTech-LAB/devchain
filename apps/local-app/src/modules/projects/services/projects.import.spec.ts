@@ -77,6 +77,7 @@ describe('ProjectsService', () => {
     updateEpicsStatus: jest.Mock;
     listWatchers: jest.Mock;
     listSubscribers: jest.Mock;
+    listVaultFamilyAccess: jest.Mock;
     listScheduledEpics: jest.Mock;
     createScheduledEpic: jest.Mock;
     deleteScheduledEpic: jest.Mock;
@@ -163,6 +164,7 @@ describe('ProjectsService', () => {
       updateEpicsStatus: jest.fn().mockResolvedValue(0),
       listWatchers: jest.fn().mockResolvedValue([]),
       listSubscribers: jest.fn().mockResolvedValue([]),
+      listVaultFamilyAccess: jest.fn().mockResolvedValue([]),
       listScheduledEpics: jest.fn().mockResolvedValue({ items: [], total: 0 }),
       createScheduledEpic: jest.fn().mockResolvedValue({ id: 'sched-1' }),
       deleteScheduledEpic: jest.fn().mockResolvedValue(undefined),

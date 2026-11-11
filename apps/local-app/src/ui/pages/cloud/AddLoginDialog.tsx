@@ -23,29 +23,14 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/ui/components/ui/tab
 import { useOpencodeLogins, useProviderAuth } from '@/ui/hooks/useProviderAuth';
 import type { ImportResult, OpencodeLoginItem } from './lib/remote-vm-contracts';
 import { GenerateLoginDialog } from './GenerateLoginDialog';
-import { PROVIDER_NAMES } from './login-choices';
+import { LOGIN_SECTION_ORDER, PROVIDER_NAMES } from './login-choices';
 
 /** A provider of the dialog; `other` stores any environment key for any provider. */
-export type AddLoginProvider =
-  | 'claude'
-  | 'codex'
-  | 'copilot'
-  | 'agy'
-  | 'opencode'
-  | 'devin'
-  | 'other';
+export type AddLoginProvider = (typeof LOGIN_SECTION_ORDER)[number] | 'other';
 
 type Method = 'token' | 'sign-in' | 'import' | 'key';
 
-const PROVIDER_ORDER: AddLoginProvider[] = [
-  'claude',
-  'codex',
-  'copilot',
-  'agy',
-  'opencode',
-  'devin',
-  'other',
-];
+const PROVIDER_ORDER: AddLoginProvider[] = [...LOGIN_SECTION_ORDER, 'other'];
 
 const PROVIDER_LABELS: Record<AddLoginProvider, string> = {
   ...(PROVIDER_NAMES as Record<Exclude<AddLoginProvider, 'other'>, string>),
@@ -59,7 +44,7 @@ const METHODS: Record<AddLoginProvider, Method[]> = {
   codex: ['sign-in'],
   agy: ['sign-in'],
   opencode: ['import', 'sign-in'],
-  devin: ['token'],
+  devin: ['import', 'token'],
   other: ['key'],
 };
 
@@ -338,6 +323,52 @@ function OpencodeImport({
   );
 }
 
+/** Copies the login of this PC's Devin CLI; a VM gets it as a reusable key. */
+function DevinImport({
+  pending,
+  onSubmit,
+}: {
+  pending: boolean;
+  onSubmit: (label: string) => void;
+}) {
+  const [label, setLabel] = useState('Devin login from this PC');
+  const canSubmit = !pending && label.trim().length > 0;
+  const submit = (event: FormEvent) => {
+    event.preventDefault();
+    if (canSubmit) onSubmit(label.trim());
+  };
+  return (
+    <form onSubmit={submit} className="space-y-3 text-sm">
+      <p className="text-muted-foreground">
+        DevChain reads the <span className="font-mono">windsurf_api_key</span> of the Devin CLI that
+        is signed in on this PC, from{' '}
+        <span className="font-mono">$XDG_DATA_HOME/devin/credentials.toml</span> or{' '}
+        <span className="font-mono">~/.local/share/devin/credentials.toml</span>. Only logins on the
+        standard Devin servers can be imported.
+      </p>
+      <div className="space-y-1.5">
+        <Label htmlFor="devin-import-label">Label</Label>
+        <Input
+          id="devin-import-label"
+          value={label}
+          onChange={(event) => setLabel(event.target.value)}
+          autoComplete="off"
+        />
+      </div>
+      <DialogFooter>
+        <Button
+          type="submit"
+          disabled={!canSubmit}
+          pending={pending}
+          data-testid="devin-import-submit"
+        >
+          Import
+        </Button>
+      </DialogFooter>
+    </form>
+  );
+}
+
 /**
  * Adds one vault login: the provider first, then only the methods that work
  * for it. Sign-in hands over to the isolated login terminal. `onAdded`
@@ -352,14 +383,14 @@ export function AddLoginDialog({
   onClose: () => void;
   onAdded?: (login: AddedLogin) => void;
 }) {
-  const { createStatic, importOpencode } = useProviderAuth();
+  const { createStatic, importOpencode, importDevin } = useProviderAuth();
   const [provider, setProvider] = useState<AddLoginProvider | null>(initialProvider ?? null);
   const [method, setMethod] = useState<Method | null>(null);
   const [signingIn, setSigningIn] = useState(false);
   const [importResults, setImportResults] = useState<ImportResult[] | null>(null);
   const methods = provider ? METHODS[provider] : [];
   const activeMethod = method && methods.includes(method) ? method : (methods[0] ?? null);
-  const pending = createStatic.isPending || importOpencode.isPending;
+  const pending = createStatic.isPending || importOpencode.isPending || importDevin.isPending;
 
   if (signingIn && provider) {
     return (
@@ -394,6 +425,14 @@ export function AddLoginDialog({
       },
     });
 
+  const importDevinLogin = (label: string) =>
+    importDevin.mutate(label, {
+      onSuccess: (entry) => {
+        onAdded?.({ id: entry.id, provider: entry.provider });
+        onClose();
+      },
+    });
+
   const methodBody = (value: Method) => {
     switch (value) {
       case 'token':
@@ -408,6 +447,9 @@ export function AddLoginDialog({
           />
         );
       case 'import':
+        if (provider === 'devin') {
+          return <DevinImport pending={pending} onSubmit={importDevinLogin} />;
+        }
         return <OpencodeImport pending={pending} results={importResults} onSubmit={importKeys} />;
       case 'sign-in':
         return (

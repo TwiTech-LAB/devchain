@@ -141,6 +141,23 @@ function legacyFiles(sys) {
   ];
 }
 
+test("each instance unit owns a tmpfs runtime directory named after its user", async (t) => {
+  const { sys, own } = await twoInstances(t);
+  for (const [instance, userName] of [
+    [sys, "alice"],
+    [own, "bob"],
+  ]) {
+    const unit = fs.readFileSync(
+      path.join(instance.paths.systemdDir, instance.paths.unitName),
+      "utf8",
+    );
+    assert.match(unit, new RegExp(`^User=${userName}$`, "m"));
+    assert.match(unit, new RegExp(`^RuntimeDirectory=devchain-${userName}$`, "m"));
+    assert.match(unit, /^RuntimeDirectoryMode=0700$/m);
+    assert.match(unit, /^RuntimeDirectoryPreserve=yes$/m);
+  }
+});
+
 test("B's update follows its own helper on every hop and preserves A; A's update preserves B", async (t) => {
   const nextPins = { ...pins, codex: { ...pins.codex, version: "0.157.0" } };
   const { sys, own, calls } = await twoInstances(t, {

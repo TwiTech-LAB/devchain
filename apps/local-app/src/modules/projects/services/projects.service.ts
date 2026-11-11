@@ -16,6 +16,7 @@ import {
   type SessionStorage,
   type StatusStorage,
   type SubscriberStorage,
+  type VaultEntryStorage,
   type WatcherStorage,
 } from '../../storage/interfaces/storage.interface';
 import {
@@ -156,6 +157,7 @@ export class ProjectsService {
       StatusStorage &
       SubscriberStorage &
       WatcherStorage &
+      Pick<VaultEntryStorage, 'listVaultFamilyAccess' | 'setVaultFamilyAccess'> &
       Pick<
         StorageService,
         'countEpicsByStatus' | 'getEpic' | 'listEpics' | 'updateEpic' | 'updateEpicsStatus'

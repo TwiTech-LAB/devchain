@@ -8,6 +8,7 @@ import { McpToolBindingRegistry } from './mcp-tool-binding.registry';
 import { redactParams } from './utils/redact';
 import { toProjectAdmissionErrorResponse } from './utils/project-admission-error';
 import { ResourceResolver } from './utils/resource-resolver';
+import { findMovedTextMarker } from './utils/tool-result-text';
 
 const logger = createLogger('McpService');
 
@@ -45,6 +46,30 @@ export class McpService {
           error: {
             code: 'UNKNOWN_TOOL',
             message: `Unknown tool: ${tool}`,
+          },
+        };
+      }
+
+      const marker = findMovedTextMarker(normalizedParams);
+      if (marker) {
+        logger.warn(
+          { tool: normalizedTool, argumentPath: marker.argumentPath },
+          'MCP tool call rejected: argument contains a moved-text marker',
+        );
+        return {
+          success: false,
+          error: {
+            code: 'VALIDATION_ERROR',
+            message: 'Invalid parameters supplied to MCP tool.',
+            data: {
+              issues: [
+                {
+                  code: 'custom',
+                  path: marker.argumentPath,
+                  message: `contains the marker for section «${marker.sectionPath}» instead of its text. Send the full text from that section of the tool result.`,
+                },
+              ],
+            },
           },
         };
       }

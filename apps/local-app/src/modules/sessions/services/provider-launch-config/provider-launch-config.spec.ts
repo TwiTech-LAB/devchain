@@ -5,6 +5,7 @@ import { resolve, type LaunchConfigInput } from './provider-launch-config.servic
 import { ClaudeAdapter } from '../../../providers/adapters/claude.adapter';
 import { CodexAdapter } from '../../../providers/adapters/codex.adapter';
 import { OpencodeAdapter } from '../../../providers/adapters/opencode.adapter';
+import { DevinAdapter } from '../../../providers/adapters/devin.adapter';
 
 function makeInput(overrides: Partial<LaunchConfigInput> = {}): LaunchConfigInput {
   return {
@@ -89,13 +90,28 @@ describe('ProviderLaunchConfig.resolve', () => {
       for (const mode of ['new', 'restore'] as const) {
         const input = makeInput({ adapter, mode, providerSessionId: 'session' });
         expect(resolve(input).env?.PATH).toBeUndefined();
-        expect(resolve({ ...input, gitShimBin: shim }).env?.PATH).toBe(
-          `${shim}:${process.env.PATH}`,
-        );
+        expect(resolve(input).pathPrependDirs).toEqual([]);
+        // Without an explicit PATH override, dirs go to the launch script, which
+        // prepends them to the pane shell's own $PATH; the resolver never bakes
+        // this server process's PATH into the session env.
+        const inherited = resolve({ ...input, gitShimBin: shim });
+        expect(inherited.env?.PATH).toBeUndefined();
+        expect(inherited.pathPrependDirs).toEqual([shim]);
         const configured = { ...input, gitShimBin: shim, configEnv: { PATH: '/opt/bin' } };
         expect(resolve(configured).commandArgs).toContain(`PATH=${shim}:/opt/bin`);
+        expect(resolve(configured).pathPrependDirs).toEqual([]);
         const first = { ...configured, configEnv: { PATH: `${shim}:/opt/bin` } };
         expect(resolve(first).env?.PATH).toBe(`${shim}:/opt/bin`);
+        // The devchain launcher goes right after the shim, so Git still resolves to the shim.
+        const cliBin = '/run/devchain/cli-bin';
+        expect(resolve({ ...configured, cliBin }).env?.PATH).toBe(`${shim}:${cliBin}:/opt/bin`);
+        const bare = resolve({ ...input, cliBin });
+        expect(bare.env?.PATH).toBeUndefined();
+        expect(bare.pathPrependDirs).toEqual([cliBin]);
+        expect(resolve({ ...input, gitShimBin: shim, cliBin }).pathPrependDirs).toEqual([
+          shim,
+          cliBin,
+        ]);
       }
     });
     it.each([
@@ -593,6 +609,81 @@ describe('ProviderLaunchConfig.resolve', () => {
         DEVCHAIN_SESSION_ID: 's1',
         MY_KEY: 'fromProvider',
       });
+    });
+  });
+
+  describe('session identity env', () => {
+    const sessionIdentity = {
+      apiUrl: 'http://127.0.0.1:3000',
+      projectId: 'project-1',
+      agentId: 'agent-1',
+      sessionId: '6f1c2a9e-3b7d-4e21-9a0c-5d8e7f6a1b2c',
+    };
+    const identityEnv = {
+      DEVCHAIN_SESSION_ID: sessionIdentity.sessionId,
+      DEVCHAIN_PROJECT_ID: 'project-1',
+      DEVCHAIN_AGENT_ID: 'agent-1',
+      DEVCHAIN_API_URL: 'http://127.0.0.1:3000',
+    };
+    const hookContext = { ...sessionIdentity, tmuxSessionName: 'tmux-1' };
+
+    it.each<[string, () => Partial<LaunchConfigInput>]>([
+      ['Claude', () => ({ adapter: new ClaudeAdapter(), hookContext })],
+      ['Codex', () => ({ adapter: new CodexAdapter() })],
+      ['OpenCode', () => ({ adapter: new OpencodeAdapter() })],
+      [
+        'Copilot',
+        () => ({
+          adapter: new CopilotAdapter(undefined as never, undefined as never),
+          hookContext,
+        }),
+      ],
+      ['agy', () => ({ adapter: new AntigravityAdapter(undefined as never) })],
+      ['Devin', () => ({ adapter: new DevinAdapter(), hookContext })],
+    ])('puts the session identity into %s new and restore launch commands', (_label, base) => {
+      for (const mode of ['new', 'restore'] as const) {
+        const result = resolve(
+          makeInput({
+            ...base(),
+            mode,
+            providerSessionId: '0b9e8d7c-6a5f-4e3d-8c2b-1a0f9e8d7c6b',
+            sessionId: sessionIdentity.sessionId,
+            projectId: 'project-1',
+            sessionIdentity,
+          }),
+        );
+
+        expect(result.env).toMatchObject(identityEnv);
+        for (const [key, value] of Object.entries(identityEnv)) {
+          expect(result.commandArgs).toContain(`${key}=${value}`);
+        }
+      }
+    });
+
+    it('wins over hook, provider, config and runtime env with the same names', () => {
+      const conflicting = {
+        DEVCHAIN_SESSION_ID: 'shared',
+        DEVCHAIN_PROJECT_ID: 'other-project',
+        DEVCHAIN_AGENT_ID: 'other-agent',
+        DEVCHAIN_API_URL: 'http://evil.example',
+      };
+      const result = resolve(
+        makeInput({
+          adapter: new ClaudeAdapter(),
+          hookContext: { ...hookContext, sessionId: 'hook-session' },
+          sessionIdentity,
+          providerEnv: conflicting,
+          configEnv: conflicting,
+          runtimeEnv: conflicting,
+        }),
+      );
+
+      expect(result.env).toMatchObject(identityEnv);
+      expect(result.commandArgs).not.toContain('DEVCHAIN_SESSION_ID=shared');
+    });
+
+    it('adds no identity when the launch has no session', () => {
+      expect(resolve(makeInput()).env?.DEVCHAIN_SESSION_ID).toBeUndefined();
     });
   });
 

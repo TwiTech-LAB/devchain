@@ -11,6 +11,7 @@ import { teamMetadata } from './team.metadata';
 import { reviewMetadata } from './review.metadata';
 import { projectMetadata } from './project.metadata';
 import { worktreeMetadata } from './worktree.metadata';
+import { vaultMetadata } from './vault.metadata';
 
 export const allMetadata: ToolMetadataEntry[] = [
   ...sessionMetadata,
@@ -24,6 +25,7 @@ export const allMetadata: ToolMetadataEntry[] = [
   ...teamMetadata,
   ...reviewMetadata,
   ...worktreeMetadata,
+  ...vaultMetadata,
 ];
 
 export type { ToolMetadataEntry } from './types';

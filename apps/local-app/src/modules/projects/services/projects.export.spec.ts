@@ -74,6 +74,7 @@ describe('ProjectsService', () => {
     updateEpicsStatus: jest.Mock;
     listWatchers: jest.Mock;
     listSubscribers: jest.Mock;
+    listVaultFamilyAccess: jest.Mock;
     listScheduledEpics: jest.Mock;
     createWatcher: jest.Mock;
     createSubscriber: jest.Mock;
@@ -157,6 +158,7 @@ describe('ProjectsService', () => {
       updateEpicsStatus: jest.fn().mockResolvedValue(0),
       listWatchers: jest.fn().mockResolvedValue([]),
       listSubscribers: jest.fn().mockResolvedValue([]),
+      listVaultFamilyAccess: jest.fn().mockResolvedValue([]),
       listScheduledEpics: jest.fn().mockResolvedValue({ items: [], total: 0 }),
       createWatcher: jest.fn(),
       createSubscriber: jest.fn(),
@@ -535,6 +537,49 @@ describe('ProjectsService', () => {
       });
     });
 
+    it.each([
+      { label: 'off', rows: [], expected: undefined },
+      {
+        label: 'all agents',
+        rows: [{ projectId: 'project-123', familySlug: null, familyMatched: true }],
+        expected: { mode: 'all' },
+      },
+      {
+        label: 'chosen roles, without the stale one',
+        rows: [
+          { projectId: 'project-123', familySlug: 'coder', familyMatched: true },
+          { projectId: 'project-123', familySlug: 'gone', familyMatched: false },
+          { projectId: 'project-123', familySlug: 'reviewer', familyMatched: true },
+        ],
+        expected: { mode: 'families', familySlugs: ['coder', 'reviewer'] },
+      },
+      {
+        label: 'chosen roles that are all stale',
+        rows: [{ projectId: 'project-123', familySlug: 'gone', familyMatched: false }],
+        expected: undefined,
+      },
+    ])(
+      'exports the Vault access of a project with the Vault $label',
+      async ({ rows, expected }) => {
+        const none = { items: [], total: 0, limit: 1000, offset: 0 };
+        for (const list of [
+          'listPrompts',
+          'listAgentProfiles',
+          'listAgents',
+          'listStatuses',
+        ] as const)
+          storage[list].mockResolvedValue(none);
+        storage.getInitialSessionPrompt.mockResolvedValue(null);
+        storage.listVaultFamilyAccess.mockResolvedValue(rows);
+
+        const result = await service.exportProject('project-123');
+
+        expect(storage.listVaultFamilyAccess).toHaveBeenCalledWith({ projectId: 'project-123' });
+        if (expected) expect(result.vaultAccess).toEqual(expected);
+        else expect(result).not.toHaveProperty('vaultAccess');
+      },
+    );
+
     it('should export projectSettings with autoCleanStatusLabels', async () => {
       const projectId = 'project-123';
 
@@ -816,9 +861,8 @@ describe('ProjectsService', () => {
       expect(result.profiles[0].providerConfigs?.[0].env).toEqual({
         PROFILE_API_KEY: 'profile-secret',
       });
-      expect(result.providerSettings?.[0].env).toEqual({
-        PROVIDER_API_KEY: '***',
-      });
+      // Provider-level env never exports, and a provider with no threshold has no row.
+      expect(result.providerSettings).toBeUndefined();
     });
 
     it('should not include providerConfigs in export when profile has none', async () => {
@@ -1528,7 +1572,7 @@ describe('ProjectsService', () => {
     });
   });
 
-  describe('provider env scope filtering on export', () => {
+  describe('provider-level env on export', () => {
     const projectId = 'project-123';
     const otherProjectId = 'project-other';
 
@@ -1560,35 +1604,22 @@ describe('ProjectsService', () => {
       ]);
     });
 
-    it('should export source-project-scoped key and omit other-project-scoped key', async () => {
+    it('exports no row for a provider that has only env', async () => {
       storage.listProvidersByIds.mockResolvedValue([
         {
           id: 'prov-1',
           name: 'claude',
           autoCompactThreshold: null,
-          env: { SOURCE_KEY: 'val-source', OTHER_KEY: 'val-other' },
+          env: { SOURCE_KEY: 'val-source', GLOBAL_A: 'a' },
         },
       ]);
 
-      const scopeMap = new Map([
-        [
-          'prov-1',
-          {
-            SOURCE_KEY: [projectId],
-            OTHER_KEY: [otherProjectId],
-          },
-        ],
-      ]);
-      storage.listEnvScopesByProviderIds.mockReturnValue(scopeMap);
-
       const result = await service.exportProject(projectId);
 
-      expect(result.providerSettings).toHaveLength(1);
-      expect(result.providerSettings![0].env).toEqual({ SOURCE_KEY: 'val-source' });
-      expect(result.providerSettings![0].env).not.toHaveProperty('OTHER_KEY');
+      expect(result.providerSettings).toBeUndefined();
     });
 
-    it('should still export other settings when all env keys are scoped to other projects', async () => {
+    it('exports the threshold without env', async () => {
       storage.listProvidersByIds.mockResolvedValue([
         {
           id: 'prov-1',
@@ -1609,44 +1640,6 @@ describe('ProjectsService', () => {
         autoCompactThreshold: 85,
       });
       expect(result.providerSettings![0].env).toBeUndefined();
-    });
-
-    it('should not include redacted secret keys excluded by scope', async () => {
-      storage.listProvidersByIds.mockResolvedValue([
-        {
-          id: 'prov-1',
-          name: 'claude',
-          autoCompactThreshold: 85,
-          env: { ANTHROPIC_API_KEY: 'sk-secret', GLOBAL_VAR: 'open' },
-        },
-      ]);
-
-      const scopeMap = new Map([['prov-1', { ANTHROPIC_API_KEY: [otherProjectId] }]]);
-      storage.listEnvScopesByProviderIds.mockReturnValue(scopeMap);
-
-      const result = await service.exportProject(projectId);
-
-      expect(result.providerSettings).toHaveLength(1);
-      expect(result.providerSettings![0].env).toEqual({ GLOBAL_VAR: 'open' });
-      expect(result.providerSettings![0].env).not.toHaveProperty('ANTHROPIC_API_KEY');
-    });
-
-    it('should export all global env unchanged when no scopes exist', async () => {
-      storage.listProvidersByIds.mockResolvedValue([
-        {
-          id: 'prov-1',
-          name: 'claude',
-          autoCompactThreshold: null,
-          env: { GLOBAL_A: 'a', GLOBAL_B: 'b' },
-        },
-      ]);
-
-      storage.listEnvScopesByProviderIds.mockReturnValue(new Map());
-
-      const result = await service.exportProject(projectId);
-
-      expect(result.providerSettings).toHaveLength(1);
-      expect(result.providerSettings![0].env).toEqual({ GLOBAL_A: 'a', GLOBAL_B: 'b' });
     });
 
     it('should not include scope project IDs anywhere in exported JSON', async () => {

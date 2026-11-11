@@ -94,6 +94,7 @@ describe('recorded transcript handoff', () => {
       transcriptRoots: (_name, dir) => ({
         claude: [join(dir, 'claude')],
         codex: [join(dir, 'codex')],
+        devin: [join(dir, 'devin')],
       }),
     });
     seedReplicaSource(instances.home.sqlite);
@@ -257,6 +258,60 @@ describe('recorded transcript handoff', () => {
       expect(text).toBe('host-only contents');
     }
     expect(await readFile(files(home).path(claude), 'utf8')).toBe('changed on host');
+  });
+
+  it('carries a Devin export and store session files, and copies same-size Devin changes back', async () => {
+    const { home, host } = instances;
+    const sessionId = 'bbbbbbbb-cccc-dddd-eeee-ffffffffffff';
+    const store = 'stores/A/cli';
+    const exported: TranscriptFile = { provider: 'devin', path: `${sessionId}.json` };
+    const log: TranscriptFile = {
+      provider: 'devin',
+      path: `${store}/sessions/brave-otter/log.jsonl`,
+    };
+    const meta: TranscriptFile = {
+      provider: 'devin',
+      path: `${store}/sessions/brave-otter/meta.json`,
+    };
+    for (const file of [exported, log, meta]) await put(home, file, `home:${file.path}`);
+    const devinRoot = (instance: TestInstance) => dirname(files(instance).path(exported));
+    const storeOnly = [`${store}/session_locks/brave-otter.lock`, `${store}/prompt_history.jsonl`];
+    for (const path of storeOnly) {
+      await mkdir(dirname(join(devinRoot(home), path)), { recursive: true });
+      await writeFile(join(devinRoot(home), path), 'stays home');
+    }
+    replicaSeeder(home.sqlite).insert('sessions', {
+      id: sessionId,
+      agent_id: 'agent-1',
+      status: 'stopped',
+      started_at: T,
+      ended_at: T,
+      transcript_path: files(home).path(exported),
+      provider_name_at_launch: 'devin',
+      provider_session_id: 'brave-otter',
+      created_at: T,
+      updated_at: T,
+    });
+
+    await operation('attach');
+    for (const file of [exported, log, meta])
+      expect(await readFile(files(host).path(file), 'utf8')).toBe(`home:${file.path}`);
+    for (const path of storeOnly)
+      await expect(readFile(join(devinRoot(host), path))).rejects.toThrow();
+
+    // Same size as before: only the Devin hash can tell the change apart.
+    const metaOnHost = `HOME:${meta.path}`;
+    await put(host, meta, metaOnHost);
+    await put(host, log, `home:${log.path}\nturn on host`);
+    const claudeOnHost = (await readFile(files(host).path(claude), 'utf8')).toUpperCase();
+    await put(host, claude, claudeOnHost);
+    const claudeAtHome = await readFile(files(home).path(claude), 'utf8');
+    expect(claudeOnHost).not.toBe(claudeAtHome);
+
+    await operation('detach');
+    expect(await readFile(files(home).path(meta), 'utf8')).toBe(metaOnHost);
+    expect(await readFile(files(home).path(log), 'utf8')).toBe(`home:${log.path}\nturn on host`);
+    expect(await readFile(files(home).path(claude), 'utf8')).toBe(claudeAtHome);
   });
 
   it('an interrupted HTTP upload retains its old destination and retry completes', async () => {

@@ -2,6 +2,7 @@ import { RemoteApiKeyService } from '../remotes/auth/remote-api-key.service';
 import { remoteFetch, requireRemoteTls } from '../remotes/transport/remote-tls';
 import { Inject, Injectable } from '@nestjs/common';
 import { z } from 'zod';
+import { VaultUnavailableError } from '../../common/errors/error-types';
 import { createLogger } from '../../common/logging/logger';
 import {
   STORAGE_SERVICE,
@@ -141,6 +142,9 @@ export class ProviderAuthWritebackService {
         pulled = true;
       }
     } catch (error) {
+      // The host answered but home cannot store its content: going on with the
+      // last report would release or destroy the VM's newer logins.
+      if (error instanceof VaultUnavailableError) throw error;
       logger.warn(
         { err: error, remoteId },
         'Families pull before reset/delete used the last report',

@@ -190,6 +190,159 @@ export const providerAuthEntries = sqliteTable(
   }),
 );
 
+/**
+ * Wrapped copies of the Vault data key, one per unlock method. Home-only: no
+ * replica, export or template carries these rows. Keys never appear here in
+ * plaintext; see `apps/local-app/src/modules/vault/vault-crypto.ts`.
+ */
+export const vaultKeySlots = sqliteTable(
+  'vault_key_slots',
+  {
+    id: text('id').primaryKey(),
+    vaultId: text('vault_id').notNull(),
+    kind: text('kind', { enum: ['keystore', 'recovery', 'file'] }).notNull(),
+    dekVersion: integer('dek_version').notNull(),
+    wrappedDek: text('wrapped_dek').notNull(),
+    // OS credential store account of a `keystore` slot.
+    keystoreAccount: text('keystore_account'),
+    // JSON scrypt parameters of a `recovery` slot.
+    kdfParams: text('kdf_params'),
+    // Recovery code sealed under the data key until the user confirms it was saved.
+    pendingRecoveryCode: text('pending_recovery_code'),
+    createdAt: text('created_at').notNull(),
+    updatedAt: text('updated_at').notNull(),
+  },
+  (table) => ({
+    kindVersionUnique: uniqueIndex('vault_key_slots_kind_version_idx').on(
+      table.kind,
+      table.dekVersion,
+    ),
+    kindCheck: check(
+      'vault_key_slots_kind_check',
+      sql`${table.kind} IN ('keystore', 'recovery', 'file')`,
+    ),
+  }),
+);
+
+/**
+ * Agent secrets of the Vault. No replica, export or template carries these rows.
+ * At home, `value_ciphertext` is sealed under the Vault data key; no route returns it.
+ * On a claimed VM, the rows are home's pushed snapshot and `value_ciphertext` is
+ * empty: values live only in the tmpfs cache (`vault-vm-cache.service.ts`).
+ * A null `project_id` is a global entry.
+ */
+export const vaultEntries = sqliteTable(
+  'vault_entries',
+  {
+    id: text('id').primaryKey(),
+    projectId: text('project_id').references(() => projects.id, { onDelete: 'cascade' }),
+    name: text('name').notNull(),
+    kind: text('kind', { enum: ['secret', 'file'] }).notNull(),
+    description: text('description').notNull(),
+    valueCiphertext: text('value_ciphertext').notNull(),
+    // Grows when the delivered name or value changes, so a session can tell it holds an old copy.
+    revision: integer('revision').notNull().default(1),
+    // Policy, not content: a change never moves `revision`, so a VM's value cache stays valid.
+    approvalRequired: integer('approval_required', { mode: 'boolean' }).notNull().default(false),
+    lastUsedAt: text('last_used_at'),
+    createdAt: text('created_at').notNull(),
+    updatedAt: text('updated_at').notNull(),
+  },
+  (table) => ({
+    globalNameUnique: uniqueIndex('vault_entries_global_name_idx')
+      .on(table.name)
+      .where(sql`${table.projectId} IS NULL`),
+    projectNameUnique: uniqueIndex('vault_entries_project_name_idx')
+      .on(table.projectId, table.name)
+      .where(sql`${table.projectId} IS NOT NULL`),
+    kindCheck: check('vault_entries_kind_check', sql`${table.kind} IN ('secret', 'file')`),
+  }),
+);
+
+/**
+ * Per-project access to a Vault entry. A null `family_slug` grants every agent of
+ * the project; otherwise only agents whose profile has that family (stored lowercase).
+ */
+export const vaultEntryGrants = sqliteTable(
+  'vault_entry_grants',
+  {
+    id: text('id').primaryKey(),
+    entryId: text('entry_id')
+      .notNull()
+      .references(() => vaultEntries.id, { onDelete: 'cascade' }),
+    projectId: text('project_id')
+      .notNull()
+      .references(() => projects.id, { onDelete: 'cascade' }),
+    familySlug: text('family_slug'),
+    createdAt: text('created_at').notNull(),
+  },
+  (table) => ({
+    allAgentsUnique: uniqueIndex('vault_entry_grants_all_idx')
+      .on(table.entryId, table.projectId)
+      .where(sql`${table.familySlug} IS NULL`),
+    familyUnique: uniqueIndex('vault_entry_grants_family_idx')
+      .on(table.entryId, table.projectId, table.familySlug)
+      .where(sql`${table.familySlug} IS NOT NULL`),
+    projectIdx: index('vault_entry_grants_project_idx').on(table.projectId),
+  }),
+);
+
+/**
+ * Which agents of a project may use the Vault at all; entry grants apply only inside it.
+ * No row: the Vault is off for the project. A null `family_slug` admits every agent,
+ * profiles without a family included; otherwise only that family (stored lowercase).
+ * No replica carries these rows. Exports and templates carry the access as `vaultAccess`
+ * (mode and current-profile slugs only); see docs/project-export-import.md#vault-access.
+ */
+export const vaultFamilyAccess = sqliteTable(
+  'vault_family_access',
+  {
+    id: text('id').primaryKey(),
+    projectId: text('project_id')
+      .notNull()
+      .references(() => projects.id, { onDelete: 'cascade' }),
+    familySlug: text('family_slug'),
+    createdAt: text('created_at').notNull(),
+  },
+  (table) => ({
+    allFamiliesUnique: uniqueIndex('vault_family_access_all_idx')
+      .on(table.projectId)
+      .where(sql`${table.familySlug} IS NULL`),
+    familyUnique: uniqueIndex('vault_family_access_family_idx')
+      .on(table.projectId, table.familySlug)
+      .where(sql`${table.familySlug} IS NOT NULL`),
+  }),
+);
+
+/**
+ * "Never ask again" for one agent family: agents of that family in the project use a
+ * gated entry without an approval prompt. Separate from `vault_entry_grants`, whose
+ * "all agents" write replaces the family rows. Home-only: no replica, export or
+ * template carries these rows; a claimed VM gets them only in the Vault push.
+ */
+export const vaultUseFamilyApprovals = sqliteTable(
+  'vault_use_family_approvals',
+  {
+    id: text('id').primaryKey(),
+    entryId: text('entry_id')
+      .notNull()
+      .references(() => vaultEntries.id, { onDelete: 'cascade' }),
+    projectId: text('project_id')
+      .notNull()
+      .references(() => projects.id, { onDelete: 'cascade' }),
+    familySlug: text('family_slug').notNull(),
+    createdAt: text('created_at').notNull(),
+  },
+  (table) => ({
+    familyUnique: uniqueIndex('vault_use_family_approvals_family_idx').on(
+      table.entryId,
+      table.projectId,
+      table.familySlug,
+    ),
+    projectIdx: index('vault_use_family_approvals_project_idx').on(table.projectId),
+  }),
+);
+
 export const pairedDeviceWorkspaceGrants = sqliteTable(
   'paired_device_workspace_grants',
   {

@@ -337,6 +337,7 @@ function useConfiguredReplaceWizard<
                 statusMappings={state.statusMappings}
                 onStatusMappingChange={onStatusMappingChange}
                 operationName={adapter.name.toLowerCase()}
+                vaultAccess={preview?.payload.vaultAccess}
               />
             )}
           </Fragment>
@@ -349,6 +350,7 @@ function useConfiguredReplaceWizard<
       isOpen,
       onStatusMappingChange,
       preflightFailure,
+      preview,
       review,
       reviewReady,
       state,

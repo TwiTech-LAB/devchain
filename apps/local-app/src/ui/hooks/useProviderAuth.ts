@@ -49,6 +49,16 @@ export function useProviderAuth() {
     client,
   );
 
+  const importDevin = useMutation(
+    {
+      mutationFn: (label: string) => api.importDevinLogin(label),
+      onSuccess: invalidate,
+      onError: (error: Error) =>
+        showError({ title: 'Devin import failed', description: error.message }),
+    },
+    client,
+  );
+
   const remove = useMutation(
     {
       mutationFn: (id: string) => api.deleteProviderAuthEntry(id),
@@ -92,6 +102,7 @@ export function useProviderAuth() {
     entriesLoading: entries.isLoading,
     createStatic,
     importOpencode,
+    importDevin,
     remove,
     rename,
     release,

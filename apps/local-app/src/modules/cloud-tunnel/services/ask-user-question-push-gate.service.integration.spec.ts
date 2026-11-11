@@ -3,10 +3,8 @@ import { createTestDatabase } from '../../../common/test/test-database.helper';
 import { randomUUID } from 'crypto';
 import Database from 'better-sqlite3';
 import { type BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
-import {
-  AskUserQuestionPushGateService,
-  AUQ_NATIVE_PUSH_GRACE_MS,
-} from './ask-user-question-push-gate.service';
+import { AskUserQuestionPushGateService } from './ask-user-question-push-gate.service';
+import { NATIVE_PUSH_GRACE_MS } from './native-push-gate';
 import { CloudSessionManagerService } from '../../cloud/services/cloud-session-manager.service';
 import { EgressQueueService } from '../../cloud/services/egress-queue.service';
 import { EventMapperService } from '../../cloud/services/event-mapper.service';
@@ -110,8 +108,8 @@ describe('AskUserQuestionPushGateService', () => {
   }
 
   async function fireAndSettle(payload = makePayload()) {
-    await gate.onPending(payload);
-    jest.advanceTimersByTime(AUQ_NATIVE_PUSH_GRACE_MS);
+    gate.onPending(payload);
+    jest.advanceTimersByTime(NATIVE_PUSH_GRACE_MS);
     // Flush mode check → liveness → final mode check → enqueue.
     for (let i = 0; i < 10; i += 1) await Promise.resolve();
   }
@@ -177,8 +175,8 @@ describe('AskUserQuestionPushGateService', () => {
   });
 
   it('does not query or enqueue before the grace window elapses', async () => {
-    await gate.onPending(makePayload());
-    jest.advanceTimersByTime(AUQ_NATIVE_PUSH_GRACE_MS - 1);
+    gate.onPending(makePayload());
+    jest.advanceTimersByTime(NATIVE_PUSH_GRACE_MS - 1);
     await Promise.resolve();
 
     expect(tunnelClient.querySseLiveness).not.toHaveBeenCalled();
@@ -195,7 +193,7 @@ describe('AskUserQuestionPushGateService', () => {
   it('skips a current project with an explicit disabled override', async () => {
     projectConfig.setEnabled(DEFAULT_PROJECT_ID, false);
 
-    await gate.onPending(makePayload());
+    gate.onPending(makePayload());
 
     expect(tunnelClient.querySseLiveness).not.toHaveBeenCalled();
     expect(egressQueue.enqueue).not.toHaveBeenCalled();
@@ -208,9 +206,9 @@ describe('AskUserQuestionPushGateService', () => {
   });
 
   it('clears pending timers on destroy without firing', async () => {
-    await gate.onPending(makePayload());
+    gate.onPending(makePayload());
     gate.onModuleDestroy();
-    jest.advanceTimersByTime(AUQ_NATIVE_PUSH_GRACE_MS * 2);
+    jest.advanceTimersByTime(NATIVE_PUSH_GRACE_MS * 2);
     await Promise.resolve();
     expect(tunnelClient.querySseLiveness).not.toHaveBeenCalled();
     expect(egressQueue.enqueue).not.toHaveBeenCalled();

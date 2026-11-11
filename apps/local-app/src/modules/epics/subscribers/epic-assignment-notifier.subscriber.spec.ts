@@ -188,6 +188,7 @@ describe('EpicAssignmentNotifierSubscriber', () => {
     ['SESSION_NOT_RUNNING', 'SESSION_NOT_RUNNING'],
     ['SESSION_NOT_FOUND', 'SESSION_NOT_FOUND'],
     ['SESSION_LAUNCH_FAILED', 'SESSION_LAUNCH_FAILED'],
+    ['VAULT_LOCKED', 'DELIVERY_FAILED'],
     ['DELIVERY_FAILED', 'DELIVERY_FAILED'],
     ['Unable to ensure active session for agent agent-1', 'SESSION_LAUNCH_FAILED'],
     ['SOME_PROVIDER_ERROR', 'DELIVERY_FAILED'],

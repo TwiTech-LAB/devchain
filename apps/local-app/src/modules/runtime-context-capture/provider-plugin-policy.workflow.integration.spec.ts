@@ -18,6 +18,8 @@ import type { Provider } from '../storage/models/domain.models';
 import { ClaudeLaunchSettingsMaterializerService } from './claude-launch-settings-materializer.service';
 import { CodexPluginProfileMaterializerService } from './codex-plugin-profile-materializer.service';
 import { RuntimeContextCaptureService } from './runtime-context-capture.service';
+import { systemRuntimeDirectoryHost } from '../runtime-directory/runtime-directory';
+import { RuntimeDirectoryService } from '../runtime-directory/runtime-directory.service';
 
 const PROJECT_ID = '11111111-1111-4111-8111-111111111111';
 const RESTORE_PROVIDER_SESSION_ID = 'provider-session-plugin-policy-workflow';
@@ -43,7 +45,10 @@ describe('provider plugin policy preparation workflow integration', () => {
       new RuntimeContextCaptureService(db),
       new ClaudeLaunchSettingsMaterializerService(join(temporaryRoot, 'claude-private')),
       new CodexPluginProfileMaterializerService(join(temporaryRoot, 'codex-private')),
-      join(temporaryRoot, 'runtime-context'),
+      new RuntimeDirectoryService({
+        ...systemRuntimeDirectoryHost(join(temporaryRoot, 'devchain.db')),
+        env: () => ({ RUNTIME_DIRECTORY: join(temporaryRoot, 'runtime-context') }),
+      }),
     );
 
     sqlite
@@ -196,6 +201,10 @@ describe('provider plugin policy preparation workflow integration', () => {
         '-u',
         'DEVCHAIN_CONTEXT_WINDOW_TOKENS',
         ...Object.entries(processIdsEnv()).map(([key, value]) => `${key}=${value}`),
+        `DEVCHAIN_SESSION_ID=session-plugin-policy-codex-${mode}`,
+        `DEVCHAIN_PROJECT_ID=${PROJECT_ID}`,
+        'DEVCHAIN_AGENT_ID=agent-plugin-policy-workflow',
+        expect.stringMatching(/^DEVCHAIN_API_URL=http:\/\//),
         '/usr/bin/codex',
         ...expectedArgv,
       ]);

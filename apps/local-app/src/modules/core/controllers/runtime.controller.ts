@@ -18,6 +18,7 @@ import { readBuildInfo } from './build-info';
 import { readHostCliVersions } from './host-cli-versions';
 import { readHostUserIdentity } from './host-user-identity';
 import type { HostRuntimeResponse } from '../../remotes/contract/host-routes';
+import { VaultVmCacheService } from '../../vault/vault-vm-cache.service';
 
 @ApiTags('runtime')
 @Controller('api/runtime')
@@ -28,6 +29,7 @@ export class RuntimeController {
     // Read-CRUD exception (development-standards.md): the override report is a
     // read-only join of provider, provider-config and project rows.
     @Inject(STORAGE_SERVICE) private readonly storage: HostEnvOverrideReportStorage,
+    private readonly vaultCache: VaultVmCacheService,
   ) {}
 
   @Get()
@@ -39,10 +41,12 @@ export class RuntimeController {
       typeof env.RUNTIME_TOKEN === 'string' && env.RUNTIME_TOKEN.trim().length > 0
         ? env.RUNTIME_TOKEN.trim()
         : undefined;
-    // Independent reads: the Docker probe and the database-backed override report.
-    const [docker, providerEnvOverrides] = await Promise.all([
+    // Independent reads: the Docker probe, the database-backed override report and,
+    // on a claimed VM, the Vault cache state (revision and readiness, never values).
+    const [docker, providerEnvOverrides, vault] = await Promise.all([
       readDockerRuntime(),
       readHostEnvOverrideReport(this.storage),
+      this.vaultCache.isClaimedHost() ? this.vaultCache.status() : undefined,
     ]);
 
     return {
@@ -69,6 +73,7 @@ export class RuntimeController {
       // Keys stored in this instance that shadow the applied host.env logins;
       // names only, never values.
       providerEnvOverrides,
+      ...(vault ? { vault } : {}),
       ...(runtimeToken ? { runtimeToken } : {}),
     };
   }

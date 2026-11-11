@@ -41,7 +41,7 @@ describe('type-guards', () => {
     it.each([
       { adapter: claude, commands: { compact: '/compact' } },
       { adapter: codex, commands: { compact: '/compact' } },
-      { adapter: devin, commands: undefined },
+      { adapter: devin, commands: { compact: '/compact' } },
       { adapter: opencode, commands: undefined },
       { adapter: antigravity, commands: undefined },
       { adapter: copilot, commands: undefined },

@@ -69,6 +69,8 @@ export const ImportOpencodeSchema = z
   })
   .strict();
 
+export const ImportDevinSchema = z.object({ label: LabelSchema }).strict();
+
 export type ImportOpencodeData = z.infer<typeof ImportOpencodeSchema>;
 
 /** One row of the opencode-logins list: an id and a fixed type, never a credential value. */

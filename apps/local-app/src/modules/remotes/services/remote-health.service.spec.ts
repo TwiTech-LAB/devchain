@@ -69,6 +69,7 @@ describe('RemoteHealthService', () => {
   let apiKeys: RemoteApiKeyService;
   let cliSettings: { pushIfChanged: jest.Mock; checkNow: jest.Mock };
   let usageSettings: { pushIfChanged: jest.Mock };
+  let vaultPush: { pushIfChanged: jest.Mock; useHealth: jest.Mock };
   let cliVersions: { registerRemoteCheck: jest.Mock };
   let sharedVm: ReturnType<typeof sharedVmGuardStub>;
 
@@ -94,6 +95,7 @@ describe('RemoteHealthService', () => {
       checkNow: jest.fn().mockResolvedValue(undefined),
     };
     usageSettings = { pushIfChanged: jest.fn().mockResolvedValue(undefined) };
+    vaultPush = { pushIfChanged: jest.fn().mockResolvedValue(undefined), useHealth: jest.fn() };
     cliVersions = { registerRemoteCheck: jest.fn().mockReturnValue(jest.fn()) };
     let key = 'first';
     apiKeys = new RemoteApiKeyService({
@@ -118,6 +120,7 @@ describe('RemoteHealthService', () => {
       apiKeys,
       sharedVm,
       { poll: async () => undefined, prune: () => undefined } as never,
+      vaultPush as never,
     );
   });
 
@@ -335,7 +338,8 @@ describe('RemoteHealthService', () => {
     expect(service.getState('remote-1').online).toBe(true);
   });
 
-  it('pushes CLI policy and usage settings, and checks CLIs, only for online version-matched VMs', async () => {
+  it('pushes CLI policy, usage settings and the Vault, checks CLIs and tells poll listeners, only for online version-matched VMs', async () => {
+    const vault = { appliedRevision: 'a'.repeat(64), cacheReady: false, cacheUnavailable: null };
     storage.listRemotes.mockResolvedValue({
       items: [
         makeRemote(),
@@ -347,16 +351,24 @@ describe('RemoteHealthService', () => {
       if (url.startsWith('https://offline')) throw new Error('offline');
       return jsonResponse(
         url.endsWith('/api/runtime')
-          ? { version: url.startsWith('https://old') ? '0.0.1' : '1.2.3' }
+          ? { version: url.startsWith('https://old') ? '0.0.1' : '1.2.3', vault }
           : HOST_STATS,
       );
     });
+    const listener = { polled: jest.fn(), lost: jest.fn() };
+    service.registerPollListener(listener);
     service.onModuleInit();
     await jest.advanceTimersByTimeAsync(0);
+    expect(listener.polled.mock.calls).toEqual([['remote-1']]);
+    // One failure is not offline yet; a version mismatch already is.
+    expect(listener.lost.mock.calls).toEqual([['old']]);
     expect(cliSettings.pushIfChanged.mock.calls).toEqual([['remote-1']]);
     expect(usageSettings.pushIfChanged.mock.calls).toEqual([['remote-1']]);
+    expect(vaultPush.pushIfChanged.mock.calls).toEqual([['remote-1', vault]]);
     await cliVersions.registerRemoteCheck.mock.calls[0][0]();
     expect(cliSettings.checkNow.mock.calls).toEqual([['remote-1']]);
+    await tick();
+    expect(listener.lost.mock.calls.slice(1).sort()).toEqual([['offline'], ['old']]);
     service.onModuleDestroy();
     expect(cliVersions.registerRemoteCheck.mock.results[0].value).toHaveBeenCalled();
   });
@@ -817,6 +829,8 @@ describe('RemoteHealthService', () => {
           : jsonResponse(HOST_STATS),
       ),
     );
+    const listener = { polled: jest.fn(), lost: jest.fn() };
+    service.registerPollListener(listener);
     service.onModuleInit();
     await jest.advanceTimersByTimeAsync(0);
     expect(service.getState('remote-1').online).toBe(true);
@@ -824,6 +838,7 @@ describe('RemoteHealthService', () => {
     storage.listRemotes.mockResolvedValue({ items: [] });
     await tick();
 
+    expect(listener.lost.mock.calls).toEqual([['remote-1']]);
     // Pruned back to the never-polled default rather than a stale "online" snapshot.
     expect(service.getState('remote-1')).toEqual({
       online: false,

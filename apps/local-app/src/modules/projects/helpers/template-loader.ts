@@ -331,7 +331,7 @@ export async function createFromTemplateWithHelper(
 
   // POST-TX (non-transactional): watchers, subscribers, teams (non-fatal on create),
   // scheduledEpics, projectSettings + initialPrompt, presets, providerSettings, providerModels,
-  // providerEfforts — in registry order.
+  // providerEfforts, vaultAccess — in registry order.
   const postResults = await CREATE_TEMPLATE_PIPELINE.applySections(
     [
       'watchers',
@@ -343,6 +343,7 @@ export async function createFromTemplateWithHelper(
       'providerSettings',
       'providerModels',
       'providerEfforts',
+      'vaultAccess',
     ],
     resolvedPayload,
     pipelineCtx,

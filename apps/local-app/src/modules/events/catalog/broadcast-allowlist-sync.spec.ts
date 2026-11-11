@@ -41,6 +41,8 @@ describe('broadcast-registry ↔ shared push allowlist sync', () => {
     'session.activity.changed',
     'agent.created',
     'agent.deleted',
+    'vault.request.pending',
+    'vault.request.resolved',
   ];
 
   it.each(MOBILE_SOURCE_EVENTS)(

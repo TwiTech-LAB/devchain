@@ -567,6 +567,37 @@ export const broadcastRegistry: Record<string, BroadcastRegistryTopicEntry<P>[]>
       clientReaction: { kind: 'invalidate', owner: 'useChatSocket' },
     },
   ],
+  // ── Vault requests: the web and the phone ask the user wherever they are; the topic
+  //    carries the project so the tunnel can scope it ──
+  'vault.request.pending': [
+    {
+      topic: (p) => `project/${p.projectId}/vault-requests`,
+      type: 'vault_request.pending',
+      payloadProjection: (p) => ({
+        requestId: p.requestId,
+        projectId: p.projectId,
+        sessionId: p.sessionId,
+        agentId: p.agentId,
+        agentName: p.agentName,
+        type: p.type,
+        name: p.name,
+        description: p.description,
+        kind: p.kind,
+        expiresAt: p.expiresAt,
+      }),
+      clientReaction: { kind: 'custom-handler', owner: 'VaultRequestModal' },
+      // The entry name and the agent's reason are real content — withheld on a plaintext push.
+      contentBearing: true,
+    },
+  ],
+  'vault.request.resolved': [
+    {
+      topic: (p) => `project/${p.projectId}/vault-requests`,
+      type: 'vault_request.resolved',
+      payloadProjection: (p) => ({ requestId: p.requestId, status: p.status }),
+      clientReaction: { kind: 'custom-handler', owner: 'VaultRequestModal' },
+    },
+  ],
   'session.recommendation': [
     {
       topic: 'system',

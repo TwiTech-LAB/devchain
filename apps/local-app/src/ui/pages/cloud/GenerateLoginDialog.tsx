@@ -57,9 +57,11 @@ export function GenerateLoginDialog({
   const [started, setStarted] = useState<ProviderAuthGenerationView | null>(null);
   /** The provider's login that was already running when this dialog tried to start one. */
   const [runningId, setRunningId] = useState<string | null>(null);
+  const [startError, setStartError] = useState<string | null>(null);
   const generationId = attach?.id ?? runningId ?? started?.id ?? null;
   const { generation: polled } = useProviderAuthGeneration(generationId);
   const generation = polled ?? attach ?? started ?? null;
+  const errorText = startError ?? generation?.error;
   const followed = Boolean(attach) || runningId !== null;
   const settledRef = useRef(false);
   const onCloseRef = useRef(onClose);
@@ -94,8 +96,10 @@ export function GenerateLoginDialog({
         else setStarted(view);
       },
       (error: unknown) => {
+        if (closedRef.current) return;
         const id = runningGenerationId(error);
-        if (id && !closedRef.current) setRunningId(id);
+        if (id) setRunningId(id);
+        else setStartError(error instanceof Error ? error.message : 'The login did not start.');
       },
     );
     // eslint-disable-next-line react-hooks/exhaustive-deps -- Start one login with the mount-time provider and label; rerenders must not start another.
@@ -169,12 +173,14 @@ export function GenerateLoginDialog({
           </p>
         )}
         <p className="text-sm" role="status" data-testid="login-generation-state">
-          {(!generation || !isGenerationTerminal(generation.state)) && <Spinner className="mr-1" />}
-          {generation ? STATE_TEXT[generation.state] : 'Starting the login terminal…'}
+          {!startError && (!generation || !isGenerationTerminal(generation.state)) && (
+            <Spinner className="mr-1" />
+          )}
+          {statusText(startError, generation)}
         </p>
-        {generation?.error && (
+        {errorText && (
           <p role="alert" className="text-sm text-destructive">
-            {generation.error}
+            {errorText}
           </p>
         )}
         {generation?.sessionId && (
@@ -201,4 +207,13 @@ export function GenerateLoginDialog({
       </DialogContent>
     </Dialog>
   );
+}
+
+function statusText(
+  startError: string | null,
+  generation: ProviderAuthGenerationView | null | undefined,
+): string {
+  if (startError) return 'The login did not start.';
+  if (generation) return STATE_TEXT[generation.state];
+  return 'Starting the login terminal…';
 }

@@ -5,6 +5,9 @@ import { MemoryRouter, useLocation } from 'react-router-dom';
 import { Layout } from './Layout';
 import { RuntimeProvider } from '../hooks/useRuntime';
 import userEvent from '@testing-library/user-event';
+
+// The agent-request modal has its own spec; these suites mock fetch with other shapes.
+jest.mock('@/ui/pages/vault/VaultRequestModal', () => ({ VaultRequestModal: () => null }));
 // Layer: UI component unit. Mocking project selection and the activity hook is the cheapest
 // reliable proof that Layout owns the wiring without duplicating the hook's event matrix.
 const useSelectedProjectMock = jest.fn();

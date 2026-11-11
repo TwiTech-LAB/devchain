@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { writeFile } from 'node:fs/promises';
 import * as os from 'node:os';
 import { join } from 'node:path';
-import { NotFoundError, ValidationError } from '../../common/errors/error-types';
+import { AppError, NotFoundError, ValidationError } from '../../common/errors/error-types';
 import { ProviderAdapterFactory } from '../providers/adapters/provider-adapter.factory';
 import type {
   ClaudeAdapter,
@@ -294,6 +294,137 @@ describe('ProviderAuthVaultService', () => {
     const toml = Buffer.from(bundle.files[0].contentBase64, 'base64').toString('utf8');
     expect(toml).toContain('windsurf_api_key = "a\\tb\\bc\\fd\\u0001e\\u007f\\"g\\\\h"');
     expect(toml).not.toMatch(/[\x00-\x08\x0b\x0e-\x1f\x7f]/);
+  });
+
+  describe('importDevin', () => {
+    const DEVIN_KEY = 'ws-pc-secret-key';
+    const STANDARD_TOML = [
+      `windsurf_api_key = "${DEVIN_KEY}"`,
+      'api_server_url = "https://server.codeium.com"',
+      'devin_webapp_host = "app.devin.ai"',
+      'devin_api_url = "https://api.devin.ai"',
+      '',
+    ].join('\n');
+    const savedXdgDataHome = process.env.XDG_DATA_HOME;
+
+    afterEach(() => {
+      if (savedXdgDataHome === undefined) delete process.env.XDG_DATA_HOME;
+      else process.env.XDG_DATA_HOME = savedXdgDataHome;
+    });
+
+    /** Writes the PC login file under `dataHome` and points HOME at the test PC home. */
+    async function writePcDevinLogin(dataHome: string, content: string) {
+      mkdirSync(join(dataHome, 'devin'), { recursive: true });
+      await writeFile(join(dataHome, 'devin/credentials.toml'), content, 'utf8');
+      jest.mocked(os.homedir).mockReturnValue(pcHome);
+    }
+
+    it.each([
+      ['XDG_DATA_HOME', (home: string) => join(home, 'xdg-data')],
+      ['the default data folder', (home: string) => join(home, '.local/share')],
+    ])('stores the login under %s as a pasted key would be stored', async (_case, dataHome) => {
+      if (_case === 'XDG_DATA_HOME') process.env.XDG_DATA_HOME = dataHome(pcHome);
+      else delete process.env.XDG_DATA_HOME;
+      await writePcDevinLogin(dataHome(pcHome), STANDARD_TOML);
+
+      const imported = await service.importDevin('Devin from this PC');
+      const pasted = await service.createStatic({
+        provider: 'devin',
+        label: 'Pasted',
+        token: DEVIN_KEY,
+      });
+
+      expect(imported).toMatchObject({ provider: 'devin', kind: 'static', payloadKind: 'env' });
+      await expect(storage.readProviderAuthPayload(imported.id)).resolves.toEqual(
+        await storage.readProviderAuthPayload(pasted.id),
+      );
+    });
+
+    it('accepts a login file that leaves the server addresses at their defaults', async () => {
+      delete process.env.XDG_DATA_HOME;
+      await writePcDevinLogin(join(pcHome, '.local/share'), `windsurf_api_key = "${DEVIN_KEY}"\n`);
+
+      const imported = await service.importDevin('Devin');
+
+      await expect(storage.readProviderAuthPayload(imported.id)).resolves.toEqual({
+        payloadKind: 'env',
+        envKey: 'WINDSURF_API_KEY',
+        value: DEVIN_KEY,
+      });
+    });
+
+    it.each([
+      [
+        'other server addresses',
+        STANDARD_TOML.replace('https://api.devin.ai', 'https://api.corp.example'),
+        ValidationError,
+        'This Devin login uses other server addresses. VM logins support only the standard Devin servers.',
+      ],
+      [
+        'a file that is not TOML',
+        `windsurf_api_key = "${DEVIN_KEY}\n[[[`,
+        ValidationError,
+        'The Devin login file on this PC is not valid TOML.',
+      ],
+      [
+        'a file without windsurf_api_key',
+        'api_server_url = "https://server.codeium.com"\n',
+        ValidationError,
+        'The Devin login file on this PC has no windsurf_api_key.',
+      ],
+      [
+        'a multi-line key',
+        `windsurf_api_key = "${DEVIN_KEY}\\nsecond-line"\n`,
+        ValidationError,
+        'The windsurf_api_key in the Devin login file on this PC is not a single-line value.',
+      ],
+      ['no login file', null, AppError, 'No Devin login on this PC'],
+    ])(
+      'refuses %s with a fixed message and stores nothing',
+      async (_case, content, errorType, message) => {
+        delete process.env.XDG_DATA_HOME;
+        jest.mocked(os.homedir).mockReturnValue(pcHome);
+        if (content !== null) await writePcDevinLogin(join(pcHome, '.local/share'), content);
+
+        const error = await service.importDevin('Devin').catch((caught: unknown) => caught);
+
+        expect(error).toBeInstanceOf(errorType);
+        const appError = error as AppError;
+        expect(appError.message).toContain(message);
+        const exposed = JSON.stringify({ message: appError.message, details: appError.details });
+        expect(exposed).not.toContain(DEVIN_KEY);
+        expect(exposed).not.toContain('[[[');
+        await expect(service.list()).resolves.toEqual([]);
+      },
+    );
+
+    it('names the path rule when the PC has no Devin login', async () => {
+      process.env.XDG_DATA_HOME = join(pcHome, 'xdg-data');
+
+      const error = (await service
+        .importDevin('Devin')
+        .catch((caught: unknown) => caught)) as AppError;
+
+      expect(error.statusCode).toBe(404);
+      expect(error.message).toContain(join(pcHome, 'xdg-data/devin/credentials.toml'));
+      expect(error.message).toContain('~/.local/share/devin/credentials.toml');
+    });
+
+    it('says the login file cannot be read, not that it is missing, when it exists but is unreadable', async () => {
+      delete process.env.XDG_DATA_HOME;
+      jest.mocked(os.homedir).mockReturnValue(pcHome);
+      const path = join(pcHome, '.local/share/devin/credentials.toml');
+      mkdirSync(path, { recursive: true }); // a folder in place of the file: EISDIR
+
+      const error = await service.importDevin('Devin').catch((caught: unknown) => caught);
+
+      expect(error).toBeInstanceOf(ValidationError);
+      expect((error as AppError).message).toContain(
+        `DevChain cannot read the Devin login file on this PC: ${path}.`,
+      );
+      expect((error as AppError).details).toMatchObject({ reason: 'devin_login_unreadable' });
+      await expect(service.list()).resolves.toEqual([]);
+    });
   });
 
   it('imports three OpenCode providers as one encrypted static group and reports refused/missing ids', async () => {

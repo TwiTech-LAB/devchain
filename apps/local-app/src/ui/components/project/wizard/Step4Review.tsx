@@ -7,7 +7,9 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/ui/components/ui/select';
+import type { ExportVaultAccess } from '@devchain/shared';
 import type { PromptTransferCounts } from '@/common/prompt-transfer';
+import { TemplateVaultAccessNotice } from './TemplateVaultAccessNotice';
 
 export interface ImportDryRunCounts {
   toImport: Record<string, number>;
@@ -38,6 +40,8 @@ export interface Step4ReviewProps {
   statusMappings: Record<string, string>;
   onStatusMappingChange: (statusId: string, templateLabel: string) => void;
   operationName?: string;
+  /** The template's Vault access, from the parsed setup-preview payload. */
+  vaultAccess?: ExportVaultAccess;
 }
 
 export function Step4Review({
@@ -46,6 +50,7 @@ export function Step4Review({
   statusMappings,
   onStatusMappingChange,
   operationName = 'import',
+  vaultAccess,
 }: Step4ReviewProps) {
   if (isLoading || !review) {
     return (
@@ -68,6 +73,8 @@ export function Step4Review({
         and the initial session prompt for this project. Only unmatched statuses mapped below will
         be deleted; matching statuses are retained. This action is destructive.
       </p>
+
+      <TemplateVaultAccessNotice vaultAccess={vaultAccess} />
 
       {review.missingProviders && review.missingProviders.length > 0 && (
         <Alert variant="destructive" data-testid="wizard-review-missing-providers">

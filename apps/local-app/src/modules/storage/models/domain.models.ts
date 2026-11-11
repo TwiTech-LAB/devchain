@@ -102,6 +102,25 @@ export interface UpdateRemote {
   name: string;
 }
 
+/** The stores whose secret column moves from the integration credential key to the Vault key. */
+export type VaultStoreName =
+  | 'integration_connections'
+  | 'provider_auth_entries'
+  | 'vm_provider_connections';
+
+/** Counts only; never a value. */
+export interface VaultStoreMigrationResult {
+  store: VaultStoreName;
+  /** Rows in the store after the run. */
+  total: number;
+  /** Rows sealed under the Vault key after the run. */
+  vault: number;
+  /** Rows this run moved to the Vault key. */
+  migrated: number;
+  /** Legacy rows that did not open under the legacy key; they stay as they are. */
+  failed: number;
+}
+
 // ── Provider auth vault ───────────────────────────────────────────────────────
 // Login material for VM claims, stored encrypted at home only.
 
@@ -130,6 +149,160 @@ export interface ProviderAuthEntry {
   updatedAt: string;
   lastVerifiedAt: string | null;
   lastWritebackAt: string | null;
+}
+
+export type VaultKeySlotKind = 'keystore' | 'recovery' | 'file';
+
+/** Scrypt parameters of a recovery slot; the salt is base64. */
+export interface VaultKdfParams {
+  algorithm: 'scrypt';
+  salt: string;
+  N: number;
+  r: number;
+  p: number;
+}
+
+/** One wrapped copy of the Vault data key. `wrappedDek` is an envelope, never a key. */
+export interface VaultKeySlot {
+  id: string;
+  vaultId: string;
+  kind: VaultKeySlotKind;
+  dekVersion: number;
+  wrappedDek: string;
+  keystoreAccount: string | null;
+  kdfParams: VaultKdfParams | null;
+  /** The recovery code sealed under the data key, until the user confirms it. */
+  pendingRecoveryCode: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type CreateVaultKeySlot = Omit<VaultKeySlot, 'createdAt' | 'updatedAt'>;
+
+export type VaultEntryKind = 'secret' | 'file';
+
+/** Vault entry metadata. The value never leaves storage through this shape. */
+export interface VaultEntry {
+  id: string;
+  /** Null for a global entry. */
+  projectId: string | null;
+  name: string;
+  kind: VaultEntryKind;
+  description: string;
+  revision: number;
+  /** A session must have the user's approval before it receives the value. */
+  approvalRequired: boolean;
+  lastUsedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/**
+ * The owner follows from `projects`: exactly one project owns the entry; none or
+ * several make it a global entry. Each project gets the grants of its own access.
+ */
+export interface CreateVaultEntry {
+  id: string;
+  projects: VaultEntryProjectAccess[];
+  name: string;
+  kind: VaultEntryKind;
+  description: string;
+  valueCiphertext: string;
+  /** Defaults to false. */
+  approvalRequired?: boolean;
+}
+
+/**
+ * `projects` replaces every grant of the entry: unlisted projects lose access. A project
+ * entry becomes global when the list names another project. Absent, grants stay.
+ */
+export interface UpdateVaultEntry {
+  name?: string;
+  description?: string;
+  projects?: VaultEntryProjectAccess[];
+  approvalRequired?: boolean;
+}
+
+export interface VaultEntryGrant {
+  projectId: string;
+  /** Null grants every agent of the project. */
+  familySlug: string | null;
+  /** False when no profile of the project has `familySlug` now; always true for null. */
+  familyMatched: boolean;
+}
+
+/** What one project's agents may receive from one entry. */
+export type VaultGrantAccess =
+  | { mode: 'all' }
+  | { mode: 'families'; familySlugs: string[] }
+  | { mode: 'none' };
+
+/** An access that grants something: a group of grant or access rows is never `none`. */
+export type VaultGivenAccess = Exclude<VaultGrantAccess, { mode: 'none' }>;
+
+/** One project of an entry's project list and what its agents may receive. */
+export type VaultEntryProjectAccess = { projectId: string } & VaultGivenAccess;
+
+/** One grant row of any entry. */
+export interface VaultGrant extends VaultEntryGrant {
+  entryId: string;
+}
+
+/** The new access of one entry in the project that `setVaultProjectGrants` names. */
+export type VaultProjectGrantChange = { entryId: string } & VaultGrantAccess;
+
+/** One row of a project's Vault access. Null admits every agent of the project. */
+export interface VaultFamilyAccess {
+  projectId: string;
+  familySlug: string | null;
+  /** False when no profile of the project has `familySlug` now; always true for null. */
+  familyMatched: boolean;
+}
+
+/** "Never ask again": agents of `familySlug` (lowercase) in the project skip the approval prompt. */
+export interface VaultUseFamilyApproval {
+  entryId: string;
+  projectId: string;
+  familySlug: string;
+  createdAt: string;
+}
+
+/**
+ * Whether one agent may use the Vault: `not_enabled` when the project has no access
+ * row, `denied` when no row covers the agent's family.
+ */
+export type VaultAccessDecision = 'granted' | 'not_enabled' | 'denied';
+
+/** An entry an agent may receive; never carries the value. */
+export interface VaultResolvedEntry {
+  id: string;
+  name: string;
+  kind: VaultEntryKind;
+  description: string;
+  revision: number;
+  owner: 'global' | 'project';
+  /** A session needs the user's approval before it receives the value. */
+  approvalRequired: boolean;
+}
+
+/**
+ * Home's Vault metadata as a claimed VM keeps it in `vault_entries`,
+ * `vault_entry_grants`, `vault_family_access` and `vault_use_family_approvals`. It
+ * carries no values: the VM keeps those in tmpfs only.
+ */
+export interface VaultSnapshot {
+  entries: Array<{
+    id: string;
+    projectId: string | null;
+    name: string;
+    kind: VaultEntryKind;
+    description: string;
+    revision: number;
+    approvalRequired: boolean;
+  }>;
+  grants: Array<{ entryId: string; projectId: string; familySlug: string | null }>;
+  access: Array<{ projectId: string; familySlug: string | null }>;
+  approvals: Array<{ entryId: string; projectId: string; familySlug: string }>;
 }
 
 /** One entry's decrypted payload. */

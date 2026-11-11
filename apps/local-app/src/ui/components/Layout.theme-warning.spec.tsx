@@ -13,6 +13,9 @@ import { MemoryRouter } from 'react-router-dom';
 import { Layout } from './Layout';
 import type { ActiveSession } from '../lib/sessions';
 
+// The agent-request modal has its own spec; these suites mock fetch with other shapes.
+jest.mock('@/ui/pages/vault/VaultRequestModal', () => ({ VaultRequestModal: () => null }));
+
 // ── Module mocks ─────────────────────────────────────────────────────────────
 
 const toastSpy = jest.fn();

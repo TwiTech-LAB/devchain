@@ -38,6 +38,7 @@ let importBody: Record<string, unknown> | null;
 let renameBody: Record<string, unknown> | null;
 // While set, a rename answers 400 with this message.
 let renameRefusal: string | null;
+let devinImportBody: Record<string, unknown> | null;
 let opencodeLogins: Array<Record<string, unknown>>;
 // While set, the login list stays pending until the promise resolves.
 let loginsGate: Promise<void> | null;
@@ -54,6 +55,7 @@ beforeEach(() => {
   importBody = null;
   renameBody = null;
   renameRefusal = null;
+  devinImportBody = null;
   opencodeLogins = OPENCODE_LOGINS.map((login) => ({ ...login }));
   loginsGate = null;
   loginsFail = false;
@@ -83,6 +85,18 @@ beforeEach(() => {
         } as Response;
       }
       return { ok: true, json: async () => ({ logins: opencodeLogins }) } as Response;
+    }
+    if (target === '/api/provider-auth/devin-import' && method === 'POST') {
+      devinImportBody = init?.body ? JSON.parse(init.body as string) : null;
+      const imported = {
+        id: 'devin-1',
+        provider: 'devin',
+        kind: 'static',
+        label: devinImportBody?.['label'],
+        payloadKind: 'env',
+      };
+      entries = [...entries, imported];
+      return { ok: true, status: 201, json: async () => imported } as Response;
     }
     if (target === '/api/provider-auth/opencode-import' && method === 'POST') {
       importBody = init?.body ? JSON.parse(init.body as string) : null;
@@ -597,6 +611,34 @@ describe('LoginsTab sections', () => {
     const dialog = await screen.findByRole('dialog', { name: 'Add login' });
     expect(within(dialog).getByRole('combobox', { name: 'Provider' })).toHaveTextContent('Codex');
     expect(within(dialog).getByRole('button', { name: 'Start sign-in' })).toBeInTheDocument();
+  });
+
+  it("imports this PC's Devin login from its own section, with paste as the second method", async () => {
+    entries = [];
+    renderPanel();
+
+    await userEvent.click(await screen.findByRole('button', { name: 'Add a Devin login' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Add login' });
+    expect(within(dialog).getByRole('combobox', { name: 'Provider' })).toHaveTextContent('Devin');
+    expect(
+      within(dialog)
+        .getAllByRole('tab')
+        .map((tab) => tab.textContent),
+    ).toEqual(['Import from this PC', 'Paste a token']);
+    expect(
+      within(dialog).getByText(/~\/\.local\/share\/devin\/credentials\.toml/),
+    ).toBeInTheDocument();
+
+    const label = within(dialog).getByLabelText('Label');
+    await userEvent.clear(label);
+    await userEvent.type(label, 'Devin laptop');
+    await userEvent.click(within(dialog).getByTestId('devin-import-submit'));
+
+    await waitFor(() =>
+      expect(screen.queryByRole('dialog', { name: 'Add login' })).not.toBeInTheDocument(),
+    );
+    expect(devinImportBody).toEqual({ label: 'Devin laptop' });
+    expect(await screen.findByText('Devin laptop')).toBeInTheDocument();
   });
 
   it('says where each login is used and when it was checked and saved', async () => {

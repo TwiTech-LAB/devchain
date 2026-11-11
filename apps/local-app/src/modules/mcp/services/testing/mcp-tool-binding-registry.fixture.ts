@@ -20,6 +20,8 @@ export type McpToolBindingRegistryFixtureDependencies = Partial<
     | 'projectCommunicationService'
     | 'projectWriteGate'
     | 'worktreesService'
+    | 'vaultDiscoveryService'
+    | 'vaultRequestService'
   >
 >;
 
@@ -44,5 +46,7 @@ export function createMcpToolBindingRegistryFixture(
     dependencies.projectCommunicationService,
     dependencies.projectWriteGate,
     dependencies.worktreesService,
+    dependencies.vaultDiscoveryService,
+    dependencies.vaultRequestService,
   );
 }

@@ -17,6 +17,7 @@ import {
   CreateRemote,
   VmProviderConnection,
   CreateVmProviderConnection,
+  VaultStoreMigrationResult,
   RemoteProjectBinding,
   UpdateRemoteProjectBinding,
   RemoteOperation,
@@ -129,6 +130,20 @@ import {
   CreateProviderAuthEntry,
   ProviderAuthEntry,
   ProviderAuthPayload,
+  CreateVaultKeySlot,
+  VaultKeySlot,
+  CreateVaultEntry,
+  UpdateVaultEntry,
+  VaultEntry,
+  VaultAccessDecision,
+  VaultEntryGrant,
+  VaultFamilyAccess,
+  VaultGrant,
+  VaultGrantAccess,
+  VaultProjectGrantChange,
+  VaultResolvedEntry,
+  VaultSnapshot,
+  VaultUseFamilyApproval,
 } from '../models/domain.models';
 
 export type VerifyIntegrationCredentials = (credentials: IntegrationCredentials) => Promise<void>;
@@ -540,6 +555,8 @@ export interface RemoteStorage {
   listVmProviderConnections(): Promise<VmProviderConnection[]>;
   getVmProviderConnection(id: string): Promise<VmProviderConnection>;
   readVmProviderTokenSecret(id: string): Promise<string>;
+  /** Moves legacy Proxmox token rows to the Vault key; see `migrateStoredSecrets`. */
+  migrateVmProviderTokensToVault(): Promise<VaultStoreMigrationResult>;
   deleteVmProviderConnection(id: string): Promise<void>;
   /** Refuses (409) while any binding still references the remote. */
   deleteRemote(id: string): Promise<void>;
@@ -584,6 +601,126 @@ export interface ProviderAuthStorage {
   /** 409 `PROVIDER_AUTH_ALREADY_CHECKED_OUT` for a family held by another remote; static never checks out. */
   checkoutProviderAuthEntry(id: string, remoteId: string): Promise<ProviderAuthEntry>;
   releaseProviderAuthEntry(id: string): Promise<ProviderAuthEntry>;
+  /** Moves legacy payload rows to the Vault key; see `migrateStoredSecrets`. */
+  migrateProviderAuthPayloadsToVault(): Promise<VaultStoreMigrationResult>;
+}
+
+export interface VaultKeySlotStorage {
+  listVaultKeySlots(): Promise<VaultKeySlot[]>;
+  /** Inserts the first slots of a Vault; 409 `VAULT_ALREADY_SET_UP` when any slot exists. */
+  initializeVaultKeySlots(slots: CreateVaultKeySlot[]): Promise<VaultKeySlot[]>;
+  /** Replaces the slots of `slot.kind` for the same data-key version with `slot`. */
+  replaceVaultKeySlot(slot: CreateVaultKeySlot): Promise<VaultKeySlot>;
+  /** Drops every pending sealed recovery code. */
+  clearVaultPendingRecoveryCode(): Promise<void>;
+}
+
+/** Vault entries and their per-project grants. No method returns a value or ciphertext. */
+export interface VaultEntryStorage {
+  /** With `projectId`, the global entries and that project's entries. */
+  listVaultEntries(filter?: { projectId?: string }): Promise<VaultEntry[]>;
+  getVaultEntry(id: string): Promise<VaultEntry>;
+  /**
+   * Creates the entry and its grants in one transaction. 409 `VAULT_ENTRY_NAME_TAKEN`
+   * names the owner that already has the name.
+   */
+  createVaultEntry(data: CreateVaultEntry): Promise<VaultEntry>;
+  /**
+   * Name, owner, grants and the approval flag change together or not at all; the owner
+   * never goes back. The flag never changes the entry revision.
+   */
+  updateVaultEntry(id: string, data: UpdateVaultEntry): Promise<VaultEntry>;
+  replaceVaultEntryValue(id: string, valueCiphertext: string): Promise<VaultEntry>;
+  deleteVaultEntry(id: string): Promise<void>;
+  listVaultEntryGrants(entryId: string): Promise<VaultEntryGrant[]>;
+  /** Every grant row, or with `projectId` the rows of that project only. */
+  listVaultGrants(filter?: { projectId?: string }): Promise<VaultGrant[]>;
+  /**
+   * Replaces the grants of the listed entries in one project in one transaction and
+   * returns the project's grants. With `access`, the project's Vault access is replaced
+   * in the same transaction, as `setVaultFamilyAccess` does. Never changes an owner;
+   * 400 `VAULT_GRANT_OTHER_PROJECT` for an entry of another project.
+   */
+  setVaultProjectGrants(
+    projectId: string,
+    entries: VaultProjectGrantChange[],
+    access?: VaultGrantAccess,
+  ): Promise<VaultGrant[]>;
+  /** Replaces the grants of one entry in one project. */
+  setVaultEntryProjectGrants(
+    entryId: string,
+    projectId: string,
+    access: VaultGrantAccess,
+  ): Promise<VaultEntryGrant[]>;
+  /**
+   * Adds one grant and keeps the entry's other grants in the project: null adds "all
+   * agents", which replaces family rows; a family already covered by "all agents"
+   * changes nothing. Same refusals as `setVaultEntryProjectGrants`.
+   */
+  addVaultEntryGrant(
+    entryId: string,
+    projectId: string,
+    familySlug: string | null,
+  ): Promise<VaultEntryGrant[]>;
+  /** Family approvals, narrowed by entry and/or project. */
+  listVaultUseFamilyApprovals(filter?: {
+    entryId?: string;
+    projectId?: string;
+  }): Promise<VaultUseFamilyApproval[]>;
+  /**
+   * Adds the approval of one family (normalized to lowercase); an existing row changes
+   * nothing. Returns the entry's approvals. 400 `VAULT_APPROVAL_FAMILY_INVALID` for an
+   * empty family, 400 `VAULT_GRANT_OTHER_PROJECT` for an entry of another project.
+   */
+  addVaultUseFamilyApproval(
+    entryId: string,
+    projectId: string,
+    familySlug: string,
+  ): Promise<VaultUseFamilyApproval[]>;
+  /** Removes one family approval; a missing row changes nothing. Returns the entry's approvals. */
+  removeVaultUseFamilyApproval(
+    entryId: string,
+    projectId: string,
+    familySlug: string,
+  ): Promise<VaultUseFamilyApproval[]>;
+  /** Every Vault access row, or with `projectId` the rows of that project only. */
+  listVaultFamilyAccess(filter?: { projectId?: string }): Promise<VaultFamilyAccess[]>;
+  /**
+   * Replaces the Vault access of one project and returns its rows: `none` turns the
+   * Vault off. 400 `VAULT_ACCESS_UNKNOWN_FAMILY` for a family no profile of the
+   * project has, unless the project already holds that row.
+   */
+  setVaultFamilyAccess(projectId: string, access: VaultGrantAccess): Promise<VaultFamilyAccess[]>;
+  getVaultAccessDecision(
+    projectId: string,
+    familySlug: string | null,
+  ): Promise<VaultAccessDecision>;
+  /**
+   * Entries an agent of `projectId` with `familySlug` may receive, one per name:
+   * a project-owned entry wins over a global entry of the same name. Empty unless
+   * the project's Vault access admits the family.
+   */
+  resolveVaultGrantsForAgent(
+    projectId: string,
+    familySlug: string | null,
+  ): Promise<VaultResolvedEntry[]>;
+  /** Sealed values of `ids`; only the launch path may call this. */
+  readVaultEntryCiphertexts(
+    ids: readonly string[],
+  ): Promise<Array<{ id: string; valueCiphertext: string }>>;
+  markVaultEntriesUsed(ids: readonly string[], at: string): Promise<void>;
+  /** A claimed VM's copy of home's entries, grants, access rows and family approvals. */
+  readVaultSnapshot(): Promise<VaultSnapshot>;
+  /**
+   * What home sends to a VM that holds `projectIds`: their grants and family approvals,
+   * without family rows no profile of the project matches, and the entries the grants name.
+   */
+  readVaultPushSnapshot(projectIds: readonly string[]): Promise<VaultSnapshot>;
+  /**
+   * Makes the VM's rows equal to `snapshot` in one transaction. Kept entry ids keep
+   * their delivery records. 409 `VAULT_SNAPSHOT_PROJECT_MISSING` when a project is absent.
+   */
+  replaceVaultSnapshot(snapshot: VaultSnapshot): Promise<void>;
 }
 
 export interface StatusStorage {
@@ -1025,6 +1162,8 @@ export interface IntegrationStorage {
   getIntegrationConnectionCredentialsById(
     connectionId: string,
   ): Promise<IntegrationCredentials | null>;
+  /** Moves legacy credential rows to the Vault key; see `migrateStoredSecrets`. */
+  migrateIntegrationCredentialsToVault(): Promise<VaultStoreMigrationResult>;
   disconnectIntegrationConnection(
     identity: IntegrationConnectionLookup,
     eventFactory?: (connection: IntegrationConnection) => PreparedEvent | null,
@@ -1172,6 +1311,8 @@ export interface StorageService
     ProjectWorkspaceStorage,
     RemoteStorage,
     ProviderAuthStorage,
+    VaultKeySlotStorage,
+    VaultEntryStorage,
     ProjectReplicaStorage,
     ProjectHostStorage,
     StatusStorage,

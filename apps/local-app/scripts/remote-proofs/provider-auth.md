@@ -40,7 +40,7 @@ CLI versions (PC / second host):
 | OpenCode `api` | n/a | one entry of the PC's `auth.json` | entry in composed `~/.local/share/opencode/auth.json` 0600 | n/a | `static` |
 | OpenCode `oauth` | `XDG_DATA_HOME` | one entry of the isolated `auth.json` | entry in composed `auth.json` | rewritten; `refresh` rotates | `family` |
 | Copilot | `GH_CONFIG_DIR` + `--insecure-storage` | `gh auth token` output (`gho_…`) | `COPILOT_GITHUB_TOKEN` env | n/a (no file) | `static` |
-| Devin | none needed (paste from `credentials.toml`) | `windsurf_api_key` value | `WINDSURF_API_KEY` env | n/a (no file) | `static` |
+| Devin | none needed (import or paste from the PC's `credentials.toml`) | `windsurf_api_key` value | `WINDSURF_API_KEY` env + `~/.local/share/devin/credentials.toml` 0600, rendered from the key | n/a (not rewritten) | `static` |
 
 ## Claude
 
@@ -172,15 +172,31 @@ CLI versions (PC / second host):
 
 ## Devin
 
+Not part of the 2026-09-22 run. Source: the Devin proof note
+(`devin.md` in this directory, P1 and check 6) and the VM test of the
+contributed Devin provider.
+
 - Isolation: none needed. Devin honors `WINDSURF_API_KEY` as the session
   identity — with it set, the binary prints "`WINDSURF_API_KEY` controls this
   session's identity, so `/login` is not available".
-- Captured: the `windsurf_api_key` value pasted from Devin's `credentials.toml`
-  on a signed-in PC (`%APPDATA%\devin\credentials.toml` on Windows).
-- Verification (VM, `WINDSURF_API_KEY` exported):
-  `devin -p "Reply with exactly: OK" --respect-workspace-trust false` → `OK`.
-- Files produced: none by the login — the env var alone carries the session.
-- Kind: `static` (no refresh).
+- The env var alone is NOT enough: `devin -p` still needs
+  `~/.local/share/devin/credentials.toml` (`$XDG_DATA_HOME/devin/`). A copied
+  `credentials.toml` logs in. A real file has exactly four keys:
+  `windsurf_api_key`, `api_server_url`, `devin_webapp_host`, `devin_api_url`.
+  The three URL values are the same for a standard account.
+- Captured: the `windsurf_api_key` value of `credentials.toml` on a signed-in
+  PC. **Import from this PC** reads it from `$XDG_DATA_HOME/devin/credentials.toml`,
+  else `~/.local/share/devin/credentials.toml`, and refuses a file whose URL
+  values differ from the three standard ones (`devin-pc-login.ts`). Pasting
+  the value is the other method.
+- Placed on VM: `WINDSURF_API_KEY` env, plus `credentials.toml` (0600)
+  rendered from the key with the three standard URL values (`claimFile` in
+  `apps/local-app/src/modules/provider-auth/provider-auth-adapters.ts`). A
+  tenant with other URL values is not covered.
+- Verification (fresh `HOME` with the rendered file):
+  `devin -p "Reply with exactly: OK" --respect-workspace-trust false` →
+  "Logged in as …", `OK`, exit 0. The interactive launch also logs in.
+- Kind: `static` (no refresh; DevChain does not watch the file).
 
 ## PC logins after the proof
 
@@ -203,7 +219,8 @@ before the proof and was not touched.
   `windsurf_api_key`, OpenCode `api` entries; `family` = Codex `auth.json`, agy
   `antigravity-oauth-token`, OpenCode `oauth` entries.
 - Place static tokens through the provider env (`providers.env` /
-  config env), never as files.
+  config env), never as files. Exception: Devin also needs its
+  `credentials.toml`, which the claim renders from the same key.
 - Watch these files on the VM for write-back: `~/.codex/auth.json`,
   `~/.gemini/antigravity-cli/antigravity-oauth-token`,
   `~/.local/share/opencode/auth.json` (split per entry id).

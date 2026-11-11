@@ -4,6 +4,11 @@ import { rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { HostResolver } from '@devchain/shared';
 import { getEnvConfig } from '../../../../common/config/env.config';
+import {
+  DEVCHAIN_CLI_PATH,
+  devchainCliBin,
+  writeDevchainCliLauncher,
+} from '../../../../common/devchain-cli-launcher';
 import { GIT_SHIM_BIN, GIT_SHIM_ON_VM } from '../../../../common/git-shim-paths';
 import { ValidationError } from '../../../../common/errors/error-types';
 import { isHookCapable } from '../../../providers/adapters/capabilities';
@@ -31,12 +36,8 @@ import {
   type LaunchConfig,
   type LaunchConfigInput,
 } from '../provider-launch-config';
-import {
-  LAUNCH_SCRIPT_SHELL,
-  PROVIDER_LAUNCH_SCRIPT_ROOT,
-  launchScriptPath,
-  writeLaunchScript,
-} from './launch-script';
+import { RuntimeDirectoryService } from '../../../runtime-directory/runtime-directory.service';
+import { LAUNCH_SCRIPT_SHELL, launchScriptPath, writeLaunchScript } from './launch-script';
 import type {
   PreparedProviderRuntime,
   ProviderRuntimePlanInput,
@@ -56,6 +57,8 @@ interface ProviderRuntimePlanState {
   readonly pluginPolicy: ReadonlyArray<ProviderPluginPolicyEntry>;
   readonly baseInput: Readonly<LaunchConfigInput>;
   readonly baseConfig: LaunchConfig;
+  /** Resolved once per launch, so the CLI launcher and the launch script share one root. */
+  readonly runtimeRoot: string;
 }
 
 class ProviderRuntimePlanValue extends ProviderRuntimePlan {
@@ -93,12 +96,13 @@ export class ProviderRuntimePreparationService {
     private readonly runtimeContextCapture: RuntimeContextCaptureService,
     claudeLaunchSettings: ClaudeLaunchSettingsMaterializerService,
     codexPluginProfiles: CodexPluginProfileMaterializerService,
-    @Inject(PROVIDER_LAUNCH_SCRIPT_ROOT) private readonly launchScriptRoot: string,
+    private readonly runtimeDirectory: RuntimeDirectoryService,
     @Optional() @Inject(GIT_SHIM_BIN) private readonly gitShimBin: string | null = null,
     @Optional() @Inject(GIT_SHIM_ON_VM) private readonly onVm: (() => boolean) | null = null,
     @Optional()
     @Inject(ProviderCliVersionProbe)
     private readonly cliVersionProbe: ProviderCliVersionProbe | null = null,
+    @Optional() @Inject(DEVCHAIN_CLI_PATH) private readonly cliPath: string | null = null,
   ) {
     this.artifactOwners = [claudeLaunchSettings, codexPluginProfiles];
   }
@@ -128,14 +132,19 @@ export class ProviderRuntimePreparationService {
 
     const environment = getEnvConfig();
     const shimBin = await this.connectedShimBin(input.projectId);
+    const runtimeRoot = (await this.runtimeDirectory.resolve()).path;
+    const sessionIdentity = Object.freeze({
+      apiUrl: HostResolver.buildInternalBaseUrl({ host: environment.HOST, port: environment.PORT }),
+      projectId: input.projectId,
+      agentId: input.agentId,
+      sessionId: input.sessionId,
+    });
     const baseInput: Readonly<LaunchConfigInput> = Object.freeze({
       mode: input.mode,
-      // `sessionId` flows for BOTH modes: deterministic-binding adapters that
-      // own their transcript path (e.g. Devin `--export <sessions.id>.json`)
-      // need it on restore too — restore re-binds the export to the SAME
-      // devchain session id. `initialPrompt` stays new-only; `providerSessionId`
-      // stays restore-only.
+      // `sessionId` flows for both modes (see BuildLaunchArgsInput.sessionId).
+      // `initialPrompt` stays new-only; `providerSessionId` stays restore-only.
       sessionId: input.sessionId,
+      projectId: input.projectId,
       ...(input.mode === 'new'
         ? { initialPrompt: input.initialPrompt }
         : { providerSessionId: input.providerSessionId }),
@@ -149,17 +158,10 @@ export class ProviderRuntimePreparationService {
       configEnv: input.configEnv ? Object.freeze({ ...input.configEnv }) : null,
       provider: frozenProvider,
       ...(shimBin && { gitShimBin: shimBin }),
+      ...(this.cliPath && { cliBin: devchainCliBin(runtimeRoot) }),
+      sessionIdentity,
       hookContext: isHookCapable(input.adapter)
-        ? Object.freeze({
-            apiUrl: HostResolver.buildInternalBaseUrl({
-              host: environment.HOST,
-              port: environment.PORT,
-            }),
-            projectId: input.projectId,
-            agentId: input.agentId,
-            sessionId: input.sessionId,
-            tmuxSessionName: input.tmuxSessionName,
-          })
+        ? Object.freeze({ ...sessionIdentity, tmuxSessionName: input.tmuxSessionName })
         : undefined,
     });
     const baseConfig = this.freezeConfig(resolveLaunchConfig(baseInput));
@@ -184,6 +186,7 @@ export class ProviderRuntimePreparationService {
         ),
         baseInput,
         baseConfig,
+        runtimeRoot,
       } satisfies ProviderRuntimePlanState),
     );
   }
@@ -250,8 +253,11 @@ export class ProviderRuntimePreparationService {
         }
       }
       const finalConfig = this.freezeConfig(config);
-      launchScript = launchScriptPath(this.launchScriptRoot);
-      await writeLaunchScript(launchScript, finalConfig.commandArgs);
+      if (state.baseInput.cliBin && this.cliPath) {
+        await writeDevchainCliLauncher(state.baseInput.cliBin, this.cliPath);
+      }
+      launchScript = launchScriptPath(state.runtimeRoot);
+      await writeLaunchScript(launchScript, finalConfig.commandArgs, finalConfig.pathPrependDirs);
 
       return Object.freeze({
         config: finalConfig,
@@ -367,6 +373,7 @@ export class ProviderRuntimePreparationService {
       ...config,
       argv: [...config.argv],
       commandArgs: [...config.commandArgs],
+      pathPrependDirs: [...config.pathPrependDirs],
       env: config.env ? { ...config.env } : null,
       promptHandshake: config.promptHandshake
         ? {
@@ -379,6 +386,7 @@ export class ProviderRuntimePreparationService {
     };
     Object.freeze(frozenConfig.argv);
     Object.freeze(frozenConfig.commandArgs);
+    Object.freeze(frozenConfig.pathPrependDirs);
     if (frozenConfig.env) Object.freeze(frozenConfig.env);
     if (frozenConfig.promptHandshake?.preKeys) Object.freeze(frozenConfig.promptHandshake.preKeys);
     if (frozenConfig.promptHandshake) Object.freeze(frozenConfig.promptHandshake);

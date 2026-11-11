@@ -15,7 +15,15 @@ import {
   isWithin,
 } from '../../session-reader/services/transcript-path-validator.service';
 import {
+  DEVIN_SESSION_STORES_DIR,
+  DEVIN_STORE_SESSIONS_DIR,
+} from '../../../common/devin-transcript-paths';
+import {
   CLAUDE_COMPANION_FOLDERS,
+  DEVIN_EXPORT_REF,
+  DEVIN_SESSION_FILES,
+  DEVIN_SESSION_REF,
+  HASHED_TRANSCRIPT_PROVIDERS,
   TranscriptFileSchema,
   TranscriptRefSchema,
   TRANSCRIPT_MAX_BYTES,
@@ -34,35 +42,52 @@ export class TranscriptFilesService {
   ) {}
 
   /**
-   * The project's recorded transcripts. A record whose path lies outside the provider
-   * root or has an unexpected name is counted in `skipped`, not thrown: one such row
-   * must not block every Connect and Disconnect of the project.
+   * The project's recorded transcripts, and for Devin the session folder in the
+   * project's store. A record whose path lies outside the provider root or has an
+   * unexpected name is counted in `skipped`, not thrown: one such row must not
+   * block every Connect and Disconnect of the project.
    */
   projectRefs(projectId: string): { refs: TranscriptRef[]; skipped: number } {
     let skipped = 0;
-    const refs = this.db
-      .select({ path: sessions.transcriptPath, provider: sessions.providerNameAtLaunch })
+    const refs = new Map<string, TranscriptRef>();
+    const add = (ref: unknown): void => {
+      const parsed = TranscriptRefSchema.safeParse(ref);
+      if (!parsed.success) {
+        skipped++;
+        return;
+      }
+      refs.set(`${parsed.data.provider}:${parsed.data.path}`, parsed.data);
+    };
+    const rows = this.db
+      .select({
+        path: sessions.transcriptPath,
+        provider: sessions.providerNameAtLaunch,
+        providerSessionId: sessions.providerSessionId,
+      })
       .from(sessions)
       .innerJoin(agents, eq(sessions.agentId, agents.id))
       .where(eq(agents.projectId, projectId))
-      .all()
-      .flatMap((row) => {
-        if (!row.path || (row.provider !== 'claude' && row.provider !== 'codex')) return [];
+      .all();
+    for (const row of rows) {
+      const provider = row.provider;
+      if (provider !== 'claude' && provider !== 'codex' && provider !== 'devin') continue;
+      if (row.path) {
         try {
-          const absolute = this.validator.validateShape(row.path, row.provider);
-          const path = relative(this.validator.root(row.provider), absolute);
-          return [
-            TranscriptRefSchema.parse({
-              provider: row.provider,
-              path: row.provider === 'claude' ? path.replace(/\.jsonl$/, '') : path,
-            }),
-          ];
+          const absolute = this.validator.validateShape(row.path, provider);
+          const path = relative(this.validator.root(provider), absolute);
+          if (provider === 'devin' && !DEVIN_EXPORT_REF.test(path)) skipped++;
+          else add({ provider, path: provider === 'claude' ? path.replace(/\.jsonl$/, '') : path });
         } catch {
           skipped++;
-          return [];
         }
-      });
-    return { refs, skipped };
+      }
+      if (provider === 'devin' && row.providerSessionId)
+        add({
+          provider,
+          path: `${DEVIN_SESSION_STORES_DIR}/${projectId}/${DEVIN_STORE_SESSIONS_DIR}/${row.providerSessionId}`,
+        });
+    }
+    return { refs: [...refs.values()], skipped };
   }
 
   path(file: TranscriptFile): string {
@@ -78,6 +103,14 @@ export class TranscriptFilesService {
     let missing = 0;
     for (const ref of refs) {
       TranscriptRefSchema.parse(ref);
+      if (ref.provider === 'devin' && DEVIN_SESSION_REF.test(ref.path)) {
+        let found = false;
+        for (const name of DEVIN_SESSION_FILES)
+          if (await this.addFile(files, { provider: 'devin', path: `${ref.path}/${name}` }))
+            found = true;
+        if (!found) missing++;
+        continue;
+      }
       const main: TranscriptFile = {
         provider: ref.provider,
         path: ref.path + (ref.provider === 'claude' ? '.jsonl' : ''),
@@ -127,8 +160,19 @@ export class TranscriptFilesService {
     }
     if (!stat.isFile()) return false;
     await this.validator.validateForRead(path, file.provider);
-    files.set(`${file.provider}:${file.path}`, { file, size: stat.size });
+    files.set(`${file.provider}:${file.path}`, {
+      file,
+      size: stat.size,
+      ...(HASHED_TRANSCRIPT_PROVIDERS.has(file.provider) && { sha256: await this.sha256(file) }),
+    });
     return true;
+  }
+
+  private async sha256(file: TranscriptFile): Promise<string> {
+    const { stream } = await this.read(file);
+    const hash = createHash('sha256');
+    for await (const chunk of stream) hash.update(chunk as Buffer);
+    return hash.digest('hex');
   }
 
   async read(file: TranscriptFile): Promise<{ stream: Readable; size: number }> {

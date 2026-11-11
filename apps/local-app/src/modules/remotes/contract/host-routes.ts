@@ -18,6 +18,10 @@ import {
   HostSkillSettingsSchema,
   ProviderUsageSettingsSchema,
   HostSkillSettingsStatusSchema,
+  HOST_VAULT_CONTENT_TYPE,
+  HostVaultPushSchema,
+  HostVaultRequestResolveSchema,
+  HostVaultStatusSchema,
   PROJECT_REPLICA_CONTENT_TYPE,
   ProjectReplicaChangesSchema,
   ProjectReplicaImportResultSchema,
@@ -67,6 +71,7 @@ import {
   TranscriptListingSchema,
 } from '../transcripts/transcript-transfer.dto';
 import { VmUidConflictSchema } from '../vm-user-identity';
+import { vaultRequestPendingEvent } from '../../events/catalog/vault.request.pending';
 import {
   SharedVmAbandonSchema,
   SharedVmDismissSchema,
@@ -106,6 +111,8 @@ export const HostRuntimeSchema = z
     uidConflict: VmUidConflictSchema.optional(),
     imageVersion: z.string().nullable().optional(),
     cliVersions: z.record(z.string()).nullable().optional(),
+    /** Claimed VMs only; absent on builds without the VM Vault cache. */
+    vault: HostVaultStatusSchema.optional(),
   })
   .passthrough();
 export type HostRuntime = z.infer<typeof HostRuntimeSchema>;
@@ -671,6 +678,43 @@ export const hostRoutes = {
     body: HostSkillSettingsSchema,
     timeoutMs: SETTINGS_TIMEOUT_MS,
     statuses: { 202: RevisionAckSchema },
+  },
+  /**
+   * Body carries Vault values: never log it. Any refusal (409 when the VM cannot hold
+   * values in memory or lacks a project) throws with the host's code.
+   */
+  putVault: {
+    method: 'PUT',
+    path: fixed('/api/host/vault'),
+    contentType: HOST_VAULT_CONTENT_TYPE,
+    body: HostVaultPushSchema,
+    timeoutMs: CONTROL_TIMEOUT_MS,
+    statuses: { 200: RevisionAckSchema },
+  },
+  /**
+   * Metadata only: never carries a value. The VM lists its store's requests, which are
+   * `vault.request.pending` payloads verbatim — the event schema owns the shape, and
+   * the wire stays strict so a value-bearing field is rejected.
+   */
+  listVaultRequests: {
+    method: 'GET',
+    path: fixed('/api/host/vault/requests'),
+    timeoutMs: CONTROL_TIMEOUT_MS,
+    statuses: {
+      200: z.object({ requests: z.array(vaultRequestPendingEvent.schema.strict()) }).strict(),
+    },
+  },
+  /**
+   * A session-only answer carries its value in the body: never log the body. The
+   * response and refusals (409 with the host's code) never echo it.
+   */
+  resolveVaultRequest: {
+    method: 'POST',
+    path: ({ requestId }: { requestId: string }) =>
+      `/api/host/vault/requests/${enc(requestId)}/resolve`,
+    body: HostVaultRequestResolveSchema,
+    timeoutMs: CONTROL_TIMEOUT_MS,
+    statuses: NO_CONTENT,
   },
   uploadSkillSourceContent: {
     method: 'PUT',

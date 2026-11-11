@@ -1,19 +1,38 @@
 import type { ProviderAuthStorage } from '../../interfaces/storage.interface';
 import { randomUUID } from 'node:crypto';
-import { ConflictError, NotFoundError } from '../../../../common/errors/error-types';
+import {
+  ConflictError,
+  NotFoundError,
+  VaultUnavailableError,
+} from '../../../../common/errors/error-types';
 import { createLogger } from '../../../../common/logging/logger';
-import type { IntegrationCredentialCipher } from '../integration-credential-cipher';
+import {
+  migrateStoredSecrets,
+  sqliteSecretColumn,
+  type StoredSecretBinding,
+  type StoredSecretCodec,
+} from '../stored-secret-codec';
 import type {
   CreateProviderAuthEntry,
   ProviderAuthEntry,
   ProviderAuthPayload,
+  VaultStoreMigrationResult,
 } from '../../models/domain.models';
 import { BaseStorageDelegate, type StorageDelegateContext } from './base-storage.delegate';
 
 const logger = createLogger('ProviderAuthStorageDelegate');
 
-/** Binds vault ciphertext to this protection domain; see `encryptValue`. */
-const VAULT_CIPHER_CONTEXT = 'devchain-provider-auth-vault-v1';
+/** Legacy AAD context of the integration credential key for this column. */
+const LEGACY_CIPHER_CONTEXT = 'devchain-provider-auth-vault-v1';
+
+function payloadBinding(id: string): StoredSecretBinding {
+  return {
+    domain: 'provider-auth-entry',
+    recordId: id,
+    field: 'payload',
+    legacyContext: LEGACY_CIPHER_CONTEXT,
+  };
+}
 
 interface ProviderAuthEntryRow {
   id: string;
@@ -43,7 +62,7 @@ export class ProviderAuthStorageDelegate
 {
   constructor(
     context: StorageDelegateContext,
-    private readonly cipher: IntegrationCredentialCipher,
+    private readonly codec: StoredSecretCodec,
   ) {
     super(context);
   }
@@ -64,13 +83,14 @@ export class ProviderAuthStorageDelegate
     const row = this.getEntrySync(id);
     try {
       const parsed = JSON.parse(
-        this.cipher.decryptValue(row.payloadCiphertext, VAULT_CIPHER_CONTEXT),
+        this.codec.open(payloadBinding(id), row.payloadCiphertext),
       ) as ProviderAuthPayload;
       if (this.payloadKindOf(parsed) !== row.payloadKind) {
         throw new Error('payload kind mismatch');
       }
       return parsed;
-    } catch {
+    } catch (error) {
+      if (error instanceof VaultUnavailableError) throw error;
       throw new ConflictError('The stored provider auth payload could not be decrypted.', {
         code: 'PROVIDER_AUTH_PAYLOAD_UNREADABLE',
         entryId: id,
@@ -94,7 +114,7 @@ export class ProviderAuthStorageDelegate
           data.provider,
           data.kind,
           data.label,
-          this.cipher.encryptValue(JSON.stringify(data.payload), VAULT_CIPHER_CONTEXT),
+          this.codec.seal(payloadBinding(id), JSON.stringify(data.payload)),
           data.payload.payloadKind,
           now,
           now,
@@ -132,7 +152,7 @@ export class ProviderAuthStorageDelegate
            WHERE id = ?`,
         )
         .run(
-          this.cipher.encryptValue(JSON.stringify(payload), VAULT_CIPHER_CONTEXT),
+          this.codec.seal(payloadBinding(id), JSON.stringify(payload)),
           payload.payloadKind,
           now,
           now,
@@ -209,6 +229,16 @@ export class ProviderAuthStorageDelegate
         .run(new Date().toISOString(), id);
       logger.info({ entryId: id }, 'Released auth family');
       return this.getEntrySync(id);
+    });
+  }
+
+  async migrateProviderAuthPayloadsToVault(): Promise<VaultStoreMigrationResult> {
+    return migrateStoredSecrets({
+      store: 'provider_auth_entries',
+      codec: this.codec,
+      txRunner: this.txRunner,
+      binding: payloadBinding,
+      ...sqliteSecretColumn(this.rawClient, 'provider_auth_entries', 'payload_ciphertext'),
     });
   }
 

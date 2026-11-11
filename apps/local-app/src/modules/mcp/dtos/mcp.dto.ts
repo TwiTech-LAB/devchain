@@ -1025,6 +1025,35 @@ export const ProjectsListParamsSchema = z
 
 export type ProjectsListParams = z.infer<typeof ProjectsListParamsSchema>;
 
+export const VaultListParamsSchema = z.object({ sessionId: z.string().min(8) }).strict();
+
+export type VaultListParams = z.infer<typeof VaultListParamsSchema>;
+
+/** `devchain_vault_list` data: names and descriptions, never a value. */
+export interface VaultListResponse {
+  entries: Array<{
+    name: string;
+    kind: 'secret' | 'file';
+    description: string;
+    status: 'available' | 'vault_locked';
+    /** `devchain vault exec` asks the user before it gives this entry the first time. */
+    approvalRequired: boolean;
+  }>;
+  /** How to use the entries; the same wording as the initial-prompt Vault block. */
+  instructions: string;
+}
+
+export const VaultRequestParamsSchema = z
+  .object({
+    sessionId: z.string().min(8),
+    name: z.string().min(1).max(255),
+    description: z.string().trim().min(1).max(1000),
+    kind: z.enum(['secret', 'file']).optional(),
+  })
+  .strict();
+
+export type VaultRequestParams = z.infer<typeof VaultRequestParamsSchema>;
+
 export interface ProjectsListResponse {
   projects: Array<{
     id: string;

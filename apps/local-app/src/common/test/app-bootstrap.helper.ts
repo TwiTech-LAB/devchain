@@ -171,6 +171,7 @@ function createBootstrapStorageMock(): Record<string, jest.Mock> {
     getAgent: jest.fn().mockResolvedValue({ providerConfigId: null }),
     getProfileProviderConfig: jest.fn().mockResolvedValue({ providerName: null, providerId: null }),
     getProvider: jest.fn().mockResolvedValue({ name: null }),
+    listVaultKeySlots: jest.fn().mockResolvedValue([]),
   };
 
   return new Proxy(predefined, {

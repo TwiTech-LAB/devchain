@@ -5,7 +5,9 @@ import { dirname, join } from 'node:path';
 import {
   CLAUDE_JSON_BASELINE,
   CLAUDE_SETTINGS_BASELINE,
+  DEVIN_CONFIG_BASELINE,
 } from '../../../common/config/provider-baseline';
+import { parseJsonc, setJsoncValue } from '../../../common/jsonc';
 import { createLogger } from '../../../common/logging/logger';
 import { ensureClaudeConfigKeys, writeConfigAtomically } from '../../providers/utils/claude-config';
 import { HostHelperService } from './host-helper.service';
@@ -34,6 +36,24 @@ export function containsBaseline(
       ? isObjectRecord(current[key]) && containsBaseline(current[key], wanted)
       : current[key] === wanted,
   );
+}
+
+/** Every leaf of `baseline` as a key path and its value. */
+function baselineLeaves(
+  baseline: BaselineObject,
+  path: string[] = [],
+): Array<{ path: string[]; value: unknown }> {
+  return Object.entries(baseline).flatMap(([key, wanted]) =>
+    isObjectRecord(wanted)
+      ? baselineLeaves(wanted, [...path, key])
+      : [{ path: [...path, key], value: wanted }],
+  );
+}
+
+/** Devin's own path rule: `$XDG_CONFIG_HOME/devin/config.json`, else `~/.config/devin/config.json`. */
+export function getDevinUserConfigPath(): string {
+  const configHome = process.env.XDG_CONFIG_HOME || join(homedir(), '.config');
+  return join(configHome, 'devin', 'config.json');
 }
 
 type BaselineMerge = { ok: true; value: Record<string, unknown> } | { ok: false; key: string };
@@ -96,6 +116,48 @@ export class ProviderBaselineService implements OnApplicationBootstrap {
     } catch (error) {
       logger.warn({ error }, 'Could not apply the Claude settings baseline');
     }
+
+    try {
+      await this.applyDevinConfigBaseline();
+    } catch (error) {
+      logger.warn({ error }, 'Could not apply the Devin config baseline');
+    }
+  }
+
+  /**
+   * Devin rewrites this file itself and accepts comments in it, so the baseline
+   * edits only its own leaves in the text instead of re-serializing the file.
+   */
+  private async applyDevinConfigBaseline(): Promise<void> {
+    const configPath = getDevinUserConfigPath();
+    await mkdir(dirname(configPath), { recursive: true, mode: SETTINGS_DIRECTORY_MODE });
+
+    let text = '{}\n';
+    try {
+      text = await readFile(configPath, 'utf-8');
+      let parsed: unknown;
+      try {
+        parsed = parseJsonc(text);
+      } catch {
+        logger.warn(
+          { path: configPath },
+          'Devin config is not valid JSON with comments; leaving unchanged',
+        );
+        return;
+      }
+      if (!isObjectRecord(parsed)) {
+        logger.warn({ path: configPath }, 'Devin config is not a JSON object; leaving unchanged');
+        return;
+      }
+      if (containsBaseline(parsed, DEVIN_CONFIG_BASELINE)) return;
+    } catch (error) {
+      if (!isMissingFileError(error)) throw error;
+    }
+
+    for (const leaf of baselineLeaves(DEVIN_CONFIG_BASELINE)) {
+      text = setJsoncValue(text, leaf.path, leaf.value);
+    }
+    await writeConfigAtomically(configPath, text, SETTINGS_FILE_MODE);
   }
 
   private async applySettingsBaseline(): Promise<void> {

@@ -49,7 +49,7 @@ describe('tunnel push content-policy ↔ broadcast-registry sync (B2 drift guard
     }
   });
 
-  it('classifies the content-bearing forwarded events (transcript deltas, agent names, AUQ)', () => {
+  it('classifies the content-bearing forwarded events (transcript deltas, agent names, AUQ, Vault requests)', () => {
     // Keep the expected content-bearing set explicit so a registry-policy regression fails
     // here with the missing event name, not only in the generic table above.
     expect([...CONTENT_BEARING_PUSH_EVENTS].sort()).toEqual(
@@ -58,6 +58,7 @@ describe('tunnel push content-policy ↔ broadcast-registry sync (B2 drift guard
         'agent.deleted',
         'claude.hooks.ask_user_question.pending',
         'session.transcript.updated',
+        'vault.request.pending',
       ].sort(),
     );
   });

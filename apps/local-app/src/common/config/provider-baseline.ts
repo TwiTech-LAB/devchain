@@ -10,3 +10,8 @@ export const CLAUDE_SETTINGS_BASELINE = {
   promptSuggestionEnabled: false,
   env: { DISABLE_AUTOUPDATER: '1' },
 } as const;
+
+/** Leaves set in the Devin user config `config.json`, the only file that accepts `attribution`. */
+export const DEVIN_CONFIG_BASELINE = {
+  attribution: false,
+} as const;

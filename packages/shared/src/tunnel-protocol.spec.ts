@@ -105,6 +105,12 @@ describe('mobile push topic allowlist', () => {
     expect(isAllowlistedTunnelPushTopic('agent/xyz', 'presence')).toBe(true);
     expect(isAllowlistedTunnelPushTopic('project/p1/state', 'agent.created')).toBe(true);
     expect(isAllowlistedTunnelPushTopic('project/p1/state', 'agent.deleted')).toBe(true);
+    expect(isAllowlistedTunnelPushTopic('project/p1/vault-requests', 'vault_request.pending')).toBe(
+      true,
+    );
+    expect(
+      isAllowlistedTunnelPushTopic('project/p1/vault-requests', 'vault_request.resolved'),
+    ).toBe(true);
   });
 
   it('rejects a syntactically-valid but unknown topic', () => {
@@ -118,6 +124,8 @@ describe('mobile push topic allowlist', () => {
     expect(isAllowlistedTunnelPushTopic('session/abc', 'updated')).toBe(false);
     expect(isAllowlistedTunnelPushTopic('agent/xyz', 'updated')).toBe(false);
     expect(isAllowlistedTunnelPushTopic('project/p1/state', 'agent.updated')).toBe(false);
+    expect(isAllowlistedTunnelPushTopic('project/p1/vault-requests', 'agent.created')).toBe(false);
+    expect(isAllowlistedTunnelPushTopic('project/p1/state', 'vault_request.pending')).toBe(false);
   });
 
   it('rejects an empty id segment or wrong arity', () => {
@@ -135,7 +143,7 @@ describe('mobile push topic allowlist', () => {
 
   it('defines the exact mobile push topic and event pairs', () => {
     expect(MOBILE_PUSH_TOPIC_ID_SEGMENT).toBe(':id');
-    expect(MOBILE_PUSH_TOPIC_ALLOWLIST.length).toBe(4);
+    expect(MOBILE_PUSH_TOPIC_ALLOWLIST.length).toBe(5);
     const pairs = MOBILE_PUSH_TOPIC_ALLOWLIST.flatMap((rule) =>
       rule.eventTypes.map((eventType) => `${rule.segments.join('/')} [${eventType}]`),
     );
@@ -148,6 +156,8 @@ describe('mobile push topic allowlist', () => {
         'agent/:id [presence]',
         'project/:id/state [agent.created]',
         'project/:id/state [agent.deleted]',
+        'project/:id/vault-requests [vault_request.pending]',
+        'project/:id/vault-requests [vault_request.resolved]',
       ].sort(),
     );
   });

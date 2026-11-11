@@ -34,6 +34,17 @@ export interface RemoteHealthState {
   powerState?: VmPowerState;
 }
 
+/**
+ * Hears each remote's poll outcome. Lets a module that `RemotesModule` must not import
+ * ride the health poll; it registers at init.
+ */
+export interface RemotePollListener {
+  /** A poll reached the remote, its version matches home's, and it took this PC's API key. */
+  polled(remoteId: string): void;
+  /** The remote is offline, refuses the API key, runs another version, or was deleted. */
+  lost(remoteId: string): void;
+}
+
 export interface RemoteHealthPort {
   /**
    * Last known health state for a remote. Never polled (unknown id, or not yet
@@ -49,4 +60,6 @@ export interface RemoteHealthPort {
   getStatsHistory(remoteId: string): HostStats[];
   /** Polls the remote now instead of waiting for the next interval. */
   refresh(remoteId: string): Promise<RemoteHealthState>;
+  /** Returns the function that unregisters the listener. */
+  registerPollListener(listener: RemotePollListener): () => void;
 }

@@ -409,6 +409,8 @@ export class ExternalSubtaskSyncSubscriber implements OnModuleInit, OnModuleDest
           },
         );
       }
+      // A locked Vault throws here, before the row loses its state and error code.
+      await this.storage.getIntegrationConnectionCredentialsById(row.connectionIdSnapshot);
       await this.storage.updateExternalManagedSubtaskLink(id, {
         operationPhase: 'pre_dispatch',
         safeErrorCode: null,

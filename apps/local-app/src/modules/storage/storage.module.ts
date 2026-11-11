@@ -9,11 +9,13 @@ import {
 import { SNAPSHOT_PROMPT_WRITER } from './interfaces/snapshot-prompt-writer.interface';
 import { EventsInfraModule } from '../events/events-infra.module';
 import { ProjectWriteGate } from './write-gate/project-write-gate';
+import { VaultStoreKey } from './local/vault-store-key';
 
 @Module({
   imports: [DbModule, EventsInfraModule],
   providers: [
     ProjectWriteGate,
+    VaultStoreKey,
     LocalStorageService,
     {
       provide: STORAGE_SERVICE,
@@ -24,7 +26,7 @@ import { ProjectWriteGate } from './write-gate/project-write-gate';
       useExisting: LocalStorageService,
     },
   ],
-  exports: [STORAGE_SERVICE, SNAPSHOT_PROMPT_WRITER, ProjectWriteGate],
+  exports: [STORAGE_SERVICE, SNAPSHOT_PROMPT_WRITER, ProjectWriteGate, VaultStoreKey],
 })
 export class StorageModule {
   constructor(

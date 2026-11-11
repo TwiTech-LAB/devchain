@@ -10,6 +10,7 @@ import {
   NotFoundError,
   StorageError,
   ValidationError,
+  VaultUnavailableError,
 } from '../../../../common/errors/error-types';
 import { externalTaskLinks, integrationConnections, projects } from '../../db/schema';
 import type {
@@ -23,11 +24,29 @@ import type {
   IntegrationCredentials,
   IntegrationProvider,
   ReplaceIntegrationConnection,
+  VaultStoreMigrationResult,
 } from '../../models/domain.models';
 import { isSqliteUniqueConstraint } from '../helpers/storage-helpers';
-import { IntegrationCredentialCipher } from '../integration-credential-cipher';
+import {
+  INTEGRATION_CREDENTIALS_CONTEXT,
+  parseIntegrationCredentials,
+} from '../integration-credential-cipher';
+import {
+  migrateStoredSecrets,
+  type StoredSecretBinding,
+  type StoredSecretCodec,
+} from '../stored-secret-codec';
 import { BaseStorageDelegate, type StorageDelegateContext } from './base-storage.delegate';
 import type { PreparedEvent } from '../../../events/services/durable-event-registry.service';
+
+function credentialBinding(connectionId: string): StoredSecretBinding {
+  return {
+    domain: 'integration-connection',
+    recordId: connectionId,
+    field: 'credentials',
+    legacyContext: INTEGRATION_CREDENTIALS_CONTEXT,
+  };
+}
 
 const CONNECTION_STATE_COLUMNS = {
   id: integrationConnections.id,
@@ -81,7 +100,7 @@ export class IntegrationStorageDelegate
 {
   constructor(
     context: StorageDelegateContext,
-    private readonly credentialCipher: IntegrationCredentialCipher,
+    private readonly codec: StoredSecretCodec,
     private readonly dependencies: IntegrationStorageDelegateDependencies,
   ) {
     super(context);
@@ -94,13 +113,18 @@ export class IntegrationStorageDelegate
   ): Promise<IntegrationConnection> {
     this.validateReplacement(data);
     const projectId = this.resolveReplacementProjectId(data);
+    this.codec.assertCanSeal();
     await verify(data.credentials);
 
-    const credentialCiphertext = this.credentialCipher.encrypt(data.credentials);
     return this.txRunner.runImmediateQueued(() => {
       const identity: IntegrationConnectionLookup =
         projectId === null ? data.provider : { projectId, provider: data.provider };
       const previous = this.getIntegrationConnectionSync(identity);
+      const connectionId = previous?.id ?? randomUUID();
+      const credentialCiphertext = this.codec.seal(
+        credentialBinding(connectionId),
+        JSON.stringify(data.credentials),
+      );
       if (previous) {
         this.dependencies.handleConnectionMutation(
           previous.id,
@@ -130,7 +154,7 @@ export class IntegrationStorageDelegate
         this.db
           .insert(integrationConnections)
           .values({
-            id: randomUUID(),
+            id: connectionId,
             projectId,
             provider: data.provider,
             legacySourceConnectionId: null,
@@ -298,7 +322,7 @@ export class IntegrationStorageDelegate
     if (!row) {
       return null;
     }
-    const credentials = this.credentialCipher.decrypt(row.credentialCiphertext);
+    const credentials = this.openCredentials(connection.id, row.credentialCiphertext);
     if (credentials.provider !== connection.provider) {
       throw new StorageError('Stored integration credentials do not match their provider.');
     }
@@ -309,6 +333,52 @@ export class IntegrationStorageDelegate
     connectionId: string,
   ): Promise<IntegrationCredentials | null> {
     return this.getIntegrationConnectionCredentials({ connectionId });
+  }
+
+  async migrateIntegrationCredentialsToVault(): Promise<VaultStoreMigrationResult> {
+    return migrateStoredSecrets({
+      store: 'integration_connections',
+      codec: this.codec,
+      txRunner: this.txRunner,
+      binding: credentialBinding,
+      listEnvelopes: () =>
+        this.db
+          .select({
+            id: integrationConnections.id,
+            envelope: integrationConnections.credentialCiphertext,
+          })
+          .from(integrationConnections)
+          .all(),
+      readEnvelope: (id) =>
+        this.db
+          .select({ envelope: integrationConnections.credentialCiphertext })
+          .from(integrationConnections)
+          .where(eq(integrationConnections.id, id))
+          .get()?.envelope,
+      replaceEnvelope: (id, next, previous) =>
+        this.db
+          .update(integrationConnections)
+          .set({ credentialCiphertext: next })
+          .where(
+            and(
+              eq(integrationConnections.id, id),
+              eq(integrationConnections.credentialCiphertext, previous),
+            ),
+          )
+          .run().changes === 1,
+    });
+  }
+
+  /** Lets `VaultUnavailableError` through: a locked Vault is not a broken credential. */
+  private openCredentials(connectionId: string, envelope: string): IntegrationCredentials {
+    try {
+      return parseIntegrationCredentials(
+        this.codec.open(credentialBinding(connectionId), envelope),
+      );
+    } catch (error) {
+      if (error instanceof VaultUnavailableError) throw error;
+      throw new StorageError('Unable to decrypt integration credentials.');
+    }
   }
 
   async disconnectIntegrationConnection(

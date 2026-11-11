@@ -224,6 +224,14 @@ const PARAM_FIXTURES = {
   'e2ee.bindNotificationRoutingIdentity': {
     routingKid: 'kPrK_qmxVWaYVA9wwBF6Iuo3vVzz7TxHCTwXBygrS4k',
   },
+  'vault.listRequests': { types: ['create', 'grant', 'use'] },
+  'vault.fulfillRequest': {
+    requestId: '00000000-0000-4000-8000-000000000301',
+    value: 'value',
+    permanent: false,
+  },
+  'vault.denyRequest': { requestId: '00000000-0000-4000-8000-000000000301', reason: 'Not now' },
+  'vault.approveUse': { requestId: '00000000-0000-4000-8000-000000000301', decision: 'once' },
 } satisfies Record<MobileRpcMethod, unknown>;
 
 const comment = {
@@ -320,7 +328,9 @@ const RESULT_FIXTURES = {
         accountKey: 'claude:login',
         provider: 'claude',
         label: 'Claude',
-        windows: [{ id: '5h', label: '5-hour limit', kind: '5h', usedPercent: 42, resetsAt: 1_760_000_000 }],
+        windows: [
+          { id: '5h', label: '5-hour limit', kind: '5h', usedPercent: 42, resetsAt: 1_760_000_000 },
+        ],
         extras: [],
         plan: 'max',
         source: 'cli',
@@ -444,12 +454,43 @@ const RESULT_FIXTURES = {
     routingKid: 'kPrK_qmxVWaYVA9wwBF6Iuo3vVzz7TxHCTwXBygrS4k',
     bound: true,
   },
+  'vault.listRequests': [
+    {
+      requestId: '00000000-0000-4000-8000-000000000301',
+      projectId: 'project-1',
+      projectName: 'Alpha',
+      sessionId: 'session-1',
+      agentId: 'agent-1',
+      agentName: 'Coder',
+      familySlug: null,
+      type: 'create',
+      name: 'API_TOKEN',
+      description: 'Deploys',
+      kind: 'secret',
+      entryId: null,
+      entryDescription: null,
+      createdAt: 1,
+      expiresAt: 2,
+    },
+  ],
+  'vault.fulfillRequest': {
+    requestId: '00000000-0000-4000-8000-000000000301',
+    status: 'fulfilled',
+    permanent: false,
+    entryId: null,
+  },
+  'vault.denyRequest': { ok: true },
+  'vault.approveUse': {
+    requestId: '00000000-0000-4000-8000-000000000301',
+    status: 'approved',
+    decision: 'once',
+  },
 } satisfies Record<MobileRpcMethod, unknown>;
 
 describe('mobile RPC catalog', () => {
-  it('contains exactly 43 methods with the canonical domain counts', () => {
-    expect(MOBILE_RPC_METHODS).toHaveLength(43);
-    expect(new Set(MOBILE_RPC_METHODS).size).toBe(43);
+  it('contains exactly 47 methods with the canonical domain counts', () => {
+    expect(MOBILE_RPC_METHODS).toHaveLength(47);
+    expect(new Set(MOBILE_RPC_METHODS).size).toBe(47);
     expect(Object.keys(MOBILE_RPC_CATALOG)).toEqual(MOBILE_RPC_METHODS);
 
     const counts = Object.groupBy(MOBILE_RPC_METHODS, (method) => method.split('.')[0]);
@@ -457,6 +498,7 @@ describe('mobile RPC catalog', () => {
     expect(counts.chat).toHaveLength(25);
     expect(counts.terminal).toHaveLength(3);
     expect(counts.e2ee).toHaveLength(3);
+    expect(counts.vault).toHaveLength(4);
   });
 
   it('accepts unknown provider usage values and extra fields in chat.getProviderUsage results', () => {
@@ -472,7 +514,14 @@ describe('mobile RPC catalog', () => {
           state: 'future-state',
           futureField: 1,
           windows: [
-            { id: 'w', label: 'W', kind: 'future-kind', usedPercent: 130, resetsAt: null, extra: 1 },
+            {
+              id: 'w',
+              label: 'W',
+              kind: 'future-kind',
+              usedPercent: 130,
+              resetsAt: null,
+              extra: 1,
+            },
           ],
         },
       ],
@@ -481,7 +530,7 @@ describe('mobile RPC catalog', () => {
     expect(getMobileRpcResultSchema('chat.getProviderUsage').safeParse(result).success).toBe(true);
   });
 
-  it('has four strict params schemas and 39 passthrough schemas', () => {
+  it('has seven strict params schemas and 40 passthrough schemas', () => {
     const strictMethods = MOBILE_RPC_METHODS.filter(
       (method) => MOBILE_RPC_CATALOG[method].paramsMode === MOBILE_RPC_PARAMS_MODES.strict,
     );
@@ -490,6 +539,9 @@ describe('mobile RPC catalog', () => {
       'chat.getCustomPrompt',
       'chat.getPendingMessages',
       'terminal.sendKey',
+      'vault.fulfillRequest',
+      'vault.denyRequest',
+      'vault.approveUse',
     ]);
 
     for (const method of MOBILE_RPC_METHODS) {
@@ -501,16 +553,18 @@ describe('mobile RPC catalog', () => {
       expect(acceptsAdditiveField, method).toBe(!strictMethods.includes(method));
     }
 
-    expect(MOBILE_RPC_METHODS).toHaveLength(strictMethods.length + 39);
+    expect(MOBILE_RPC_METHODS).toHaveLength(strictMethods.length + 40);
   });
 
-  it('has crypto counts 40/1/2 and the exact exceptional methods', () => {
+  it('has crypto counts 42/1/4 and the exact exceptional methods', () => {
     const byMode = Object.groupBy(MOBILE_RPC_METHODS, getMobileRpcCryptoMode);
-    expect(byMode[MOBILE_RPC_CRYPTO_MODES.conditionalSeal]).toHaveLength(40);
+    expect(byMode[MOBILE_RPC_CRYPTO_MODES.conditionalSeal]).toHaveLength(42);
     expect(byMode[MOBILE_RPC_CRYPTO_MODES.plaintextBootstrap]).toEqual(['e2ee.adoptDeviceKey']);
     expect(byMode[MOBILE_RPC_CRYPTO_MODES.sealedOnly]).toEqual([
       'e2ee.revokeDeviceKey',
       'e2ee.bindNotificationRoutingIdentity',
+      'vault.fulfillRequest',
+      'vault.denyRequest',
     ]);
   });
 

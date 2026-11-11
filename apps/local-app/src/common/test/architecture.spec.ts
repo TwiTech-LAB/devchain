@@ -30,6 +30,7 @@ const OWNED_QUERY_ROOTS = new Map([
   ['project-presets', join(UI_ROOT, 'lib', 'project-presets.ts')],
   ['prompts', join(UI_ROOT, 'lib', 'prompts.ts')],
   ['settings', join(UI_ROOT, 'lib', 'settings.ts')],
+  ['vault', join(UI_ROOT, 'lib', 'vault.ts')],
 ]);
 const MODULES_ROOT = join(SRC_ROOT, 'modules');
 const ALLOWLIST_PATH = join(APP_ROOT, 'scripts', 'cycle-allowlist.json');
@@ -60,6 +61,7 @@ const MCP_BINDING_FILES = [
   'session.bindings.ts',
   'skill.bindings.ts',
   'team.bindings.ts',
+  'vault.bindings.ts',
   'worktree.bindings.ts',
 ] as const;
 

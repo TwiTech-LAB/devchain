@@ -56,6 +56,7 @@ import {
   type EpicDescriptionEdit,
   type EpicDescriptionEditOutcome,
 } from '../utils/apply-description-edits';
+import { wrapLongProseLines } from '../utils/wrap-long-prose-lines';
 interface EpicBroadcastPayload {
   projectId: string;
   type: 'created' | 'updated' | 'deleted' | 'comment.created';
@@ -496,6 +497,17 @@ export class EpicsService {
     return this.storage.countSubEpicsByStatus(parentId);
   }
 
+  /**
+   * Agent and guest text is wrapped so clients with a per-line read limit can read it
+   * back; text without an actor (people, imports, schedules) is stored as given.
+   */
+  private wrapAgentText(
+    text: string | null | undefined,
+    context?: EpicOperationContext,
+  ): string | null | undefined {
+    return context?.actor && text ? wrapLongProseLines(text) : text;
+  }
+
   async createEpicForProject(
     projectId: string,
     input: CreateEpicForProjectOperationInput,
@@ -520,6 +532,7 @@ export class EpicsService {
     }
     const createInput = {
       ...epicInput,
+      description: this.wrapAgentText(epicInput.description, context),
       statusId: statusSnapshot.statusId,
       agentId,
       createdBy: this.deriveCreatedBy(context),
@@ -709,14 +722,21 @@ export class EpicsService {
     this.gate.assertWritable(before.projectId);
 
     const { descriptionEdits, appendDescription, ...updateData } = data;
+    // Lines already stored stay byte-identical; only new or changed lines are wrapped.
+    const wrapNewLines = context?.actor
+      ? (text: string) => wrapLongProseLines(text, new Set((before.description ?? '').split('\n')))
+      : undefined;
     let descriptionEdit: EpicDescriptionEditOutcome | undefined;
     if (descriptionEdits !== undefined || appendDescription !== undefined) {
       descriptionEdit = applyEpicDescriptionEdits({
         text: before.description,
         edits: descriptionEdits ?? [],
         append: appendDescription,
+        finalize: wrapNewLines,
       });
       updateData.description = descriptionEdit.text;
+    } else if (wrapNewLines && typeof updateData.description === 'string') {
+      updateData.description = wrapNewLines(updateData.description);
     }
 
     // Enforce 1-level hierarchy: a child with sub-epics cannot be moved under another parent
@@ -959,6 +979,7 @@ export class EpicsService {
     authorId: string,
     authorType: 'agent' | 'guest',
   ): Promise<EpicComment> {
+    const storedContent = wrapLongProseLines(content);
     const epic = await this.storage.getEpic(epicId);
 
     if (epic.projectId !== projectId) {
@@ -980,13 +1001,13 @@ export class EpicsService {
     }
 
     if (authorType === 'agent') {
-      return this.addExactAgentEpicComment(epicId, projectId, content, authorId, authorName);
+      return this.addExactAgentEpicComment(epicId, projectId, storedContent, authorId, authorName);
     }
 
     const comment = await this.storage.createEpicComment({
       epicId,
       authorName,
-      content,
+      content: storedContent,
     });
 
     // Publish epic.comment.created event (best-effort)
@@ -1005,7 +1026,7 @@ export class EpicsService {
         projectId,
         parentId: epic.parentId ?? null,
         authorName,
-        content,
+        content: comment.content,
         actor: { type: authorType, id: authorId },
         projectName,
         epicTitle: epic.title,

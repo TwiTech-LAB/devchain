@@ -935,6 +935,18 @@ describe('ProvidersPage - provider models management', () => {
     updatedAt: '2024-01-01',
   };
 
+  const agyProvider = {
+    id: 'p-agy',
+    name: 'agy',
+    binPath: '/usr/local/bin/agy',
+    autoCompactThreshold: null,
+    mcpConfigured: true,
+    mcpEndpoint: 'http://127.0.0.1:3000/mcp',
+    mcpRegisteredAt: '2024-01-01',
+    createdAt: '2024-01-01',
+    updatedAt: '2024-01-01',
+  };
+
   const modelsByProvider: Record<
     string,
     Array<{ id: string; providerId: string; name: string }>
@@ -1100,26 +1112,36 @@ describe('ProvidersPage - provider models management', () => {
     });
   });
 
-  it('shows Auto Discover only for OpenCode providers and calls discover endpoint', async () => {
-    setupFetch([opencodeProvider, codexProvider]);
+  it('shows Auto Discover only for providers with model discovery and calls discover endpoint', async () => {
+    setupFetch([opencodeProvider, codexProvider, agyProvider]);
     renderWithQuery(<ProvidersPage />);
     await waitFor(() => expect(screen.getByText('opencode')).toBeInTheDocument());
     await waitFor(() => expect(screen.getByText('codex')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText('agy')).toBeInTheDocument());
 
-    fireEvent.click(screen.getAllByRole('button', { name: /Models \(/i })[0]);
-    fireEvent.click(screen.getAllByRole('button', { name: /Models \(/i })[1]);
+    for (const button of screen.getAllByRole('button', { name: /Models \(/i })) {
+      fireEvent.click(button);
+    }
 
+    // opencode and agy discover models; codex does not.
     const discoverButtons = await screen.findAllByRole('button', { name: /Auto Discover/i });
-    expect(discoverButtons).toHaveLength(1);
-    fireEvent.click(discoverButtons[0]);
+    expect(discoverButtons).toHaveLength(2);
+    for (const button of discoverButtons) fireEvent.click(button);
 
     await waitFor(() => {
       const fetchMock = (global as unknown as { fetch?: unknown }).fetch as jest.Mock;
-      const discoverCalls = fetchMock.mock.calls.filter(
-        (call: [string, RequestInit?]) =>
-          call[0] === '/api/providers/p-opencode/models/discover' && call[1]?.method === 'POST',
+      const discovered = fetchMock.mock.calls
+        .filter(
+          (call: [string, RequestInit?]) =>
+            /\/models\/discover$/.test(call[0]) && call[1]?.method === 'POST',
+        )
+        .map((call: [string, RequestInit?]) => call[0]);
+      expect(new Set(discovered)).toEqual(
+        new Set([
+          '/api/providers/p-opencode/models/discover',
+          '/api/providers/p-agy/models/discover',
+        ]),
       );
-      expect(discoverCalls.length).toBeGreaterThan(0);
     });
   });
 

@@ -11,6 +11,8 @@ import type { ProjectStorageDelegate } from './delegates/project.delegate';
 import type { ProjectWorkspaceStorageDelegate } from './delegates/project-workspace.delegate';
 import type { RemoteStorageDelegate } from './delegates/remote.delegate';
 import type { ProviderAuthStorageDelegate } from './delegates/provider-auth.delegate';
+import type { VaultKeySlotStorageDelegate } from './delegates/vault-key-slot.delegate';
+import type { VaultEntryStorageDelegate } from './delegates/vault-entry.delegate';
 import type { ProjectReplicaReadStorageDelegate } from './delegates/project-replica-read.delegate';
 import type { ProjectReplicaStorageDelegate } from './delegates/project-replica.delegate';
 import type { ProjectHostStorageDelegate } from './delegates/project-host.delegate';
@@ -43,6 +45,8 @@ export type LocalStorageDelegates = {
   projectWorkspace: ProjectWorkspaceStorageDelegate;
   remote: RemoteStorageDelegate;
   providerAuth: ProviderAuthStorageDelegate;
+  vaultKeySlot: VaultKeySlotStorageDelegate;
+  vaultEntry: VaultEntryStorageDelegate;
   projectReplicaRead: ProjectReplicaReadStorageDelegate;
   projectReplica: ProjectReplicaStorageDelegate;
   projectHost: ProjectHostStorageDelegate;
@@ -87,6 +91,9 @@ export type StorageRoutes = {
   );
 };
 
+const HOME_OWNED_VAULT_REASON =
+  'Vault entries, grants, access and approvals are home-only and never replicated, so a remote project keeps them.';
+
 const HOME_OWNED_INTEGRATION_REASON =
   'External integration state remains owned by home when projects run remotely.';
 
@@ -121,6 +128,7 @@ export const STORAGE_ROUTES = {
   listVmProviderConnections: { delegate: 'remote', scope: 'read' },
   getVmProviderConnection: { delegate: 'remote', scope: 'read' },
   readVmProviderTokenSecret: { delegate: 'remote', scope: 'read' },
+  migrateVmProviderTokensToVault: { delegate: 'remote', scope: 'global' },
   deleteVmProviderConnection: { delegate: 'remote', scope: 'global' },
   deleteRemote: { delegate: 'remote', scope: 'global' },
   listProviderAuthEntries: { delegate: 'providerAuth', scope: 'read' },
@@ -132,6 +140,70 @@ export const STORAGE_ROUTES = {
   renameProviderAuthEntry: { delegate: 'providerAuth', scope: 'global' },
   checkoutProviderAuthEntry: { delegate: 'providerAuth', scope: 'global' },
   releaseProviderAuthEntry: { delegate: 'providerAuth', scope: 'global' },
+  migrateProviderAuthPayloadsToVault: { delegate: 'providerAuth', scope: 'global' },
+  listVaultKeySlots: { delegate: 'vaultKeySlot', scope: 'read' },
+  initializeVaultKeySlots: { delegate: 'vaultKeySlot', scope: 'global' },
+  replaceVaultKeySlot: { delegate: 'vaultKeySlot', scope: 'global' },
+  clearVaultPendingRecoveryCode: { delegate: 'vaultKeySlot', scope: 'global' },
+  listVaultEntries: { delegate: 'vaultEntry', scope: 'read' },
+  getVaultEntry: { delegate: 'vaultEntry', scope: 'read' },
+  createVaultEntry: { delegate: 'vaultEntry', scope: 'exempt', reason: HOME_OWNED_VAULT_REASON },
+  updateVaultEntry: { delegate: 'vaultEntry', scope: 'exempt', reason: HOME_OWNED_VAULT_REASON },
+  replaceVaultEntryValue: {
+    delegate: 'vaultEntry',
+    scope: 'exempt',
+    reason: HOME_OWNED_VAULT_REASON,
+  },
+  deleteVaultEntry: { delegate: 'vaultEntry', scope: 'exempt', reason: HOME_OWNED_VAULT_REASON },
+  listVaultEntryGrants: { delegate: 'vaultEntry', scope: 'read' },
+  listVaultGrants: { delegate: 'vaultEntry', scope: 'read' },
+  setVaultProjectGrants: {
+    delegate: 'vaultEntry',
+    scope: 'exempt',
+    reason: HOME_OWNED_VAULT_REASON,
+  },
+  setVaultEntryProjectGrants: {
+    delegate: 'vaultEntry',
+    scope: 'exempt',
+    reason: HOME_OWNED_VAULT_REASON,
+  },
+  addVaultEntryGrant: {
+    delegate: 'vaultEntry',
+    scope: 'exempt',
+    reason: HOME_OWNED_VAULT_REASON,
+  },
+  listVaultUseFamilyApprovals: { delegate: 'vaultEntry', scope: 'read' },
+  addVaultUseFamilyApproval: {
+    delegate: 'vaultEntry',
+    scope: 'exempt',
+    reason: HOME_OWNED_VAULT_REASON,
+  },
+  removeVaultUseFamilyApproval: {
+    delegate: 'vaultEntry',
+    scope: 'exempt',
+    reason: HOME_OWNED_VAULT_REASON,
+  },
+  listVaultFamilyAccess: { delegate: 'vaultEntry', scope: 'read' },
+  setVaultFamilyAccess: {
+    delegate: 'vaultEntry',
+    scope: 'exempt',
+    reason: HOME_OWNED_VAULT_REASON,
+  },
+  getVaultAccessDecision: { delegate: 'vaultEntry', scope: 'read' },
+  resolveVaultGrantsForAgent: { delegate: 'vaultEntry', scope: 'read' },
+  readVaultEntryCiphertexts: { delegate: 'vaultEntry', scope: 'read' },
+  markVaultEntriesUsed: {
+    delegate: 'vaultEntry',
+    scope: 'exempt',
+    reason: HOME_OWNED_VAULT_REASON,
+  },
+  readVaultSnapshot: { delegate: 'vaultEntry', scope: 'read' },
+  readVaultPushSnapshot: { delegate: 'vaultEntry', scope: 'read' },
+  replaceVaultSnapshot: {
+    delegate: 'vaultEntry',
+    scope: 'exempt',
+    reason: 'A claimed VM gets its Vault snapshot only from the push of its home.',
+  },
   listRemoteProjectBindings: { delegate: 'remote', scope: 'read' },
   getRemoteProjectBinding: { delegate: 'remote', scope: 'read' },
   createRemoteProjectBinding: {
@@ -473,6 +545,11 @@ export const STORAGE_ROUTES = {
   listIntegrationConnections: { delegate: 'integration', scope: 'read' },
   getIntegrationConnectionCredentials: { delegate: 'integration', scope: 'read' },
   getIntegrationConnectionCredentialsById: { delegate: 'integration', scope: 'read' },
+  migrateIntegrationCredentialsToVault: {
+    delegate: 'integration',
+    scope: 'exempt',
+    reason: HOME_OWNED_INTEGRATION_REASON,
+  },
   disconnectIntegrationConnection: {
     delegate: 'integration',
     scope: 'exempt',

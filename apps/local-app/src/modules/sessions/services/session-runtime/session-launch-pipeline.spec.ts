@@ -45,8 +45,10 @@ jest.mock('../../utils/tmux-naming.util', () => ({
 
 // ── Imports ────────────────────────────────────────────────────────────
 
+import { readFileSync } from 'node:fs';
 import {
   createLaunchPipelineHarness,
+  fakeProfile,
   fakeProfileProviderConfig,
 } from './__test-utils__/pipeline-harness';
 import { isProjectProvisioningCapable } from '../../../providers/adapters/capabilities';
@@ -57,6 +59,12 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import { ClaudeLaunchSettingsMaterializerService } from '../../../runtime-context-capture/claude-launch-settings-materializer.service';
 import { ShellForegroundError } from '../../../terminal/services/terminal-io/delivery';
+import { vaultInstructionBlock } from '../../../vault/vault-instructions';
+
+const SHIPPED_INITIAL_PROMPT = readFileSync(
+  join(__dirname, '../../../../../templates-src/teams-dev/prompts/009-initialize-agent.md'),
+  'utf8',
+);
 
 const mockIsProjectProvisioningCapable = isProjectProvisioningCapable as unknown as jest.Mock;
 
@@ -448,6 +456,25 @@ describe('SessionLaunchPipeline', () => {
     });
   });
 
+  describe('Vault grants', () => {
+    it('counts grants from the agent profile family and starts with no Vault value', async () => {
+      const { pipeline, mocks } = createLaunchPipelineHarness();
+      mocks.storage.getAgentProfile.mockResolvedValue(fakeProfile({ familySlug: 'coder' }));
+      mocks.vaultLaunch.hasAccess.mockResolvedValue(true);
+      mocks.vaultLaunch.grantedEntryCount.mockResolvedValue(2);
+
+      await runWithTimers(() => pipeline.launch(launchDto));
+
+      expect(mocks.vaultLaunch.grantedEntryCount).toHaveBeenCalledWith('project-1', 'coder');
+      const [planInput] = mocks.providerRuntimePreparation.createPlan.mock.calls[0];
+      expect(Object.keys(planInput).filter((key) => /vault/i.test(key))).toEqual([]);
+      expect(mocks.eventsService.publish).toHaveBeenCalledWith(
+        'session.started',
+        expect.objectContaining({ agentId: 'agent-1' }),
+      );
+    });
+  });
+
   // Scenario 3: Tmux create fails after DB write
   describe('Scenario 3: tmux create fails after DB write — DB row updated to failed', () => {
     it('updates DB row to failed, no session.started', async () => {
@@ -703,6 +730,52 @@ describe('SessionLaunchPipeline', () => {
       expect(deliveredText).toContain('project=TestProject');
       expect(deliveredText).toMatch(/session_short=[a-f0-9]{8}/);
     });
+
+    it.each([
+      ['with Vault access', true],
+      ['without Vault access', false],
+    ])(
+      'F: pastes the shipped prompt %s, with the Vault block only then',
+      async (_label, access) => {
+        const { pipeline, mocks } = createLaunchPipelineHarness();
+        mocks.storage.getAgentProfile.mockResolvedValue(fakeProfile({ familySlug: 'coder' }));
+        mocks.storage.getInitialSessionPrompt.mockResolvedValue({
+          content: SHIPPED_INITIAL_PROMPT,
+        });
+        mocks.vaultLaunch.hasAccess.mockResolvedValue(access);
+        mocks.vaultLaunch.grantedEntryCount.mockResolvedValue(2);
+
+        await runWithTimers(() =>
+          pipeline.launch({ projectId: 'project-1', agentId: 'agent-1', epicId: 'epic-1' }),
+        );
+
+        expect(mocks.vaultLaunch.hasAccess).toHaveBeenCalledWith('project-1', 'coder');
+        expect(mocks.terminalIO.deliver).toHaveBeenCalledTimes(1);
+        const deliveredText = mocks.terminalIO.deliver.mock.calls[0][1] as string;
+        expect(deliveredText).toContain('Get your profile (devchain_get_agent_by_name)');
+        if (access) {
+          expect(deliveredText.endsWith(`\n\n${vaultInstructionBlock(2)}`)).toBe(true);
+          expect(deliveredText).toContain('You have 2 granted Vault entries now.');
+          expect(deliveredText.split('Never print a Vault value')).toHaveLength(2);
+        } else {
+          expect(deliveredText).not.toContain('Vault');
+        }
+      },
+    );
+
+    it.each([
+      ['no configured prompt', null],
+      ['a prompt that renders empty', { content: '  \n' }],
+    ])('sends nothing for %s, also with Vault access', async (_label, prompt) => {
+      const { pipeline, mocks } = createLaunchPipelineHarness();
+      mocks.storage.getInitialSessionPrompt.mockResolvedValue(prompt);
+      mocks.vaultLaunch.hasAccess.mockResolvedValue(true);
+
+      await runWithTimers(() => pipeline.launch(launchDto));
+
+      expect(mocks.terminalIO.deliver).not.toHaveBeenCalled();
+      expect(mocks.terminalIO.deliverImmediate).not.toHaveBeenCalled();
+    });
   });
 
   // ── Opt-in initial-prompt seeding (initialPromptSeedMode) ────────────────
@@ -772,6 +845,34 @@ describe('SessionLaunchPipeline', () => {
       expect(mocks.terminalIO.deliver).not.toHaveBeenCalled();
       expect(mocks.terminalIO.deliverImmediate).not.toHaveBeenCalled();
     });
+
+    it.each(['argv', 'stdin'] as const)(
+      '%s mode: seeds the prompt with the Vault block for an agent with Vault access',
+      async (seedMode) => {
+        const { pipeline, mocks } = createLaunchPipelineHarness();
+        (mocks.adapter as { initialPromptSeedMode?: 'argv' | 'stdin' }).initialPromptSeedMode =
+          seedMode;
+        mocks.storage.getInitialSessionPrompt.mockResolvedValue({ content: 'Seed {{agent_name}}' });
+        mocks.vaultLaunch.hasAccess.mockResolvedValue(true);
+        mocks.vaultLaunch.grantedEntryCount.mockResolvedValue(1);
+        mocks.sqliteMock.prepare.mockImplementation(noRunningSelect);
+
+        await runWithTimers(() => pipeline.launch(launchDto));
+
+        const seeded = `Seed test-agent\n\n${vaultInstructionBlock(1)}`;
+        expect(mocks.providerRuntimePreparation.createPlan).toHaveBeenCalledWith(
+          expect.objectContaining({ initialPrompt: seeded }),
+        );
+        if (seedMode === 'stdin') {
+          expect(mocks.terminalIO.deliverImmediate).toHaveBeenCalledWith(
+            { name: expect.any(String) },
+            seeded,
+            { bracketed: false, confirm: false },
+          );
+        }
+        expect(mocks.terminalIO.deliver).not.toHaveBeenCalled();
+      },
+    );
 
     it('stdin mode: pipes the rendered prompt as literal input (no bracketed paste) and SKIPS paste', async () => {
       const { pipeline, mocks } = createLaunchPipelineHarness();

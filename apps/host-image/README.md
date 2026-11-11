@@ -100,10 +100,15 @@ from the base image or use separate pins.
 | Bootstrap service     | `apps/host-bootstrap`, packed with `npm pack`                                                                            | Provides the claim and runtime endpoints; package version is recorded in the manifest                                                                                           | Separate pin |
 
 The image does not contain the provider CLIs `claude`, `codex`, `copilot`,
-`opencode` or `agy`. The bootstrap installs them after the DevChain package is
+`opencode`, `devin` or `agy`. The bootstrap installs them after the DevChain package is
 downloaded at claim time, using the pins in that package's
 `dist/host-cli-pins.json` (`apps/host-bootstrap/lib/claim.js`,
 `apps/host-bootstrap/lib/clis.js`, `scripts/host-cli-pins.json`).
+
+`socat` is in the image as a tool package. Devin's `--sandbox` mode on Linux
+needs `socat` and `bubblewrap`; the image does not install `bubblewrap`.
+DevChain does not pass `--sandbox` (`DEVCHAIN_TOOL_PACKAGES` in
+`versions.env`; "Devin known limits" in `docs/provider-standards.md`, private repository).
 
 Settings in the image:
 

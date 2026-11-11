@@ -53,6 +53,8 @@ import { buildPromptRenderContext } from '../../../../common/template/prompt-ren
 import { CleanupStack } from './cleanup-stack';
 import { ensureMcpReadiness } from './ensure-mcp-readiness';
 import type { LaunchSessionDto, SessionDetailDto } from '../../dtos/sessions.dto';
+import { vaultInstructionBlock } from '../../../vault/vault-instructions';
+import { VaultLaunchService } from '../../../vault/vault-launch.service';
 import { SessionTerminalRuntimeService } from '../../../session-terminal-runtime/session-terminal-runtime.service';
 import {
   ProviderRuntimePreparationService,
@@ -89,6 +91,7 @@ export class SessionLaunchPipeline {
     private readonly sessionTerminalRuntime: SessionTerminalRuntimeService,
     private readonly providerRuntimePreparation: ProviderRuntimePreparationService,
     private readonly sessionRows: SessionRowStore,
+    private readonly vaultLaunch: VaultLaunchService,
   ) {
     this.sqlite = getRawSqliteClient(db);
   }
@@ -149,6 +152,7 @@ export class SessionLaunchPipeline {
               epic,
               profile,
               provider,
+              vaultEntryCount: target.vaultEntryCount,
             })
           : null;
 
@@ -258,6 +262,7 @@ export class SessionLaunchPipeline {
           provider,
           seedMode,
           seededPrompt,
+          vaultEntryCount: target.vaultEntryCount,
         });
 
         await this.eventsService.publish('session.started', {
@@ -378,6 +383,15 @@ export class SessionLaunchPipeline {
     }
 
     const provider = await this.storage.getProvider(config.providerId);
+    // Grants come from backend facts only: the agent's project and its profile family.
+    // null = no Vault access; the count exists only when access does. The grants
+    // query is skipped without access, and better-sqlite3 is synchronous anyway.
+    const vaultEntryCount = (await this.vaultLaunch.hasAccess(
+      project.id,
+      profile.familySlug ?? null,
+    ))
+      ? await this.vaultLaunch.grantedEntryCount(project.id, profile.familySlug ?? null)
+      : null;
 
     return {
       agent,
@@ -385,6 +399,7 @@ export class SessionLaunchPipeline {
       epic,
       profile,
       provider,
+      vaultEntryCount,
       options: config.options,
       configEnv: config.env,
       // Structured model/effort defaults remain separate so runtime planning
@@ -532,6 +547,7 @@ export class SessionLaunchPipeline {
       provider: Provider;
       seedMode?: 'argv' | 'stdin';
       seededPrompt: string | null;
+      vaultEntryCount: number | null;
     },
   ): Promise<void> {
     await this.terminalIO.typeCommand({ name: tmuxSessionName }, providerRuntime.typedArgs);
@@ -576,6 +592,7 @@ export class SessionLaunchPipeline {
       epic: context.epic,
       profile: context.profile,
       provider: context.provider,
+      vaultEntryCount: context.vaultEntryCount,
       launchHandshake: providerRuntime.config.promptHandshake,
     });
   }
@@ -593,10 +610,23 @@ export class SessionLaunchPipeline {
     epic: Epic | null;
     profile: AgentProfile;
     provider: Provider;
+    /** null = no Vault access; a number appends the block to a non-empty prompt. */
+    vaultEntryCount: number | null;
   }): Promise<string | null> {
     const initialPrompt = await this.storage.getInitialSessionPrompt(params.project.id);
     if (!initialPrompt) return null;
 
+    const extras = {
+      agent_name: params.agent.name,
+      project_name: params.project.name,
+      epic_title: params.epic?.title ?? '',
+      provider_name: params.provider.name,
+      profile_name: params.profile.name,
+      session_id: params.sessionId,
+      session_id_short: params.sessionId.slice(0, 8),
+      has_vault_entries: (params.vaultEntryCount ?? 0) > 0,
+      vault_entry_count: params.vaultEntryCount ?? 0,
+    };
     let renderResult: {
       vars: Record<string, unknown>;
       recipientLegacyVariables: readonly string[];
@@ -605,15 +635,7 @@ export class SessionLaunchPipeline {
       renderResult = await buildPromptRenderContext({
         recipientAgentId: params.agent.id,
         teams: this.teamsStore,
-        extras: {
-          agent_name: params.agent.name,
-          project_name: params.project.name,
-          epic_title: params.epic?.title ?? '',
-          provider_name: params.provider.name,
-          profile_name: params.profile.name,
-          session_id: params.sessionId,
-          session_id_short: params.sessionId.slice(0, 8),
-        },
+        extras,
       });
     } catch (err) {
       logger.warn(
@@ -625,13 +647,7 @@ export class SessionLaunchPipeline {
           team_name: '',
           team_names: '',
           is_team_lead: false,
-          agent_name: params.agent.name,
-          project_name: params.project.name,
-          epic_title: params.epic?.title ?? '',
-          provider_name: params.provider.name,
-          profile_name: params.profile.name,
-          session_id: params.sessionId,
-          session_id_short: params.sessionId.slice(0, 8),
+          ...extras,
         },
         recipientLegacyVariables: ['team_name', 'team_names', 'is_team_lead'],
       };
@@ -642,7 +658,10 @@ export class SessionLaunchPipeline {
       renderResult.vars,
       Object.keys(renderResult.vars),
     );
-    return rendered.trim() ? rendered : null;
+    if (!rendered.trim()) return null;
+    return params.vaultEntryCount === null
+      ? rendered
+      : `${rendered.trimEnd()}\n\n${vaultInstructionBlock(params.vaultEntryCount)}`;
   }
 
   private async renderAndPasteInitialPrompt(params: {
@@ -654,6 +673,7 @@ export class SessionLaunchPipeline {
     epic: Epic | null;
     profile: AgentProfile;
     provider: Provider;
+    vaultEntryCount: number | null;
     launchHandshake?: { preKeys?: string[]; preDelayMs?: number };
   }): Promise<void> {
     const rendered = await this.renderInitialPromptText(params);

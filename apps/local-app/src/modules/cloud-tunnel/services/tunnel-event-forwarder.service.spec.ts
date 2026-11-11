@@ -83,7 +83,7 @@ describe('TunnelEventForwarderService', () => {
 
   afterEach(() => service.onModuleDestroy());
 
-  it('only registers the 7 allowlisted events', () => {
+  it('only registers the 9 allowlisted events', () => {
     expect(TUNNEL_FORWARDED_EVENTS).toEqual([
       'session.transcript.updated',
       'claude.hooks.ask_user_question.pending',
@@ -92,6 +92,8 @@ describe('TunnelEventForwarderService', () => {
       'session.activity.changed',
       'agent.created',
       'agent.deleted',
+      'vault.request.pending',
+      'vault.request.resolved',
     ]);
     for (const event of TUNNEL_FORWARDED_EVENTS) {
       expect(emitter.listeners(event)).toHaveLength(1);
@@ -459,6 +461,69 @@ describe('TunnelEventForwarderService', () => {
     expect(tunnelClient.sendPush).not.toHaveBeenCalled();
 
     emitter.emit('agent.deleted', { agentId: 'a1', agentName: 'No Project' });
+    await flush();
+
+    expect(tunnelClient.sendPush).not.toHaveBeenCalled();
+  });
+
+  // ── Vault requests: project-scoped, the pending frame is content-bearing ──
+
+  const vaultPending = {
+    requestId: '11111111-1111-4111-8111-111111111111',
+    projectId: 'p1',
+    sessionId: 's1',
+    agentId: 'a1',
+    agentName: 'Coder',
+    familySlug: 'coder',
+    type: 'create',
+    name: 'STRIPE_KEY',
+    description: 'Needed for the payment tests',
+    kind: 'secret',
+    entryId: null,
+    createdAt: 1,
+    expiresAt: 2,
+  };
+
+  it('forwards a Vault request as a project/<id>/vault-requests frame, sealed, without a session lookup', async () => {
+    channelMode = 'encrypted';
+    emitter.emit('vault.request.pending', vaultPending);
+    await flush();
+
+    expect(activeSessions.getSessionProjectScope).not.toHaveBeenCalled();
+    expect(tunnelClient.sendPush.mock.calls[0][0]).toMatchObject({
+      topic: 'project/p1/vault-requests',
+      eventType: 'vault_request.pending',
+      payload: { alg: 'XC20P', __plain: { name: 'STRIPE_KEY', type: 'create' } },
+    });
+  });
+
+  it('withholds the pending Vault request from a plaintext peer but sends the resolved hint', async () => {
+    channelMode = 'plaintext';
+    emitter.emit('vault.request.pending', vaultPending);
+    emitter.emit('vault.request.resolved', {
+      requestId: vaultPending.requestId,
+      projectId: 'p1',
+      sessionId: 's1',
+      agentId: 'a1',
+      name: 'STRIPE_KEY',
+      status: 'denied',
+      reason: 'Use the test key',
+    });
+    await flush();
+
+    expect(tunnelClient.sendPush).toHaveBeenCalledTimes(1);
+    const frame = tunnelClient.sendPush.mock.calls[0][0];
+    expect(frame).toMatchObject({
+      topic: 'project/p1/vault-requests',
+      eventType: 'vault_request.resolved',
+      payload: { requestId: vaultPending.requestId, status: 'denied' },
+    });
+    expect(JSON.stringify(frame)).not.toMatch(/STRIPE_KEY|Use the test key/);
+  });
+
+  it('drops a Vault request frame without a projectId', async () => {
+    channelMode = 'encrypted';
+    emitter.emit('vault.request.pending', { ...vaultPending, projectId: '' });
     await flush();
 
     expect(tunnelClient.sendPush).not.toHaveBeenCalled();

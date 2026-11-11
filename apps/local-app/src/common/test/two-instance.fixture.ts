@@ -1,5 +1,8 @@
 import { PROVIDER_CLI_INSTALL_ROOT } from '../../modules/providers/services/provider-cli-install-state.service';
-import { PROVIDER_LAUNCH_SCRIPT_ROOT } from '../../modules/sessions/services/provider-runtime-preparation/launch-script';
+import {
+  RUNTIME_DIRECTORY_HOST,
+  systemRuntimeDirectoryHost,
+} from '../../modules/runtime-directory/runtime-directory';
 import { TranscriptPathValidator } from '../../modules/session-reader/services/transcript-path-validator.service';
 import { ValidationPipe } from '@nestjs/common';
 import { FastifyAdapter, NestFastifyApplication } from '@nestjs/platform-fastify';
@@ -155,8 +158,11 @@ async function startInstance(
       .useValue(db)
       .overrideProvider(PROVIDER_CLI_INSTALL_ROOT)
       .useValue(join(dataDir, 'provider-clis'))
-      .overrideProvider(PROVIDER_LAUNCH_SCRIPT_ROOT)
-      .useValue(join(dataDir, 'runtime-context'));
+      .overrideProvider(RUNTIME_DIRECTORY_HOST)
+      .useValue({
+        ...systemRuntimeDirectoryHost(join(dataDir, 'devchain.db')),
+        env: () => ({ RUNTIME_DIRECTORY: join(dataDir, 'runtime-context') }),
+      });
     if (fileSyncPaths) {
       builder = builder.overrideProvider(FILE_SYNC_PATHS).useValue(fileSyncPaths(name, dataDir));
     }

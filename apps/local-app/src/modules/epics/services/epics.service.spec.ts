@@ -1979,4 +1979,186 @@ describe('EpicsService', () => {
       expect(result.outcome.previousAssigneeAgent).toBeNull();
     });
   });
+
+  describe('long prose lines in agent-written text', () => {
+    const agent = { actor: { type: 'agent' as const, id: 'agent-1' } };
+    const sentences = (count: number, word = 'plan') =>
+      Array.from(
+        { length: count },
+        (_, n) => `Sentence ${n} explains one part of the ${word} in plain words for the reader.`,
+      ).join(' ');
+    const longLine = sentences(50);
+    const maxLineBytes = (text: string) =>
+      Math.max(...text.split('\n').map((line) => Buffer.byteLength(line, 'utf8')));
+
+    beforeEach(() => {
+      storage.getProject.mockResolvedValue({ id: 'project-1', name: 'Test Project' });
+      storage.getStatus.mockResolvedValue({
+        id: 'status-1',
+        label: 'New',
+        projectId: baseEpic.projectId,
+      });
+      storage.updateEpic.mockImplementation(
+        async (_id: string, data: { description?: string | null }) => ({
+          ...baseEpic,
+          description: data.description ?? null,
+          version: 2,
+        }),
+      );
+    });
+
+    it('wraps the description of an agent create without relations', async () => {
+      storage.createEpicForProject.mockResolvedValue(baseEpic);
+
+      await service.createEpicForProject(
+        baseEpic.projectId,
+        { title: 'T', description: longLine },
+        agent,
+      );
+
+      const stored = storage.createEpicForProject.mock.calls[0][1].description as string;
+      expect(stored).not.toBe(longLine);
+      expect(stored.length).toBe(longLine.length);
+      expect(maxLineBytes(stored)).toBeLessThanOrEqual(1500);
+    });
+
+    it('wraps the description of an agent create with relations', async () => {
+      storage.createEpicWithinTransaction.mockResolvedValue(baseEpic);
+      storage.getWorkspaceEpicsByIdPrefix.mockResolvedValue([
+        {
+          id: 'related-epic',
+          projectId: baseEpic.projectId,
+          projectName: 'Demo Project',
+          title: 'Related',
+          statusId: 'status-1',
+          statusLabel: 'New',
+          statusColor: '#ccc',
+          statusMcpHidden: false,
+          parentId: null,
+        },
+      ]);
+      storage.setEpicRelation.mockResolvedValue({
+        changed: true,
+        workspaceId: '11111111-1111-4111-8111-111111111111',
+      });
+
+      await service.createEpicForProject(
+        baseEpic.projectId,
+        {
+          title: 'T',
+          description: longLine,
+          statusId: 'status-1',
+          relation: { relatedEpicId: 'related-epic', relation: 'blocked_by' },
+        },
+        agent,
+      );
+
+      const stored = storage.createEpicWithinTransaction.mock.calls[0][0].description as string;
+      expect(maxLineBytes(stored)).toBeLessThanOrEqual(1500);
+    });
+
+    it('stores create text without an actor byte-identical (board REST and scheduled epics)', async () => {
+      storage.createEpicForProject.mockResolvedValue(baseEpic);
+      storage.createEpic.mockResolvedValue(baseEpic);
+
+      await service.createEpicForProject(baseEpic.projectId, {
+        title: 'T',
+        description: longLine,
+      });
+      await service.createEpic({ ...baseEpic, description: longLine } as unknown as CreateEpic);
+
+      expect(storage.createEpicForProject.mock.calls[0][1].description).toBe(longLine);
+      expect(storage.createEpic.mock.calls[0][0].description).toBe(longLine);
+    });
+
+    it('wraps only new lines of a full agent description and keeps stored long lines', async () => {
+      const fresh = sentences(50, 'design');
+      storage.getEpic.mockResolvedValue({ ...baseEpic, description: longLine });
+
+      await service.updateEpic(baseEpic.id, { description: `${longLine}\n${fresh}` }, 1, agent);
+
+      const [kept, ...rest] = (storage.updateEpic.mock.calls[0][1].description as string).split(
+        '\n',
+      );
+      expect(kept).toBe(longLine);
+      expect(rest.length).toBeGreaterThan(1);
+      expect(rest.join(' ')).toBe(fresh);
+    });
+
+    it('returns contexts from the stored text that work as the next find', async () => {
+      const existing = `intro\n${longLine}`;
+      storage.getEpic.mockResolvedValue({ ...baseEpic, description: existing });
+
+      const result = await service.updateEpicWithOutcome(
+        baseEpic.id,
+        {
+          descriptionEdits: [{ find: 'intro', replace: `intro ${sentences(30, 'design')}` }],
+          appendDescription: sentences(40, 'tests'),
+        },
+        1,
+        agent,
+      );
+
+      const stored = storage.updateEpic.mock.calls[0][1].description as string;
+      const edit = result.outcome.descriptionEdit!;
+      expect(edit.text).toBe(stored);
+      expect(edit.descriptionLength).toBe(stored.length);
+      expect(stored.split('\n')).toContain(longLine);
+      expect(maxLineBytes(stored.replace(longLine, ''))).toBeLessThanOrEqual(1500);
+      const editContext = edit.descriptionEdits![0].context.replace(/^…|…$/g, '');
+      expect(editContext).toContain('\n');
+      expect(stored).toContain(editContext);
+      expect(stored).toContain(edit.appended!.context);
+
+      // The returned context is accepted as the find text of the next edit.
+      storage.getEpic.mockResolvedValue({ ...baseEpic, description: stored, version: 2 });
+      await expect(
+        service.updateEpic(
+          baseEpic.id,
+          { descriptionEdits: [{ find: editContext, replace: 'x' }] },
+          2,
+          agent,
+        ),
+      ).resolves.toBeDefined();
+    });
+
+    it('leaves text without an actor and updates without a description untouched', async () => {
+      storage.getEpic.mockResolvedValue({ ...baseEpic, description: 'old' });
+
+      await service.updateEpic(baseEpic.id, { description: longLine }, 1);
+      await service.updateEpic(baseEpic.id, { appendDescription: longLine }, 1);
+      await service.updateEpic(baseEpic.id, { statusId: 'status-2' }, 1, agent);
+
+      expect(storage.updateEpic.mock.calls[0][1].description).toBe(longLine);
+      expect(storage.updateEpic.mock.calls[1][1].description).toBe(`old\n\n${longLine}`);
+      expect(storage.updateEpic.mock.calls[2][1]).not.toHaveProperty('description');
+    });
+
+    it('wraps agent comments and keeps REST comments byte-identical', async () => {
+      storage.getEpic.mockResolvedValue(baseEpic);
+      storage.getAgent.mockResolvedValue({ id: 'agent-1', name: 'Test Agent' });
+      storage.createEpicComment.mockImplementation(async (input: { content: string }) => ({
+        id: 'comment-1',
+        epicId: 'epic-1',
+        authorName: 'Test Agent',
+        content: input.content,
+        createdAt: '2024-01-01T00:00:00.000Z',
+        updatedAt: '2024-01-01T00:00:00.000Z',
+      }));
+
+      const agentComment = await service.addEpicComment(
+        'epic-1',
+        'project-1',
+        longLine,
+        'agent-1',
+        'agent',
+      );
+      const restComment = await service.addEpicCommentFromRest('epic-1', 'REST User', longLine);
+
+      expect(agentComment.content).not.toBe(longLine);
+      expect(agentComment.content.length).toBe(longLine.length);
+      expect(maxLineBytes(agentComment.content)).toBeLessThanOrEqual(1500);
+      expect(restComment.content).toBe(longLine);
+    });
+  });
 });

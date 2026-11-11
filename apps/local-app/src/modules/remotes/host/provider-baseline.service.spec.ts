@@ -1,13 +1,15 @@
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import * as fsPromises from 'fs/promises';
 import { homedir } from 'os';
 import { lock } from 'proper-lockfile';
 import { HostHelperService } from './host-helper.service';
+import { parseJsonc } from '../../../common/jsonc';
 import {
   ProviderBaselineService,
   containsBaseline,
+  getDevinUserConfigPath,
   mergeBaseline,
 } from './provider-baseline.service';
 
@@ -52,17 +54,23 @@ describe('ProviderBaselineService', () => {
   let homeDir: string;
   let service: ProviderBaselineService;
   let isClaimedHost: jest.Mock<boolean, []>;
+  let devinConfigPath: string;
+  const savedXdgConfigHome = process.env.XDG_CONFIG_HOME;
 
   beforeEach(() => {
     jest.clearAllMocks();
+    delete process.env.XDG_CONFIG_HOME;
     homeDir = mkdtempSync(join(tmpdir(), 'devchain-provider-baseline-'));
     mockHomedir.mockReturnValue(homeDir);
     mockLock.mockResolvedValue(createRelease());
     isClaimedHost = jest.fn().mockReturnValue(true);
     service = new ProviderBaselineService({ isClaimedHost } as unknown as HostHelperService);
+    devinConfigPath = join(homeDir, '.config', 'devin', 'config.json');
   });
 
   afterEach(() => {
+    if (savedXdgConfigHome === undefined) delete process.env.XDG_CONFIG_HOME;
+    else process.env.XDG_CONFIG_HOME = savedXdgConfigHome;
     jest.restoreAllMocks();
     rmSync(homeDir, { recursive: true, force: true });
   });
@@ -111,6 +119,12 @@ describe('ProviderBaselineService', () => {
     const settingsPath = join(homeDir, '.claude', 'settings.json');
     const configBefore = readFileSync(claudeConfigPath, 'utf-8');
     const settingsBefore = readFileSync(settingsPath, 'utf-8');
+    const devinBefore = readFileSync(devinConfigPath, 'utf-8');
+    expect(JSON.parse(devinBefore)).toEqual({ attribution: false });
+    if (process.platform !== 'win32') {
+      expect(statSync(devinConfigPath).mode & 0o777).toBe(0o600);
+      expect(statSync(join(homeDir, '.config', 'devin')).mode & 0o777).toBe(0o700);
+    }
     const writeFileSpy = jest.spyOn(fsPromises, 'writeFile');
     const renameSpy = jest.spyOn(fsPromises, 'rename');
     writeFileSpy.mockClear();
@@ -120,6 +134,7 @@ describe('ProviderBaselineService', () => {
 
     expect(readFileSync(claudeConfigPath, 'utf-8')).toBe(configBefore);
     expect(readFileSync(settingsPath, 'utf-8')).toBe(settingsBefore);
+    expect(readFileSync(devinConfigPath, 'utf-8')).toBe(devinBefore);
     expect(writeFileSpy).not.toHaveBeenCalled();
     expect(renameSpy).not.toHaveBeenCalled();
   });
@@ -169,6 +184,67 @@ describe('ProviderBaselineService', () => {
       skipDangerousModePermissionPrompt: true,
       env: { DISABLE_AUTOUPDATER: '1' },
     });
+    expect(JSON.parse(readFileSync(devinConfigPath, 'utf-8'))).toEqual({ attribution: false });
+  });
+
+  it('adds attribution: false to a Devin config and keeps its comments and other keys', async () => {
+    const original = `{
+  // user note — keep
+  "theme_mode": "dark",
+  "attribution": true, /* old */
+  "shell": { "setup_complete": true },
+}
+`;
+    mkdirSync(dirname(devinConfigPath), { recursive: true });
+    writeFileSync(devinConfigPath, original);
+
+    await service.onApplicationBootstrap();
+
+    const text = readFileSync(devinConfigPath, 'utf-8');
+    expect(text).toContain('// user note — keep');
+    expect(text).toContain('/* old */');
+    expect(parseJsonc(text)).toEqual({
+      theme_mode: 'dark',
+      attribution: false,
+      shell: { setup_complete: true },
+    });
+  });
+
+  it.each([
+    ['malformed', '{ "attribution": '],
+    ['not an object', '[{ "attribution": false }]'],
+  ])('leaves a %s Devin config byte-identical and logs a warning', async (_label, content) => {
+    mkdirSync(dirname(devinConfigPath), { recursive: true });
+    writeFileSync(devinConfigPath, content);
+
+    await service.onApplicationBootstrap();
+
+    expect(readFileSync(devinConfigPath, 'utf-8')).toBe(content);
+    expect(mockWarn).toHaveBeenCalledTimes(1);
+    expect(mockWarn.mock.calls[0][1]).toMatch(/^Devin config is not/);
+  });
+
+  it('applies the Claude baselines when the Devin baseline fails', async () => {
+    // A folder at the config path makes the Devin read fail with EISDIR.
+    mkdirSync(devinConfigPath, { recursive: true });
+
+    await expect(service.onApplicationBootstrap()).resolves.toBeUndefined();
+
+    expect(mockWarn).toHaveBeenCalledWith(
+      expect.objectContaining({ error: expect.anything() }),
+      'Could not apply the Devin config baseline',
+    );
+    expect(JSON.parse(readFileSync(join(homeDir, '.claude.json'), 'utf-8'))).toMatchObject({
+      hasCompletedOnboarding: true,
+    });
+    expect(
+      JSON.parse(readFileSync(join(homeDir, '.claude', 'settings.json'), 'utf-8')),
+    ).toMatchObject({ attribution: { commit: '', pr: '' } });
+  });
+
+  it('follows XDG_CONFIG_HOME for the Devin config path', () => {
+    process.env.XDG_CONFIG_HOME = join(homeDir, 'xdg');
+    expect(getDevinUserConfigPath()).toBe(join(homeDir, 'xdg', 'devin', 'config.json'));
   });
 });
 

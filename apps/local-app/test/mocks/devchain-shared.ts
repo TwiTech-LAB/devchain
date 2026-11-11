@@ -167,3 +167,5 @@ export * from '../../../../packages/shared/src/schemas/provider-clis';
 export * from '../../../../packages/shared/src/schemas/host-provider-clis';
 
 export * from '../../../../packages/shared/src/schemas/provider-usage';
+
+export * from '../../../../packages/shared/src/schemas/host-vault';

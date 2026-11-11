@@ -11,10 +11,14 @@ import { RemoteProviderCliSettingsService } from './services/remote-provider-cli
 import { HostProviderUsageSettingsController } from './host/host-provider-usage-settings.controller';
 import { HostProviderUsageSettingsService } from './host/host-provider-usage-settings.service';
 import { RemoteProviderUsageSettingsService } from './services/remote-provider-usage-settings.service';
+import { RemoteVaultPushService } from './services/remote-vault-push.service';
+import { VaultModule } from '../vault/vault.module';
 import { RemoteSkillSettingsService } from './services/remote-skill-settings.service';
 import { SkillsModule } from '../skills/skills.module';
 import { SettingsModule } from '../settings/settings.module';
 import { HostSkillSettingsController } from './host/host-skill-settings.controller';
+import { HostVaultController } from './host/host-vault.controller';
+import { VaultVmCacheModule } from '../vault/vault-vm-cache.module';
 import { HostSkillSettingsService } from './host/host-skill-settings.service';
 import { GitModule } from '../git/git.module';
 import { RemoteFileSyncService } from './sync/remote-file-sync.service';
@@ -55,6 +59,7 @@ import { RemoteProxyService } from './services/remote-proxy.service';
 import { RemotesService } from './services/remotes.service';
 import { REMOTE_HEALTH_PORT } from './ports/remote-health.port';
 import { REMOTE_MIRROR_SYNC_PORT } from './ports/remote-mirror-sync.port';
+import { REMOTE_VAULT_DELIVERY_PORT } from './ports/remote-vault-delivery.port';
 import { ProjectReplicaBuilder } from './replica/project-replica.builder';
 import { ProjectReplicaApplier } from './replica/project-replica.applier';
 import { HostController } from './host/host.controller';
@@ -156,6 +161,8 @@ import {
     ProviderAuthModule,
     ProviderAdaptersModule,
     VmProvidersModule,
+    VaultVmCacheModule,
+    VaultModule,
   ],
   controllers: [
     HomeGitWriteController,
@@ -165,6 +172,7 @@ import {
     HostProviderCliSettingsController,
     HostProviderUsageSettingsController,
     HostSkillSettingsController,
+    HostVaultController,
     RemotesController,
     RemoteProbeController,
     RemoteOperationsController,
@@ -200,6 +208,7 @@ import {
     RemoteProviderCliSettingsService,
     HostProviderUsageSettingsService,
     RemoteProviderUsageSettingsService,
+    RemoteVaultPushService,
     HostSkillSettingsService,
     RemotesService,
     RemoteProbeService,
@@ -265,6 +274,7 @@ import {
     InstallHostOperation,
     { provide: REMOTE_HEALTH_PORT, useExisting: RemoteHealthService },
     { provide: REMOTE_MIRROR_SYNC_PORT, useExisting: RemoteLiveSyncService },
+    { provide: REMOTE_VAULT_DELIVERY_PORT, useExisting: RemoteVaultPushService },
     {
       provide: ProjectReplicaBuilder,
       useFactory: (storage: ConstructorParameters<typeof ProjectReplicaBuilder>[0]) =>
@@ -285,6 +295,7 @@ import {
     DockerPlanService,
     REMOTE_HEALTH_PORT,
     REMOTE_MIRROR_SYNC_PORT,
+    REMOTE_VAULT_DELIVERY_PORT,
     RemoteHostClient,
     ProjectReplicaBuilder,
     ProjectReplicaApplier,

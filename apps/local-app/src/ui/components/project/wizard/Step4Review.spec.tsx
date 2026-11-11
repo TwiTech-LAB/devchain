@@ -75,6 +75,33 @@ describe('Step4Review', () => {
     expect(screen.getByTestId('wizard-review-status-mappings')).toBeInTheDocument();
     expect(screen.getByTestId('wizard-status-map-s1')).toBeInTheDocument();
   });
+
+  it.each([
+    {
+      label: 'all agents',
+      vaultAccess: { mode: 'all' as const },
+      text: 'This template turns on the Vault for: all agents',
+    },
+    {
+      label: 'listed roles',
+      vaultAccess: { mode: 'families' as const, familySlugs: ['coder', 'reviewer'] },
+      text: 'This template turns on the Vault for roles: coder, reviewer',
+    },
+    { label: 'no field', vaultAccess: undefined, text: null },
+  ])('shows the Vault access line for $label', ({ vaultAccess, text }) => {
+    render(
+      <Step4Review
+        review={REVIEW}
+        isLoading={false}
+        statusMappings={{}}
+        onStatusMappingChange={jest.fn()}
+        vaultAccess={vaultAccess}
+      />,
+    );
+    const notice = screen.queryByTestId('wizard-vault-access-notice');
+    if (text === null) expect(notice).not.toBeInTheDocument();
+    else expect(notice).toHaveTextContent(text);
+  });
 });
 
 describe('hasUnmappedStatuses', () => {

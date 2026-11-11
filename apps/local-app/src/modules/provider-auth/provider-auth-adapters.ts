@@ -46,6 +46,16 @@ export type ProviderAuthAdapterSpec =
   | ProviderAuthFilesSpec
   | ProviderAuthOpencodeSpec;
 
+/**
+ * The server addresses a VM's Devin `credentials.toml` gets. A PC login with
+ * other addresses cannot be imported, because a VM would not use them.
+ */
+export const DEVIN_STANDARD_SERVER_URLS = {
+  api_server_url: 'https://server.codeium.com',
+  devin_webapp_host: 'app.devin.ai',
+  devin_api_url: 'https://api.devin.ai',
+} as const;
+
 const AGY_TOKEN_FILE_PATH = '.gemini/antigravity-cli/antigravity-oauth-token';
 
 export const PROVIDER_AUTH_ADAPTERS: Record<string, ProviderAuthAdapterSpec> = {
@@ -67,9 +77,9 @@ export const PROVIDER_AUTH_ADAPTERS: Record<string, ProviderAuthAdapterSpec> = {
           // JSON.stringify is a TOML basic string literal: it escapes all C0
           // controls plus quotes/backslash; DEL (0x7f) needs a \u007f escape.
           `windsurf_api_key = ${JSON.stringify(value).replace(/\u007f/g, '\\u007f')}`,
-          'api_server_url = "https://server.codeium.com"',
-          'devin_webapp_host = "app.devin.ai"',
-          'devin_api_url = "https://api.devin.ai"',
+          ...Object.entries(DEVIN_STANDARD_SERVER_URLS).map(
+            ([key, url]) => `${key} = ${JSON.stringify(url)}`,
+          ),
           '',
         ].join('\n'),
     },

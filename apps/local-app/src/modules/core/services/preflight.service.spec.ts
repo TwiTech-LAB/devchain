@@ -130,6 +130,8 @@ describe('PreflightService', () => {
       listProfileProviderConfigsByIds: jest.fn().mockResolvedValue([]),
       listProvidersByIds: jest.fn().mockResolvedValue([]),
       findProjectByPath: jest.fn(),
+      getProviderEnvForProject: jest.fn().mockReturnValue(null),
+      resolveVaultGrantsForAgent: jest.fn().mockResolvedValue([]),
       getFeatureFlags: jest.fn().mockReturnValue(DEFAULT_FEATURE_FLAGS),
     } as unknown as jest.Mocked<StorageService>;
 
@@ -156,7 +158,7 @@ describe('PreflightService', () => {
         }
         if (name === 'devin') {
           // Devin is project_config too (.devin/mcp_config.local.json):
-          // `devin mcp list` redacts URLs so CLI-mode MCP checks can't work.
+          // `devin mcp remove` cannot touch foreign configs, so CLI mode can't work.
           return { providerName: 'devin', mcpMode: 'project_config' };
         }
         if (name === 'agy') {
@@ -995,6 +997,13 @@ describe('PreflightService', () => {
 
       expect(result.providers[0].configEnvStatus).toBe('fail');
       expect(result.providers[0].configEnvMessage).toContain('INVALID-KEY');
+    });
+
+    it('does not compare env keys with Vault entries: launches carry no Vault value', async () => {
+      const result = await runEnvPreflight({ VAULT_SHARED: 'config' });
+
+      expect(result.providers[0].configEnvStatus).toBe('pass');
+      expect(mockStorage.resolveVaultGrantsForAgent).not.toHaveBeenCalled();
     });
 
     it('reports an invalid configured context window as a non-blocking warning', async () => {

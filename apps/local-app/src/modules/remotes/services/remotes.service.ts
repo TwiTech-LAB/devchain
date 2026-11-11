@@ -8,6 +8,7 @@ import {
   ConflictError,
   NotFoundError,
   ValidationError,
+  VaultUnavailableError,
 } from '../../../common/errors/error-types';
 import { certificateFingerprint } from '../../../common/tls/certificate';
 import { ProviderAuthWritebackService } from '../../provider-auth/provider-auth-writeback.service';
@@ -116,7 +117,7 @@ export class RemotesService {
     // gone, so pull it into the vault before the delete (reset_vm shares this
     // pre-step). A missing remote still 404s through the pull's lookup.
     await this.familyWriteback.pullFamiliesNow(id).catch((error) => {
-      if (error instanceof NotFoundError) throw error;
+      if (error instanceof NotFoundError || error instanceof VaultUnavailableError) throw error;
       logger.warn({ err: error, remoteId: id }, 'Family pull before remote delete failed');
     });
     return this.storage.deleteRemote(id);

@@ -50,6 +50,8 @@ interface MobileRpcCatalogEntry {
 }
 
 const uuidSchema = z.string().uuid();
+/** How long an approved `use` lasts; the contract stays self-contained, so it is local. */
+const vaultUseDecisionSchema = z.enum(['session', 'once', 'family']);
 const isoTimestampSchema = z.string().datetime({ offset: true });
 
 /** The owning remote of a remote-owned placeholder project row. */
@@ -1230,16 +1232,96 @@ const e2eeCatalog = {
   },
 } as const satisfies Record<string, MobileRpcCatalogEntry>;
 
+/** A pending agent request for a Vault entry. Never carries a value. */
+const vaultRequestSchema = z
+  .object({
+    requestId: uuidSchema,
+    projectId: z.string().min(1),
+    projectName: z.string(),
+    sessionId: z.string().min(1),
+    agentId: z.string().min(1),
+    agentName: z.string(),
+    familySlug: z.string().nullable(),
+    type: z.enum(['create', 'grant', 'use']),
+    name: z.string().min(1),
+    description: z.string(),
+    kind: z.enum(['secret', 'file']),
+    entryId: z.string().nullable(),
+    entryDescription: z.string().nullable(),
+    createdAt: z.number(),
+    expiresAt: z.number(),
+  })
+  .passthrough();
+
+const vaultCatalog = {
+  'vault.listRequests': {
+    // Without `use` in `types`, the PC leaves out `use` requests: a build that predates
+    // that type rejects the whole list when one item has it. Unknown values are ignored.
+    paramsSchema: z.object({ types: z.array(z.string().max(32)).max(16).optional() }).passthrough(),
+    resultSchema: z.array(vaultRequestSchema),
+    paramsMode: passthrough,
+    cryptoMode: conditionalSeal,
+  },
+  // The value travels only sealed; a plaintext lane cannot carry it.
+  'vault.fulfillRequest': {
+    paramsSchema: z
+      .object({
+        requestId: uuidSchema,
+        value: z
+          .string()
+          .max(256 * 1024)
+          .optional(),
+        permanent: z.boolean(),
+      })
+      .strict(),
+    resultSchema: z
+      .object({
+        requestId: uuidSchema,
+        status: z.literal('fulfilled'),
+        permanent: z.boolean(),
+        entryId: z.string().nullable(),
+      })
+      .passthrough(),
+    paramsMode: strict,
+    cryptoMode: sealedOnly,
+  },
+  'vault.denyRequest': {
+    paramsSchema: z
+      .object({ requestId: uuidSchema, reason: z.string().trim().max(200).optional() })
+      .strict(),
+    resultSchema: z.object({ ok: z.literal(true) }).passthrough(),
+    paramsMode: strict,
+    cryptoMode: sealedOnly,
+  },
+  // A `use` answer carries no value, so the plaintext lane may carry it.
+  'vault.approveUse': {
+    paramsSchema: z
+      .object({ requestId: uuidSchema, decision: vaultUseDecisionSchema })
+      .strict(),
+    resultSchema: z
+      .object({
+        requestId: uuidSchema,
+        status: z.literal('approved'),
+        decision: vaultUseDecisionSchema,
+      })
+      .passthrough(),
+    paramsMode: strict,
+    cryptoMode: conditionalSeal,
+  },
+} as const satisfies Record<string, MobileRpcCatalogEntry>;
+
 export const MOBILE_RPC_CATALOG: typeof boardCatalog &
   typeof chatReadCatalog &
   typeof chatActionCatalog &
   typeof terminalCatalog &
-  typeof e2eeCatalog = {
+  typeof e2eeCatalog &
+  typeof vaultCatalog = {
   ...boardCatalog,
   ...chatReadCatalog,
   ...chatActionCatalog,
   ...terminalCatalog,
   ...e2eeCatalog,
+  ...vaultCatalog,
 };
 
 export type MobileRpcMethod = keyof typeof MOBILE_RPC_CATALOG;
@@ -1288,6 +1370,10 @@ export const MOBILE_RPC_METHODS = [
   'e2ee.adoptDeviceKey',
   'e2ee.revokeDeviceKey',
   'e2ee.bindNotificationRoutingIdentity',
+  'vault.listRequests',
+  'vault.fulfillRequest',
+  'vault.denyRequest',
+  'vault.approveUse',
 ] as const satisfies readonly MobileRpcMethod[];
 
 export type MobileRpcParams<M extends MobileRpcMethod> = z.input<

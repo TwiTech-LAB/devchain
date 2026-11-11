@@ -83,7 +83,8 @@ import { useSubNavSearchParam } from '@/ui/hooks/useSubNavSearchParam';
 import { useHomeQueryClient } from '@/ui/components/BackendBoundary';
 import { useOptionalBackend } from '@/ui/lib/backend-context';
 
-type ProviderType = 'codex' | 'claude' | 'opencode' | 'agy' | 'copilot' | 'devin';
+const PROVIDER_TYPES = ['codex', 'claude', 'opencode', 'agy', 'copilot', 'devin'] as const;
+type ProviderType = (typeof PROVIDER_TYPES)[number];
 
 function getDefaultBinPathForType(t: ProviderType) {
   if (t === 'codex') return 'codex';
@@ -466,7 +467,7 @@ function ProviderModelsSection({ provider }: { provider: Provider }) {
               </div>
 
               <div className="flex flex-wrap gap-2">
-                {['opencode', 'devin'].includes(provider.name.toLowerCase()) && (
+                {['opencode', 'agy', 'devin'].includes(provider.name.toLowerCase()) && (
                   <Button
                     variant="outline"
                     onClick={() => discoverModelsMutation.mutate()}
@@ -1085,21 +1086,9 @@ export function ProvidersPage() {
       envScopes: provider.envScopes ?? {},
     });
     // derive provider type from existing provider
-    const t: ProviderType = (
-      provider.name === 'codex'
-        ? 'codex'
-        : provider.name === 'claude'
-          ? 'claude'
-          : provider.name === 'opencode'
-            ? 'opencode'
-            : provider.name === 'agy'
-              ? 'agy'
-              : provider.name === 'copilot'
-                ? 'copilot'
-                : provider.name === 'devin'
-                  ? 'devin'
-                  : 'codex'
-    ) as ProviderType;
+    const t: ProviderType = (PROVIDER_TYPES as readonly string[]).includes(provider.name)
+      ? (provider.name as ProviderType)
+      : 'codex';
     setProviderType(t);
     setBinPathTouched(false);
     setFormError(null);

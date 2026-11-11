@@ -18,6 +18,12 @@ WorkingDirectory=@HOME@
 Environment=DEVCHAIN_HOST_TLS_KEY_FILE=@HOME@/.devchain/tls/key.pem
 Environment=DEVCHAIN_HOST_TLS_CERT_FILE=@HOME@/.devchain/tls/cert.pem
 EnvironmentFile=@HOME@/.devchain/host.env
+# /run/devchain-<user>: tmpfs that survives a service restart and is cleared at
+# reboot; DevChain keeps the Vault value cache here. The name is per user: with
+# one fixed name, the instance that starts last would take over the directory.
+RuntimeDirectory=devchain-@USER@
+RuntimeDirectoryMode=0700
+RuntimeDirectoryPreserve=yes
 # Without its certificate DevChain must not start at all: home pins it, and a
 # new one would never match.
 ExecStartPre=/bin/sh -c 'for f in "$${DEVCHAIN_HOST_TLS_KEY_FILE}" "$${DEVCHAIN_HOST_TLS_CERT_FILE}"; do [ -n "$$f" ] && [ -r "$$f" ] || { echo "devchain-host: TLS file $$f is missing or unreadable; reset the VM." >&2; exit 1; }; done'

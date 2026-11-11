@@ -14,6 +14,7 @@ import { SessionLifecycleFacade } from './session-lifecycle-facade.service';
 import { EpicTimeStore } from '../../epic-time/services/epic-time.store';
 import { TransactionRunner } from '../../storage/db/transaction-runner';
 import {
+  createVaultLaunchMock,
   fakeAgent,
   fakeProfile,
   fakeProfileProviderConfig,
@@ -242,6 +243,7 @@ describe('session lifecycle race serialization', () => {
       runtimeContextCapture as never,
       claudeLaunchSettings as never,
       codexPluginProfiles as never,
+      { cleanupSession: jest.fn().mockResolvedValue(undefined) } as never,
       new SessionRowStore(db),
     );
     const launchPipeline = new SessionLaunchPipeline(
@@ -262,6 +264,7 @@ describe('session lifecycle race serialization', () => {
       sessionTerminalRuntime,
       providerRuntimePreparation as never,
       new SessionRowStore(db),
+      createVaultLaunchMock() as never,
     );
     const restorePipeline = new SessionRestorePipeline(
       db,

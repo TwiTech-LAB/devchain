@@ -115,6 +115,7 @@ export interface RemoteVmApi {
   listProviderAuthEntries(signal: AbortSignal): Promise<ProviderAuthEntryItem[]>;
   createStaticProviderAuth(input: Record<string, string>): Promise<ProviderAuthEntryItem>;
   importOpencodeLogins(providerIds: string[]): Promise<{ results: ImportResult[] }>;
+  importDevinLogin(label: string): Promise<ProviderAuthEntryItem>;
   deleteProviderAuthEntry(entryId: string): Promise<void>;
   renameProviderAuthEntry(entryId: string, label: string): Promise<ProviderAuthEntryItem>;
   releaseProviderAuthEntry(entryId: string): Promise<ProviderAuthReleaseView>;

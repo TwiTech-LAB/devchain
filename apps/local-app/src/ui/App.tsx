@@ -4,6 +4,7 @@ import { ProjectsPage } from './pages/ProjectsPage';
 import { PromptsPage } from './pages/PromptsPage';
 import { ProfilesPage } from './pages/ProfilesPage';
 import { ProvidersPage } from './pages/ProvidersPage';
+import { VaultPage } from './pages/VaultPage';
 import { AgentsPage } from './pages/AgentsPage';
 import { TeamsPage } from './pages/TeamsPage';
 import { StatusesPage } from './pages/StatusesPage';
@@ -87,6 +88,7 @@ function AppRoutes() {
                       <Route path="/prompts" element={<PromptsPage />} />
                       <Route path="/profiles" element={<ProfilesPage />} />
                       <Route path="/providers" element={<ProvidersPage />} />
+                      <Route path="/vault" element={<VaultPage />} />
                       <Route path="/agents" element={<AgentsPage />} />
                       <Route path="/teams" element={<TeamsPage />} />
                       <Route path="/statuses" element={<StatusesPage />} />

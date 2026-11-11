@@ -1,6 +1,6 @@
 {
   "name": "devchain-cli",
-  "version": "0.26.5",
+  "version": "0.27.1",
   "description": "AI driven development platform",
   "homepage": "https://devchain.cc/",
   "repository": {
@@ -8,6 +8,20 @@
     "url": "https://github.com/twitech-lab/devchain.git"
   },
   "changelog": {
+    "0.27.1": [
+      "https://devchain.cc/releases/0.27.0/",
+      "",
+      "Projects: exports and templates no longer carry provider-level environment variables"
+    ],
+    "0.27.0": [
+      "https://devchain.cc/releases/0.27.0/",
+      "",
+      "Vault: a built-in encrypted store for API keys, tokens and key files, and agents get a value only when a command needs it",
+      "Providers: Devin CLI support, on this PC and on remote VMs",
+      "Security: ClickUp, Jira, provider logins and the Proxmox token are now sealed with the Vault key",
+      "Mobile app 1.13.0: answer Vault requests and approvals from your phone",
+      "Host image 1.6.0: Vault delivery for VMs and the Devin CLI"
+    ],
     "0.26.5": [
       "Remote VMs: files sync right away again after a branch switch or rebase on the VM",
       "Dev Template: stronger code reviews, and epics with open defects stay in Review",
@@ -56,22 +70,6 @@
       "Host image 1.4.0: more tools for agents, and the VM user gets the same user ids as this PC, which moving Docker containers needs",
       "Dev Template: clearer rules for writing tests, and agents run only the affected tests before review",
       "Stability: skill sync no longer fills the temp folder, and queued test runs no longer overload the machine"
-    ],
-    "0.24.1": [
-      "Mobile app 1.10.2: a more live and responsive chat experience",
-      "Remote VMs: more control over Connect. You can cancel it, choose which Docker containers to move, and see progress while it runs",
-      "Remote VMs: more reliable Connect and sign-in",
-      "Stability: smoother pasting into Claude, and restored agents keep their DevChain tools",
-      "Teams and templates: teams keep their order after a template update, and the Dev Template has updated defaults"
-    ],
-    "0.24.0": [
-      "https://devchain.cc/releases/0.24.0/",
-      "",
-      "Remote VMs: run a project's agents on your own Proxmox or Ubuntu/Debian VM, from the same app, over an encrypted connection.",
-      "Stability: smoother terminals and transcripts, and full Codex history",
-      "Look: Dark is the default theme, and Ocean has higher contrast",
-      "Dev Template: renamed to DevChain Development Flow",
-      "Mobile app 1.10.0: one project list across home and your VMs, and the last chat reopens at launch"
     ]
   },
   "publishConfig": {
@@ -128,6 +126,7 @@
     "@fastify/send": "2.1.0",
     "@modelcontextprotocol/sdk": "1.20.1",
     "@multiavatar/multiavatar": "1.0.7",
+    "@napi-rs/keyring": "2.1.2",
     "@nestjs/common": "^10.3.3",
     "@nestjs/core": "^10.3.3",
     "@nestjs/event-emitter": "3.0.1",

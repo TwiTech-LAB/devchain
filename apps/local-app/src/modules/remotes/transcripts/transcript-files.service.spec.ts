@@ -6,6 +6,7 @@ import { join, dirname } from 'node:path';
 import { Readable, PassThrough } from 'node:stream';
 import { ConflictError, ValidationError } from '../../../common/errors/error-types';
 import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { DB_CONNECTION } from '../../storage/db/db.provider';
 import { TranscriptPathValidator } from '../../session-reader/services/transcript-path-validator.service';
 import { TranscriptFilesService } from './transcript-files.service';
@@ -28,6 +29,7 @@ describe('TranscriptFilesService', () => {
           useValue: new TranscriptPathValidator({
             claude: [join(root, 'claude')],
             codex: [join(root, 'codex')],
+            devin: [join(root, 'devin')],
           }),
         },
       ],
@@ -58,6 +60,48 @@ describe('TranscriptFilesService', () => {
     expect(listing.missing).toBe(1);
     expect(listing.files).toHaveLength(4);
     expect(listing.files).toEqual(expect.arrayContaining(files.map((file) => ({ file, size: 4 }))));
+  });
+
+  it('lists a Devin export and its store session files with content hashes', async () => {
+    const session = 'stores/project-1/cli/sessions/brave-otter';
+    const files: TranscriptFile[] = [
+      { provider: 'devin', path: `${uuid}.json` },
+      { provider: 'devin', path: `${session}/log.jsonl` },
+      { provider: 'devin', path: `${session}/meta.json` },
+    ];
+    for (const entry of files) await service.write(entry, Readable.from('data'), 4);
+    const linked = join(root, 'devin', 'stores', 'project-1', 'cli', 'sessions', 'linked');
+    await mkdir(linked);
+    await symlink(service.path(files[1]), join(linked, 'log.jsonl'));
+    const listing = await service.list([
+      { provider: 'devin', path: files[0].path },
+      { provider: 'devin', path: session },
+      { provider: 'devin', path: 'stores/project-1/cli/sessions/linked' },
+    ]);
+    const sha256 = createHash('sha256').update('data').digest('hex');
+    expect(listing.missing).toBe(1);
+    expect(listing.files).toEqual(
+      expect.arrayContaining(files.map((file) => ({ file, size: 4, sha256 }))),
+    );
+    expect(listing.files).toHaveLength(3);
+  });
+
+  it.each([
+    'not-a-uuid.json',
+    `../${uuid}.json`,
+    `/${uuid}.json`,
+    `${uuid}.jsonl`,
+    'stores/project-1/cli/prompt_history.jsonl',
+    'stores/project-1/cli/session_locks/brave-otter.lock',
+    'stores/project-1/cli/sessions/brave-otter/other.json',
+    'stores/project-1/cli/sessions/Brave-Otter/log.jsonl',
+    'stores/project-1/cli/sessions/../brave-otter/log.jsonl',
+    'stores/../cli/sessions/brave-otter/log.jsonl',
+    'stores/project-1/cli/sessions/brave-otter/log.jsonl\n',
+  ])('refuses invalid Devin path %s', async (path) => {
+    await expect(
+      service.write({ provider: 'devin', path }, Readable.from('x'), 1),
+    ).rejects.toThrow();
   });
 
   it('rejects a concurrent destination write with a domain conflict and releases it after completion', async () => {

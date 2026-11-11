@@ -16,6 +16,7 @@ import {
   CheckoutSchema,
   CreateProviderAuthStaticSchema,
   GenerateProviderAuthSchema,
+  ImportDevinSchema,
   ImportOpencodeSchema,
   ProviderAuthGenerationIdSchema,
   ProviderAuthEntryIdSchema,
@@ -64,6 +65,13 @@ export class ProviderAuthController {
     logger.info('POST /api/provider-auth/opencode-import');
     const { providerIds } = ImportOpencodeSchema.parse(body);
     return { results: await this.vault.importOpencode(providerIds) };
+  }
+
+  @Post('devin-import')
+  async importDevin(@Body() body: unknown): Promise<ProviderAuthEntryDto> {
+    logger.info('POST /api/provider-auth/devin-import');
+    const { label } = ImportDevinSchema.parse(body);
+    return this.vault.importDevin(label);
   }
 
   /** Ids and fixed types only; the answer never carries a credential value or raw entry field. */

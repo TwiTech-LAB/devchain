@@ -18,3 +18,18 @@ export const DEVIN_TRANSCRIPTS_ROOT = '.devchain/provider-transcripts/devin/';
 export function devinTranscriptPath(homeDir: string, sessionId: string): string {
   return join(homeDir, DEVIN_TRANSCRIPTS_ROOT, `${sessionId}.json`);
 }
+
+/** Folder under the Devin transcript root that holds one Devin session store per project. */
+export const DEVIN_SESSION_STORES_DIR = 'stores';
+
+/** Folder inside a Devin session store that holds one folder per session. */
+export const DEVIN_STORE_SESSIONS_DIR = 'cli/sessions';
+
+/**
+ * `~/.devchain/provider-transcripts/devin/stores/<projectId>` — the project's
+ * `DEVIN_SESSIONS_DIR`. Devin names a session folder by its two-word id, which
+ * is unique only inside one store, so each project gets its own store.
+ */
+export function devinSessionStorePath(homeDir: string, projectId: string): string {
+  return join(homeDir, DEVIN_TRANSCRIPTS_ROOT, DEVIN_SESSION_STORES_DIR, projectId);
+}

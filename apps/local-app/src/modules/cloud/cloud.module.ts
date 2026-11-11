@@ -66,6 +66,7 @@ import { SettingsModule } from '../settings/settings.module';
     EgressQueueService,
     EventMapperService,
     ProjectEgressConfigService,
+    NotificationRecipientResolverService,
   ],
 })
 export class CloudModule {}

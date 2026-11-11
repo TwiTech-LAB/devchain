@@ -82,6 +82,7 @@ export interface CodecApplyRuntime {
       | 'bulkCreateProviderModels'
       | 'listEpics'
       | 'listProviders'
+      | 'setVaultFamilyAccess'
       | 'updateEpicsStatus'
       | 'updateProvider'
     >;

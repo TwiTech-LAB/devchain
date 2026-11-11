@@ -27,6 +27,8 @@ import type { TeamsService } from '../../teams/services/teams.service';
 import type { TerminalIOService } from '../../terminal/services/terminal-io/terminal-io.service';
 import type { ProjectWriteGate } from '../../storage/write-gate/project-write-gate';
 import type { WorktreesService } from '../../worktrees/worktrees.service';
+import type { VaultDiscoveryService } from '../../vault/vault-discovery.service';
+import type { VaultRequestService } from '../../vault-requests/vault-request.service';
 import type { InstructionsResolver } from '../services/instructions-resolver';
 
 export type ContextualMcpToolHandler<TContext> = (
@@ -63,6 +65,8 @@ export interface McpBindingRuntime {
   readonly projectCommunicationService?: ProjectCommunicationService;
   readonly projectWriteGate?: ProjectWriteGate;
   readonly worktreesService?: WorktreesService;
+  readonly vaultDiscoveryService?: VaultDiscoveryService;
+  readonly vaultRequestService?: VaultRequestService;
   readonly instructionsResolver: InstructionsResolver;
   readonly defaultInlineMaxBytes: number;
   readonly resolveSessionContext: (sessionId: string) => Promise<McpResponse>;

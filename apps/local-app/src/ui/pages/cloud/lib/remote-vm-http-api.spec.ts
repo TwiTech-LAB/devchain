@@ -707,6 +707,17 @@ const cases = {
     serverMessage: true,
     providerAuthError: true,
   },
+  importDevinLogin: {
+    invoke: (api) => api.importDevinLogin('Devin PC'),
+    url: '/api/provider-auth/devin-import',
+    init: () => post({ label: 'Devin PC' }),
+    backend: HOME_BACKEND,
+    response: { id: 'entry', label: 'Devin PC' },
+    result: { id: 'entry', label: 'Devin PC' },
+    fallback: 'Provider auth request failed (503)',
+    serverMessage: true,
+    providerAuthError: true,
+  },
   deleteProviderAuthEntry: {
     invoke: (api) => api.deleteProviderAuthEntry('entry'),
     url: '/api/provider-auth/entry',

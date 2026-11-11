@@ -486,12 +486,13 @@ export async function importProjectWithHelper(
       });
     }
 
-    // providerSettings + providerModels + providerEfforts codecs (matrix rows 19–21):
-    // additive provider-catalog mutations, no ImportContext products. providerSettings
-    // resolves against live provider storage (threshold/env merge); the other two
-    // add model/effort catalogs. Applied in registry order.
+    // providerSettings + providerModels + providerEfforts + vaultAccess codecs (matrix
+    // rows 19–22): no ImportContext products. providerSettings resolves against live
+    // provider storage (threshold/env merge); the next two add model/effort catalogs;
+    // vaultAccess runs last and is non-fatal — an absent section leaves access untouched.
+    // Applied in registry order.
     await pipeline.applySections(
-      ['providerSettings', 'providerModels', 'providerEfforts'],
+      ['providerSettings', 'providerModels', 'providerEfforts', 'vaultAccess'],
       context.payload,
       pipelineCtx,
       'replace',

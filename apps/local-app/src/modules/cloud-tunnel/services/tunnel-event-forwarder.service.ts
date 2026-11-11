@@ -32,6 +32,8 @@ export const TUNNEL_FORWARDED_EVENTS = [
   'session.activity.changed',
   'agent.created',
   'agent.deleted',
+  'vault.request.pending',
+  'vault.request.resolved',
 ] as const;
 
 type ForwardedEvent = (typeof TUNNEL_FORWARDED_EVENTS)[number];
@@ -43,6 +45,7 @@ type ForwardedEvent = (typeof TUNNEL_FORWARDED_EVENTS)[number];
  *  - `session.transcript.updated` — kept sealed-only even though the forwarded hint omits
  *    `deltaChunks`/`deltaMessages` (its socket.io payload carries transcript body text).
  *  - `agent.created` / `agent.deleted` — carry agent/team NAMES.
+ *  - `vault.request.pending` — the entry name and the agent's reason (never a value).
  *
  * When the lane can encrypt these are sealed like any other frame; when it can't, they are
  * WITHHELD (the phone recovers the content via its own encrypted per-topic catch-up / the
@@ -60,6 +63,7 @@ export const CONTENT_BEARING_PUSH_EVENTS: ReadonlySet<ForwardedEvent> = new Set<
   'session.transcript.updated',
   'agent.created',
   'agent.deleted',
+  'vault.request.pending',
 ]);
 
 /**
@@ -271,6 +275,14 @@ export class TunnelEventForwarderService implements OnModuleInit, OnModuleDestro
         const projectId = payload.projectId;
         if (!isNonEmptyString(projectId)) return false;
         return true;
+      }
+
+      case 'vault.request.pending':
+      case 'vault.request.resolved': {
+        // Project-scoped (topic `project/<projectId>/vault-requests`) and emitted in-process
+        // by this instance's request store. The resolved frame often follows a session stop,
+        // so the session lookup cannot be the check here.
+        return isNonEmptyString(payload.projectId);
       }
 
       default:

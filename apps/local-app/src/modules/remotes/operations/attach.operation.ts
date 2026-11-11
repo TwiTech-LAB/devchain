@@ -35,6 +35,7 @@ import {
   type RemoteOperationStepDefinition,
   type RemoteOperationStepRun,
 } from './remote-operation.types';
+import { RemoteVaultPushService } from '../services/remote-vault-push.service';
 
 const logger = createLogger('AttachOperation');
 
@@ -99,6 +100,7 @@ export class AttachOperation implements RemoteOperationDefinition {
     private readonly processExecutor: ProcessExecutor,
     private readonly gitOwner: GitOwnerStore,
     private readonly worktrees: RemoteWorktreeGuard,
+    private readonly vaultPush: RemoteVaultPushService,
   ) {
     const noDocker = (details: Record<string, unknown>) => !dockerSelection(details);
     this.steps = [
@@ -170,6 +172,13 @@ export class AttachOperation implements RemoteOperationDefinition {
         skip: noDocker,
       },
       { id: 'bind_remote', label: 'Make the VM the project owner', run: (c) => this.bindRemote(c) },
+      {
+        id: 'vault_push',
+        label: 'Send Vault entries to the VM',
+        // Before the unlock, so agents that start on the VM have their values. It never
+        // fails Connect: a locked Vault sends nothing, and the health poll retries.
+        run: ({ operation }) => this.vaultPush.pushNow(operation.remoteId),
+      },
       { id: 'thaw_host', label: 'Unlock the project on the VM', run: (c) => this.thawHost(c) },
       {
         id: 'thaw_lanes',

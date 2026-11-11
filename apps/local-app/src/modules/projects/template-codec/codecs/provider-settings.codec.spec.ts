@@ -196,17 +196,21 @@ describe('buildProviderSettings', () => {
       env: { KEEP: 'value' },
     };
 
-    const result = buildProviderSettings(
-      new Map([[provider.id, provider]]),
-      'project-1',
-      new Map(),
-      {
-        filterEnvByScope: (env) => env,
-        sanitizeEnvMap: (env) => env ?? null,
-      },
-    );
+    const result = buildProviderSettings(new Map([[provider.id, provider]]));
 
-    expect(result).toEqual([{ name: 'claude', autoCompactThreshold: 95, env: { KEEP: 'value' } }]);
+    expect(result).toEqual([{ name: 'claude', autoCompactThreshold: 95 }]);
     expect(result[0]).not.toHaveProperty('claudeLaunchSettingsJson');
+    expect(result[0]).not.toHaveProperty('env');
+  });
+
+  it('emits no row for a provider that only has env', () => {
+    const provider: ProviderExportRow = {
+      id: 'provider-2',
+      name: 'claude',
+      autoCompactThreshold: null,
+      env: { CLAUDE_CODE_OAUTH_TOKEN: 'real-token' },
+    };
+
+    expect(buildProviderSettings(new Map([[provider.id, provider]]))).toEqual([]);
   });
 });

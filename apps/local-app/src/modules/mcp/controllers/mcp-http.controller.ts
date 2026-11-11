@@ -1,5 +1,6 @@
 import { Body, Controller, HttpCode, Post, Res, Get, Req, Headers, Delete } from '@nestjs/common';
 import { McpService } from '../services/mcp.service';
+import { formatToolResultText } from '../services/utils/tool-result-text';
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import { randomUUID } from 'crypto';
 import { filterHiddenTools } from '../constants';
@@ -184,7 +185,7 @@ export class McpHttpController {
         const resp = await this.mcp.handleToolCall(name, args);
         if (resp.success)
           return makeResult(id, {
-            content: [{ type: 'text', text: JSON.stringify(resp.data ?? null, null, 2) }],
+            content: [{ type: 'text', text: formatToolResultText(resp.data ?? null) }],
             isError: false,
           });
         return makeError(id, JSONRPC_ERRORS.INTERNAL_ERROR, resp.error?.message || 'Error', {

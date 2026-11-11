@@ -10,6 +10,7 @@ import type { FastifyRequest, FastifyReply } from 'fastify';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { McpService } from '../services/mcp.service';
 import { McpServerService } from '../services/mcp-server.service';
+import { formatToolResultText } from '../services/utils/tool-result-text';
 import { createLogger } from '../../../common/logging/logger';
 import { filterHiddenTools } from '../constants';
 import { allMetadata } from '../tool-descriptors';
@@ -120,7 +121,7 @@ export class McpSdkController {
         content: [
           {
             type: 'text' as const,
-            text: JSON.stringify(result.data, null, 2),
+            text: formatToolResultText(result.data),
           },
         ],
       };

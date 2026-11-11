@@ -6,7 +6,9 @@ import { StorageError } from '../../../common/errors/error-types';
 import type { IntegrationCredentials } from '../models/domain.models';
 
 const APP_SALT = Buffer.from('devchain-integration-credential-store-v1-salt', 'utf8');
-const CIPHER_CONTEXT = Buffer.from('devchain-integration-credentials-v1', 'utf8');
+/** AAD context of integration connection credentials; `encrypt` and `decrypt` use it. */
+export const INTEGRATION_CREDENTIALS_CONTEXT = 'devchain-integration-credentials-v1';
+const CIPHER_CONTEXT = Buffer.from(INTEGRATION_CREDENTIALS_CONTEXT, 'utf8');
 const SECRET_LENGTH = 32;
 const KEY_LENGTH = 32;
 const IV_LENGTH = 12;
@@ -55,7 +57,7 @@ export class IntegrationCredentialCipher {
       throw new StorageError('Unable to decrypt integration credentials.');
     }
     try {
-      return this.parseCredentials(plaintext);
+      return parseIntegrationCredentials(plaintext);
     } catch {
       throw new StorageError('Unable to decrypt integration credentials.');
     }
@@ -158,29 +160,30 @@ export class IntegrationCredentialCipher {
     }
     return secret;
   }
+}
 
-  private parseCredentials(plaintext: string): IntegrationCredentials {
-    const value = JSON.parse(plaintext) as unknown;
-    if (!value || typeof value !== 'object') {
-      throw new Error('Credential payload is invalid');
-    }
-    const candidate = value as Record<string, unknown>;
-    if (candidate.provider === 'clickup' && typeof candidate.token === 'string') {
-      return { provider: 'clickup', token: candidate.token };
-    }
-    if (
-      candidate.provider === 'jira' &&
-      typeof candidate.siteUrl === 'string' &&
-      typeof candidate.email === 'string' &&
-      typeof candidate.token === 'string'
-    ) {
-      return {
-        provider: 'jira',
-        siteUrl: candidate.siteUrl,
-        email: candidate.email,
-        token: candidate.token,
-      };
-    }
+/** Throws when `plaintext` is not a credential payload of a known provider. */
+export function parseIntegrationCredentials(plaintext: string): IntegrationCredentials {
+  const value = JSON.parse(plaintext) as unknown;
+  if (!value || typeof value !== 'object') {
     throw new Error('Credential payload is invalid');
   }
+  const candidate = value as Record<string, unknown>;
+  if (candidate.provider === 'clickup' && typeof candidate.token === 'string') {
+    return { provider: 'clickup', token: candidate.token };
+  }
+  if (
+    candidate.provider === 'jira' &&
+    typeof candidate.siteUrl === 'string' &&
+    typeof candidate.email === 'string' &&
+    typeof candidate.token === 'string'
+  ) {
+    return {
+      provider: 'jira',
+      siteUrl: candidate.siteUrl,
+      email: candidate.email,
+      token: candidate.token,
+    };
+  }
+  throw new Error('Credential payload is invalid');
 }

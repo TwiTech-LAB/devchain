@@ -20,10 +20,12 @@ afterEach(() => {
 // off the npm registry, including tests that write their own claim file. Blank TLS
 // paths are unset, so the VM's own certificate puts no TLS front on test apps.
 // Startup skill sync off keeps test apps off GitHub and out of this machine's temp folder.
+// Vault keystore off keeps test apps out of this machine's OS credential store.
 const BACKEND_TEST_ENV = {
   DEVCHAIN_HOST_ETC_DIR: '/nonexistent/devchain-host',
   PROVIDER_CLI_CHECKS_ENABLED: 'false',
   SKILLS_STARTUP_SYNC_ENABLED: 'false',
+  VAULT_KEYSTORE_ENABLED: 'false',
   DEVCHAIN_HOST_TLS_KEY_FILE: '',
   DEVCHAIN_HOST_TLS_CERT_FILE: '',
 };

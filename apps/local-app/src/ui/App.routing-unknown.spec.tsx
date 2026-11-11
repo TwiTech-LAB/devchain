@@ -116,6 +116,9 @@ import { App } from './App';
 import { isHomeRoute } from './lib/home-routes';
 import { extractPathname, isHomeAlwaysRoute } from './lib/api-transport';
 
+// The agent-request modal has its own spec; these suites mock fetch with other shapes.
+jest.mock('@/ui/pages/vault/VaultRequestModal', () => ({ VaultRequestModal: () => null }));
+
 const REMOTE_ID = '11111111-1111-4111-8111-111111111111';
 const BOUND_PROJECT = 'bound-project';
 

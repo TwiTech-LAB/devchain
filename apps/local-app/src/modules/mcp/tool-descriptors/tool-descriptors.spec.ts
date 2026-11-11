@@ -393,6 +393,7 @@ describe('tool-descriptors', () => {
         'devchain_worktrees_remove',
       ],
       projects: ['devchain_projects_list'],
+      vault: ['devchain_vault_list', 'devchain_vault_request'],
       team: [
         'devchain_teams_list',
         'devchain_teams_members_list',

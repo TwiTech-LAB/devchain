@@ -52,21 +52,16 @@ function parseDevinModelsJson(stdout: string): string[] {
     const doc = JSON.parse(stdout) as {
       families?: Array<{ variants?: Array<{ model_uid?: unknown }> }>;
     };
-    const seen = new Set<string>();
-    const names: string[] = [];
+    // A Set keeps insertion order, so the first occurrence decides the position.
+    const names = new Set<string>();
     for (const family of doc.families ?? []) {
       for (const variant of family.variants ?? []) {
-        if (
-          typeof variant.model_uid === 'string' &&
-          variant.model_uid &&
-          !seen.has(variant.model_uid)
-        ) {
-          seen.add(variant.model_uid);
-          names.push(variant.model_uid);
+        if (typeof variant.model_uid === 'string' && variant.model_uid) {
+          names.add(variant.model_uid);
         }
       }
     }
-    return names;
+    return [...names];
   } catch {
     throw new BadRequestException('Unable to parse devin models list output as JSON');
   }
@@ -204,9 +199,7 @@ export class ProviderModelsController {
       });
     }
 
-    // Devin emits `{ families: [{ variants: [{ model_uid, … }] }] }` — flatten
-    // variants in catalog order and dedupe. Other providers list one selectable
-    // model per line.
+    // Other providers list one selectable model per line.
     const modelNames =
       providerName === 'devin'
         ? parseDevinModelsJson(execResult.stdout)

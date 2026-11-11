@@ -19,6 +19,8 @@ import { McpTestController } from './controllers/mcp-test.controller';
 import { ProjectCommunicationModule } from '../project-communication/project-communication.module';
 import { McpToolBindingRegistry } from './services/mcp-tool-binding.registry';
 import { WorktreesModule } from '../worktrees/worktrees.module';
+import { VaultModule } from '../vault/vault.module';
+import { VaultRequestsModule } from '../vault-requests/vault-requests.module';
 
 @Module({
   imports: [
@@ -35,6 +37,8 @@ import { WorktreesModule } from '../worktrees/worktrees.module';
     forwardRef(() => AgentMessageDeliveryModule),
     ProjectCommunicationModule,
     WorktreesModule,
+    VaultModule,
+    VaultRequestsModule,
   ],
   controllers: [McpHttpController, McpSdkController, McpTestController],
   providers: [McpToolBindingRegistry, McpService, McpServerService, McpGateway],

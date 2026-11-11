@@ -1,4 +1,4 @@
-import { Agent } from 'undici';
+import { Agent, fetch as undiciFetch, type Dispatcher } from 'undici';
 import { z } from 'zod';
 import { AppError } from '../../common/errors/error-types';
 import { SCAN_TIMEOUT_MS } from './file-sync.dto';
@@ -10,8 +10,12 @@ const DEFAULT_TIMEOUT_MS = 5_000;
  * ends, which on a large project can exceed undici's default headersTimeout
  * (~300s) and fail mid-scan with a bare "fetch failed". This dispatcher leaves
  * headroom past the largest per-request timeout so the caller's own abort wins.
+ *
+ * The client calls this package's `fetch`, not the global one: Node's built-in
+ * fetch runs its own, different undici major, so handing it an Agent from this
+ * package would cross versions (same pairing as `remotes/transport/remote-tls.ts`).
  */
-const dispatcher = new Agent({
+const defaultDispatcher = new Agent({
   headersTimeout: SCAN_TIMEOUT_MS + 60_000,
   bodyTimeout: SCAN_TIMEOUT_MS + 60_000,
 });
@@ -51,6 +55,7 @@ export class SyncthingRestClient {
   constructor(
     readonly baseUrl: string,
     private readonly apiKey: string,
+    private readonly dispatcher: Dispatcher = defaultDispatcher,
   ) {}
 
   async ping(timeoutMs = 1_000): Promise<void> {
@@ -99,21 +104,19 @@ export class SyncthingRestClient {
       ? AbortSignal.any([timeoutController.signal, signal])
       : timeoutController.signal;
     const route = path.split('?')[0];
-    let response: Response;
+    let response: Awaited<ReturnType<typeof undiciFetch>>;
     let text: string;
     try {
-      response = await fetch(`${this.baseUrl}${path}`, {
+      response = await undiciFetch(`${this.baseUrl}${path}`, {
         method,
         signal: requestSignal,
-        // Undici extension absent from the DOM RequestInit type: the dispatcher
-        // carries the raised headers/body timeouts this call site needs.
-        dispatcher,
+        dispatcher: this.dispatcher,
         headers: {
           'X-API-Key': this.apiKey,
           ...(body !== undefined && { 'content-type': 'application/json' }),
         },
         ...(body !== undefined && { body: JSON.stringify(body) }),
-      } as RequestInit);
+      });
       text = await response.text();
     } catch (error) {
       if (signal?.aborted) throw signal.reason;

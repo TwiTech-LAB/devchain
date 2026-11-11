@@ -6,6 +6,9 @@
  * Apply preserves the established provider-settings import contract:
  *  - `autoCompactThreshold` imports ONLY when the local provider's threshold is null;
  *  - `env` merges NON-destructively (local wins), preserving redacted `***` placeholders.
+ *    Exports no longer emit provider-level env (a machine-local setting, and the source
+ *    of a leaked masked token in the bundled template); apply keeps the merge so older
+ *    templates still import.
  *
  * Env semantics here are DISTINCT from config-level env (config env is preserved verbatim
  * via `preserveImportedEnv`; provider env is a local-wins merge) — the two rules must never
@@ -37,44 +40,17 @@ export interface ProviderExportRow {
   env?: Record<string, string> | null;
 }
 
-/**
- * Env helpers the export builder needs. Injected (not imported from project-export.ts) to
- * keep the dependency one-way (project-export -> codec) and avoid an import cycle — the
- * same pattern the profiles codec uses for `sanitizeEnv`.
- */
-export interface ProviderEnvFns {
-  filterEnvByScope: (
-    env: Record<string, string>,
-    scopes: Record<string, string[]> | undefined,
-    sourceProjectId: string,
-  ) => Record<string, string> | null;
-  sanitizeEnvMap: (env: Record<string, string> | null | undefined) => Record<string, string> | null;
-}
-
 // --- Export build (moved from project-export.ts `buildProviderSettings`). ------------
-export function buildProviderSettings(
-  providersMap: Map<string, ProviderExportRow>,
-  sourceProjectId: string,
-  scopeMap: Map<string, Record<string, string[]>>,
-  envFns: ProviderEnvFns,
-) {
-  const providerSettings: Array<{
-    name: string;
-    autoCompactThreshold: number | null;
-    env?: Record<string, string> | null;
-  }> = [];
+export function buildProviderSettings(providersMap: Map<string, ProviderExportRow>) {
+  // Provider-level env is machine-local and never exported. Only the threshold rides
+  // a template; a provider with no threshold contributes no row.
+  const providerSettings: Array<{ name: string; autoCompactThreshold: number }> = [];
 
-  for (const [providerId, provider] of providersMap.entries()) {
-    const filteredEnv =
-      provider.env && Object.keys(provider.env).length > 0
-        ? envFns.filterEnvByScope(provider.env, scopeMap.get(providerId), sourceProjectId)
-        : null;
-    const hasEnv = filteredEnv !== null;
-    if (provider.autoCompactThreshold != null || hasEnv) {
+  for (const provider of providersMap.values()) {
+    if (provider.autoCompactThreshold != null) {
       providerSettings.push({
         name: provider.name,
-        autoCompactThreshold: provider.autoCompactThreshold ?? null,
-        ...(hasEnv && { env: envFns.sanitizeEnvMap(filteredEnv) }),
+        autoCompactThreshold: provider.autoCompactThreshold,
       });
     }
   }

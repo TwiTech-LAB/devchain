@@ -21,6 +21,8 @@ import { ClaudeLaunchSettingsMaterializerService } from '../runtime-context-capt
 import { CodexPluginProfileMaterializerService } from '../runtime-context-capture/codex-plugin-profile-materializer.service';
 import { RuntimeContextCaptureModule } from '../runtime-context-capture/runtime-context-capture.module';
 import { RuntimeContextCaptureService } from '../runtime-context-capture/runtime-context-capture.service';
+import { RuntimeDirectoryModule } from '../runtime-directory/runtime-directory.module';
+import { RuntimeDirectoryService } from '../runtime-directory/runtime-directory.service';
 import { DB_CONNECTION } from '../storage/db/db.provider';
 import { DbModule } from '../storage/db/db.module';
 import { SessionTerminalRuntimeModule } from './session-terminal-runtime.module';
@@ -41,6 +43,7 @@ describe('SessionTerminalRuntimeService', () => {
   let runtimeContextCapture: { clear: jest.Mock };
   let claudeLaunchSettings: { cleanupSessionSync: jest.Mock; reconcileStartup: jest.Mock };
   let codexPluginProfiles: { cleanupSession: jest.Mock; reconcileStartup: jest.Mock };
+  let runtimeDirectory: { cleanupSession: jest.Mock; reconcileStartup: jest.Mock };
 
   beforeEach(async () => {
     jest.clearAllMocks();
@@ -65,6 +68,10 @@ describe('SessionTerminalRuntimeService', () => {
       cleanupSession: jest.fn().mockResolvedValue(undefined),
       reconcileStartup: jest.fn().mockResolvedValue(undefined),
     };
+    runtimeDirectory = {
+      cleanupSession: jest.fn().mockResolvedValue(undefined),
+      reconcileStartup: jest.fn().mockResolvedValue(undefined),
+    };
 
     const db = drizzle(sqlite) as BetterSQLite3Database;
     moduleRef = await Test.createTestingModule({
@@ -76,6 +83,7 @@ describe('SessionTerminalRuntimeService', () => {
         { provide: RuntimeContextCaptureService, useValue: runtimeContextCapture },
         { provide: ClaudeLaunchSettingsMaterializerService, useValue: claudeLaunchSettings },
         { provide: CodexPluginProfileMaterializerService, useValue: codexPluginProfiles },
+        { provide: RuntimeDirectoryService, useValue: runtimeDirectory },
       ],
     }).compile();
     service = moduleRef.get(SessionTerminalRuntimeService);
@@ -93,6 +101,7 @@ describe('SessionTerminalRuntimeService', () => {
       DbModule,
       ProviderAdaptersModule,
       RuntimeContextCaptureModule,
+      RuntimeDirectoryModule,
     ]);
     expect(Reflect.getMetadata(MODULE_METADATA.PROVIDERS, SessionTerminalRuntimeModule)).toEqual([
       SessionTerminalRuntimeService,
@@ -273,17 +282,24 @@ describe('SessionTerminalRuntimeService', () => {
     );
   });
 
-  // Unit coverage is sufficient for the startup contract: each owner receives the same proven-dead set.
-  it('reconciles all artifact owners at startup in list order', async () => {
+  // Unit coverage is sufficient for the startup contract: each owner receives the same proven-dead
+  // set and the live set read from the remaining running rows.
+  it('reconciles all artifact owners at startup in list order with the dead and live sets', async () => {
+    insertSession({ id: 'live', tmuxSessionName: 'tmux-live', providerName: 'claude' });
+    insertSession({ id: 'dead', tmuxSessionName: 'tmux-dead', providerName: 'claude' });
+    insertSession({ id: 'stopped', tmuxSessionName: 'tmux-stopped', status: 'stopped' });
     const nonLiveSessionIds = new Set(['dead']);
+    const liveSessionIds = new Set(['live']);
 
     await service.reconcileProviderStartup(nonLiveSessionIds);
 
-    expect(claudeLaunchSettings.reconcileStartup).toHaveBeenCalledWith(nonLiveSessionIds);
-    expect(codexPluginProfiles.reconcileStartup).toHaveBeenCalledWith(nonLiveSessionIds);
-    expect(claudeLaunchSettings.reconcileStartup.mock.invocationCallOrder[0]).toBeLessThan(
-      codexPluginProfiles.reconcileStartup.mock.invocationCallOrder[0],
+    for (const owner of [claudeLaunchSettings, codexPluginProfiles, runtimeDirectory]) {
+      expect(owner.reconcileStartup).toHaveBeenCalledWith(nonLiveSessionIds, liveSessionIds);
+    }
+    const order = [claudeLaunchSettings, codexPluginProfiles, runtimeDirectory].map(
+      (owner) => owner.reconcileStartup.mock.invocationCallOrder[0],
     );
+    expect(order).toEqual([...order].sort((a, b) => a - b));
   });
 
   describe('retireConfirmedLoss', () => {

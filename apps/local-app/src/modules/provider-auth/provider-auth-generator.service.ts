@@ -4,11 +4,17 @@ import { access, constants, mkdir, readdir, readFile, rm, stat } from 'node:fs/p
 import { homedir } from 'node:os';
 import { basename, delimiter, isAbsolute, join } from 'node:path';
 import { Inject, Injectable, OnModuleDestroy, OnModuleInit, Optional } from '@nestjs/common';
-import { ConflictError, NotFoundError, ValidationError } from '../../common/errors/error-types';
+import {
+  ConflictError,
+  NotFoundError,
+  ValidationError,
+  VaultUnavailableError,
+} from '../../common/errors/error-types';
 import { createLogger } from '../../common/logging/logger';
 import { ProviderAdapterFactory } from '../providers/adapters/provider-adapter.factory';
 import { ProviderCliVersionProbe } from '../providers/services/provider-cli-version-probe.service';
 import { STORAGE_SERVICE, type ProviderStorage } from '../storage/interfaces/storage.interface';
+import { VaultStoreKey } from '../storage/local/vault-store-key';
 import { ProcessExecutor } from '../terminal/services/process-executor/process-executor.port';
 import {
   StandaloneTerminalService,
@@ -66,6 +72,8 @@ interface RunningGeneration {
   bin: ProviderAuthBinResolver;
   deadline: number;
   lastSnapshot: string | null;
+  /** A verified login that waits for the Vault to unlock before it is stored. */
+  verified: ProviderAuthGeneratedEntry[] | null;
   timer: NodeJS.Timeout | null;
   /** Set when the generation starts to finish; the view flips once cleanup is done. */
   finishing: Promise<void> | null;
@@ -177,6 +185,7 @@ export class ProviderAuthGeneratorService implements OnModuleInit, OnModuleDestr
     private readonly executor: ProcessExecutor,
     @Inject(STORAGE_SERVICE) private readonly storage: Pick<ProviderStorage, 'listProviders'>,
     private readonly versionProbe: ProviderCliVersionProbe,
+    private readonly storeKey: VaultStoreKey,
     @Optional()
     @Inject(PROVIDER_AUTH_GENERATOR_OPTIONS)
     options: ProviderAuthGeneratorOptions | null = null,
@@ -228,6 +237,8 @@ export class ProviderAuthGeneratorService implements OnModuleInit, OnModuleDestr
         { reason: 'provider_auth_paste_only' },
       );
     }
+    // A locked Vault cannot store the login: refuse before the user completes it.
+    this.storeKey.assertCanSeal();
     const running = [...this.generations.values()].find(
       (generation) => generation.view.provider === name && !generation.finishing,
     );
@@ -286,6 +297,7 @@ export class ProviderAuthGeneratorService implements OnModuleInit, OnModuleDestr
         bin,
         deadline: now.getTime() + this.timeoutMs,
         lastSnapshot: null,
+        verified: null,
         timer: null,
         finishing: null,
       };
@@ -330,7 +342,17 @@ export class ProviderAuthGeneratorService implements OnModuleInit, OnModuleDestr
   private async tick(running: RunningGeneration): Promise<void> {
     if (running.finishing) return;
     if (Date.now() > running.deadline) {
-      await this.finish(running, 'timed_out', 'No login was captured within the time limit.');
+      await this.finish(
+        running,
+        'timed_out',
+        running.verified
+          ? 'The Vault stayed locked, so the login could not be stored.'
+          : 'No login was captured within the time limit.',
+      );
+      return;
+    }
+    if (running.verified) {
+      await this.store(running, running.verified);
       return;
     }
     const terminalRunning = await this.terminals.isRunning(running.view.sessionId);
@@ -368,12 +390,29 @@ export class ProviderAuthGeneratorService implements OnModuleInit, OnModuleDestr
       );
       return;
     }
-    running.view.entries = await this.vault.createGenerated(
-      running.view.provider,
-      running.label,
-      entries,
-      new Date().toISOString(),
-    );
+    await this.store(running, entries);
+  }
+
+  /** A locked Vault keeps the verified login and its dir, and retries until the deadline. */
+  private async store(
+    running: RunningGeneration,
+    entries: ProviderAuthGeneratedEntry[],
+  ): Promise<void> {
+    try {
+      running.view.entries = await this.vault.createGenerated(
+        running.view.provider,
+        running.label,
+        entries,
+        new Date().toISOString(),
+      );
+    } catch (error) {
+      if (!(error instanceof VaultUnavailableError) || running.finishing) throw error;
+      running.verified = entries;
+      running.view.error = 'The Vault is locked. Unlock the Vault to store this login.';
+      this.schedule(running);
+      return;
+    }
+    running.view.error = null;
     await this.finish(running, 'stored', null);
   }
 

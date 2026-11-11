@@ -234,6 +234,7 @@ export class InMemoryRemoteVmApi implements RemoteVmApi {
     listProviderAuthEntries: [],
     createStaticProviderAuth: [],
     importOpencodeLogins: [],
+    importDevinLogin: [],
     deleteProviderAuthEntry: [],
     renameProviderAuthEntry: [],
     releaseProviderAuthEntry: [],
@@ -526,6 +527,8 @@ export class InMemoryRemoteVmApi implements RemoteVmApi {
     importOpencodeLogins: async (providerIds) => ({
       results: providerIds.map((providerId) => ({ providerId, outcome: 'missing' as const })),
     }),
+    importDevinLogin: (label) =>
+      this.defaults.createStaticProviderAuth({ provider: 'devin', label }),
     deleteProviderAuthEntry: async (entryId) => {
       this.loginEntries = this.loginEntries.filter((entry) => entry.id !== entryId);
     },
@@ -674,6 +677,7 @@ export class InMemoryRemoteVmApi implements RemoteVmApi {
   readonly listProviderAuthEntries = this.method('listProviderAuthEntries');
   readonly createStaticProviderAuth = this.method('createStaticProviderAuth');
   readonly importOpencodeLogins = this.method('importOpencodeLogins');
+  readonly importDevinLogin = this.method('importDevinLogin');
   readonly deleteProviderAuthEntry = this.method('deleteProviderAuthEntry');
   readonly renameProviderAuthEntry = this.method('renameProviderAuthEntry');
   readonly releaseProviderAuthEntry = this.method('releaseProviderAuthEntry');

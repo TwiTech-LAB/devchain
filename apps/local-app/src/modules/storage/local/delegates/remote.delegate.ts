@@ -12,6 +12,7 @@ import type {
   CreateVmProviderConnection,
   CreateRemoteOperation,
   Remote,
+  VaultStoreMigrationResult,
   VmProviderConnection,
   VmSpec,
   RemoteOperation,
@@ -24,6 +25,12 @@ import type {
 import { isSqliteUniqueConstraint, normalizeListOptions } from '../helpers/storage-helpers';
 import { BaseStorageDelegate, type StorageDelegateContext } from './base-storage.delegate';
 import type { IntegrationCredentialCipher } from '../integration-credential-cipher';
+import {
+  migrateStoredSecrets,
+  sqliteSecretColumn,
+  type StoredSecretBinding,
+  type StoredSecretCodec,
+} from '../stored-secret-codec';
 
 const logger = createLogger('RemoteStorageDelegate');
 
@@ -64,6 +71,15 @@ interface VmProviderConnectionRow {
 
 const REMOTE_API_KEY_CONTEXT = 'devchain-remote-api-key-v1';
 const VM_PROVIDER_SECRET_CONTEXT = 'devchain-vm-provider-token-v1';
+
+function tokenSecretBinding(id: string): StoredSecretBinding {
+  return {
+    domain: 'vm-provider-connection',
+    recordId: id,
+    field: 'token-secret',
+    legacyContext: VM_PROVIDER_SECRET_CONTEXT,
+  };
+}
 const SELECT_VM_PROVIDER_COLUMNS =
   'id, kind, name, api_url, node, pool, storage, image_storage, bridge, vmid_min, vmid_max, name_prefix, tag, ssl_fingerprint, ca_pem, token_id, token_secret_ciphertext, created_at, updated_at FROM vm_provider_connections';
 
@@ -99,9 +115,14 @@ const SELECT_REMOTE_COLUMNS =
   'id, name, base_url, kind, vm_provider_connection_id, vm_identity, vm_spec_json, tls_certificate, created_at, updated_at FROM remotes';
 
 export class RemoteStorageDelegate extends BaseStorageDelegate implements RemoteStorage {
+  /**
+   * The VM API key stays on `cipher` (the integration credential key): the
+   * `/r` proxy and the health poll need it while the Vault is locked.
+   */
   constructor(
     context: StorageDelegateContext,
     private readonly cipher: IntegrationCredentialCipher,
+    private readonly codec: StoredSecretCodec,
   ) {
     super(context);
   }
@@ -245,9 +266,9 @@ export class RemoteStorageDelegate extends BaseStorageDelegate implements Remote
   async createVmProviderConnection(
     data: CreateVmProviderConnection,
   ): Promise<VmProviderConnection> {
-    const ciphertext = this.cipher.encryptValue(data.tokenSecret, VM_PROVIDER_SECRET_CONTEXT);
     return this.txRunner.runImmediateQueuedOrJoin(() => {
       const id = randomUUID();
+      const ciphertext = this.codec.seal(tokenSecretBinding(id), data.tokenSecret);
       const now = new Date().toISOString();
       this.rawClient
         .prepare(
@@ -293,10 +314,20 @@ export class RemoteStorageDelegate extends BaseStorageDelegate implements Remote
   }
 
   async readVmProviderTokenSecret(id: string): Promise<string> {
-    return this.cipher.decryptValue(
+    return this.codec.open(
+      tokenSecretBinding(id),
       this.getVmProviderConnectionSync(id).tokenSecretCiphertext,
-      VM_PROVIDER_SECRET_CONTEXT,
     );
+  }
+
+  async migrateVmProviderTokensToVault(): Promise<VaultStoreMigrationResult> {
+    return migrateStoredSecrets({
+      store: 'vm_provider_connections',
+      codec: this.codec,
+      txRunner: this.txRunner,
+      binding: tokenSecretBinding,
+      ...sqliteSecretColumn(this.rawClient, 'vm_provider_connections', 'token_secret_ciphertext'),
+    });
   }
 
   async deleteVmProviderConnection(id: string): Promise<void> {

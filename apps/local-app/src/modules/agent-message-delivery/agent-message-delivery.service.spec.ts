@@ -193,7 +193,7 @@ describe('AgentMessageDeliveryService', () => {
       expect(outcome.results).toHaveLength(0);
     });
 
-    it('returns failed when session launch fails', async () => {
+    it('returns failed with the launch error message when session launch fails', async () => {
       const { service, launcher } = buildService();
       launcher.ensureActiveSession.mockRejectedValue(new Error('Binary not found'));
 

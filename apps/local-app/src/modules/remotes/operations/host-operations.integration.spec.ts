@@ -299,6 +299,7 @@ describe('claim and update_host operations', () => {
       apiKeys,
       sharedVmGuardStub(),
       { poll: async () => undefined, prune: () => undefined } as never,
+      { pushIfChanged: async () => undefined, useHealth: () => undefined } as never,
     );
     host = new RemoteHostClient(storage, apiKeys);
     processExecutor = new FakeProcessExecutor();

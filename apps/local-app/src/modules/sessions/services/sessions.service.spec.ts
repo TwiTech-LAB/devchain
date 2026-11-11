@@ -169,6 +169,7 @@ describe('SessionsService', () => {
         runtimeContextCapture as unknown as RuntimeContextCaptureService,
         claudeLaunchSettings as never,
         codexPluginProfiles as never,
+        { cleanupSession: jest.fn().mockResolvedValue(undefined) } as never,
         new SessionRowStore(dbMock),
       ),
       {

@@ -3,7 +3,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { DevinAdapter } from './devin.adapter';
 import type { ProviderAdapter } from './provider-adapter.interface';
-import { devinTranscriptPath } from '../../../common/devin-transcript-paths';
+import { devinSessionStorePath, devinTranscriptPath } from '../../../common/devin-transcript-paths';
 
 jest.mock('node:os', () => {
   const actual = jest.requireActual<typeof import('node:os')>('node:os');
@@ -42,6 +42,7 @@ describe('DevinAdapter', () => {
       const { argv } = adapter.buildLaunchArgs({
         mode: 'new',
         sessionId: 'sess-1',
+        projectId: 'proj-1',
         profileOptionArgs: ['--model', 'claude-fable-5-1-xhigh', '--permission-mode', 'dangerous'],
         initialPrompt: 'do the thing',
       });
@@ -63,6 +64,7 @@ describe('DevinAdapter', () => {
       const { argv } = adapter.buildLaunchArgs({
         mode: 'new',
         sessionId: 'sess-1',
+        projectId: 'proj-1',
         profileOptionArgs: [],
       });
       expect(argv).toEqual([
@@ -87,6 +89,7 @@ describe('DevinAdapter', () => {
         mode: 'restore',
         providerSessionId: 'functional-share',
         sessionId: 'sess-9',
+        projectId: 'proj-1',
         profileOptionArgs: ['--model', 'x'],
       });
       expect(argv).toEqual([
@@ -108,6 +111,33 @@ describe('DevinAdapter', () => {
     });
   });
 
+  describe('buildLaunchArgs — per-project session store env', () => {
+    it.each([
+      { mode: 'new' as const },
+      { mode: 'restore' as const, providerSessionId: 'functional-share' },
+    ])('$mode keeps the input env and selects the project store', (input) => {
+      const { env } = adapter.buildLaunchArgs({
+        ...input,
+        sessionId: 'sess-1',
+        projectId: 'proj-1',
+        profileOptionArgs: [],
+        env: { PROFILE_KEY: 'profile', PATH: '/shim:/usr/bin' },
+      });
+      expect(env).toEqual({
+        PROFILE_KEY: 'profile',
+        PATH: '/shim:/usr/bin',
+        DEVIN_SESSION_STORE: 'files',
+        DEVIN_SESSIONS_DIR: devinSessionStorePath(HOME, 'proj-1'),
+      });
+    });
+
+    it('throws a clear error when projectId is missing', () => {
+      expect(() =>
+        adapter.buildLaunchArgs({ mode: 'new', sessionId: 'sess-1', profileOptionArgs: [] }),
+      ).toThrow(/projectId/);
+    });
+  });
+
   it('buildLaunchArgs creates nothing on disk in either mode', () => {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), 'devin-home-'));
     homedirMock.mockReturnValue(home);
@@ -115,12 +145,14 @@ describe('DevinAdapter', () => {
       adapter.buildLaunchArgs({
         mode: 'new',
         sessionId: 's1',
+        projectId: 'p1',
         profileOptionArgs: [],
       });
       adapter.buildLaunchArgs({
         mode: 'restore',
         providerSessionId: 'functional-share',
         sessionId: 's2',
+        projectId: 'p1',
         profileOptionArgs: [],
       });
       expect(fs.readdirSync(home)).toEqual([]);

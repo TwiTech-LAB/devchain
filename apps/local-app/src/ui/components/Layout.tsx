@@ -4,6 +4,7 @@ import { useQuery } from '@tanstack/react-query';
 import { useSelectedProject } from '../hooks/useProjectSelection';
 import { useProjectActivityReporter } from '../hooks/useProjectActivityReporter';
 import { preloadReviewsPage } from '../pages/ReviewsPage.lazy';
+import { VaultRequestModal } from '../pages/vault/VaultRequestModal';
 import { Button } from './ui/button';
 import { WorkspaceSwitcher } from './WorkspaceSwitcher';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select';
@@ -73,6 +74,7 @@ import {
   UsersRound,
   Cloud,
   Bell,
+  KeyRound,
 } from 'lucide-react';
 import {
   ThemeSelect,
@@ -171,6 +173,7 @@ const navSections: NavSection[] = [
     collapsible: true,
     items: [
       { label: 'Providers', path: '/providers', icon: Server },
+      { label: 'Vault', path: '/vault', icon: KeyRound },
       { label: 'Events', path: '/events', icon: Activity },
       { label: 'Messages', path: '/messages', icon: Inbox },
       { label: 'Automation', path: '/automation', icon: Zap },
@@ -956,6 +959,7 @@ function LayoutShell({
 
   return (
     <ToastHost>
+      <VaultRequestModal />
       <div
         className={cn(
           'flex h-screen overflow-hidden bg-canvas',

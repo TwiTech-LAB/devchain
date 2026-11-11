@@ -10,6 +10,8 @@ import { ProjectStorageDelegate } from './delegates/project.delegate';
 import { ProjectWorkspaceStorageDelegate } from './delegates/project-workspace.delegate';
 import { RemoteStorageDelegate } from './delegates/remote.delegate';
 import { ProviderAuthStorageDelegate } from './delegates/provider-auth.delegate';
+import { VaultKeySlotStorageDelegate } from './delegates/vault-key-slot.delegate';
+import { VaultEntryStorageDelegate } from './delegates/vault-entry.delegate';
 import { ProjectReplicaReadStorageDelegate } from './delegates/project-replica-read.delegate';
 import { ProjectReplicaStorageDelegate } from './delegates/project-replica.delegate';
 import { ProjectHostStorageDelegate } from './delegates/project-host.delegate';
@@ -37,6 +39,8 @@ import { IntegrationStorageDelegate } from './delegates/integration.delegate';
 import { ExternalManagedSubtaskStorageDelegate } from './delegates/external-managed-subtask.delegate';
 import { ExternalEstimateLogStorageDelegate } from './delegates/external-estimate-log.delegate';
 import { IntegrationCredentialCipher } from './integration-credential-cipher';
+import { StoredSecretCodec } from './stored-secret-codec';
+import { VaultStoreKey } from './vault-store-key';
 import { CommittedEventStore } from '../../events/services/committed-event.store';
 import { DurableEventRegistryService } from '../../events/services/durable-event-registry.service';
 import { STORAGE_ROUTES } from './storage-routes';
@@ -58,17 +62,24 @@ export class LocalStorageService {
     @Optional() integrationCredentialCipher?: IntegrationCredentialCipher,
     @Optional() committedEventStore?: CommittedEventStore,
     @Optional() gate?: ProjectWriteGate,
+    @Optional() vaultStoreKey?: VaultStoreKey,
   ) {
     const context = createStorageDelegateContext(db);
     const eventStore =
       committedEventStore ?? new CommittedEventStore(db, new DurableEventRegistryService());
     const credentialCipher = integrationCredentialCipher ?? new IntegrationCredentialCipher();
+    const storedSecrets = new StoredSecretCodec(
+      credentialCipher,
+      vaultStoreKey ?? new VaultStoreKey(),
+    );
     const createTag = (data: CreateTag): Tag => delegates.tag.createTagSync(data);
     const delegates: LocalStorageDelegates = {
       project: new ProjectStorageDelegate(context),
       projectWorkspace: new ProjectWorkspaceStorageDelegate(context),
-      remote: new RemoteStorageDelegate(context, credentialCipher),
-      providerAuth: new ProviderAuthStorageDelegate(context, credentialCipher),
+      remote: new RemoteStorageDelegate(context, credentialCipher, storedSecrets),
+      providerAuth: new ProviderAuthStorageDelegate(context, storedSecrets),
+      vaultKeySlot: new VaultKeySlotStorageDelegate(context),
+      vaultEntry: new VaultEntryStorageDelegate(context),
       projectReplicaRead: new ProjectReplicaReadStorageDelegate(context),
       projectReplica: new ProjectReplicaStorageDelegate(context, {
         appendEvent: (event) => eventStore.appendInCurrentTransaction(event),
@@ -119,7 +130,7 @@ export class LocalStorageService {
       session: new SessionStorageDelegate(context),
       externalManagedSubtask: new ExternalManagedSubtaskStorageDelegate(context),
       externalEstimateLog: new ExternalEstimateLogStorageDelegate(context),
-      integration: new IntegrationStorageDelegate(context, credentialCipher, {
+      integration: new IntegrationStorageDelegate(context, storedSecrets, {
         createEpicWithinTransaction: (data) => delegates.epic.createEpicWithinTransaction(data),
         getEpic: (id) => delegates.epic.getEpic(id),
         appendEvent: (event) => eventStore.appendInCurrentTransaction(event),

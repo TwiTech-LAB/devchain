@@ -3,12 +3,18 @@ import { STORAGE_SERVICE } from '../../storage/interfaces/storage.interface';
 import { createLogger } from '../../../common/logging/logger';
 import { MobileChatRpcService } from './mobile-chat-rpc.service';
 import { MobileBoardRpcService } from './mobile-board-rpc.service';
+import { MobileVaultRpcService } from './mobile-vault-rpc.service';
 import { ViewportStreamerService } from './viewport-streamer.service';
 import { E2eeTrustService } from '../../e2ee/services/e2ee-trust.service';
 import { ActiveSessionLookup } from '../../sessions/services/active-session-lookup.service';
 import { TerminalKeyInputFacade } from '../../terminal/services/terminal-key-input/terminal-key-input.facade';
 import { DEFAULT_PROJECT_WORKSPACE_ID } from '../../storage/db/schema';
-import { ValidationError, NotFoundError, ForbiddenError } from '../../../common/errors/error-types';
+import {
+  AppError,
+  ValidationError,
+  NotFoundError,
+  ForbiddenError,
+} from '../../../common/errors/error-types';
 import { type RpcCryptoContext } from './tunnel-rpc-crypto.service';
 import { toJsonRpcError } from './jsonrpc-error.util';
 import { toEpicDto, toStatusDto, toStatusMap } from './epic-dto.util';
@@ -101,6 +107,7 @@ export class TunnelHandlerService {
     @Optional()
     @Inject(E2EE_REQUIRE_SIGNED_ENROLLMENT_POLICY)
     private readonly requireSignedEnrollment: boolean = false,
+    @Optional() private readonly mobileVault?: MobileVaultRpcService,
   ) {
     this.handlers = {
       'board.listWorkspaces': (_p, _cryptoCtx, authorization) => this.listWorkspaces(authorization),
@@ -195,7 +202,21 @@ export class TunnelHandlerService {
       // caller-supplied sender identity is ignored.
       'e2ee.bindNotificationRoutingIdentity': (p, cryptoCtx) =>
         Promise.resolve(this.bindNotificationRoutingIdentity(p, cryptoCtx)),
+      // Agent Vault requests. Fulfill and deny are sealed-only in the contract, so a value
+      // never reaches this map from the plaintext lane.
+      'vault.listRequests': (p, cryptoCtx, authorization) =>
+        this.requireVault().listRequests(p, cryptoCtx, authorization),
+      'vault.fulfillRequest': (p) => this.requireVault().fulfillRequest(p),
+      'vault.denyRequest': (p) => this.requireVault().denyRequest(p),
+      'vault.approveUse': (p) => this.requireVault().approveUse(p),
     } satisfies MobileRpcHandlerMap;
+  }
+
+  private requireVault(): MobileVaultRpcService {
+    if (!this.mobileVault) {
+      throw new AppError('Vault requests are unavailable here.', 'SERVICE_UNAVAILABLE', 503);
+    }
+    return this.mobileVault;
   }
 
   async handle(req: JsonRpcRequest, cryptoCtx?: RpcCryptoContext): Promise<JsonRpcResponse> {

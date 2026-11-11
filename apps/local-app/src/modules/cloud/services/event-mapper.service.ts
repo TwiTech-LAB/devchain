@@ -6,6 +6,7 @@ import type { EpicCommentCreatedEventPayload } from '../../events/catalog/epic.c
 import type { SessionCrashedEventPayload } from '../../events/catalog/session.crashed';
 import type { SessionStoppedEventPayload } from '../../events/catalog/session.stopped';
 import type { ClaudeHooksAskUserQuestionPendingEventPayload } from '../../events/catalog/claude.hooks.ask_user_question.pending';
+import type { VaultRequestPendingEventPayload } from '../../events/catalog/vault.request.pending';
 
 export interface IngestPayload {
   source: 'workflow';
@@ -38,7 +39,8 @@ type AllowlistedEvent =
   | {
       name: 'claude.hooks.ask_user_question.pending';
       payload: ClaudeHooksAskUserQuestionPendingEventPayload;
-    };
+    }
+  | { name: 'vault.request.pending'; payload: VaultRequestPendingEventPayload };
 
 /** Caller-supplied context that isn't on the event payload itself. */
 export interface MapToIngestOptions {
@@ -63,6 +65,14 @@ export class EventMapperService {
       payload: { accountLevel: true },
       projectId: null,
       orgId: null,
+    };
+  }
+
+  /** Account-level Vault request notice for multi-workspace mode: no project, no ids. */
+  mapToGenericVaultRequestNotice(sourceEventId: string, forwardingUserId: string): IngestPayload {
+    return {
+      ...this.mapToGenericAskUserQuestionNotice(sourceEventId, forwardingUserId),
+      sourceEventType: 'vault.request.pending',
     };
   }
 
@@ -110,6 +120,17 @@ export class EventMapperService {
         ...(options?.instanceId ? { instanceId: options.instanceId } : {}),
       };
     }
+    if (event.name === 'vault.request.pending') {
+      // Identifiers only: the entry name and the agent's reason stay off the push pipeline.
+      const p = event.payload;
+      return {
+        requestId: p.requestId,
+        projectId: p.projectId,
+        sessionId: p.sessionId,
+        agentId: p.agentId,
+        ...(options?.instanceId ? { instanceId: options.instanceId } : {}),
+      };
+    }
     return event.payload as unknown as Record<string, unknown>;
   }
 
@@ -121,6 +142,7 @@ export class EventMapperService {
       case 'epic.comment.created':
         return event.payload.projectId;
       case 'claude.hooks.ask_user_question.pending':
+      case 'vault.request.pending':
         return event.payload.projectId;
       case 'session.crashed':
       case 'session.stopped':

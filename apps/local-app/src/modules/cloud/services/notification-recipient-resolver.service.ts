@@ -30,9 +30,12 @@ export class NotificationRecipientResolverService {
   /**
    * Resolve the authorized recipient routing kids for a project. Empty array means
    * "no authorized recipient" (including an unknown/deleted project) — the caller must
-   * not enqueue the event then.
+   * not enqueue the event then. `deviceKids` narrows the candidates to those paired devices.
    */
-  async resolveProjectRecipientRoutingKids(projectId: string): Promise<string[]> {
+  async resolveProjectRecipientRoutingKids(
+    projectId: string,
+    deviceKids?: ReadonlySet<string>,
+  ): Promise<string[]> {
     let workspaceId: string;
     try {
       workspaceId = (await this.storage.getProject(projectId)).workspaceId;
@@ -43,6 +46,7 @@ export class NotificationRecipientResolverService {
     const routingKids = new Set<string>();
     for (const device of this.deviceStore.list()) {
       if (!device.notificationRoutingKid) continue;
+      if (deviceKids && !deviceKids.has(device.kid)) continue;
       if (canAccessWorkspace(this.deviceAccess.getAccess(device.kid), workspaceId)) {
         routingKids.add(device.notificationRoutingKid);
       }

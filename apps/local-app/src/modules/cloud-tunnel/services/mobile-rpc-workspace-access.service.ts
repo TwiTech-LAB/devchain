@@ -12,6 +12,10 @@ import {
   type ProjectStorage,
   type StatusStorage,
 } from '../../storage/interfaces/storage.interface';
+import {
+  VaultRequestStore,
+  vaultRequestNotPending,
+} from '../../vault-requests/vault-request.store';
 import { WorkspaceModeCoordinatorService } from '../../workspaces/services/workspace-mode-coordinator.service';
 import type { MobileRpcMethod } from './mobile-rpc-contract.generated';
 import type { RpcCryptoContext } from './tunnel-rpc-crypto.service';
@@ -29,7 +33,8 @@ export type MobileRpcWorkspaceScope =
   | 'parentId'
   | 'statusId-or-projectId'
   | 'epicId'
-  | 'subscriptionId';
+  | 'subscriptionId'
+  | 'vaultRequestId';
 
 export const MOBILE_RPC_WORKSPACE_SCOPES = {
   'board.listWorkspaces': 'authorized-workspaces',
@@ -72,6 +77,10 @@ export const MOBILE_RPC_WORKSPACE_SCOPES = {
   'terminal.viewport.subscribe': 'projectId',
   'terminal.viewport.unsubscribe': 'subscriptionId',
   'terminal.sendKey': 'projectId',
+  'vault.listRequests': 'authorized-workspaces',
+  'vault.fulfillRequest': 'vaultRequestId',
+  'vault.denyRequest': 'vaultRequestId',
+  'vault.approveUse': 'vaultRequestId',
 } as const satisfies Record<WorkspaceBearingMobileRpcMethod, MobileRpcWorkspaceScope>;
 
 export interface MobileRpcWorkspaceAuthorization {
@@ -92,6 +101,7 @@ export class MobileRpcWorkspaceAccessService {
     private readonly deviceAccess: PairedDeviceWorkspaceAccessService,
     private readonly keypair: E2eeKeypairService,
     private readonly viewportStreamer: ViewportStreamerService,
+    private readonly vaultRequests: VaultRequestStore,
   ) {}
 
   async authorize(
@@ -122,6 +132,10 @@ export class MobileRpcWorkspaceAccessService {
 
     const allowedWorkspaceIds = await this.resolveAuthenticatedWorkspaceIds(cryptoCtx);
     if (scope === 'authorized-workspaces') return { allowedWorkspaceIds };
+    if (scope === 'vaultRequestId') {
+      await this.assertVaultRequestAnswerable(params['requestId'] as string, allowedWorkspaceIds);
+      return { allowedWorkspaceIds };
+    }
     if (scope === 'authorized-projects') {
       this.assertWorkspaceAllowed(projectListWorkspaceId!, allowedWorkspaceIds);
       return { allowedWorkspaceIds, projectListWorkspaceId };
@@ -167,8 +181,40 @@ export class MobileRpcWorkspaceAccessService {
     }
   }
 
+  /**
+   * An answer to a Vault request that ended, never existed, or waits in a workspace the
+   * device may not use gets the store's own 409 `VAULT_REQUEST_NOT_PENDING`: the phone
+   * shows "already answered" and never the workspace-revocation pair, and a foreign id
+   * cannot be told from an unknown one. Only a pending request of an allowed workspace
+   * reaches the handler. Matrix: docs/vault.md#from-the-phone.
+   */
+  private async assertVaultRequestAnswerable(
+    requestId: string,
+    allowedWorkspaceIds: ReadonlySet<string>,
+  ): Promise<void> {
+    const request = this.vaultRequests.get(requestId);
+    const workspaceId = request
+      ? await this.storage.getProject(request.projectId).then(
+          (project) => project.workspaceId,
+          (error: unknown) => {
+            if (error instanceof NotFoundError) return null;
+            throw error;
+          },
+        )
+      : null;
+    if (
+      !workspaceId ||
+      !canAccessWorkspace({ workspaceIds: [...allowedWorkspaceIds] }, workspaceId)
+    ) {
+      throw vaultRequestNotPending();
+    }
+  }
+
   private async resolveProjectId(
-    scope: Exclude<MobileRpcWorkspaceScope, 'authorized-workspaces' | 'authorized-projects'>,
+    scope: Exclude<
+      MobileRpcWorkspaceScope,
+      'authorized-workspaces' | 'authorized-projects' | 'vaultRequestId'
+    >,
     params: Record<string, unknown>,
   ): Promise<string> {
     try {

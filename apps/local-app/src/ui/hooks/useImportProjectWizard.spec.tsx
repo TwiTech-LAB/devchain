@@ -150,6 +150,27 @@ describe('useImportProjectWizard', () => {
     await waitFor(() => expect(result.current.isOpen).toBe(false));
   });
 
+  it('shows the template Vault access line on Review', async () => {
+    const api = mockApi({
+      previewResponse: preview({ vaultAccess: { mode: 'families', familySlugs: ['coder'] } }),
+    });
+    const { result } = renderHook(
+      () => useImportProjectWizard({ onImported: jest.fn(), toast: jest.fn(), api }),
+      { wrapper },
+    );
+
+    act(() => result.current.openImportWizard(TARGET, { slug: 'demo' }));
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+    act(() => result.current.controller.goNext());
+    act(() => result.current.controller.goNext());
+    await waitFor(() => expect(result.current.controller.canProceed).toBe(true));
+
+    render(<>{result.current.controller.currentStep?.render()}</>);
+    expect(screen.getByTestId('wizard-vault-access-notice')).toHaveTextContent(
+      'This template turns on the Vault for roles: coder',
+    );
+  });
+
   it('blocks the final Import until every unmatched status is mapped', async () => {
     const api = mockApi({
       dryRunResponse: {

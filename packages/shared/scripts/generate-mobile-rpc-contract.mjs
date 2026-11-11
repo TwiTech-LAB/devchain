@@ -32,9 +32,9 @@ async function loadCanonicalContract(repositoryRoot) {
   if (!Array.isArray(methods) || methods.some((method) => typeof method !== 'string')) {
     throw new Error('Canonical MOBILE_RPC_METHODS must be a string tuple');
   }
-  if (methods.length !== 43 || new Set(methods).size !== methods.length) {
+  if (methods.length !== 47 || new Set(methods).size !== methods.length) {
     throw new Error(
-      `Canonical MOBILE_RPC_METHODS must contain 43 unique methods; found ${methods.length}`,
+      `Canonical MOBILE_RPC_METHODS must contain 47 unique methods; found ${methods.length}`,
     );
   }
   if (!catalog || typeof catalog !== 'object') {
@@ -70,8 +70,8 @@ export function isMobileRpcMethod(value: unknown): value is MobileRpcMethod {
 `;
 }
 
-const METHOD_LITERAL_PATTERN = /["']((?:board|chat|terminal|e2ee)\.[A-Za-z0-9.]+)["']/g;
-const METHOD_LITERAL_VALUE_PATTERN = /^(?:board|chat|terminal|e2ee)\.[A-Za-z0-9.]+$/;
+const METHOD_LITERAL_PATTERN = /["']((?:board|chat|terminal|e2ee|vault)\.[A-Za-z0-9.]+)["']/g;
+const METHOD_LITERAL_VALUE_PATTERN = /^(?:board|chat|terminal|e2ee|vault)\.[A-Za-z0-9.]+$/;
 
 function extractMethodLiterals(source) {
   return [...source.matchAll(METHOD_LITERAL_PATTERN)].map((match) => match[1]);

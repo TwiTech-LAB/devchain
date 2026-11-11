@@ -9,6 +9,7 @@ import { projectBindings } from './project.bindings';
 import { teamBindings } from './team.bindings';
 import { reviewBindings } from './review.bindings';
 import { worktreeBindings } from './worktree.bindings';
+import { vaultBindings } from './vault.bindings';
 
 export const allBindingGroups = Object.freeze([
   sessionBindings,
@@ -22,6 +23,7 @@ export const allBindingGroups = Object.freeze([
   teamBindings,
   reviewBindings,
   worktreeBindings,
+  vaultBindings,
 ]);
 
 export const allBindingDefinitions = Object.freeze(allBindingGroups.flat());

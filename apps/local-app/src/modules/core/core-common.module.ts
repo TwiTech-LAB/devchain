@@ -6,9 +6,10 @@ import { HostStatsController } from './controllers/host-stats.controller';
 import { HealthService } from './services/health.service';
 import { FileSyncModule } from '../file-sync/file-sync.module';
 import { StorageModule } from '../storage/storage.module';
+import { VaultVmCacheModule } from '../vault/vault-vm-cache.module';
 
 @Module({
-  imports: [FileSyncModule, StorageModule, ProviderCliStateModule],
+  imports: [FileSyncModule, StorageModule, ProviderCliStateModule, VaultVmCacheModule],
   controllers: [HealthController, RuntimeController, HostStatsController],
   providers: [HealthService],
   exports: [HealthService],

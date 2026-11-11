@@ -433,6 +433,39 @@ describe('ExportSchema', () => {
     });
   });
 
+  describe('vaultAccess', () => {
+    const baseTemplate = { version: 1, prompts: [], profiles: [], agents: [], statuses: [] };
+    const slugs = (count: number) => Array.from({ length: count }, (_, index) => `role-${index}`);
+
+    it('leaves a legacy payload without the field unchanged', () => {
+      const result = ExportSchema.safeParse(baseTemplate);
+      expect(result.success && result.data).not.toHaveProperty('vaultAccess');
+    });
+
+    it.each([
+      { label: 'all agents', vaultAccess: { mode: 'all' }, ok: true },
+      {
+        label: '100 trimmed roles',
+        vaultAccess: { mode: 'families', familySlugs: slugs(100) },
+        ok: true,
+      },
+      { label: 'no roles', vaultAccess: { mode: 'families', familySlugs: [] }, ok: false },
+      { label: '101 roles', vaultAccess: { mode: 'families', familySlugs: slugs(101) }, ok: false },
+      { label: 'a blank role', vaultAccess: { mode: 'families', familySlugs: ['  '] }, ok: false },
+      { label: 'an off value', vaultAccess: { mode: 'none' }, ok: false },
+    ])('accepts $label: $ok', ({ vaultAccess, ok }) => {
+      expect(ExportSchema.safeParse({ ...baseTemplate, vaultAccess }).success).toBe(ok);
+    });
+
+    it('trims role slugs', () => {
+      const result = ExportSchema.parse({
+        ...baseTemplate,
+        vaultAccess: { mode: 'families', familySlugs: [' coder '] },
+      });
+      expect(result.vaultAccess).toEqual({ mode: 'families', familySlugs: ['coder'] });
+    });
+  });
+
   describe('providerModels', () => {
     const baseTemplate = {
       version: 1,

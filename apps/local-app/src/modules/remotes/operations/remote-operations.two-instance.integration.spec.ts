@@ -260,6 +260,7 @@ describe('remote operations between two instances', () => {
         'file_sync_flip',
         'docker_create_host',
         'bind_remote',
+        'vault_push',
         'thaw_host',
         'thaw_lanes',
         'start_live_sync',

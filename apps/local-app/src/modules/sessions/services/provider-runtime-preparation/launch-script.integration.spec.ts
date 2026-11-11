@@ -50,4 +50,23 @@ describe('launch script under a real /bin/sh', () => {
     expect(JSON.parse(result.stdout)).toEqual({ argv, env });
     expect(existsSync(script)).toBe(false);
   });
+
+  it('prepends pathPrependDirs to the inherited $PATH instead of a literal', async () => {
+    const shimBin = join(root, "shim with 'quote");
+    const cliBin = join(root, 'cli-bin');
+    const inheritedPath = `/project/.venv/bin:/usr/bin:${process.env.PATH ?? ''}`;
+    const probe = 'process.stdout.write(process.env.PATH ?? "")';
+    const script = launchScriptPath(root);
+
+    await writeLaunchScript(script, [process.execPath, '-e', probe], [shimBin, cliBin]);
+    const result = spawnSync(LAUNCH_SCRIPT_SHELL, [script], {
+      encoding: 'utf8',
+      env: { ...process.env, PATH: inheritedPath },
+    });
+
+    expect(result.stderr).toBe('');
+    expect(result.status).toBe(0);
+    // The pane shell's own PATH survives; the dirs go in front, shim first.
+    expect(result.stdout).toBe(`${shimBin}:${cliBin}:${inheritedPath}`);
+  });
 });

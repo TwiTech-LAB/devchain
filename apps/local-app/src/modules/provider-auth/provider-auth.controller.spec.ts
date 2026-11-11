@@ -26,6 +26,7 @@ describe('ProviderAuthController', () => {
     list: jest.Mock;
     createStatic: jest.Mock;
     importOpencode: jest.Mock;
+    importDevin: jest.Mock;
     listOpencodeLogins: jest.Mock;
     delete: jest.Mock;
     checkout: jest.Mock;
@@ -49,6 +50,7 @@ describe('ProviderAuthController', () => {
       list: jest.fn().mockResolvedValue([ENTRY]),
       createStatic: jest.fn().mockResolvedValue(ENTRY),
       importOpencode: jest.fn().mockResolvedValue([]),
+      importDevin: jest.fn().mockResolvedValue({ ...ENTRY, provider: 'devin' }),
       listOpencodeLogins: jest.fn().mockResolvedValue([]),
       delete: jest.fn().mockResolvedValue(undefined),
       checkout: jest.fn().mockResolvedValue(ENTRY),
@@ -90,6 +92,10 @@ describe('ProviderAuthController', () => {
       controller.createStatic({ provider: 'claude', label: 'L', envKey: 'HOME', value: 'x' }),
     ).rejects.toBeInstanceOf(ZodError);
     await expect(controller.importOpencode({ providerIds: [] })).rejects.toBeInstanceOf(ZodError);
+    await expect(controller.importDevin({ label: ' ' })).rejects.toBeInstanceOf(ZodError);
+    await expect(controller.importDevin({ label: 'L', token: 'x' })).rejects.toBeInstanceOf(
+      ZodError,
+    );
     await expect(controller.delete('not-a-uuid')).rejects.toBeInstanceOf(ZodError);
     await expect(
       controller.checkout('11111111-1111-4111-8111-111111111111', { remoteId: 'nope' }),
@@ -99,5 +105,13 @@ describe('ProviderAuthController', () => {
     ).rejects.toBeInstanceOf(ZodError);
     expect(vault.createStatic).not.toHaveBeenCalled();
     expect(vault.delete).not.toHaveBeenCalled();
+    expect(vault.importDevin).not.toHaveBeenCalled();
+  });
+
+  it('imports the Devin login of this PC under the trimmed label', async () => {
+    await expect(controller.importDevin({ label: ' Devin PC ' })).resolves.toMatchObject({
+      provider: 'devin',
+    });
+    expect(vault.importDevin).toHaveBeenCalledWith('Devin PC');
   });
 });

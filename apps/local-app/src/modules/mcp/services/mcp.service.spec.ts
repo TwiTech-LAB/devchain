@@ -100,6 +100,61 @@ describe('McpService interface', () => {
     expect(response.error?.data).not.toHaveProperty('suggestions');
   });
 
+  describe('moved-text marker guard', () => {
+    const marker = '[moved: full text in section «epic.description» below]';
+    const updateParams = (description: string) => ({
+      sessionId: '12345678',
+      id: '00000000-0000-0000-0000-000000000001',
+      version: 1,
+      description,
+    });
+
+    it.each([
+      ['a marker', marker],
+      ['a marker line plus appended text', `${marker}\n\n## Notes\nAppended.`],
+    ])('rejects devchain_update_epic with %s as description', async (_label, description) => {
+      const invoke = jest.fn();
+      resolve.mockReturnValue({ paramsSchema: UpdateEpicParamsSchema, invoke });
+
+      const response = await service.handleToolCall(
+        'devchain_update_epic',
+        updateParams(description),
+      );
+
+      expect(invoke).not.toHaveBeenCalled();
+      expect(response).toEqual({
+        success: false,
+        error: {
+          code: 'VALIDATION_ERROR',
+          message: 'Invalid parameters supplied to MCP tool.',
+          data: {
+            issues: [
+              expect.objectContaining({
+                path: ['description'],
+                message: expect.stringContaining(
+                  'Send the full text from that section of the tool result.',
+                ),
+              }),
+            ],
+          },
+        },
+      });
+    });
+
+    it('accepts a description that mentions the marker inline', async () => {
+      const invoke = jest.fn().mockResolvedValue({ success: true });
+      resolve.mockReturnValue({ paramsSchema: UpdateEpicParamsSchema, invoke });
+
+      const response = await service.handleToolCall(
+        'devchain_update_epic',
+        updateParams(`Long strings become \`${marker}\` in tool results.`),
+      );
+
+      expect(response).toEqual({ success: true });
+      expect(invoke).toHaveBeenCalledTimes(1);
+    });
+  });
+
   it('maps unexpected invocation errors to INTERNAL_ERROR', async () => {
     resolve.mockReturnValue({
       paramsSchema: null,

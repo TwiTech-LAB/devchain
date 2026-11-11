@@ -65,6 +65,8 @@ export interface BuildLaunchArgsInput {
    * never read it.
    */
   sessionId?: string;
+  /** The project this launch runs in. Supplied for both modes. */
+  projectId?: string;
   profileOptionArgs: string[];
   /**
    * Pre-rendered initial prompt, supplied ONLY for adapters that declare an

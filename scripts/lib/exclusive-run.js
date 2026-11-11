@@ -197,11 +197,7 @@ function scopedSpawnArgs(command, args, env) {
     : [command, args];
 }
 
-async function spawnAndForward(
-  { command, args, env, pollMs, name },
-  state,
-  onSpawn,
-) {
+async function spawnAndForward({ command, args, env, pollMs, name }, state, onSpawn) {
   if (state.signal) return signalCode(state.signal);
   const [file, argv] = scopedSpawnArgs(command, args, env);
   const child = spawn(file, argv, { env, stdio: "inherit", detached: true });
@@ -232,12 +228,7 @@ async function spawnAndForward(
   return state.signal ? signalCode(state.signal) : code;
 }
 
-async function runCommand({
-  command,
-  args = [],
-  env = process.env,
-  pollMs = 2000,
-}) {
+async function runCommand({ command, args = [], env = process.env, pollMs = 2000 }) {
   const state = signalState();
   try {
     return await spawnAndForward({ command, args, env, pollMs }, state);
@@ -353,4 +344,4 @@ async function runExclusive({
   }
 }
 
-module.exports = { QUEUE_NAME, runExclusive, runCommand };
+module.exports = { QUEUE_NAME, runExclusive, runCommand, signalCode };

@@ -56,6 +56,7 @@ function makeOperation(
     executor,
     { clear: jest.fn() } as never,
     { assertLocalEmpty: jest.fn().mockResolvedValue(null) } as never,
+    { pushNow: async () => undefined } as never,
   );
 }
 
@@ -152,6 +153,7 @@ describe('AttachOperation preflight home gate', () => {
       new FakeProcessExecutor(),
       { clear: jest.fn() } as never,
       { assertLocalEmpty: jest.fn().mockResolvedValue(null) } as never,
+      { pushNow: async () => undefined } as never,
     );
   }
 
@@ -321,6 +323,7 @@ describe('AttachOperation rollback managed exclusions', () => {
       new FakeProcessExecutor(),
       { clear: jest.fn() } as never,
       { assertLocalEmpty: jest.fn().mockResolvedValue(null) } as never,
+      { pushNow: async () => undefined } as never,
     );
   }
 
@@ -621,6 +624,7 @@ describe('AttachOperation Docker steps', () => {
       new FakeProcessExecutor(),
       { clear: jest.fn() } as never,
       { assertLocalEmpty: jest.fn().mockResolvedValue(null) } as never,
+      { pushNow: async () => undefined } as never,
     );
   };
 

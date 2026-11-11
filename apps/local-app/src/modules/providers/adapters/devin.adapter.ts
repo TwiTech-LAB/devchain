@@ -5,6 +5,7 @@ import type {
   ProviderAdapter,
   AddMcpServerOptions,
   BuildLaunchArgsInput,
+  BuildLaunchArgsResult,
   McpServerEntry,
   RuntimePromptBehavior,
 } from './provider-adapter.interface';
@@ -13,8 +14,9 @@ import type {
   TranscriptDiscoveryCapability,
   HookCapability,
   HookEnvContext,
+  SessionCommandCapability,
 } from './capabilities';
-import { devinTranscriptPath } from '../../../common/devin-transcript-paths';
+import { devinSessionStorePath, devinTranscriptPath } from '../../../common/devin-transcript-paths';
 import { parseJsonc } from '../../../common/jsonc';
 
 /**
@@ -36,6 +38,11 @@ import { parseJsonc } from '../../../common/jsonc';
  *   export's top-level `session_id` — NOT the devchain id that names the file.
  * - **Argv prompt seeding.** `devin [OPTIONS] -- <PROMPT>` starts an
  *   interactive session; the prompt must come after `--`, at the end of argv.
+ * - **Session store per project.** Every launch and restore runs with
+ *   `DEVIN_SESSION_STORE=files` and `DEVIN_SESSIONS_DIR=<devin transcript
+ *   root>/stores/<projectId>` (needs Devin 3000.11.205+). Connect and
+ *   Disconnect copy the store's session files with the export, so `--resume`
+ *   finds the session on the other side.
  * - **Workspace trust.** `--respect-workspace-trust false` skips the trust
  *   prompt on every launch/restore — no pre-written trust file needed.
  * - **Terminal.** Interactive Devin uses no alternate screen (proof P7 in
@@ -56,10 +63,17 @@ import { parseJsonc } from '../../../common/jsonc';
  */
 @Injectable()
 export class DevinAdapter
-  implements ProviderAdapter, ConfigFileMcpCapability, TranscriptDiscoveryCapability, HookCapability
+  implements
+    ProviderAdapter,
+    ConfigFileMcpCapability,
+    TranscriptDiscoveryCapability,
+    HookCapability,
+    SessionCommandCapability
 {
   readonly providerName = 'devin';
   readonly traits = DEVIN_TRAITS;
+  // Sent while busy, Devin queues `/compact` and runs it after the current turn.
+  readonly sessionCommands = { compact: '/compact' } as const;
 
   // The prompt is seeded at launch as the argv tail after `--` (interactive
   // session; the shared pipeline renders it before resolveLaunchConfig).
@@ -116,16 +130,27 @@ export class DevinAdapter
     mode,
     providerSessionId,
     sessionId,
+    projectId,
     profileOptionArgs,
     initialPrompt,
-  }: BuildLaunchArgsInput): { argv: string[] } {
+    env: inputEnv,
+  }: BuildLaunchArgsInput): BuildLaunchArgsResult {
     if (!sessionId) {
       throw new Error(
         'Devin launch requires the devchain sessionId to bind its --export transcript path',
       );
     }
-    // The session reader creates the export folder at app start.
+    if (!projectId) {
+      throw new Error('Devin launch requires the projectId to select its session store');
+    }
+    // The session reader creates the export folder at app start; Devin creates
+    // a missing store folder itself.
     const exportPath = devinTranscriptPath(os.homedir(), sessionId);
+    const env = {
+      ...inputEnv,
+      DEVIN_SESSION_STORE: 'files',
+      DEVIN_SESSIONS_DIR: devinSessionStorePath(os.homedir(), projectId),
+    };
 
     const commonArgs = [
       '--export',
@@ -138,7 +163,7 @@ export class DevinAdapter
     if (mode === 'restore') {
       // `devin -r <id> --export <newpath>` re-writes the FULL conversation (old
       // + new turns) to the fresh path — the restore re-binds deterministically.
-      return { argv: ['--resume', providerSessionId!, ...commonArgs] };
+      return { argv: ['--resume', providerSessionId!, ...commonArgs], env };
     }
 
     // New: interactive launch with an optional prompt seeded after `--`.
@@ -146,7 +171,7 @@ export class DevinAdapter
     if (initialPrompt) {
       argv.push('--', initialPrompt);
     }
-    return { argv };
+    return { argv, env };
   }
 
   /**

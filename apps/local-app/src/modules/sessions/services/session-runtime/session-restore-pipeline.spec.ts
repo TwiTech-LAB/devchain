@@ -146,6 +146,18 @@ describe('SessionRestorePipeline', () => {
   });
 
   // Scenario 5: Restore tmux create fails after flipToRunning
+  describe('Vault', () => {
+    it('restores with no Vault value in the runtime plan', async () => {
+      const { pipeline, mocks } = createRestorePipelineHarness();
+
+      await pipeline.restore(sessionId, projectId);
+
+      const [planInput] = mocks.providerRuntimePreparation.createPlan.mock.calls[0];
+      expect(planInput.mode).toBe('restore');
+      expect(Object.keys(planInput).filter((key) => /vault/i.test(key))).toEqual([]);
+    });
+  });
+
   describe('Scenario 5: tmux create fails after flipToRunning — status flipped back', () => {
     it('flips status back to prior value, no session.restored', async () => {
       const { pipeline, createTrackedPrepare, mocks } = createRestorePipelineHarness();

@@ -4,7 +4,7 @@ A root service supplied by the DevChain host image (`apps/host-image`) or the
 [host installer](../local-app/src/modules/remotes/host-install/host-install-block.ts). On an
 unclaimed VM it serves the runtime endpoint and accepts one claim. The claim
 creates the user, writes provider auth, installs the requested DevChain
-version, its four pinned npm provider CLIs and the latest agy, then starts it. After the claim, DevChain serves the port and two root
+version, its pinned npm provider CLIs and the latest agy, then starts it. After the claim, DevChain serves the port and two root
 helpers handle "Update VM" and project roots.
 
 No dependencies: Node.js 24 built-ins only, so `npm pack` produces a
@@ -36,6 +36,19 @@ reset the machine ID. See `apps/local-app/src/modules/remotes/host-install/host-
 `devchain-host.service` has no `PAMName=`, so no logind session starts and
 there is no `/run/user/<uid>` and no session bus. Provider env comes from
 `<home>/.devchain/host.env` (`EnvironmentFile=`).
+
+Each instance unit has its own runtime directory, `/run/devchain-<user>`
+(`RuntimeDirectory=devchain-@USER@`, mode 0700, `RuntimeDirectoryPreserve=yes`).
+It is a tmpfs. It survives a service restart and is cleared at reboot.
+DevChain keeps the Vault value cache at its top level, and launch scripts and
+session files in one subdirectory for each DevChain instance
+(`docs/vault.md`, "Remote VMs", in the private repository).
+`devchain-host.service` and each `devchain-user-<user>.service` render the
+same template with their own user, so two users on one VM get two directories
+with their own owners. With one fixed name, systemd would give the directory
+to the user of the unit that starts last (`systemd/devchain-host.service`,
+`test/helper-isolation.test.js`). An existing VM gets the directive only at a
+version-changing update, which re-writes the unit.
 
 DevChain terminals and provider sessions on each side set `DEVCHAIN_UID` and
 `DEVCHAIN_GID` from the app process's own ids, overriding inherited values.
@@ -251,7 +264,7 @@ Switching versions renames two symlinks, so an update that fails or is
 interrupted leaves the running version intact.
 
 `dist/host-cli-pins.json` in the installed `devchain-cli` package provides the
-four npm package pins and the agy installer URL (`scripts/host-cli-pins.json`,
+npm package pins (Claude, Codex, Copilot, OpenCode and Devin) and the agy installer URL (`scripts/host-cli-pins.json`,
 `scripts/copy-cli.js`). The `clis` step installs mismatched npm packages as
 root-owned globals under `/usr/local` for the first instance, or under the
 joined instance's `clis/` prefix with links in its `bin/`, always from the public npm registry

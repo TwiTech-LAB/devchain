@@ -92,9 +92,13 @@ const minimalParams: Record<string, Record<string, unknown>> = {
   devchain_worktrees_commit: { sessionId: SESSION_ID, name: 'lane', message: 'commit' },
   devchain_worktrees_merge: { sessionId: SESSION_ID, name: 'lane', expectedHead: 'a'.repeat(40) },
   devchain_worktrees_remove: { sessionId: SESSION_ID, name: 'lane' },
+  devchain_vault_list: { sessionId: SESSION_ID },
+  devchain_vault_request: { sessionId: SESSION_ID, name: 'API_TOKEN', description: 'Deploy' },
 };
 
 const optionalServiceTools = new Set([
+  'devchain_vault_list',
+  'devchain_vault_request',
   'devchain_send_message',
   'devchain_projects_list',
   'devchain_create_epic',
@@ -131,6 +135,8 @@ const optionalServiceTools = new Set([
   'devchain_worktrees_remove',
 ]);
 const agentRequiredTools = new Set([
+  'devchain_vault_list',
+  'devchain_vault_request',
   'devchain_worktrees_create',
   'devchain_worktrees_list',
   'devchain_worktrees_commit',
@@ -258,7 +264,9 @@ describe('McpToolBindingRegistry guards', () => {
     sessionRows
       .filter(({ name }) => agentRequiredTools.has(name))
       .flatMap((row) =>
-        row.name === 'devchain_skills_set_enabled'
+        ['devchain_skills_set_enabled', 'devchain_vault_list', 'devchain_vault_request'].includes(
+          row.name,
+        )
           ? [
               { ...row, kind: 'guest' },
               { ...row, kind: 'agent without agent' },

@@ -64,6 +64,23 @@ const EventFilterGroupSchema = z.object({
 const EventFilterSchema = z.union([EventFilterGroupSchema, EventFilterConditionSchema]).nullable();
 
 /**
+ * A project's Vault access in a template. There is no `none`: an absent field leaves the
+ * target's access unchanged, so a template can turn the Vault on but never off.
+ * Slug limits match the Vault access API (local-app `vault.dto.ts`).
+ */
+export const ExportVaultAccessSchema = z.discriminatedUnion('mode', [
+  z.object({ mode: z.literal('all') }).strict(),
+  z
+    .object({
+      mode: z.literal('families'),
+      familySlugs: z.array(z.string().trim().min(1).max(255)).min(1).max(100),
+    })
+    .strict(),
+]);
+
+export type ExportVaultAccess = z.infer<typeof ExportVaultAccessSchema>;
+
+/**
  * ExportSchema - The canonical schema for template/project export format.
  * Used by both local-app and template-registry for consistent data interchange.
  */
@@ -333,6 +350,7 @@ export const ExportSchema = z
       )
       .optional()
       .default([]),
+    vaultAccess: ExportVaultAccessSchema.optional(),
     // Template manifest metadata (optional, for display/UX purposes)
     _manifest: ManifestSchema.optional(),
   })

@@ -2,6 +2,20 @@
 
 Release notes for each published `devchain-cli` version, newest first. The `changelog` field in `package.json` keeps the newest 10 versions for the CLI update notice.
 
+## 0.27.1 — 2026-11-11
+
+- https://devchain.cc/releases/0.27.0/
+- Projects: exports and templates no longer carry provider-level environment variables
+
+## 0.27.0 — 2026-11-11
+
+- https://devchain.cc/releases/0.27.0/
+- Vault: a built-in encrypted store for API keys, tokens and key files, and agents get a value only when a command needs it
+- Providers: Devin CLI support, on this PC and on remote VMs
+- Security: ClickUp, Jira, provider logins and the Proxmox token are now sealed with the Vault key
+- Mobile app 1.13.0: answer Vault requests and approvals from your phone
+- Host image 1.6.0: Vault delivery for VMs and the Devin CLI
+
 ## 0.26.5 — 2026-11-04
 
 - Remote VMs: files sync right away again after a branch switch or rebase on the VM

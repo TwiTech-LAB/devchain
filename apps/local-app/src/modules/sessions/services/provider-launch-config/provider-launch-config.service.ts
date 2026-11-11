@@ -1,5 +1,6 @@
 import { delimiter } from 'node:path';
 import { processIdsEnv } from '../../../../common/process-ids-env';
+import { sessionIdentityEnv, type SessionIdentity } from '../../../../common/session-identity-env';
 import type {
   ProviderAdapter,
   LaunchInitialPromptBehavior,
@@ -29,14 +30,10 @@ export { ProfileOptionsError, EnvBuilderError };
 export interface LaunchConfigInput {
   mode: 'new' | 'restore';
   providerSessionId?: string;
-  /**
-   * The devchain `sessions.id`, threaded into `buildLaunchArgs` for BOTH modes
-   * so deterministic-binding adapters can anchor their transcript to it:
-   * Copilot emits it as the provider session UUID on new (`--session-id
-   * <sessions.id>`) and ignores it on restore; Devin derives its `--export`
-   * path from it on new and restore.
-   */
+  /** The devchain `sessions.id`, for both modes; see {@link BuildLaunchArgsInput.sessionId}. */
   sessionId?: string;
+  /** See {@link BuildLaunchArgsInput.projectId}. */
+  projectId?: string;
   adapter: ProviderAdapter;
   profileOptions: string | null | undefined;
   modelOverride: string | null | undefined;
@@ -58,7 +55,14 @@ export interface LaunchConfigInput {
   runtimeEnv?: Record<string, string>;
   /** The git shim's directory, put first on the session PATH so Git in agent shells uses it. */
   gitShimBin?: string;
+  /** The directory of this app's `devchain` launcher, on the session PATH after the git shim. */
+  cliBin?: string;
   hookContext?: HookEnvContext;
+  /**
+   * Applied after every other env layer, adapter env included, so no provider or
+   * config key can make two sessions share one identity.
+   */
+  sessionIdentity?: SessionIdentity;
   /**
    * Pre-rendered initial prompt for opt-in seeding adapters
    * (`adapter.initialPromptSeedMode` set). Threaded into `buildLaunchArgs` so
@@ -74,6 +78,12 @@ export interface LaunchConfig {
   argv: string[];
   commandArgs: string[];
   env: Record<string, string> | null;
+  /**
+   * Dirs the launch script prepends to the pane shell's own `$PATH` at run time
+   * (shim first). Empty when PATH is an explicit provider/config env override,
+   * which is then carried literally in `env`/`commandArgs` instead.
+   */
+  pathPrependDirs: readonly string[];
   contextWindowOverride: ModelBoundContextWindow | null;
   promptHandshake?: LaunchInitialPromptBehavior;
 }
@@ -159,13 +169,20 @@ export function resolve(input: LaunchConfigInput): LaunchConfig {
     env = { ...(env ?? {}), ...input.runtimeEnv };
   }
 
-  if (input.gitShimBin) {
-    const path = env?.PATH ?? process.env.PATH ?? '';
-    if (path.split(delimiter)[0] !== input.gitShimBin)
-      env = {
-        ...(env ?? {}),
-        PATH: path ? `${input.gitShimBin}${delimiter}${path}` : input.gitShimBin,
-      };
+  // The shim goes on last, so it stays first. An explicit PATH from provider or
+  // config env keeps the literal prepend; without one the dirs go to the launch
+  // script, which prepends them to the pane shell's own $PATH at run time —
+  // the resolver must not bake this server process's PATH into the session.
+  const pathPrependDirs: string[] = [];
+  for (const dir of [input.cliBin, input.gitShimBin]) {
+    if (!dir) continue;
+    if (env?.PATH !== undefined) {
+      const path = env.PATH;
+      if (path.split(delimiter)[0] !== dir)
+        env = { ...env, PATH: path ? `${dir}${delimiter}${path}` : dir };
+    } else if (!pathPrependDirs.includes(dir)) {
+      pathPrependDirs.unshift(dir);
+    }
   }
 
   const idsEnv = processIdsEnv();
@@ -178,16 +195,20 @@ export function resolve(input: LaunchConfigInput): LaunchConfig {
     mode: input.mode,
     providerSessionId: input.providerSessionId,
     sessionId: input.sessionId,
+    projectId: input.projectId,
     profileOptionArgs: finalOptionArgs,
     initialPrompt: input.initialPrompt,
+    env,
     ...(input.adapter.requiresCliVersion && {
       cliVersion: input.cliVersion,
       providerBinPath: input.providerBinPath,
-      env,
     }),
   });
   const { argv } = launchArgs;
   if (launchArgs.env !== undefined) env = launchArgs.env;
+  if (input.sessionIdentity) {
+    env = { ...(env ?? {}), ...sessionIdentityEnv(input.sessionIdentity) };
+  }
 
   // Providers declare any env vars that must be cleared from their launch
   // environment via `launchUnsetEnv` (e.g. Claude unsets $TMUX/$TMUX_PANE to
@@ -200,6 +221,7 @@ export function resolve(input: LaunchConfigInput): LaunchConfig {
     argv,
     commandArgs,
     env,
+    pathPrependDirs,
     contextWindowOverride,
     promptHandshake: input.adapter.launchInitialPromptBehavior,
   };

@@ -1,6 +1,7 @@
+import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { Inject, Injectable } from '@nestjs/common';
-import { NotFoundError, ValidationError } from '../../common/errors/error-types';
+import { AppError, NotFoundError, ValidationError } from '../../common/errors/error-types';
 import { createLogger } from '../../common/logging/logger';
 import { ProviderAdapterFactory } from '../providers/adapters/provider-adapter.factory';
 import {
@@ -22,6 +23,7 @@ import {
 } from './provider-auth-adapters';
 import {
   isOpencodeProviderId,
+  ProviderAuthEnvValueSchema,
   type CreateProviderAuthStaticData,
   type OpencodeLoginDto,
   type PerProviderIdImportResult,
@@ -29,6 +31,7 @@ import {
 } from './provider-auth.dto';
 import type { ProviderAuthFamilyReport } from './provider-auth-watcher.service';
 import { OpencodePcLoginsReader } from './opencode-pc-logins.service';
+import { DEVIN_PC_LOGIN_PATH_RULE, readDevinPcLogin } from './devin-pc-login';
 
 const logger = createLogger('ProviderAuthVaultService');
 
@@ -140,6 +143,57 @@ export class ProviderAuthVaultService {
       }
     }
     return providerIds.map((providerId) => results.get(providerId)!);
+  }
+
+  /**
+   * Stores this PC's Devin CLI login as a static entry with the same payload as
+   * a pasted key. Errors use fixed wording: they never carry the key, the file
+   * content or a TOML parser message.
+   */
+  async importDevin(label: string): Promise<ProviderAuthEntryDto> {
+    const spec = this.requireSupportedProvider('devin');
+    if (spec.payloadKind !== 'env' || spec.kind !== 'static') {
+      throw new ValidationError('Devin logins are not importable on this instance.');
+    }
+    const login = await readDevinPcLogin(process.env, homedir());
+    switch (login.outcome) {
+      case 'missing':
+        throw new AppError(
+          `No Devin login on this PC: ${login.path} does not exist. DevChain reads ${DEVIN_PC_LOGIN_PATH_RULE}.`,
+          'not_found',
+          404,
+          { reason: 'devin_login_missing' },
+        );
+      case 'unreadable':
+        throw new ValidationError(
+          `DevChain cannot read the Devin login file on this PC: ${login.path}. Check that it is a file that your user can read.`,
+          { reason: 'devin_login_unreadable' },
+        );
+      case 'invalid':
+        throw new ValidationError('The Devin login file on this PC is not valid TOML.', {
+          reason: 'devin_login_invalid',
+        });
+      case 'no-key':
+        throw new ValidationError('The Devin login file on this PC has no windsurf_api_key.', {
+          reason: 'devin_login_no_key',
+        });
+      case 'other-servers':
+        throw new ValidationError(
+          'This Devin login uses other server addresses. VM logins support only the standard Devin servers.',
+          { reason: 'devin_login_other_servers' },
+        );
+      case 'found':
+        break;
+    }
+    if (!ProviderAuthEnvValueSchema.safeParse(login.apiKey).success) {
+      throw new ValidationError(
+        'The windsurf_api_key in the Devin login file on this PC is not a single-line value.',
+        { reason: 'devin_login_invalid_key' },
+      );
+    }
+    const entry = await this.createStatic({ provider: 'devin', label, token: login.apiKey });
+    logger.info({ entryId: entry.id }, 'Imported the Devin login of this PC');
+    return entry;
   }
 
   /**

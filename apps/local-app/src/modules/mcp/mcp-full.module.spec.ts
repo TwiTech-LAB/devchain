@@ -39,6 +39,8 @@ describe('McpFullModule', () => {
       'AgentMessageDeliveryModule',
       'ProjectCommunicationModule',
       'WorktreesModule',
+      'VaultModule',
+      'VaultRequestsModule',
     ]);
     expect(imports.filter(isForwardReference).map(moduleName)).toEqual([
       'SessionsModule',

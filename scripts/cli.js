@@ -26,6 +26,7 @@ const {
 } = require('./lib/local-app-process');
 const { runHostApiKeyReset } = require('./lib/host-api-key');
 const { QUEUE_NAME, runExclusive } = require('./lib/exclusive-run');
+const { runVaultExec } = require('./lib/vault-exec');
 const readline = require('readline');
 
 async function waitForHealth(url, { timeoutMs = 15000, intervalMs = 250 } = {}) {
@@ -1374,6 +1375,35 @@ async function main(argv) {
         name,
         command: commandArgs[0],
         args: commandArgs.slice(1),
+      });
+    });
+
+  const vault = program.command('vault').description('Use Vault entries in a DevChain agent session');
+  vault
+    .command('exec [command...]')
+    .usage('[--only NAME,NAME2] -- <command> [args…]')
+    .description(
+      'Run a command with the Vault entries granted to this agent session in its environment. ' +
+        'Values never go to the output of devchain itself.',
+    )
+    .option('--only <names>', 'give only these entries, separated by commas')
+    .action(async (commandArgs, options, execCommand) => {
+      const input = program.rawArgs.slice(2);
+      const separator = input.indexOf('--');
+      const afterSeparator = separator === -1 ? [] : input.slice(separator + 1);
+      // Everything before `--` must be options of exec, so a typo cannot become the command.
+      if (
+        afterSeparator.length === 0 ||
+        commandArgs.length !== afterSeparator.length ||
+        commandArgs.some((arg, index) => arg !== afterSeparator[index])
+      ) {
+        execCommand.error('usage: devchain vault exec [--only NAME,NAME2] -- <command> [args…]');
+      }
+      process.exitCode = await runVaultExec({
+        command: commandArgs[0],
+        args: commandArgs.slice(1),
+        only: options.only,
+        processDeps: { readPidFile, isProcessRunning, resolveSharedModuleSpecifier },
       });
     });
 

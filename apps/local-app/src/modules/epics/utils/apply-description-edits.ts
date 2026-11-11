@@ -85,12 +85,10 @@ function buildEditContext(finalText: string, span: Span): string {
   return leading + finalText.slice(beforeStart, afterEnd) + trailing;
 }
 
-function buildAppendContext(textBeforeAppend: string, append: string): string {
-  const prefix =
-    textBeforeAppend.length > 0
-      ? `${textBeforeAppend.slice(-APPEND_CONTEXT_PREFIX_LIMIT)}\n\n`
-      : '';
-  return (prefix + append).slice(0, APPEND_CONTEXT_TOTAL_LIMIT);
+/** The appended text with up to the last 160 characters before it, as a window into `finalText`. */
+function buildAppendContext(finalText: string, textBeforeAppendLength: number): string {
+  const start = Math.max(0, textBeforeAppendLength - APPEND_CONTEXT_PREFIX_LIMIT);
+  return finalText.slice(start, start + APPEND_CONTEXT_TOTAL_LIMIT);
 }
 
 /**
@@ -100,11 +98,16 @@ function buildAppendContext(textBeforeAppend: string, append: string): string {
  * error is thrown and no partial result escapes — callers keep their original
  * text. `replace` is spliced in literally, so `$&`, `$1`, and `$$` carry no
  * special meaning.
+ *
+ * `finalize` runs once on the final text, after all edits and the append, and
+ * must keep its length and offsets (for example by swapping one character for
+ * another); the contexts are taken from its result.
  */
 export function applyEpicDescriptionEdits(input: {
   text: string | null;
   edits?: EpicDescriptionEdit[];
   append?: string;
+  finalize?: (text: string) => string;
 }): EpicDescriptionEditOutcome {
   let text = input.text ?? '';
   const spans: Span[] = [];
@@ -128,11 +131,24 @@ export function applyEpicDescriptionEdits(input: {
     text = text.slice(0, start) + edit.replace + text.slice(end);
   }
 
-  let appended: { context: string } | undefined;
+  let textBeforeAppendLength: number | undefined;
   if (input.append !== undefined) {
-    appended = { context: buildAppendContext(text, input.append) };
+    textBeforeAppendLength = text.length;
     text = text.length > 0 ? `${text}\n\n${input.append}` : input.append;
   }
+
+  if (input.finalize) {
+    const finalized = input.finalize(text);
+    if (finalized.length !== text.length) {
+      throw new Error('finalize must keep the description length.');
+    }
+    text = finalized;
+  }
+
+  const appended =
+    textBeforeAppendLength !== undefined
+      ? { context: buildAppendContext(text, textBeforeAppendLength) }
+      : undefined;
 
   return {
     text,

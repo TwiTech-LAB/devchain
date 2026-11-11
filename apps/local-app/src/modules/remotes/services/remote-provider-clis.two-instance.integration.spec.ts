@@ -50,6 +50,7 @@ import { RemoteLiveSyncService } from '../sync/remote-live-sync.service';
 import { resetEnvConfig } from '../../../common/config/env.config';
 import { fixtureTls, installFixtureTlsFront } from '../../../common/test/tls-fixture';
 import { providerCliPolicyRevision } from '../host/host-provider-cli-policy';
+import { VaultVmCacheService } from '../../vault/vault-vm-cache.service';
 
 jest.mock('../../core/controllers/docker-runtime', () => ({
   ...jest.requireActual('../../core/controllers/docker-runtime'),
@@ -190,6 +191,7 @@ describe('provider CLI policy across home and VM', () => {
       new RemoteApiKeyService(storage),
       sharedVmGuardStub(),
       { poll: async () => undefined, prune: () => undefined } as never,
+      { pushIfChanged: async () => undefined, useHealth: () => undefined } as never,
     );
     const module = await Test.createTestingModule({
       controllers: [
@@ -209,6 +211,7 @@ describe('provider CLI policy across home and VM', () => {
         { provide: RemoteProviderCliSettingsService, useValue: push },
         { provide: REMOTE_HEALTH_PORT, useValue: health },
         { provide: SyncthingManager, useValue: { getState: () => null } },
+        { provide: VaultVmCacheService, useValue: { isClaimedHost: () => false } },
         { provide: RemotesService, useValue: {} },
         { provide: RemoteFileSyncService, useValue: {} },
         { provide: RemoteLiveSyncService, useValue: {} },

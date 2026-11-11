@@ -1,6 +1,15 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
-import { delimiter, dirname, join } from 'node:path';
+import { dirname, join } from 'node:path';
+import { DEVCHAIN_CLI_PATH } from '../../../../common/devchain-cli-launcher';
 import { GIT_SHIM_BIN, GIT_SHIM_ON_VM } from '../../../../common/git-shim-paths';
 import { processIdsEnv } from '../../../../common/process-ids-env';
 import type { Provider as NestProvider } from '@nestjs/common';
@@ -24,7 +33,7 @@ import {
 } from '../../../storage/interfaces/storage.interface';
 import type { Provider } from '../../../storage/models/domain.models';
 import { quoteShellArg } from '../../../terminal/services/terminal-io/quote-shell-arg';
-import { PROVIDER_LAUNCH_SCRIPT_ROOT } from './launch-script';
+import { RuntimeDirectoryService } from '../../../runtime-directory/runtime-directory.service';
 import { ProviderRuntimePreparationService } from './provider-runtime-preparation.service';
 import type {
   NewProviderRuntimePlanInput,
@@ -178,7 +187,10 @@ describe('ProviderRuntimePreparationService', () => {
         { provide: RuntimeContextCaptureService, useValue: capture },
         { provide: ClaudeLaunchSettingsMaterializerService, useValue: claude },
         { provide: CodexPluginProfileMaterializerService, useValue: codex.owner },
-        { provide: PROVIDER_LAUNCH_SCRIPT_ROOT, useValue: launchRoot },
+        {
+          provide: RuntimeDirectoryService,
+          useValue: { resolve: async () => ({ path: launchRoot }) },
+        },
         ...extraProviders,
       ],
     }).compile();
@@ -270,8 +282,15 @@ describe('ProviderRuntimePreparationService', () => {
         mode: 'new',
         providerSessionId: undefined,
         sessionId: 'session-1',
+        projectId: 'project-1',
         profileOptionArgs: ['--model', 'agent-model', '--verbose', '--effort', 'agent-effort'],
         initialPrompt: 'hello',
+        env: expect.objectContaining({
+          DEVCHAIN_HOOK: 'bound',
+          SHARED: 'config',
+          PROVIDER: 'yes',
+          CONFIG: 'yes',
+        }),
       });
       expect(capture.rotateEpoch).not.toHaveBeenCalled();
       expect(claude.prepare).not.toHaveBeenCalled();
@@ -293,10 +312,10 @@ describe('ProviderRuntimePreparationService', () => {
         rmSync(emptyDir, { recursive: true, force: true });
       });
 
-      async function launchEnv(
+      async function launchConfig(
         mode: 'new' | 'restore',
         { shimBin, onVm, bound }: { shimBin: string; onVm: boolean; bound: boolean },
-      ): Promise<Record<string, string> | null> {
+      ) {
         storage.getRemoteProjectBinding.mockResolvedValue(
           bound ? ({ projectId: 'project-1' } as never) : null,
         );
@@ -310,7 +329,7 @@ describe('ProviderRuntimePreparationService', () => {
           const plan = await preparation.createPlan(
             mode === 'new' ? makeNewInput(adapter) : makeRestoreInput(adapter),
           );
-          return (await preparation.materialize(plan)).config.env;
+          return (await preparation.materialize(plan)).config;
         } finally {
           await gated.close();
         }
@@ -324,13 +343,42 @@ describe('ProviderRuntimePreparationService', () => {
           const vm = { shimBin: shimDir, onVm: true, bound: false };
           const shimMissing = { shimBin: emptyDir, onVm: true, bound: true };
 
-          expect((await launchEnv(mode, pcUnbound))?.PATH).toBeUndefined();
-          expect((await launchEnv(mode, pcBound))?.PATH?.split(delimiter)[0]).toBe(shimDir);
-          expect((await launchEnv(mode, vm))?.PATH?.split(delimiter)[0]).toBe(shimDir);
-          expect((await launchEnv(mode, shimMissing))?.PATH).toBeUndefined();
+          expect((await launchConfig(mode, pcUnbound)).pathPrependDirs).toEqual([]);
+          const bound2 = await launchConfig(mode, pcBound);
+          // The dir goes to the launch script's $PATH prepend, never a baked literal.
+          expect([bound2.pathPrependDirs, bound2.env?.PATH]).toEqual([[shimDir], undefined]);
+          expect((await launchConfig(mode, vm)).pathPrependDirs).toEqual([shimDir]);
+          expect((await launchConfig(mode, shimMissing)).pathPrependDirs).toEqual([]);
         },
       );
     });
+
+    it.each(['new', 'restore'] as const)(
+      "writes this app's devchain launcher and puts its directory on PATH (%s)",
+      async (mode) => {
+        const cli = join(tempRoot, "it's", 'cli.js');
+        const withCli = await compileModule([{ provide: DEVCHAIN_CLI_PATH, useValue: cli }]);
+        try {
+          const preparation = withCli.get(ProviderRuntimePreparationService);
+          const adapter = makeAdapter();
+          const plan = await preparation.createPlan(
+            mode === 'new' ? makeNewInput(adapter) : makeRestoreInput(adapter),
+          );
+          const config = (await preparation.materialize(plan)).config;
+
+          const bin = join(launchRoot, 'cli-bin');
+          // The dir goes to the launch script's $PATH prepend, never a baked literal.
+          expect([config.pathPrependDirs, config.env?.PATH]).toEqual([[bin], undefined]);
+          const launcher = join(bin, 'devchain');
+          expect(statSync(launcher).mode & 0o777).toBe(0o755);
+          expect(readFileSync(launcher, 'utf8')).toBe(
+            `#!/bin/sh\nexec ${quoteShellArg(process.execPath)} '${tempRoot}/it'\\''s/cli.js' "$@"\n`,
+          );
+        } finally {
+          await withCli.close();
+        }
+      },
+    );
 
     it.each([
       ['claude', '--settings user.json', 'Profile-supplied --settings'],
@@ -427,6 +475,34 @@ describe('ProviderRuntimePreparationService', () => {
   });
 
   describe('materialize', () => {
+    describe('Vault', () => {
+      const vaultDir = () => join(launchRoot, 'session-files', 'session-1', 'vault');
+
+      it.each(['new', 'restore'] as const)(
+        'writes a %s launch script with no Vault entry, and keeps files the resolve route wrote',
+        async (mode) => {
+          // A running `devchain vault exec` may be reading a file the resolve route wrote.
+          mkdirSync(vaultDir(), { recursive: true });
+          writeFileSync(join(vaultDir(), 'KEY_FILE'), 'in-use');
+          const adapter = makeAdapter();
+
+          const prepared = await service.materialize(
+            await service.createPlan(
+              mode === 'new' ? makeNewInput(adapter) : makeRestoreInput(adapter),
+            ),
+          );
+
+          const script = readFileSync(prepared.typedArgs[1], 'utf8');
+          expect(script).not.toMatch(/vault|KEY_FILE/i);
+          expect(
+            Object.keys(prepared.config.env ?? {}).filter((key) => /vault/i.test(key)),
+          ).toEqual([]);
+          await prepared.rollback();
+          expect(readFileSync(join(vaultDir(), 'KEY_FILE'), 'utf8')).toBe('in-use');
+        },
+      );
+    });
+
     it('preserves the base command when preparation is inactive and clears new capture on rollback', async () => {
       const adapter = makeAdapter();
       const plan = await service.createPlan(
@@ -562,6 +638,10 @@ describe('ProviderRuntimePreparationService', () => {
         PROVIDER: 'yes',
         CONFIG: 'yes',
         RUNTIME: 'yes',
+        DEVCHAIN_SESSION_ID: 'session-1',
+        DEVCHAIN_PROJECT_ID: 'project-1',
+        DEVCHAIN_AGENT_ID: 'agent-1',
+        DEVCHAIN_API_URL: expect.stringMatching(/^http:\/\//),
       });
       expect(Object.isFrozen(prepared.config)).toBe(true);
       expect(Object.isFrozen(prepared.config.argv)).toBe(true);

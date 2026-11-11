@@ -119,6 +119,9 @@ jest.mock('../hooks/useRuntime', () => ({
 
 import { Layout } from './Layout';
 
+// The agent-request modal has its own spec; these suites mock fetch with other shapes.
+jest.mock('@/ui/pages/vault/VaultRequestModal', () => ({ VaultRequestModal: () => null }));
+
 function renderLayout(initialPath: string) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   global.fetch = jest.fn().mockResolvedValue({

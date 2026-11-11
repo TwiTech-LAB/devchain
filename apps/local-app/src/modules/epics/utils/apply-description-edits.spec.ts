@@ -186,6 +186,28 @@ describe('applyEpicDescriptionEdits', () => {
     });
   });
 
+  describe('finalize', () => {
+    it('takes edit and append contexts from the finalized text', () => {
+      const result = applyEpicDescriptionEdits({
+        text: 'one two three',
+        edits: [{ find: 'two', replace: 'TWO' }],
+        append: 'four five',
+        finalize: (text) => text.replace(/ /g, '_'),
+      });
+
+      expect(result.text).toBe('one_TWO_three\n\nfour_five');
+      expect(result.descriptionEdits).toEqual([{ index: 0, context: result.text }]);
+      expect(result.appended).toEqual({ context: result.text });
+      expect(result.descriptionLength).toBe(result.text.length);
+    });
+
+    it('rejects a finalize that changes the length', () => {
+      expect(() =>
+        applyEpicDescriptionEdits({ text: 'a', append: 'b', finalize: (text) => `${text}!` }),
+      ).toThrow('finalize must keep the description length.');
+    });
+  });
+
   describe('context windows', () => {
     const longText = `${'A'.repeat(100)}TARGET${'B'.repeat(100)}`;
 

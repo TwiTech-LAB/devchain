@@ -1,5 +1,7 @@
 import { AppError, ForbiddenError, NotFoundError } from '../../../common/errors/error-types';
+import type { EventsService } from '../../events/services/events.service';
 import { DEFAULT_PROJECT_WORKSPACE_ID } from '../../storage/db/schema';
+import { VaultRequestStore } from '../../vault-requests/vault-request.store';
 import { MOBILE_RPC_METHODS } from './mobile-rpc-contract.generated';
 import {
   MOBILE_RPC_WORKSPACE_SCOPES,
@@ -14,10 +16,13 @@ const PROJECT_B = '30000000-0000-4000-8000-000000000002';
 const STATUS_B = '40000000-0000-4000-8000-000000000002';
 const EPIC_B = '50000000-0000-4000-8000-000000000002';
 const SUBSCRIPTION_B = 'vp-b';
+const REQUEST_A = '60000000-0000-4000-8000-000000000001';
+const REQUEST_B = '60000000-0000-4000-8000-000000000002';
 
 function createAccessHarness(options?: {
   multiWorkspaceMode?: boolean;
   failClosedPending?: boolean;
+  vaultRequests?: Pick<VaultRequestStore, 'get'>;
 }) {
   const storage = {
     getProject: jest.fn(async (projectId: string) => ({
@@ -44,32 +49,48 @@ function createAccessHarness(options?: {
   const viewport = {
     resolveSubscriptionProjectId: jest.fn(async () => PROJECT_B),
   };
+  const vaultRequests = options?.vaultRequests ?? {
+    get: jest.fn((requestId: string) =>
+      requestId === REQUEST_A
+        ? { projectId: PROJECT_A }
+        : requestId === REQUEST_B
+          ? { projectId: PROJECT_B }
+          : null,
+    ),
+  };
   const service = new MobileRpcWorkspaceAccessService(
     storage as never,
     workspaceMode as never,
     deviceAccess as never,
     keypair as never,
     viewport as never,
+    vaultRequests as never,
   );
-  return { service, storage, workspaceMode, deviceAccess, keypair, viewport };
+  return { service, storage, workspaceMode, deviceAccess, keypair, viewport, vaultRequests };
 }
 
 describe('MobileRpcWorkspaceAccessService classification', () => {
-  it('classifies every one of the 40 non-E2EE methods exactly once', () => {
+  it('classifies every one of the 44 non-E2EE methods exactly once', () => {
     const nonE2eeMethods = MOBILE_RPC_METHODS.filter((method) => !method.startsWith('e2ee.'));
     expect(Object.keys(MOBILE_RPC_WORKSPACE_SCOPES)).toEqual(nonE2eeMethods);
-    expect(nonE2eeMethods).toHaveLength(40);
+    expect(nonE2eeMethods).toHaveLength(44);
 
     const scopes = Object.values(MOBILE_RPC_WORKSPACE_SCOPES);
     expect(scopes.filter((scope) => scope === 'projectId')).toHaveLength(34);
     expect(
       scopes.filter((scope) =>
-        ['parentId', 'statusId-or-projectId', 'epicId', 'subscriptionId'].includes(scope),
+        [
+          'parentId',
+          'statusId-or-projectId',
+          'epicId',
+          'subscriptionId',
+          'vaultRequestId',
+        ].includes(scope),
       ),
-    ).toHaveLength(4);
+    ).toHaveLength(7);
     expect(
       scopes.filter((scope) => ['authorized-workspaces', 'authorized-projects'].includes(scope)),
-    ).toHaveLength(2);
+    ).toHaveLength(3);
   });
 
   it('preserves the unrestricted plaintext path while exactly one workspace is stable', async () => {
@@ -159,6 +180,100 @@ describe('MobileRpcWorkspaceAccessService classification', () => {
       ).rejects.toMatchObject({ message: 'Workspace access denied', details: undefined });
     }
     expect(harness.viewport.resolveSubscriptionProjectId).toHaveBeenCalledWith(SUBSCRIPTION_B);
+  });
+
+  it('answers an ended or foreign Vault request as not pending, never as workspace revocation', async () => {
+    // Multi-workspace phone: the user answered on web (or the TTL fired) while the sheet
+    // was open. A 'forbidden' + 'Workspace access denied' answer would make the phone drop
+    // its workspaces; a foreign pending id must look the same as a gone one.
+    const harness = createAccessHarness();
+
+    await expect(
+      harness.service.authorize(
+        'vault.fulfillRequest',
+        { requestId: REQUEST_A, permanent: false, value: 'v' },
+        { senderKid: 'kid-a' },
+      ),
+    ).resolves.toEqual({ allowedWorkspaceIds: new Set([WORKSPACE_A]) });
+    const answers = [
+      ['vault.denyRequest', {}],
+      ['vault.approveUse', { decision: 'session' }],
+    ] as const;
+    for (const [method, answer] of answers) {
+      await expect(
+        harness.service.authorize(
+          method,
+          { requestId: REQUEST_A, ...answer },
+          { senderKid: 'kid-a' },
+        ),
+      ).resolves.toEqual({ allowedWorkspaceIds: new Set([WORKSPACE_A]) });
+    }
+    const refusals = answers.flatMap(([method, answer]) =>
+      [REQUEST_B, '60000000-0000-4000-8000-0000000000ff'].map((requestId) =>
+        harness.service
+          .authorize(method, { requestId, ...answer }, { senderKid: 'kid-a' })
+          .catch((error: unknown) => error),
+      ),
+    );
+    for (const refusal of await Promise.all(refusals)) {
+      expect(refusal).toMatchObject({
+        statusCode: 409,
+        code: 'conflict',
+        details: { code: 'VAULT_REQUEST_NOT_PENDING' },
+      });
+    }
+  });
+
+  it('answers a request mirrored from a VM only from a device of its workspace', async () => {
+    // Home adopts a VM request into its own store, so the same lookup must find it.
+    const store = new VaultRequestStore({
+      publish: async () => 'event-id',
+    } as unknown as EventsService);
+    await store.syncRemote(
+      'vm-1',
+      [
+        {
+          requestId: REQUEST_B,
+          projectId: PROJECT_B,
+          sessionId: 'vm-session',
+          agentId: 'agent-b',
+          agentName: 'Coder',
+          familySlug: 'coder',
+          type: 'create',
+          name: 'API_TOKEN',
+          description: 'Token',
+          kind: 'secret',
+          entryId: null,
+          createdAt: Date.now(),
+          expiresAt: Date.now() + 60_000,
+        },
+      ],
+      10_000,
+    );
+    const harness = createAccessHarness({ vaultRequests: store });
+    const answer = (kid: string) =>
+      harness.service.authorize(
+        'vault.fulfillRequest',
+        { requestId: REQUEST_B, permanent: false, value: 'v' },
+        { senderKid: kid },
+      );
+
+    try {
+      await expect(answer('kid-b')).resolves.toEqual({
+        allowedWorkspaceIds: new Set([WORKSPACE_B]),
+      });
+      await expect(answer('kid-a')).rejects.toMatchObject({
+        statusCode: 409,
+        details: { code: 'VAULT_REQUEST_NOT_PENDING' },
+      });
+      await store.dropRemote('vm-1');
+      await expect(answer('kid-b')).rejects.toMatchObject({
+        statusCode: 409,
+        details: { code: 'VAULT_REQUEST_NOT_PENDING' },
+      });
+    } finally {
+      store.onModuleDestroy();
+    }
   });
 
   it('authorizes only the effective workspace subset for both list methods', async () => {

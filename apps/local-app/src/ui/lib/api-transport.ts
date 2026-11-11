@@ -77,6 +77,7 @@ const HOME_ALWAYS_PREFIXES = [
   '/api/e2ee',
   '/api/integrations',
   '/api/provider-auth',
+  '/api/vault',
   '/api/provider-clis',
   '/api/runtime',
   '/api/fs',

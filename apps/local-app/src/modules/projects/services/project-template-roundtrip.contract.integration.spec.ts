@@ -818,12 +818,19 @@ describe('template round-trip contract safety net (real storage)', () => {
       // Seed project A by importing the all-sections fixture through the real path.
       const projectA = await freshProject(h, 'Project A');
       const importA = await importProjectWithHelper(
-        { projectId: projectA, payload: allSectionsTemplate() },
+        {
+          projectId: projectA,
+          payload: {
+            ...allSectionsTemplate(),
+            vaultAccess: { mode: 'families', familySlugs: ['claude-family'] },
+          },
+        },
         importDeps(h) as never,
       );
       expect(importA).toMatchObject({ success: true, mode: 'replace', replaced: true });
 
       const exportA = (await exportProjectWithHelper(projectA, undefined, exportDeps(h))) as AnyRec;
+      expect(exportA.vaultAccess).toEqual({ mode: 'families', familySlugs: ['claude-family'] });
 
       // Import exportA into a fresh project B, then export again.
       const projectB = await freshProject(h, 'Project B');
@@ -1268,6 +1275,11 @@ describe('template round-trip contract safety net (real storage)', () => {
           { label: 'Legacy', color: '#bbbbbb', position: 1 },
           { label: 'Unused', color: '#cccccc', position: 2 },
         ];
+        targetTemplate.vaultAccess = { mode: 'all' };
+        await h.storage.setVaultFamilyAccess(projectId, {
+          mode: 'families',
+          familySlugs: ['worker-family'],
+        });
         const { statusMappings: _statusMappings, ...controls } =
           configuredUpgradeControls(legacyStatusId);
         const { service } = createRealStorageUpgradeService(h, targetTemplate, {
@@ -1314,6 +1326,9 @@ describe('template round-trip contract safety net (real storage)', () => {
           }),
         ]);
         expect(h.settings.getProjectActivePreset(projectId)).toBe(activePreset);
+        expect(await h.storage.listVaultFamilyAccess({ projectId })).toEqual([
+          expect.objectContaining({ familySlug: 'worker-family' }),
+        ]);
 
         const publicAfter = (await exportProjectWithHelper(
           projectId,
@@ -1548,7 +1563,7 @@ describe('template round-trip contract safety net (real storage)', () => {
   });
 
   describe('env secret redaction discipline', () => {
-    it('redacts secret-shaped env keys on export and skips redacted values on re-import', async () => {
+    it('redacts config-level secrets on export and never exports provider-level env', async () => {
       await seedClaudeProvider(h);
       const template = allSectionsTemplate();
       // Inject a secret-shaped key at config level and provider level.
@@ -1563,17 +1578,46 @@ describe('template round-trip contract safety net (real storage)', () => {
         { projectId: projectA, payload: template },
         importDeps(h) as never,
       );
+      h.sqlite
+        .prepare(
+          `INSERT INTO vault_entries
+             (id, project_id, name, kind, description, value_ciphertext, created_at, updated_at)
+           VALUES ('vault-1', ?, 'VAULT_CANARY_NAME', 'secret', 'd', 'vault-canary-ciphertext', 'T', 'T')`,
+        )
+        .run(projectA);
+      h.sqlite
+        .prepare(
+          `INSERT INTO vault_family_access (id, project_id, family_slug, created_at)
+           VALUES ('vault-access-1', ?, 'vault-access-canary', 'T'),
+                  ('vault-access-2', ?, 'claude-family', 'T')`,
+        )
+        .run(projectA, projectA);
+      h.sqlite
+        .prepare(
+          `INSERT INTO vault_use_family_approvals
+             (id, entry_id, project_id, family_slug, created_at)
+           VALUES ('vault-approval-1', 'vault-1', ?, 'vault-approval-canary', 'T')`,
+        )
+        .run(projectA);
       const exportA = (await exportProjectWithHelper(projectA, undefined, exportDeps(h))) as AnyRec;
+      // Vault entries and approvals never travel in a template or export, not even redacted.
+      expect(JSON.stringify(exportA)).not.toMatch(
+        /VAULT_CANARY_NAME|vault-canary-ciphertext|vault-approval-canary/,
+      );
+      // Access rides only for families a current profile has.
+      expect(exportA.vaultAccess).toEqual({ mode: 'families', familySlugs: ['claude-family'] });
+      expect(JSON.stringify(exportA)).not.toContain('vault-access-canary');
 
       const cfg = ((exportA.profiles as AnyRec[])[0].providerConfigs as AnyRec[])[0];
       // Config-level: non-secret preserved, secret redacted to '***'.
       expect((cfg.env as AnyRec).LOG_LEVEL).toBe('debug');
       expect((cfg.env as AnyRec).API_KEY).toBe('***');
 
-      const provEnv = ((exportA.providerSettings as AnyRec[])[0].env as AnyRec) ?? {};
-      expect(provEnv.PUBLIC_FLAG).toBe('on');
-      // Provider-level secret is redacted on export...
-      expect(provEnv.GITHUB_TOKEN).toBe('***');
+      // Provider-level env never exports, secret or not (it is machine-local).
+      for (const row of (exportA.providerSettings as AnyRec[]) ?? []) {
+        expect(row).not.toHaveProperty('env');
+      }
+      expect(JSON.stringify(exportA)).not.toMatch(/PUBLIC_FLAG|GITHUB_TOKEN/);
     });
   });
 
@@ -1600,6 +1644,62 @@ describe('template round-trip contract safety net (real storage)', () => {
       // Legacy import defaults optional collections to empty, not absent-error.
       expect(exportA.providerModels).toEqual([]);
       expect(exportA.providerEfforts).toEqual([]);
+    });
+  });
+
+  describe('vaultAccess import', () => {
+    function vaultTemplate(vaultAccess?: AnyRec): Record<string, unknown> {
+      const template = legacyV1Template();
+      const [profile] = template.profiles as AnyRec[];
+      return {
+        ...template,
+        profiles: [{ ...profile, familySlug: 'Legacy-Family' }],
+        ...(vaultAccess && { vaultAccess }),
+      };
+    }
+
+    const accessOf = async (projectId: string) =>
+      (await h.storage.listVaultFamilyAccess({ projectId })).map((row) => row.familySlug).sort();
+
+    it('create-from-template applies the field; without it the Vault stays off', async () => {
+      await seedClaudeProvider(h);
+      const create = async (name: string, template: Record<string, unknown>) => {
+        const result = (await createFromTemplateWithHelper(
+          { name, rootPath: `/tmp/${slugify(name)}`, slug: 'legacy-v1' },
+          createDeps(h, template) as never,
+        )) as AnyRec;
+        return String((result.project as AnyRec).id);
+      };
+
+      const withField = await create(
+        'Vault On',
+        vaultTemplate({ mode: 'families', familySlugs: ['legacy-family', 'ghost'] }),
+      );
+      const withoutField = await create('Vault Off', vaultTemplate());
+
+      expect(await accessOf(withField)).toEqual(['legacy-family']);
+      expect(await accessOf(withoutField)).toEqual([]);
+    });
+
+    it('replace-import replaces access exactly; without the field access is untouched', async () => {
+      await seedClaudeProvider(h);
+      const projectId = await freshProject(h, 'Vault Replace');
+      await h.storage.setVaultFamilyAccess(projectId, { mode: 'all' });
+
+      await importProjectWithHelper(
+        {
+          projectId,
+          payload: vaultTemplate({ mode: 'families', familySlugs: ['legacy-family'] }),
+        },
+        importDeps(h) as never,
+      );
+      expect(await accessOf(projectId)).toEqual(['legacy-family']);
+
+      await importProjectWithHelper(
+        { projectId, payload: vaultTemplate() },
+        importDeps(h) as never,
+      );
+      expect(await accessOf(projectId)).toEqual(['legacy-family']);
     });
   });
 

@@ -14,9 +14,14 @@ import {
 } from 'node:fs';
 import * as os from 'node:os';
 import { dirname, join } from 'node:path';
-import { ConflictError, ValidationError } from '../../common/errors/error-types';
+import {
+  ConflictError,
+  ValidationError,
+  VaultUnavailableError,
+} from '../../common/errors/error-types';
 import type { ProviderAdapterFactory } from '../providers/adapters/provider-adapter.factory';
 import { LocalStorageService } from '../storage/local/local-storage.service';
+import { VaultStoreKey } from '../storage/local/vault-store-key';
 import { IntegrationCredentialCipher } from '../storage/local/integration-credential-cipher';
 import type {
   StandaloneTerminal,
@@ -187,7 +192,9 @@ describe('ProviderAuthGeneratorService', () => {
     getSupportedProviders: () => Object.keys(PROVIDER_AUTH_ADAPTERS),
   } as unknown as ProviderAdapterFactory;
 
-  function makeGenerator(options: { timeoutMs?: number } = {}): ProviderAuthGeneratorService {
+  function makeGenerator(
+    options: { timeoutMs?: number; storeKey?: VaultStoreKey } = {},
+  ): ProviderAuthGeneratorService {
     const executor = new ChildProcessExecutor();
     const probe = new ProviderCliVersionProbe(executor);
     const providers = { listProviders: async () => ({ items: providerBins }) } as never;
@@ -202,6 +209,7 @@ describe('ProviderAuthGeneratorService', () => {
       executor,
       providers,
       probe,
+      options.storeKey ?? new VaultStoreKey(),
       { baseDir, pollIntervalMs: 10, timeoutMs: options.timeoutMs ?? 20_000 },
     );
   }
@@ -311,6 +319,49 @@ describe('ProviderAuthGeneratorService', () => {
     expect(readdirSync(baseDir)).toEqual([]);
     expect(terminals.ended.get(started.sessionId)).toBe('Login stored in the provider auth vault.');
     expect(stdinLines()).toEqual(['stdin=/dev/null']);
+  });
+
+  it('refuses to start a login while the Vault is locked', async () => {
+    const storeKey = new VaultStoreKey();
+    storeKey.bind({
+      mode: () => 'locked',
+      state: () => 'locked',
+      encrypt: () => {
+        throw new VaultUnavailableError('locked');
+      },
+      decrypt: () => {
+        throw new VaultUnavailableError('locked');
+      },
+    });
+    const locked = makeGenerator({ storeKey });
+
+    await expect(locked.start('codex')).rejects.toBeInstanceOf(VaultUnavailableError);
+    expect(existsSync(baseDir) ? readdirSync(baseDir) : []).toHaveLength(0);
+  });
+
+  it('keeps a verified login while the Vault is locked and stores it after unlock', async () => {
+    const locked = jest
+      .spyOn(storage, 'createProviderAuthEntry')
+      .mockRejectedValue(new VaultUnavailableError('locked'));
+    const started = await generator.start('codex');
+
+    const deadline = Date.now() + 15_000;
+    while (generator.get(started.id).error === null) {
+      if (Date.now() > deadline) throw new Error('the generation never reported the locked Vault');
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    expect(generator.get(started.id)).toMatchObject({
+      finishedAt: null,
+      error: 'The Vault is locked. Unlock the Vault to store this login.',
+    });
+    expect(readdirSync(baseDir)).toHaveLength(1);
+
+    locked.mockRestore();
+    const done = await settle(started.id);
+
+    expect(done).toMatchObject({ state: 'stored', error: null });
+    expect(done.entries).toHaveLength(1);
+    expect(readdirSync(baseDir)).toEqual([]);
   });
 
   it('runs a configured provider binary instead of the name on PATH', async () => {

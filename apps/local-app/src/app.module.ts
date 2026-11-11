@@ -46,6 +46,7 @@ import { ExternalIntegrationsModule } from './modules/external-integrations/exte
 import { EpicTimeModule } from './modules/epic-time/epic-time.module';
 import { WorktreesModule } from './modules/worktrees/worktrees.module';
 import { ProviderUsageModule } from './modules/provider-usage/provider-usage.module';
+import { VaultModule } from './modules/vault/vault.module';
 
 @Module({
   imports: [
@@ -67,6 +68,7 @@ import { ProviderUsageModule } from './modules/provider-usage/provider-usage.mod
     WorkspacesModule,
     RemotesModule,
     ProviderAuthModule,
+    VaultModule,
     PromptsModule,
     ProfilesModule,
     ProvidersModule,

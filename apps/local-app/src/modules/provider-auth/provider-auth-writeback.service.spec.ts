@@ -4,6 +4,7 @@ import type { ProviderAuthVaultService } from './provider-auth-vault.service';
 import type { ProviderAuthStorage, RemoteStorage } from '../storage/interfaces/storage.interface';
 import type { Remote } from '../storage/models/domain.models';
 import { fixtureTls } from '../../common/test/tls-fixture';
+import { VaultUnavailableError } from '../../common/errors/error-types';
 
 jest.mock('../remotes/transport/remote-tls', () => ({
   ...jest.requireActual('../remotes/transport/remote-tls'),
@@ -155,6 +156,27 @@ describe('ProviderAuthWritebackService', () => {
     await service.pullIfChanged('remote-1', 'https://host', fixtureTls.cert);
 
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('keeps since while the Vault is locked and stores the payload at the next pull after unlock', async () => {
+    fetchMock.mockResolvedValue(familiesResponse(1500));
+    vault.writeBackFamilies.mockRejectedValueOnce(new VaultUnavailableError('locked'));
+
+    await service.pullIfChanged('remote-1', 'https://host', fixtureTls.cert);
+    await service.pullIfChanged('remote-1', 'https://host', fixtureTls.cert);
+
+    expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
+      'https://host/api/host/provider-auth/families?since=0',
+      'https://host/api/host/provider-auth/families?since=0',
+    ]);
+    expect(vault.writeBackFamilies).toHaveBeenCalledTimes(2);
+  });
+
+  it('pullFamiliesNow refuses while the Vault is locked instead of reporting the host offline', async () => {
+    fetchMock.mockResolvedValueOnce(familiesResponse(2000));
+    vault.writeBackFamilies.mockRejectedValueOnce(new VaultUnavailableError('locked'));
+
+    await expect(service.pullFamiliesNow('remote-1')).rejects.toBeInstanceOf(VaultUnavailableError);
   });
 
   it('survives a network failure without touching the vault', async () => {

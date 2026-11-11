@@ -478,4 +478,50 @@ describe('TunnelRpcCryptoService', () => {
       expect(dispatch.mock.calls[0]).toHaveLength(1);
     });
   });
+
+  describe('sealed-only Vault request answers', () => {
+    const REQUEST_ID = '00000000-0000-4000-8000-000000000001';
+
+    it.each([
+      ['vault.fulfillRequest', { requestId: REQUEST_ID, value: 'sk-canary', permanent: false }],
+      ['vault.denyRequest', { requestId: REQUEST_ID, reason: 'no' }],
+    ])('rejects a PLAINTEXT %s with NO dispatch', async (method, params) => {
+      const { svc } = makeService(); // default e2eeRequired=false
+      const dispatch = jest.fn();
+      const resp = await svc.handle(
+        { jsonrpc: '2.0', id: 'v1', method, params },
+        INSTANCE_ID,
+        dispatch,
+      );
+      expect(dispatch).not.toHaveBeenCalled();
+      expect(resp.error).toEqual({ code: -32603, message: 'E2EE required' });
+      expect(JSON.stringify(resp)).not.toContain('sk-canary');
+    });
+
+    it('opens a sealed vault.fulfillRequest and seals its result', async () => {
+      const METHOD = 'vault.fulfillRequest';
+      const { svc } = makeService();
+      const mobileSvc = mobileEnvelopeService();
+      const params = { requestId: REQUEST_ID, value: 'sk-canary', permanent: true };
+      const sealedParams = await mobileSvc.seal(params, reqCtx(METHOD));
+      expect(JSON.stringify(sealedParams)).not.toContain('sk-canary');
+      const result = { requestId: REQUEST_ID, status: 'fulfilled', permanent: true, entryId: 'e1' };
+      const dispatch = jest.fn(async (plain: JsonRpcRequestLike) => ({
+        jsonrpc: '2.0' as const,
+        id: plain.id,
+        result,
+      }));
+
+      const resp = await svc.handle(
+        { jsonrpc: '2.0', id: 'v2', method: METHOD, params: sealedParams },
+        INSTANCE_ID,
+        dispatch,
+      );
+
+      expect(dispatch.mock.calls[0][0].params).toEqual(params);
+      expect(resp.error).toBeUndefined();
+      const opened = (await mobileSvc.open(resp.result, resCtx(METHOD))) as SealedRpcResult;
+      expect(opened).toEqual({ ok: true, data: result });
+    });
+  });
 });

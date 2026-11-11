@@ -28,6 +28,11 @@ import { TunnelViewportCryptoService } from './services/tunnel-viewport-crypto.s
 import { TunnelClientService } from './services/tunnel-client.service';
 import { TunnelEventForwarderService } from './services/tunnel-event-forwarder.service';
 import { AskUserQuestionPushGateService } from './services/ask-user-question-push-gate.service';
+import { MobileVaultRpcService } from './services/mobile-vault-rpc.service';
+import { VaultRequestPushGateService } from './services/vault-request-push-gate.service';
+import { VaultUseOptInRegistry } from './services/vault-use-opt-in';
+import { VaultRequestsModule } from '../vault-requests/vault-requests.module';
+import { VaultVmCacheModule } from '../vault/vault-vm-cache.module';
 import { MobileChatRpcService } from './services/mobile-chat-rpc.service';
 import { MobileBoardRpcService } from './services/mobile-board-rpc.service';
 import { LifecycleOperationTracker } from './services/lifecycle-operation-tracker';
@@ -65,6 +70,10 @@ import { MobileRpcWorkspaceAccessService } from './services/mobile-rpc-workspace
     // singleton the hooks write — re-providing would create a divergent instance.
     // HooksModule only adds StorageModule + EventsCoreModule edges (no new cycle).
     HooksModule,
+    // Agent Vault requests: the store (workspace scope of a requestId) and the shared
+    // fulfill service behind vault.* RPCs.
+    VaultRequestsModule,
+    VaultVmCacheModule,
     // NARROW viewport facade (TerminalViewportFacade only) for the live tmux viewport
     // streamer. Imported instead of TerminalModule wholesale to bound the dependency surface.
     TerminalViewportModule,
@@ -102,6 +111,9 @@ import { MobileRpcWorkspaceAccessService } from './services/mobile-rpc-workspace
     TunnelClientService,
     TunnelEventForwarderService,
     AskUserQuestionPushGateService,
+    VaultRequestPushGateService,
+    VaultUseOptInRegistry,
+    MobileVaultRpcService,
     MobileChatRpcService,
     MobileBoardRpcService,
     LifecycleOperationTracker,

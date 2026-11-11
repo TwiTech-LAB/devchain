@@ -144,6 +144,12 @@ export const MOBILE_PUSH_TOPIC_ALLOWLIST: readonly MobilePushTopicRule[] = [
     segments: ['project', MOBILE_PUSH_TOPIC_ID_SEGMENT, 'state'],
     eventTypes: ['agent.created', 'agent.deleted'],
   },
+  // vault.request.pending|resolved → `project/<id>/vault-requests`. Drives the phone's
+  // pending Vault request sheet (catch-up = vault.listRequests).
+  {
+    segments: ['project', MOBILE_PUSH_TOPIC_ID_SEGMENT, 'vault-requests'],
+    eventTypes: ['vault_request.pending', 'vault_request.resolved'],
+  },
 ];
 
 /**

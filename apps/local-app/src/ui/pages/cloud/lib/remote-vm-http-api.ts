@@ -550,6 +550,10 @@ export class RemoteVmHttpApi implements RemoteVmApi {
     return providerAuthRequest('/api/provider-auth/opencode-import', jsonPost({ providerIds }));
   }
 
+  importDevinLogin(label: string): Promise<ProviderAuthEntryItem> {
+    return providerAuthRequest('/api/provider-auth/devin-import', jsonPost({ label }));
+  }
+
   async deleteProviderAuthEntry(entryId: string): Promise<void> {
     await sendProviderAuth(`/api/provider-auth/${entryId}`, { method: 'DELETE' });
   }

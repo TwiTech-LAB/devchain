@@ -147,6 +147,30 @@ interface CreateMutationLike {
   isSuccess: boolean;
 }
 
+/** The wizard opened on BASE; without `mutation`, one that never fires. */
+function useOpenedWizard(api: InMemoryProjectsPageApi, mutation?: CreateMutationLike) {
+  const stub = useMemo<CreateMutationLike>(
+    () => ({ mutate: jest.fn(), isPending: false, isSuccess: false }),
+    [],
+  );
+  const wiz = useCreateProjectWizard(mutation ?? stub, api);
+  useEffect(() => {
+    // openWizard is stable (useCallback over reset); run once on mount.
+    wiz.openWizard(BASE);
+  }, []);
+  return wiz;
+}
+
+/** Every harness renders under one QueryClient + in-memory API pair. */
+function renderWithPreview(
+  preview: SetupPreviewResponse,
+  harness: (api: InMemoryProjectsPageApi) => React.ReactElement,
+) {
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const api = new InMemoryProjectsPageApi({ setupPreview: preview });
+  return render(<QueryClientProvider client={queryClient}>{harness(api)}</QueryClientProvider>);
+}
+
 /**
  * Test harness that drives the create wizard to open and renders the active step body + a "Next"
  * button gated on `controller.canProceed` (mirroring the wizard shell's footer). This proves the
@@ -154,15 +178,7 @@ interface CreateMutationLike {
  * WITHOUT the Dialog chrome. No mutation fires (we never reach submit).
  */
 function WizardHarness({ api }: { api: InMemoryProjectsPageApi }) {
-  const mutation = useMemo<CreateMutationLike>(
-    () => ({ mutate: jest.fn(), isPending: false, isSuccess: false }),
-    [],
-  );
-  const wiz = useCreateProjectWizard(mutation, api);
-  useEffect(() => {
-    // openWizard is stable (useCallback over reset); run once on mount.
-    wiz.openWizard(BASE);
-  }, []);
+  const wiz = useOpenedWizard(api);
   return (
     <div>
       <div data-testid="body">{wiz.controller.currentStep?.render() ?? null}</div>
@@ -174,13 +190,7 @@ function WizardHarness({ api }: { api: InMemoryProjectsPageApi }) {
 }
 
 function renderWizard(preview: SetupPreviewResponse) {
-  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  const api = new InMemoryProjectsPageApi({ setupPreview: preview });
-  return render(
-    <QueryClientProvider client={queryClient}>
-      <WizardHarness api={api} />
-    </QueryClientProvider>,
-  );
+  return renderWithPreview(preview, (api) => <WizardHarness api={api} />);
 }
 
 describe('useCreateProjectWizard — Step 1 provider gating', () => {
@@ -219,6 +229,45 @@ describe('useCreateProjectWizard — Step 1 provider gating', () => {
   });
 });
 
+describe('useCreateProjectWizard — template Vault access line', () => {
+  function StepsHarness({ api }: { api: InMemoryProjectsPageApi }) {
+    const wiz = useOpenedWizard(api);
+    if (wiz.isLoading) return null;
+    return (
+      <>
+        {wiz.controller.visibleSteps.map((step) => (
+          <div key={step.id} data-testid={`step-${step.id}`}>
+            {step.render()}
+          </div>
+        ))}
+      </>
+    );
+  }
+
+  function renderSteps(preview: SetupPreviewResponse) {
+    return renderWithPreview(preview, (api) => <StepsHarness api={api} />);
+  }
+
+  it('shows the line only on the last visible step (the one with Create)', async () => {
+    const preview = oneFamilyPreview();
+    preview.payload.vaultAccess = { mode: 'all' };
+    renderSteps(preview);
+
+    // Teams is skipped (no configurable team), so Agents is the last step.
+    const agents = await screen.findByTestId('step-agents');
+    expect(screen.queryByTestId('step-teams')).not.toBeInTheDocument();
+    expect(agents).toHaveTextContent('This template turns on the Vault for: all agents');
+    expect(screen.getAllByTestId('wizard-vault-access-notice')).toHaveLength(1);
+  });
+
+  it('shows nothing new when the template has no Vault access', async () => {
+    renderSteps(oneFamilyPreview());
+
+    await screen.findByTestId('step-agents');
+    expect(screen.queryByTestId('wizard-vault-access-notice')).not.toBeInTheDocument();
+  });
+});
+
 /**
  * Emission harness: renders the Providers step body so tests can make a real selection (nothing
  * is preselected anymore), while exposing the wizard object for goNext/submit. The body is only
@@ -232,11 +281,8 @@ function EmissionHarness({
   mutation: CreateMutationLike;
   api: InMemoryProjectsPageApi;
 }) {
-  const wiz = useCreateProjectWizard(mutation, api);
+  const wiz = useOpenedWizard(api, mutation);
   lastWiz = wiz;
-  useEffect(() => {
-    wiz.openWizard(BASE);
-  }, []);
   return (
     <div>
       {wiz.controller.currentStep?.id === 'providers' ? wiz.controller.currentStep.render() : null}
@@ -246,13 +292,7 @@ function EmissionHarness({
 
 function renderEmissionHarness(mutation: CreateMutationLike, preview: SetupPreviewResponse) {
   lastWiz = null;
-  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  const api = new InMemoryProjectsPageApi({ setupPreview: preview });
-  return render(
-    <QueryClientProvider client={queryClient}>
-      <EmissionHarness mutation={mutation} api={api} />
-    </QueryClientProvider>,
-  );
+  return renderWithPreview(preview, (api) => <EmissionHarness mutation={mutation} api={api} />);
 }
 
 describe('useCreateProjectWizard — Step 1 family→provider mapping emission', () => {

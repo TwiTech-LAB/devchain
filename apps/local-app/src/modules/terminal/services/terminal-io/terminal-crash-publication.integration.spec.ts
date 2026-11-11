@@ -38,6 +38,7 @@ function bindCrashListener(db: BetterSQLite3Database, emitter: EventEmitter2) {
     { clear: jest.fn() } as never,
     { cleanupSessionSync: jest.fn() } as never,
     { cleanupSession: jest.fn().mockResolvedValue(undefined) } as never,
+    { cleanupSession: jest.fn().mockResolvedValue(undefined) } as never,
     new SessionRowStore(db),
   );
   const gateway = Object.create(TerminalGateway.prototype) as TerminalGateway;

@@ -105,6 +105,9 @@ jest.mock('./pages/ReviewDetailPage.lazy', () => ({
 
 import { App } from './App';
 
+// The agent-request modal has its own spec; these suites mock fetch with other shapes.
+jest.mock('@/ui/pages/vault/VaultRequestModal', () => ({ VaultRequestModal: () => null }));
+
 // Mock all the hooks and components that App depends on
 jest.mock('./hooks/useProjectSelection', () => ({
   ProjectSelectionProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,

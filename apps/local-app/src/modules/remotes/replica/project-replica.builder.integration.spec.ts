@@ -95,6 +95,40 @@ describe('ProjectReplicaBuilder (integration)', () => {
   });
 
   it('builds an attach replica with every table, preserved IDs and referenced global rows', async () => {
+    for (const [id, projectId] of [
+      ['vault-own', 'A'],
+      ['vault-global', null],
+    ] as const) {
+      seed.insert('vault_entries', {
+        id,
+        project_id: projectId,
+        name: 'VAULT_CANARY_NAME',
+        kind: 'secret',
+        description: 'd',
+        value_ciphertext: 'vault-canary-ciphertext',
+        created_at: T,
+        updated_at: T,
+      });
+      seed.insert('vault_entry_grants', {
+        id: `${id}-grant`,
+        entry_id: id,
+        project_id: 'A',
+        created_at: T,
+      });
+    }
+    seed.insert('vault_family_access', {
+      id: 'vault-access-row',
+      project_id: 'A',
+      family_slug: 'vault-access-canary',
+      created_at: T,
+    });
+    seed.insert('vault_use_family_approvals', {
+      id: 'vault-approval-row',
+      entry_id: 'vault-own',
+      project_id: 'A',
+      family_slug: 'vault-approval-canary',
+      created_at: T,
+    });
     const result = await builder.build({ projectIds: ['A'], scope: 'attach' });
 
     if (!result.ok) throw new Error(JSON.stringify(result.errors));
@@ -147,6 +181,13 @@ describe('ProjectReplicaBuilder (integration)', () => {
       envScopes: { API_KEY: ['A', 'B'] },
     });
     expect(tables).not.toHaveProperty('provider_env_scopes');
+    expect(tables).not.toHaveProperty('vault_entries');
+    expect(tables).not.toHaveProperty('vault_entry_grants');
+    expect(tables).not.toHaveProperty('vault_family_access');
+    expect(tables).not.toHaveProperty('vault_use_family_approvals');
+    expect(JSON.stringify(replica)).not.toMatch(
+      /VAULT_CANARY_NAME|vault-canary-ciphertext|vault-access-canary|vault-approval-canary/,
+    );
     expect(tables.project_settings).toEqual([
       { project_id: 'A', key: 'autoClean.statusIds', value: ['A-status'] },
       { project_id: 'A', key: 'projectPresets', value: [{ name: 'Fast', agentConfigs: [] }] },

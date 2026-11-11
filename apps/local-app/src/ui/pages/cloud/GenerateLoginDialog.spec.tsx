@@ -26,8 +26,8 @@ const waiting: ProviderAuthGenerationView = {
 
 let cancels: number;
 let starts: number;
-/** How the start answers: a new login, or the 409 that names the login already running. */
-let startAnswer: 'new' | 'running';
+/** How the start answers: a new login, the 409 that names the login already running, or a locked Vault. */
+let startAnswer: 'new' | 'running' | 'locked';
 /** While set, the start answers only after it settles. */
 let startGate: Promise<void> | null;
 
@@ -47,6 +47,18 @@ beforeEach(() => {
     if (target === '/api/provider-auth/generate' && method === 'POST') {
       starts += 1;
       await startGate;
+      if (startAnswer === 'locked') {
+        return {
+          ok: false,
+          status: 503,
+          json: async () => ({
+            statusCode: 503,
+            code: 'vault_unavailable',
+            message:
+              'Vault locked. Unlock the Vault in Settings → Vault to use this login or connection.',
+          }),
+        } as Response;
+      }
       if (startAnswer === 'running') {
         return {
           ok: false,
@@ -84,6 +96,16 @@ function renderDialog(
 }
 
 describe('GenerateLoginDialog', () => {
+  it('replaces the starting spinner with the error when the start is refused', async () => {
+    startAnswer = 'locked';
+    renderDialog();
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('Vault locked');
+    expect(screen.getByTestId('login-generation-state')).toHaveTextContent(
+      'The login did not start.',
+    );
+  });
+
   it("hides a claim's login on Escape without cancelling it", async () => {
     const { onClose } = renderDialog({ attach: waiting });
     await screen.findByTestId('terminal-stub');

@@ -666,6 +666,55 @@
       "when": 1791761398862,
       "tag": "0094_agent_worktree_lanes",
       "breakpoints": true
+    },
+    {
+      "idx": 95,
+      "version": "6",
+      "when": 1793973036189,
+      "tag": "0095_vault_key_slots",
+      "breakpoints": true
+    },
+    {
+      "idx": 96,
+      "version": "6",
+      "when": 1793974178876,
+      "tag": "0096_vault_entries",
+      "breakpoints": true
+    },
+    {
+      "idx": 97,
+      "version": "6",
+      "when": 1793975299526,
+      "tag": "0097_session_vault_grants",
+      "breakpoints": true
+    },
+    {
+      "idx": 98,
+      "version": "6",
+      "when": 1794266420576,
+      "tag": "0098_vault_family_access",
+      "breakpoints": true
+    },
+    {
+      "idx": 99,
+      "version": "6",
+      "when": 1794267208965,
+      "tag": "0099_vault_entries_last_used",
+      "breakpoints": true
+    },
+    {
+      "idx": 100,
+      "version": "6",
+      "when": 1794269188395,
+      "tag": "0100_drop_session_vault_grants",
+      "breakpoints": true
+    },
+    {
+      "idx": 101,
+      "version": "6",
+      "when": 1794330790698,
+      "tag": "0101_vault_use_approvals",
+      "breakpoints": true
     }
   ]
 }

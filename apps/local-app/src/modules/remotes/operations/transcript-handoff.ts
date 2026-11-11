@@ -29,12 +29,14 @@ export class TranscriptHandoff {
       const home = await this.files.list(refs);
       const host = await this.host.listTranscripts(run.operation.remoteId, refs);
       const [source, destination] = direction === 'push' ? [home, host] : [host, home];
-      const sizes = new Map(
-        destination.files.map(({ file, size }) => [`${file.provider}:${file.path}`, size]),
+      const existing = new Map(
+        destination.files.map((entry) => [`${entry.file.provider}:${entry.file.path}`, entry]),
       );
-      const pending = source.files.filter(
-        ({ file, size }) => sizes.get(`${file.provider}:${file.path}`) !== size,
-      );
+      // A listing carries a hash only for providers that rewrite files at the same size.
+      const pending = source.files.filter(({ file, size, sha256 }) => {
+        const copy = existing.get(`${file.provider}:${file.path}`);
+        return copy?.size !== size || copy.sha256 !== sha256;
+      });
       const progress: TranscriptTransferDetails = {
         filesDone: 0,
         filesTotal: pending.length,
