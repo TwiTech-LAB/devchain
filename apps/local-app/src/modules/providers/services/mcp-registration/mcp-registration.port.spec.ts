@@ -1,14 +1,17 @@
+import * as path from 'path';
 import type { Provider } from '../../../storage/models/domain.models';
 import type { StorageService } from '../../../storage/interfaces/storage.interface';
 import { ProviderAdapterFactory, ClaudeAdapter, CodexAdapter } from '../../../providers/adapters';
 import { OpencodeAdapter } from '../../../providers/adapters/opencode.adapter';
 import { AntigravityAdapter } from '../../../providers/adapters/antigravity.adapter';
 import { CopilotAdapter } from '../../../providers/adapters/copilot.adapter';
+import { DevinAdapter } from '../../../providers/adapters/devin.adapter';
 import { FakeProcessExecutor } from '../../../terminal/services/process-executor/fake-process-executor';
 import { McpRegistrationPort } from './mcp-registration.port';
 import { CliMcpRegistrationAdapter } from './cli-mcp-registration.adapter';
 import { ConfigFileMcpRegistrationAdapter } from './config-file-mcp-registration.adapter';
 import { AntigravityMcpRegistrationAdapter } from './antigravity-mcp-registration.adapter';
+import { parseJsonc } from '../../../../common/jsonc';
 
 jest.mock('fs/promises', () => ({
   access: jest.fn(),
@@ -89,6 +92,20 @@ describe('McpRegistrationPort', () => {
     updatedAt: new Date().toISOString(),
   };
 
+  const devinProvider: Provider = {
+    id: 'p-devin',
+    name: 'devin',
+    binPath: '/usr/local/bin/devin',
+    mcpConfigured: false,
+    mcpEndpoint: null,
+    mcpRegisteredAt: null,
+    autoCompactThreshold: null,
+    claudeLaunchSettingsJson: null,
+    env: null,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  };
+
   beforeEach(() => {
     const storage = { updateProviderMcpMetadata: jest.fn() } as unknown as StorageService;
     const opencodeAdapter = new OpencodeAdapter();
@@ -100,10 +117,15 @@ describe('McpRegistrationPort', () => {
       // MCP methods don't use the injected trust/auth services, so stub them.
       new AntigravityAdapter(undefined as never),
       new CopilotAdapter(undefined as never, undefined as never),
+      new DevinAdapter(),
     );
     fakeExecutor = new FakeProcessExecutor();
     const cliAdapter = new CliMcpRegistrationAdapter(factory, fakeExecutor);
-    const configFileAdapter = new ConfigFileMcpRegistrationAdapter(factory);
+    // A separate executor: the git-exclude lookup is not a provider CLI call.
+    const configFileAdapter = new ConfigFileMcpRegistrationAdapter(
+      factory,
+      new FakeProcessExecutor(),
+    );
     const antigravityAdapter = new AntigravityMcpRegistrationAdapter(factory);
     port = new McpRegistrationPort(cliAdapter, configFileAdapter, antigravityAdapter, factory);
 
@@ -271,6 +293,113 @@ describe('McpRegistrationPort', () => {
 
       expect(result.success).toBe(true);
       expect(result.action).toBe('added');
+    });
+  });
+
+  describe('ConfigFile adapter routing (Devin — .devin/mcp_config.local.json)', () => {
+    // Devin declares mcpMode='project_config' → isMcpCli=false → the port must
+    // route it to ConfigFileMcpRegistrationAdapter, never the CLI adapter
+    // (`devin mcp remove` can't touch foreign configs).
+    const devinConfigPath = path.join('/projects/myapp', '.devin', 'mcp_config.local.json');
+
+    it('register writes mcpServers.<alias> under .devin/ with mkdir, zero CLI calls', async () => {
+      const enoent = new Error('ENOENT') as NodeJS.ErrnoException;
+      enoent.code = 'ENOENT';
+      readFileMock.mockRejectedValue(enoent);
+
+      const result = await port.register(
+        devinProvider,
+        { endpoint: 'http://127.0.0.1:3000/mcp', alias: 'devchain' },
+        { cwd: '/projects/myapp' },
+      );
+
+      expect(result.success).toBe(true);
+      expect(fakeExecutor.calls).toHaveLength(0);
+      expect(mkdirMock).toHaveBeenCalledWith(path.dirname(devinConfigPath), {
+        recursive: true,
+      });
+      expect(writeFileMock).toHaveBeenCalledWith(
+        devinConfigPath + '.tmp',
+        expect.any(String),
+        'utf-8',
+      );
+      expect(renameMock).toHaveBeenCalledWith(devinConfigPath + '.tmp', devinConfigPath);
+      const written = JSON.parse(writeFileMock.mock.calls[0][1] as string);
+      expect(written.mcpServers.devchain).toEqual({
+        url: 'http://127.0.0.1:3000/mcp',
+        transport: 'http',
+      });
+      expect(written.mcp).toBeUndefined();
+    });
+
+    it('ensure reports already_configured when the commented file entry endpoint matches', async () => {
+      readFileMock.mockResolvedValue(`{
+  // devin documents comments in this file
+  "mcpServers": {
+    "devchain": { "url": "http://127.0.0.1:3000/mcp", "transport": "http" },
+  },
+}`);
+
+      const result = await port.ensure(
+        devinProvider,
+        { endpoint: 'http://127.0.0.1:3000/mcp', alias: 'devchain' },
+        { cwd: '/projects/myapp' },
+      );
+
+      expect(result.success).toBe(true);
+      expect(result.action).toBe('already_configured');
+      expect(fakeExecutor.calls).toHaveLength(0);
+      expect(writeFileMock).not.toHaveBeenCalled();
+    });
+
+    it('register and remove edit only the DevChain entry of a commented file', async () => {
+      const original = `{
+  // user servers
+  "mcpServers": {
+    "mine": { "command": "my-mcp", "args": [] } /* stdio */
+  }
+}
+`;
+      readFileMock.mockResolvedValueOnce(original);
+      await port.register(
+        devinProvider,
+        { endpoint: 'http://127.0.0.1:3000/mcp', alias: 'devchain' },
+        { cwd: '/projects/myapp' },
+      );
+      const added = writeFileMock.mock.calls[0][1] as string;
+      expect(added).toContain('// user servers');
+      expect(added).toContain('/* stdio */');
+      expect(parseJsonc(added)).toEqual({
+        mcpServers: {
+          mine: { command: 'my-mcp', args: [] },
+          devchain: { url: 'http://127.0.0.1:3000/mcp', transport: 'http' },
+        },
+      });
+
+      readFileMock.mockResolvedValueOnce(added);
+      const removed = await port.remove(devinProvider, 'devchain', { cwd: '/projects/myapp' });
+
+      expect(removed.success).toBe(true);
+      const after = writeFileMock.mock.calls[1][1] as string;
+      expect(after).toContain('// user servers');
+      expect(after).toContain('/* stdio */');
+      expect(parseJsonc(after)).toEqual({ mcpServers: { mine: { command: 'my-mcp', args: [] } } });
+    });
+
+    it('ensure adds the entry when the file is missing (no devin CLI involved)', async () => {
+      const enoent = new Error('ENOENT') as NodeJS.ErrnoException;
+      enoent.code = 'ENOENT';
+      readFileMock.mockRejectedValue(enoent);
+
+      const result = await port.ensure(
+        devinProvider,
+        { endpoint: 'http://127.0.0.1:3000/mcp', alias: 'devchain' },
+        { cwd: '/projects/myapp' },
+      );
+
+      expect(result.success).toBe(true);
+      expect(result.action).toBe('added');
+      expect(fakeExecutor.calls).toHaveLength(0);
     });
   });
 

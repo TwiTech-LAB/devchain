@@ -12,6 +12,7 @@ import { CodexSessionReaderAdapter } from './adapters/codex-session-reader.adapt
 import { OpenCodeSessionReaderAdapter } from './adapters/opencode-session-reader.adapter';
 import { AntigravitySessionReaderAdapter } from './adapters/antigravity-session-reader.adapter';
 import { CopilotSessionReaderAdapter } from './adapters/copilot-session-reader.adapter';
+import { DevinSessionReaderAdapter } from './adapters/devin-session-reader.adapter';
 import { PRICING_SERVICE } from './services/pricing.interface';
 import { PricingService } from './services/pricing.service';
 import { SessionReaderService } from './services/session-reader.service';
@@ -49,6 +50,7 @@ import { RuntimeContextCaptureModule } from '../runtime-context-capture/runtime-
     OpenCodeSessionReaderAdapter,
     AntigravitySessionReaderAdapter,
     CopilotSessionReaderAdapter,
+    DevinSessionReaderAdapter,
     { provide: PRICING_SERVICE, useClass: PricingService },
     SessionReaderService,
     { provide: TRANSCRIPT_CACHE_CONFIG, useFactory: getTranscriptCacheConfig },
@@ -68,6 +70,7 @@ import { RuntimeContextCaptureModule } from '../runtime-context-capture/runtime-
     OpenCodeSessionReaderAdapter,
     AntigravitySessionReaderAdapter,
     CopilotSessionReaderAdapter,
+    DevinSessionReaderAdapter,
     PRICING_SERVICE,
     SessionReaderService,
     SessionCacheService,
@@ -84,6 +87,7 @@ export class SessionReaderModule implements OnModuleInit {
     private readonly opencodeAdapter: OpenCodeSessionReaderAdapter,
     private readonly antigravityAdapter: AntigravitySessionReaderAdapter,
     private readonly copilotAdapter: CopilotSessionReaderAdapter,
+    private readonly devinAdapter: DevinSessionReaderAdapter,
   ) {}
 
   onModuleInit() {
@@ -92,5 +96,6 @@ export class SessionReaderModule implements OnModuleInit {
     this.adapterFactory.registerAdapter(this.opencodeAdapter);
     this.adapterFactory.registerAdapter(this.antigravityAdapter);
     this.adapterFactory.registerAdapter(this.copilotAdapter);
+    this.adapterFactory.registerAdapter(this.devinAdapter);
   }
 }

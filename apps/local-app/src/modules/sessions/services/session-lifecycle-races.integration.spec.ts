@@ -206,6 +206,10 @@ describe('session lifecycle race serialization', () => {
       providerName: 'copilot',
       ensureHooksConfig: jest.fn().mockResolvedValue(undefined),
     };
+    const devinHooksConfigService = {
+      providerName: 'devin',
+      ensureHooksConfig: jest.fn().mockResolvedValue(undefined),
+    };
     const preflightService = {
       runChecks: jest.fn().mockResolvedValue({ overall: 'pass', checks: [], providers: [] }),
     };
@@ -250,6 +254,7 @@ describe('session lifecycle race serialization', () => {
       terminalSessionRegistry as never,
       hooksConfigService as never,
       copilotHooksConfigService as never,
+      devinHooksConfigService as never,
       preflightService as never,
       mcpEnsureService as never,
       eventsService as never,

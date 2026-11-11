@@ -318,6 +318,8 @@ export class UpdateLoginsOperation implements RemoteOperationDefinition {
       }
     }
     if (adapter?.payloadKind === 'files') files.add(path.join(homePath, adapter.filePath));
+    if (adapter?.payloadKind === 'env' && adapter.claimFile)
+      files.add(path.join(homePath, adapter.claimFile.path));
     if (adapter?.payloadKind === 'opencode-entry')
       files.add(path.join(homePath, OPENCODE_AUTH_FILE_PATH));
     return { envKeys: [...envKeys], files: [...files] };

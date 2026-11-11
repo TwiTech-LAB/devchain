@@ -86,6 +86,24 @@ function overviewFixture(): ProviderClisOverview {
           checkedAt: null,
         },
       },
+      devin: {
+        provider: 'devin',
+        npmPackage: 'devin',
+        setting: { version: 'latest', homeManaged: true },
+        lookup: {
+          latestVersion: '3000.11.234',
+          versions: ['3000.11.234'],
+          checkedAt: '2026-09-28T10:00:00.000Z',
+          error: null,
+        },
+        install: {
+          desiredVersion: 'latest',
+          installedVersion: '3000.11.234',
+          state: 'idle',
+          error: null,
+          checkedAt: '2026-09-28T10:00:00.000Z',
+        },
+      },
       opencode: {
         provider: 'opencode',
         npmPackage: '@opencode/cli',
@@ -202,6 +220,7 @@ describe('ProviderCliVersionsSection', () => {
       'Claude CLI version',
       'Codex CLI version',
       'Copilot CLI version',
+      'Devin CLI version',
       'OpenCode CLI version',
       'Antigravity CLI version',
     ]) {

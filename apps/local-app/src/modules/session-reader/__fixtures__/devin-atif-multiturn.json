@@ -1,0 +1,145 @@
+{
+  "schema_version": "ATIF-v1.7",
+  "session_id": "camp-magazine",
+  "agent": {
+    "name": "devin",
+    "version": "3000.11.234",
+    "model_name": "SWE-2 Flash Medium"
+  },
+  "steps": [
+    {
+      "step_id": 1,
+      "timestamp": "2026-11-07T16:28:11.254737830+00:00",
+      "source": "system",
+      "message": "<normal system prompt trimmed>",
+      "extra": {
+        "telemetry": {
+          "source": "sysprompt",
+          "operation": "normal"
+        }
+      }
+    },
+    {
+      "step_id": 2,
+      "timestamp": "2026-11-07T16:28:11.278945263+00:00",
+      "source": "system",
+      "message": "<subagent_profiles system prompt trimmed>",
+      "extra": {
+        "telemetry": {
+          "source": "sysprompt",
+          "operation": "subagent_profiles"
+        }
+      }
+    },
+    {
+      "step_id": 3,
+      "timestamp": "2026-11-07T16:28:12.156318915+00:00",
+      "source": "system",
+      "message": "You are powered by SWE-2 Flash Medium.",
+      "extra": {
+        "telemetry": {
+          "source": "system",
+          "operation": "unknown"
+        }
+      }
+    },
+    {
+      "step_id": 4,
+      "timestamp": "2026-11-07T16:28:11.286758190+00:00",
+      "source": "system",
+      "message": "<system_info>\nCurrent workspace directories:\n  /work/probe (cwd)\n</system_info>",
+      "extra": {
+        "telemetry": {
+          "source": "system",
+          "operation": "unknown"
+        }
+      }
+    },
+    {
+      "step_id": 5,
+      "timestamp": "2026-11-07T16:28:13.111957346+00:00",
+      "source": "user",
+      "message": "Use your file read tool to read README.md, then reply with its first line only.",
+      "extra": {
+        "telemetry": {
+          "source": "user",
+          "operation": "unknown"
+        }
+      }
+    },
+    {
+      "step_id": 6,
+      "timestamp": "2026-11-07T16:28:13.120002656+00:00",
+      "source": "system",
+      "message": "<available_skills>\n- **devin-cli**: Look up Devin CLI documentation (source: builtin)\n</available_skills>",
+      "extra": {
+        "telemetry": {
+          "source": "system",
+          "operation": "unknown"
+        }
+      }
+    },
+    {
+      "step_id": 7,
+      "timestamp": "2026-11-07T16:28:13.471687092+00:00",
+      "source": "agent",
+      "message": "",
+      "model_name": "swe-2-flash-medium",
+      "reasoning_content": "Need read README.md in cwd.",
+      "tool_calls": [
+        {
+          "tool_call_id": "call_84f5ab3d5bbab351",
+          "function_name": "read",
+          "arguments": {
+            "file_path": "/work/probe/README.md"
+          }
+        }
+      ],
+      "observation": {
+        "results": [
+          {
+            "source_call_id": "call_84f5ab3d5bbab351",
+            "content": "<file-view path=\"/work/probe/README.md\" start_line=\"1\" end_line=\"1\" total_lines=\"1\">\n  1|# probe project\n</file-view>"
+          }
+        ]
+      },
+      "metrics": {
+        "prompt_tokens": 12041,
+        "completion_tokens": 84,
+        "cached_tokens": 9984
+      },
+      "extra": {
+        "generation_model": "swe-2-flash-medium",
+        "telemetry": {
+          "source": "assistant",
+          "operation": "inference"
+        }
+      }
+    },
+    {
+      "step_id": 8,
+      "timestamp": "2026-11-07T16:28:21.112689333+00:00",
+      "source": "agent",
+      "message": "# probe project",
+      "model_name": "swe-2-flash-medium",
+      "tool_calls": [],
+      "metrics": {
+        "prompt_tokens": 12221,
+        "completion_tokens": 6
+      },
+      "extra": {
+        "generation_model": "swe-2-flash-medium",
+        "telemetry": {
+          "source": "assistant",
+          "operation": "inference"
+        }
+      }
+    }
+  ],
+  "final_metrics": {
+    "total_prompt_tokens": 24262,
+    "total_completion_tokens": 90,
+    "total_cached_tokens": 9984,
+    "total_steps": 8
+  }
+}

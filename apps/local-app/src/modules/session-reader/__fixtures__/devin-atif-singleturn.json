@@ -1,0 +1,110 @@
+{
+  "schema_version": "ATIF-v1.7",
+  "session_id": "full-witness",
+  "agent": {
+    "name": "devin",
+    "version": "3000.11.234",
+    "model_name": "SWE-2 Flash Medium"
+  },
+  "steps": [
+    {
+      "step_id": 1,
+      "timestamp": "2026-11-07T16:27:11.914674868+00:00",
+      "source": "system",
+      "message": "<normal system prompt trimmed>",
+      "extra": {
+        "telemetry": {
+          "source": "sysprompt",
+          "operation": "normal"
+        }
+      }
+    },
+    {
+      "step_id": 2,
+      "timestamp": "2026-11-07T16:27:11.916743212+00:00",
+      "source": "system",
+      "message": "<subagent_profiles system prompt trimmed>",
+      "extra": {
+        "telemetry": {
+          "source": "sysprompt",
+          "operation": "subagent_profiles"
+        }
+      }
+    },
+    {
+      "step_id": 3,
+      "timestamp": "2026-11-07T16:27:12.109051501+00:00",
+      "source": "system",
+      "message": "You are powered by SWE-2 Flash Medium.",
+      "extra": {
+        "telemetry": {
+          "source": "system",
+          "operation": "unknown"
+        }
+      }
+    },
+    {
+      "step_id": 4,
+      "timestamp": "2026-11-07T16:27:11.917443626+00:00",
+      "source": "system",
+      "message": "<system_info>\nCurrent workspace directories:\n  /work/probe (cwd)\n</system_info>",
+      "extra": {
+        "telemetry": {
+          "source": "system",
+          "operation": "unknown"
+        }
+      }
+    },
+    {
+      "step_id": 5,
+      "timestamp": "2026-11-07T16:27:12.320221310+00:00",
+      "source": "user",
+      "message": "Reply with the single word OK.",
+      "extra": {
+        "telemetry": {
+          "source": "user",
+          "operation": "unknown"
+        }
+      }
+    },
+    {
+      "step_id": 6,
+      "timestamp": "2026-11-07T16:27:12.328550526+00:00",
+      "source": "system",
+      "message": "<available_skills>\n- **devin-cli**: Look up Devin CLI documentation (source: builtin)\n</available_skills>",
+      "extra": {
+        "telemetry": {
+          "source": "system",
+          "operation": "unknown"
+        }
+      }
+    },
+    {
+      "step_id": 7,
+      "timestamp": "2026-11-07T16:27:12.739223668+00:00",
+      "source": "agent",
+      "message": "OK",
+      "model_name": "swe-2-flash-medium",
+      "reasoning_content": "Reply OK only.",
+      "tool_calls": [],
+      "metrics": {
+        "prompt_tokens": 12030,
+        "completion_tokens": 11,
+        "cached_tokens": 5248
+      },
+      "extra": {
+        "generation_model": "swe-2-flash-medium",
+        "telemetry": {
+          "source": "assistant",
+          "operation": "inference"
+        }
+      }
+    }
+  ],
+  "final_metrics": {
+    "total_prompt_tokens": 12030,
+    "total_completion_tokens": 11,
+    "total_cached_tokens": 5248,
+    "total_steps": 7
+  }
+}

@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { getEnvConfig } from '../../../common/config/env.config';
 
-const CLI_NAMES = ['claude', 'codex', 'copilot', 'opencode', 'agy'] as const;
+const CLI_NAMES = ['claude', 'codex', 'copilot', 'opencode', 'agy', 'devin'] as const;
 
 export function readHostCliVersions(
   file = join(getEnvConfig().DEVCHAIN_HOST_ETC_DIR, 'claim.json'),

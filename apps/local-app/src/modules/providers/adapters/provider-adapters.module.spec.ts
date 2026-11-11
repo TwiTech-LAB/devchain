@@ -12,6 +12,7 @@ describe('ProviderAdaptersModule', () => {
     expect(factory).toBeDefined();
     expect(factory.getAdapter('claude')).toBeDefined();
     expect(factory.getAdapter('copilot')).toBeDefined();
+    expect(factory.getAdapter('devin')).toBeDefined();
     expect(typeof factory.getRuntimePromptBehaviorForAgent).toBe('function');
 
     await module.close();

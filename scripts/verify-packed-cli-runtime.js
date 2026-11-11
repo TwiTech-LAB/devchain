@@ -388,6 +388,7 @@ async function verifyPackedRuntime({ install = false } = {}) {
       "copilot",
       "opencode",
       "agy",
+      "devin",
     ]);
     assert.deepEqual(
       findUndeclaredRequires(packageRoot),

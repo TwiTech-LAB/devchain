@@ -181,6 +181,7 @@
     "hterm": "2.0.2",
     "hterm-umd": "1.0.1",
     "jose": "^5.10.0",
+    "jsonc-parser": "^3.3.1",
     "lucide-react": "0.545.0",
     "node-pty": "1.2.0-beta.2",
     "open": "^8.4.2",

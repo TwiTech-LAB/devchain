@@ -232,6 +232,8 @@ describe('TranscriptPersistenceListener', () => {
       | 'bindTranscriptFromHook'
       | 'bindDiscoveredTranscript'
       | 'backfillTranscriptProviderSessionId'
+      | 'bindProviderSessionIdIfAbsent'
+      | 'getSessionProjectScope'
     >
   >;
   let mockStorage: ReturnType<typeof createMockStorage>;
@@ -270,6 +272,12 @@ describe('TranscriptPersistenceListener', () => {
       backfillTranscriptProviderSessionId: jest
         .fn()
         .mockResolvedValue({ kind: 'backfilledId', sessionId: sessionStartedPayload.sessionId }),
+      bindProviderSessionIdIfAbsent: jest.fn().mockReturnValue(1),
+      getSessionProjectScope: jest.fn().mockReturnValue({
+        sessionId: sessionStartedPayload.sessionId,
+        agentId: sessionStartedPayload.agentId,
+        projectId: 'project-1',
+      }),
     };
     const db = createMockDb();
     mockPrepare = db.mockPrepare;
@@ -311,6 +319,16 @@ describe('TranscriptPersistenceListener', () => {
             providerName: 'copilot',
             hooksEnabled: true,
             hooksProvideTranscriptPath: false,
+          };
+        }
+        if (name === 'devin') {
+          return {
+            providerName: 'devin',
+            hooksEnabled: true,
+            hooksProvideTranscriptPath: false,
+            transcriptDiscoveryStrategy: 'first',
+            providerSessionIdRequiredForRestore: true,
+            transcriptAppearsAfterTurn: true,
           };
         }
         if (name === 'acme') {
@@ -561,6 +579,347 @@ describe('TranscriptPersistenceListener', () => {
           providerSessionId: 'acme-sess-1',
         }),
       );
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Devin confirm path: hooks carry no transcriptPath (the export isn't written
+  // until a turn completes) but DO carry the authoritative providerSessionId —
+  // backfilled here so restore doesn't wait on discovery.
+  // -------------------------------------------------------------------------
+
+  describe('handleHookSessionStarted — Devin provider_session_id backfill', () => {
+    const SID = '33333333-3333-3333-3333-333333333333';
+    const devinSessionStart: ClaudeHooksSessionStartedEventPayload = {
+      providerName: 'devin',
+      providerSessionId: 'first-echidna',
+      claudeSessionId: 'first-echidna',
+      source: 'startup',
+      tmuxSessionName: 'devchain-x',
+      projectId: '11111111-1111-1111-1111-111111111111',
+      agentId: '22222222-2222-2222-2222-222222222222',
+      sessionId: SID,
+      // NOTE: Devin SessionStart carries NO transcriptPath.
+    };
+
+    it('binds provider_session_id from the hook before the export exists', async () => {
+      await listener.handleHookSessionStarted(devinSessionStart);
+
+      expect(mockStore.bindTranscriptFromHook).not.toHaveBeenCalled();
+      expect(mockValidator.validateShape).not.toHaveBeenCalled();
+      expect(mockStore.bindProviderSessionIdIfAbsent).toHaveBeenCalledWith({
+        sessionId: SID,
+        providerSessionId: 'first-echidna',
+        providerName: 'devin',
+        updatedAt: expect.any(String),
+      });
+      expect(mockEvents.publish).toHaveBeenCalledWith('session.providerSessionId.discovered', {
+        sessionId: SID,
+        providerSessionId: 'first-echidna',
+        providerName: 'devin',
+      });
+    });
+
+    it('does not publish when the guarded write loses the race', async () => {
+      mockStore.bindProviderSessionIdIfAbsent.mockReturnValue(0);
+
+      await listener.handleHookSessionStarted(devinSessionStart);
+
+      expect(mockEvents.publish).not.toHaveBeenCalled();
+    });
+
+    it('never overwrites a bound id on hook mismatch', async () => {
+      const warnSpy = jest.spyOn(Logger.prototype, 'warn').mockImplementation();
+      mockStore.getTranscriptMetadata.mockReturnValue({
+        transcript_path: null,
+        provider_session_id: 'other-id',
+      });
+      try {
+        await listener.handleHookSessionStarted(devinSessionStart);
+        expect(mockStore.bindProviderSessionIdIfAbsent).not.toHaveBeenCalled();
+        expect(mockEvents.publish).not.toHaveBeenCalled();
+        expect(warnSpy).toHaveBeenCalledWith(
+          expect.objectContaining({ bound: 'other-id', incoming: 'first-echidna' }),
+          expect.stringContaining('mismatch'),
+        );
+      } finally {
+        warnSpy.mockRestore();
+      }
+    });
+
+    it('writes nothing for an unknown provider (adapter unresolvable)', async () => {
+      const warnSpy = jest.spyOn(Logger.prototype, 'warn').mockImplementation();
+      try {
+        await listener.handleHookSessionStarted({
+          ...devinSessionStart,
+          providerName: 'not-a-real-provider',
+        });
+      } finally {
+        warnSpy.mockRestore();
+      }
+      expect(mockStore.bindProviderSessionIdIfAbsent).not.toHaveBeenCalled();
+      expect(mockEvents.publish).not.toHaveBeenCalledWith(
+        'session.providerSessionId.discovered',
+        expect.anything(),
+      );
+    });
+
+    it('writes nothing for a known provider that is not hook-capable (codex)', async () => {
+      await listener.handleHookSessionStarted({
+        ...devinSessionStart,
+        providerName: 'codex',
+      });
+      expect(mockStore.bindProviderSessionIdIfAbsent).not.toHaveBeenCalled();
+      expect(mockEvents.publish).not.toHaveBeenCalledWith(
+        'session.providerSessionId.discovered',
+        expect.anything(),
+      );
+    });
+
+    it('does not backfill when a contradictory transcriptPath fails the bound-path guard', async () => {
+      const warnSpy = jest.spyOn(Logger.prototype, 'warn').mockImplementation();
+      // Row has a bound transcript_path but a still-NULL provider_session_id;
+      // the incoming hook carries a DIFFERENT path — the mismatch guard must
+      // fire before any provider_session_id write.
+      mockStore.getTranscriptMetadata.mockReturnValue({
+        transcript_path: '/bound/transcript.jsonl',
+        provider_session_id: null,
+      });
+      try {
+        await listener.handleHookSessionStarted({
+          ...devinSessionStart,
+          transcriptPath: '/different/transcript.jsonl',
+        });
+      } finally {
+        warnSpy.mockRestore();
+      }
+      expect(mockStore.bindProviderSessionIdIfAbsent).not.toHaveBeenCalled();
+      expect(mockEvents.publish).not.toHaveBeenCalledWith(
+        'session.providerSessionId.discovered',
+        expect.anything(),
+      );
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Idle-triggered re-discovery: only for adapters whose transcript appears
+  // after a turn (Devin's --export), which can outlast the launch backoff.
+  // -------------------------------------------------------------------------
+
+  describe('handleActivityChanged (idle-triggered re-discovery)', () => {
+    const SID = '33333333-3333-3333-3333-333333333333';
+    let mockAdapter: ReturnType<typeof createMockAdapter>;
+
+    const idlePayload = {
+      sessionId: SID,
+      state: 'idle' as const,
+      lastActivityAt: null,
+      busySince: null,
+    };
+
+    beforeEach(() => {
+      mockAdapter = createMockAdapter();
+      mockAdapterFactory.getAdapter.mockReturnValue(mockAdapter as unknown as SessionReaderAdapter);
+      mockStorage.getProvider.mockResolvedValue(
+        createMockProvider({ id: 'provider-1', name: 'devin', binPath: null }),
+      );
+    });
+
+    it('binds a Devin export that materializes after the launch retries exhaust', async () => {
+      // session.started races the export: the file is absent for the whole
+      // backoff window, so nothing binds.
+      mockAdapter.discoverSessionFile.mockResolvedValue([]);
+      const started = listener.handleSessionStarted(sessionStartedPayload);
+      await advanceAllDiscoveryRetries();
+      await started;
+      expect(mockStore.bindDiscoveredTranscript).not.toHaveBeenCalled();
+
+      // Turn completes → export flushed → the idle transition re-discovers it.
+      const devinFile = makeFileInfo({
+        filePath: `/home/user/.devchain/provider-transcripts/devin/${SID}.json`,
+        providerName: 'devin',
+        providerSessionId: 'first-echidna',
+      });
+      mockAdapter.discoverSessionFile.mockResolvedValue([devinFile]);
+
+      const idle = listener.handleActivityChanged(idlePayload);
+      await jest.advanceTimersByTimeAsync(0);
+      await idle;
+
+      expect(mockStore.bindDiscoveredTranscript).toHaveBeenCalledWith(
+        expect.objectContaining({
+          sessionId: SID,
+          providerSessionId: 'first-echidna',
+        }),
+      );
+      expect(mockEvents.publish).toHaveBeenCalledWith(
+        'session.transcript.discovered',
+        expect.objectContaining({
+          sessionId: SID,
+          providerName: 'devin',
+          providerSessionId: 'first-echidna',
+        }),
+      );
+    });
+
+    it('ignores busy transitions', async () => {
+      await listener.handleActivityChanged({ ...idlePayload, state: 'busy' });
+
+      expect(mockStore.getSessionProjectScope).not.toHaveBeenCalled();
+      expect(mockAdapter.discoverSessionFile).not.toHaveBeenCalled();
+    });
+
+    it('skips sessions whose binding is already complete', async () => {
+      mockStore.getTranscriptMetadata.mockReturnValue({
+        transcript_path: `/home/user/.devchain/provider-transcripts/devin/${SID}.json`,
+        provider_session_id: 'first-echidna',
+      });
+
+      await listener.handleActivityChanged(idlePayload);
+
+      expect(mockStore.getSessionProjectScope).not.toHaveBeenCalled();
+      expect(mockAdapter.discoverSessionFile).not.toHaveBeenCalled();
+    });
+
+    it.each(['codex', 'claude'])(
+      'skips %s: its transcript does not appear after the turn',
+      async (providerName) => {
+        mockStorage.getProvider.mockResolvedValue(
+          createMockProvider({ id: 'provider-1', name: providerName, binPath: null }),
+        );
+
+        await listener.handleActivityChanged(idlePayload);
+
+        expect(mockAdapter.discoverSessionFile).not.toHaveBeenCalled();
+      },
+    );
+
+    it('skips when the session has no agent scope', async () => {
+      mockStore.getSessionProjectScope.mockReturnValue(null);
+
+      await listener.handleActivityChanged(idlePayload);
+
+      expect(mockAdapter.discoverSessionFile).not.toHaveBeenCalled();
+    });
+
+    it('preserves one pending rerun when idle arrives during the final unsuccessful attempt', async () => {
+      // The launch-discovery loop reaches its LAST attempt with the file still
+      // absent; the call hangs on a deferred promise while a turn end arrives —
+      // the pending rerun must fire once more after the loop exits and bind.
+      let activeCalls = 0;
+      let maxActive = 0;
+      let call = 0;
+      let resolveFinal: ((v: never[]) => void) | null = null;
+      mockAdapter.discoverSessionFile.mockImplementation(async () => {
+        call += 1;
+        activeCalls += 1;
+        maxActive = Math.max(maxActive, activeCalls);
+        try {
+          if (call === 7) {
+            // Final attempt of the launch loop — defer until the test releases it.
+            return await new Promise<never[]>((resolve) => {
+              resolveFinal = resolve;
+            });
+          }
+          if (call >= 8) {
+            return [
+              makeFileInfo({
+                filePath: `/home/user/.devchain/provider-transcripts/devin/${SID}.json`,
+                providerName: 'devin',
+                providerSessionId: 'first-echidna',
+              }),
+            ];
+          }
+          return [];
+        } finally {
+          activeCalls -= 1;
+        }
+      });
+
+      const started = listener.handleSessionStarted(sessionStartedPayload);
+      // Let the loop reach the deferred final attempt.
+      await advanceAllDiscoveryRetries();
+
+      // Turn end arrives while the final attempt is still in flight.
+      const idle = listener.handleActivityChanged(idlePayload);
+      await jest.advanceTimersByTimeAsync(0);
+      await idle;
+
+      expect(call).toBe(7);
+      resolveFinal!([] as never[]);
+      await started;
+      await advanceAllDiscoveryRetries();
+
+      expect(call).toBe(8);
+      expect(maxActive).toBe(1);
+      expect(mockStore.bindDiscoveredTranscript).toHaveBeenCalledWith(
+        expect.objectContaining({ sessionId: SID, providerSessionId: 'first-echidna' }),
+      );
+    });
+
+    it('does not queue a rerun for a duplicate session.started while a loop owns the session', async () => {
+      let release: (() => void) | null = null;
+      let calls = 0;
+      mockAdapter.discoverSessionFile.mockImplementation(async () => {
+        calls += 1;
+        if (calls === 1) {
+          await new Promise<void>((resolve) => {
+            release = resolve;
+          });
+        }
+        return [];
+      });
+
+      const started = listener.handleSessionStarted(sessionStartedPayload);
+      await jest.advanceTimersByTimeAsync(0);
+
+      // Second launch signal while the first loop owns the session: returns
+      // immediately and MUST NOT queue a pending rerun.
+      await listener.handleSessionStarted(sessionStartedPayload);
+
+      release!();
+      await advanceAllDiscoveryRetries();
+      await started;
+
+      // The queued-second-signal rerun never happened: only the first loop ran
+      // (initial attempt + DISCOVERY_MAX_RETRIES retries = 7 adapter calls).
+      expect(calls).toBe(7);
+      expect(mockStore.bindDiscoveredTranscript).not.toHaveBeenCalled();
+    });
+
+    it('suppresses a queued rerun once the binding gate is complete', async () => {
+      let resolveFinal: ((v: never[]) => void) | null = null;
+      let call = 0;
+      mockAdapter.discoverSessionFile.mockImplementation(async () => {
+        call += 1;
+        if (call === 7) {
+          return await new Promise<never[]>((resolve) => {
+            resolveFinal = resolve;
+          });
+        }
+        return [];
+      });
+
+      const started = listener.handleSessionStarted(sessionStartedPayload);
+      await advanceAllDiscoveryRetries();
+
+      // Idle queues a pending rerun while the gate still needs binding.
+      const idle = listener.handleActivityChanged(idlePayload);
+      await jest.advanceTimersByTimeAsync(0);
+      await idle;
+
+      // Another path completes the binding before the loop's tail check.
+      mockStore.getTranscriptMetadata.mockReturnValue({
+        transcript_path: `/home/user/.devchain/provider-transcripts/devin/${SID}.json`,
+        provider_session_id: 'first-echidna',
+      });
+
+      resolveFinal!([] as never[]);
+      await started;
+      await advanceAllDiscoveryRetries();
+
+      expect(call).toBe(7);
+      expect(mockStore.bindDiscoveredTranscript).not.toHaveBeenCalled();
     });
   });
 

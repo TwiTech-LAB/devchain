@@ -51,6 +51,7 @@ describe('ProviderCliSettingsDelegate', () => {
         claude: { version: 'latest', homeManaged: false },
         codex: { version: 'latest', homeManaged: false },
         copilot: { version: 'latest', homeManaged: false },
+        devin: { version: 'latest', homeManaged: false },
         opencode: { version: 'latest', homeManaged: false },
       });
       expect(defaultProviderCliEntry()).toEqual({ version: 'latest', homeManaged: false });

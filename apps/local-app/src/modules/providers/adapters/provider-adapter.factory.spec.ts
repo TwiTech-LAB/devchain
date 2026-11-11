@@ -4,6 +4,7 @@ import { CodexAdapter } from './codex.adapter';
 import { OpencodeAdapter } from './opencode.adapter';
 import { AntigravityAdapter } from './antigravity.adapter';
 import { CopilotAdapter } from './copilot.adapter';
+import { DevinAdapter } from './devin.adapter';
 import { UnsupportedProviderError, NotFoundError } from '../../../common/errors/error-types';
 import type { StorageService } from '../../storage/interfaces/storage.interface';
 
@@ -23,6 +24,7 @@ describe('ProviderAdapterFactory', () => {
   let opencodeAdapter: OpencodeAdapter;
   let antigravityAdapter: AntigravityAdapter;
   let copilotAdapter: CopilotAdapter;
+  let devinAdapter: DevinAdapter;
   let mockStorage: StorageService;
 
   beforeEach(() => {
@@ -34,6 +36,7 @@ describe('ProviderAdapterFactory', () => {
       { ensure: jest.fn() } as never,
       { isAuthenticated: jest.fn() } as never,
     );
+    devinAdapter = new DevinAdapter();
     mockStorage = makeMockStorage();
     factory = new ProviderAdapterFactory(
       mockStorage,
@@ -42,6 +45,7 @@ describe('ProviderAdapterFactory', () => {
       opencodeAdapter,
       antigravityAdapter,
       copilotAdapter,
+      devinAdapter,
     );
   });
 
@@ -57,6 +61,12 @@ describe('ProviderAdapterFactory', () => {
       expect(factory.getAdapter('copilot').providerName).toBe('copilot');
       expect(factory.getAdapter('Copilot')).toBe(copilotAdapter);
       expect(factory.getAdapter('COPILOT')).toBe(copilotAdapter);
+    });
+
+    it('returns DevinAdapter for devin provider (case-insensitive)', () => {
+      expect(factory.getAdapter('devin')).toBeInstanceOf(DevinAdapter);
+      expect(factory.getAdapter('devin').providerName).toBe('devin');
+      expect(factory.getAdapter('DEVIN')).toBe(devinAdapter);
     });
 
     it('OpenCode adapter does not define launchInitialPromptBehavior', () => {
@@ -97,7 +107,7 @@ describe('ProviderAdapterFactory', () => {
         expect(unsupportedError.code).toBe('unsupported_provider');
         expect(unsupportedError.details).toEqual({
           providerName: 'unknown',
-          supportedProviders: ['claude', 'codex', 'opencode', 'agy', 'copilot'],
+          supportedProviders: ['claude', 'codex', 'opencode', 'agy', 'copilot', 'devin'],
         });
       }
     });
@@ -126,9 +136,9 @@ describe('ProviderAdapterFactory', () => {
     it('returns array of supported provider names', () => {
       const supported = factory.getSupportedProviders();
       expect(supported).toEqual(
-        expect.arrayContaining(['claude', 'codex', 'opencode', 'agy', 'copilot']),
+        expect.arrayContaining(['claude', 'codex', 'opencode', 'agy', 'copilot', 'devin']),
       );
-      expect(supported).toHaveLength(5);
+      expect(supported).toHaveLength(6);
     });
   });
 

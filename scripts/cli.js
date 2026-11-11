@@ -283,11 +283,13 @@ function detectInstalledProviders() {
   const opencodePath = isBinaryInstalled('opencode');
   const agyPath = isBinaryInstalled('agy');
   const copilotPath = isBinaryInstalled('copilot');
+  const devinPath = isBinaryInstalled('devin');
   if (codexPath) detected.set('codex', codexPath);
   if (claudePath) detected.set('claude', claudePath);
   if (opencodePath) detected.set('opencode', opencodePath);
   if (agyPath) detected.set('agy', agyPath);
   if (copilotPath) detected.set('copilot', copilotPath);
+  if (devinPath) detected.set('devin', devinPath);
   return detected; // Map<name, absolutePath>
 }
 
@@ -772,12 +774,13 @@ async function runHostPreflightChecks(
     if (providersDetected.size === 0) {
       const guide = [
         'No provider binaries detected on PATH. Install at least one provider and retry.',
-        'Checked: "which codex", "which claude", "which opencode", "which agy", and "which copilot"',
+        'Checked: "which codex", "which claude", "which opencode", "which agy", "which copilot", and "which devin"',
         'Examples:',
         '  - Install Codex:    npm i -g @openai/codex (example) or follow provider docs',
         '  - Install Claude:   npm i -g @anthropic-ai/claude-code (example) or follow provider docs',
         '  - Install agy:      curl -fsSL https://antigravity.google/cli/install.sh | bash or follow provider docs',
         '  - Install OpenCode: npm i -g @opencode/cli or follow provider docs',
+        '  - Install Devin:    npm i -g devin or follow provider docs',
         'Advanced: bypass with DEVCHAIN_SKIP_PROVIDER_CHECK=1',
       ].join('\n');
       if (opts.foreground) {
@@ -788,6 +791,7 @@ async function runHostPreflightChecks(
             'which opencode',
             'which agy',
             'which copilot',
+            'which devin',
           ],
         });
       } else {

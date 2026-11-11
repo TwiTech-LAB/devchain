@@ -2,15 +2,16 @@
   "_manifest": {
     "slug": "teams-dev",
     "name": "DevChain Development Flow",
-    "description": "A multi-agent development workflow that automates software delivery through three phases:\n\n1. Planning — A Brainstormer agent collaborates with a technical validator to refine user requirements into an approved master plan, then breaks it down into epics and tasks.\n2. Execution — A Coder agent implements tasks while an Epic Manager reviews and controls the flow—approving, revising, or flagging issues until all work is complete.\n3. Code Review — A Code Reviewer audits the completed work against architectural standards, generating findings that feed back into new remediation tasks if needed.\n\nSupported agents: claude, codex, glm, agy",
-    "version": "1.1.68",
+    "description": "A multi-agent development workflow that automates software delivery through three phases:\n\n1. Planning — A Brainstormer agent collaborates with a technical validator to refine user requirements into an approved master plan, then breaks it down into epics and tasks.\n2. Execution — A Coder agent implements tasks while an Epic Manager reviews and controls the flow—approving, revising, or flagging issues until all work is complete.\n3. Code Review — A Code Reviewer audits the completed work against architectural standards, generating findings that feed back into new remediation tasks if needed.\n\nSupported agents: claude, codex, glm, agy, devin",
+    "version": "1.1.69",
     "category": "development",
     "tags": [
       "development",
       "claude",
       "codex",
       "glm",
-      "agy"
+      "agy",
+      "devin"
     ],
     "authorName": "Devchain",
     "changelog": "",
@@ -263,6 +264,14 @@
           "model": "claude-fable-5-1[1m]",
           "effort": "xhigh",
           "position": 7
+        },
+        {
+          "name": "devin",
+          "providerName": "devin",
+          "description": null,
+          "options": "--permission-mode dangerous",
+          "env": null,
+          "position": 8
         }
       ]
     },
@@ -324,6 +333,14 @@
           "options": "--yolo",
           "env": null,
           "position": 4
+        },
+        {
+          "name": "devin",
+          "providerName": "devin",
+          "description": null,
+          "options": "--permission-mode dangerous",
+          "env": null,
+          "position": 5
         }
       ]
     },
@@ -385,6 +402,14 @@
           "options": "--yolo",
           "env": null,
           "position": 5
+        },
+        {
+          "name": "devin",
+          "providerName": "devin",
+          "description": null,
+          "options": "--permission-mode dangerous",
+          "env": null,
+          "position": 6
         }
       ]
     },
@@ -491,6 +516,14 @@
           "model": "zai-coding-plan/glm-5.3-flash",
           "effort": "max",
           "position": 9
+        },
+        {
+          "name": "devin",
+          "providerName": "devin",
+          "description": null,
+          "options": "--permission-mode dangerous",
+          "env": null,
+          "position": 10
         }
       ]
     },
@@ -598,6 +631,14 @@
           "options": "--yolo",
           "env": null,
           "position": 4
+        },
+        {
+          "name": "devin",
+          "providerName": "devin",
+          "description": null,
+          "options": "--permission-mode dangerous",
+          "env": null,
+          "position": 5
         }
       ]
     }

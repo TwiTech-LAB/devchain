@@ -57,6 +57,26 @@ export function isAuthProbeCapable(
 
 export interface ConfigFileMcpCapability {
   readonly configFileName: string;
+  /**
+   * Root key of the MCP server map inside the config file. Defaults to `'mcp'`
+   * (opencode-flat `{ "mcp": { … } }`); providers whose config nests servers
+   * under a different key declare it here — devin uses `'mcpServers'`
+   * (`{ "mcpServers": { "<name>": { "url": …, "transport": "http" } } }`).
+   */
+  readonly mcpConfigRootKey?: string;
+  /**
+   * The config file is JSON with comments. Writes then edit only the DevChain
+   * entry in place, so user comments and formatting survive; without this flag
+   * the file is strict JSON and is re-serialized whole.
+   */
+  readonly configFileAllowsComments?: boolean;
+  /**
+   * The config file is machine-local (it holds DevChain's loopback MCP URL).
+   * After each DevChain write, `configFileName` goes into the repository's git
+   * exclude file, so `git add -A` never commits it. Unset keeps the file
+   * visible to git (opencode.json).
+   */
+  readonly excludeConfigFileFromGit?: boolean;
   parseProjectConfig(content: string): McpServerEntry[];
   buildMcpConfigEntry(options: AddMcpServerOptions): {
     key: string;

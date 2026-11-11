@@ -131,6 +131,7 @@ describe('ProvidersPage - Provider Type presets and command previews', () => {
   it.each([
     ['Antigravity CLI', 'agy'],
     ['Copilot CLI', 'copilot'],
+    ['Devin CLI', 'devin'],
   ])('uses the %s default binary path', async (label, binPath) => {
     renderWithQuery(<ProvidersPage />);
     await waitFor(() =>
@@ -2166,6 +2167,7 @@ describe('ProvidersPage - CLI versions section and managed Binary Path', () => {
         claude: entry('claude'),
         codex: entry('codex'),
         copilot: entry('copilot'),
+        devin: entry('devin'),
         opencode: entry('opencode'),
       },
     };

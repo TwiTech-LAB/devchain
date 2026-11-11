@@ -66,6 +66,15 @@ describe('McpConfigurationModal', () => {
     expect(screen.queryByText(/--header/)).not.toBeInTheDocument();
   });
 
+  it('displays file-edit instructions for Devin provider', () => {
+    render(<McpConfigurationModal {...defaultProps} providerName="Devin" />);
+    expect(
+      screen.getByText(/Add to \.devin\/mcp_config\.local\.json in your project/),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/"mcpServers"/)).toBeInTheDocument();
+    expect(screen.getByText(/"transport": "http"/)).toBeInTheDocument();
+  });
+
   it('displays correct manual command for Codex provider', () => {
     render(<McpConfigurationModal {...defaultProps} providerName="Codex" />);
     expect(screen.getByText(/codex mcp add --url.*devchain/)).toBeInTheDocument();

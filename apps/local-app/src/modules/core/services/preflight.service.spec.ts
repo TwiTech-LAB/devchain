@@ -145,14 +145,19 @@ describe('PreflightService', () => {
       isSupported: jest
         .fn()
         .mockImplementation((name: string) =>
-          ['claude', 'codex', 'opencode', 'agy', 'copilot'].includes(name),
+          ['claude', 'codex', 'opencode', 'agy', 'copilot', 'devin'].includes(name),
         ),
       getSupportedProviders: jest
         .fn()
-        .mockReturnValue(['claude', 'codex', 'opencode', 'agy', 'copilot']),
+        .mockReturnValue(['claude', 'codex', 'opencode', 'agy', 'copilot', 'devin']),
       getAdapter: jest.fn().mockImplementation((name: string) => {
         if (name === 'opencode') {
           return { providerName: 'opencode', mcpMode: 'project_config' };
+        }
+        if (name === 'devin') {
+          // Devin is project_config too (.devin/mcp_config.local.json):
+          // `devin mcp list` redacts URLs so CLI-mode MCP checks can't work.
+          return { providerName: 'devin', mcpMode: 'project_config' };
         }
         if (name === 'agy') {
           // P2-1: agy is real-MCP (HOME-global config). No `mcpMode='project_config'`
@@ -1240,6 +1245,97 @@ describe('PreflightService', () => {
       expect(result.providers[0].name).toBe('opencode');
       expect(result.providers[0].mcpStatus).toBe('pass');
       expect(mockMcpRegistration.listRegistrations).toHaveBeenCalledWith(opencodeProvider, {
+        cwd: '/test/project',
+      });
+    });
+  });
+
+  describe('config-file provider (devin) preflight', () => {
+    const devinProvider = createMockProvider({
+      id: 'p-dv',
+      name: 'devin',
+      binPath: '/usr/local/bin/devin',
+      mcpConfigured: false,
+      mcpEndpoint: null,
+      mcpRegisteredAt: null,
+      createdAt: '',
+      updatedAt: '',
+    });
+
+    it('returns warn MCP status for devin without project context', async () => {
+      mockStorage.listProviders.mockResolvedValue({
+        items: [devinProvider],
+        total: 1,
+        limit: 100,
+        offset: 0,
+      });
+      mockStorage.listAllProfileProviderConfigs.mockResolvedValue([]);
+      mockAccess.mockResolvedValue(undefined);
+
+      const result = await service.runChecks();
+
+      expect(result.providers).toHaveLength(1);
+      expect(result.providers[0].name).toBe('devin');
+      expect(result.providers[0].mcpStatus).toBe('warn');
+      expect(result.providers[0].mcpMessage).toContain('requires project context');
+      expect(mockMcpRegistration.listRegistrations).not.toHaveBeenCalled();
+      expect(result.providers[0].requiresProjectContext).toBe(true);
+    });
+
+    it('evaluates MCP via project config file for devin with project context', async () => {
+      mockStorage.findProjectByPath.mockResolvedValue(
+        createMockProject({
+          id: 'project-1',
+          name: 'Test',
+          rootPath: '/test',
+          isTemplate: false,
+          description: null,
+          createdAt: '',
+          updatedAt: '',
+        }),
+      );
+      mockStorage.listAgents.mockResolvedValue({
+        items: [
+          createMockAgent({
+            id: 'agent-dv',
+            projectId: 'project-1',
+            profileId: 'profile-1',
+            providerConfigId: 'config-dv',
+            name: 'DV Agent',
+            description: null,
+            createdAt: '',
+            updatedAt: '',
+          }),
+        ],
+        total: 1,
+        limit: 100,
+        offset: 0,
+      });
+      mockStorage.listProfileProviderConfigsByIds.mockResolvedValue([
+        createProfileProviderConfig({
+          id: 'config-dv',
+          profileId: 'profile-1',
+          providerId: 'p-dv',
+          options: null,
+          env: null,
+          createdAt: '',
+          updatedAt: '',
+        }),
+      ]);
+      mockStorage.listProvidersByIds.mockResolvedValue([devinProvider]);
+      mockAccess.mockResolvedValue(undefined);
+      mockMcpRegistration.listRegistrations.mockResolvedValue({
+        success: true,
+        message: 'OK',
+        entries: [{ alias: 'devchain', endpoint: 'http://127.0.0.1:3000/mcp' }],
+      });
+
+      const result = await service.runChecks('/test/project');
+
+      expect(result.providers).toHaveLength(1);
+      expect(result.providers[0].name).toBe('devin');
+      expect(result.providers[0].mcpStatus).toBe('pass');
+      expect(mockMcpRegistration.listRegistrations).toHaveBeenCalledWith(devinProvider, {
         cwd: '/test/project',
       });
     });

@@ -3,9 +3,11 @@ import { CodexAdapter } from '../codex.adapter';
 import { OpencodeAdapter } from '../opencode.adapter';
 import { AntigravityAdapter } from '../antigravity.adapter';
 import { CopilotAdapter } from '../copilot.adapter';
+import { DevinAdapter } from '../devin.adapter';
 import type { ProviderAdapter } from '../provider-adapter.interface';
 import {
   isMcpCli,
+  isConfigFileMcpCapable,
   isGlobalMcpConfigCapable,
   isAutoCompactCapable,
   isEffortCapable,
@@ -26,6 +28,7 @@ describe('type-guards', () => {
     { ensure: jest.fn() } as never,
     { isAuthenticated: jest.fn() } as never,
   );
+  const devin: ProviderAdapter = new DevinAdapter();
 
   // Unit coverage checks command declarations and narrowing without launching a CLI.
   describe('isSessionCommandCapable', () => {
@@ -38,6 +41,7 @@ describe('type-guards', () => {
     it.each([
       { adapter: claude, commands: { compact: '/compact' } },
       { adapter: codex, commands: { compact: '/compact' } },
+      { adapter: devin, commands: undefined },
       { adapter: opencode, commands: undefined },
       { adapter: antigravity, commands: undefined },
       { adapter: copilot, commands: undefined },
@@ -55,6 +59,22 @@ describe('type-guards', () => {
       expect(isGlobalMcpConfigCapable(claude)).toBe(false);
       expect(isGlobalMcpConfigCapable(codex)).toBe(false);
       expect(isGlobalMcpConfigCapable(opencode)).toBe(false);
+      expect(isGlobalMcpConfigCapable(devin)).toBe(false);
+    });
+  });
+
+  describe('isConfigFileMcpCapable', () => {
+    it('returns true for project_config providers (opencode, devin)', () => {
+      expect(isConfigFileMcpCapable(opencode)).toBe(true);
+      expect(isConfigFileMcpCapable(devin)).toBe(true);
+    });
+
+    it('returns false for CLI-mode providers', () => {
+      expect(isConfigFileMcpCapable(claude)).toBe(false);
+      expect(isConfigFileMcpCapable(codex)).toBe(false);
+      expect(isConfigFileMcpCapable(copilot)).toBe(false);
+      // agy is HOME-global config, not project config-file mode.
+      expect(isConfigFileMcpCapable(antigravity)).toBe(false);
     });
   });
 
@@ -69,14 +89,22 @@ describe('type-guards', () => {
   });
 
   describe('isMcpCli', () => {
+    const adaptersByName: Record<string, ProviderAdapter> = {
+      claude,
+      codex,
+      opencode,
+      devin,
+    };
+
     it.each([
       { name: 'claude', expected: true },
       { name: 'codex', expected: true },
       { name: 'opencode', expected: false },
+      // devin is project_config too: `devin mcp remove` cannot touch
+      // foreign-config entries — CLI mode is unusable.
+      { name: 'devin', expected: false },
     ])('classifies $name MCP mode', ({ name, expected }) => {
-      expect(isMcpCli(name === 'claude' ? claude : name === 'codex' ? codex : opencode)).toBe(
-        expected,
-      );
+      expect(isMcpCli(adaptersByName[name])).toBe(expected);
     });
   });
 

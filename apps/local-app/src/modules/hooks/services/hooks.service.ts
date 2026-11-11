@@ -85,7 +85,7 @@ export class HooksService {
     return this.signalTurn(data, 'prompt-submitted');
   }
 
-  /** Stop (Claude `Stop`, Copilot `agentStop`): the agent finished a turn, so it is idle. */
+  /** Stop (Claude `Stop`, Copilot `agentStop`, Devin `Stop`): the agent finished a turn, so it is idle. */
   private handleStop(data: StopHookEvent): HookEventResponse {
     logger.debug(
       {
@@ -216,7 +216,7 @@ export class HooksService {
     }
 
     // Provider-neutral session identity: Claude relays send `claudeSessionId`,
-    // provider-neutral relays (Copilot) send `providerSessionId`. The downstream
+    // provider-neutral relays (Copilot, Devin) send `providerSessionId`. The downstream
     // event still keys on `claudeSessionId`, so resolve it from whichever the
     // relay provided (Claude is unchanged — it always sets `claudeSessionId`).
     const providerSessionId = data.claudeSessionId ?? data.providerSessionId;

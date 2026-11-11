@@ -1,4 +1,5 @@
 import { Test, TestingModule } from '@nestjs/testing';
+import * as path from 'path';
 import { ProviderMcpEnsureService } from './provider-mcp-ensure.service';
 import { McpProviderRegistrationService } from './mcp-provider-registration.service';
 import { ProviderAdapterFactory } from '../adapters';
@@ -80,11 +81,16 @@ describe('ProviderMcpEnsureService', () => {
       isSupported: jest
         .fn()
         .mockImplementation((name: string) =>
-          ['claude', 'codex', 'opencode', 'agy', 'copilot'].includes(name),
+          ['claude', 'codex', 'opencode', 'agy', 'copilot', 'devin'].includes(name),
         ),
       getAdapter: jest.fn().mockImplementation((name: string) => {
         if (name === 'opencode') {
           return { providerName: 'opencode', mcpMode: 'project_config' };
+        }
+        if (name === 'devin') {
+          // Devin is project_config too (.devin/mcp_config.local.json) — CLI MCP
+          // is unusable because `devin mcp remove` cannot touch foreign configs.
+          return { providerName: 'devin', mcpMode: 'project_config' };
         }
         if (name === 'agy') {
           // P2-1: agy is real-MCP (HOME-global config) + provisioning-capable.
@@ -596,6 +602,59 @@ describe('ProviderMcpEnsureService', () => {
       expect(result.action).toBe('already_configured');
       expect(mockMcpRegistration.ensureRegistration).toHaveBeenCalledWith(
         opencodeProvider,
+        { endpoint: 'http://127.0.0.1:3000/mcp', alias: 'devchain' },
+        { cwd: projectPath },
+      );
+    });
+  });
+
+  describe('config-file provider (devin)', () => {
+    const devinProvider = createProvider({ id: 'provider-dv', name: 'devin' });
+
+    it('returns error when devin has no projectPath (config-file mode requires it)', async () => {
+      const result = await service.ensureMcp(devinProvider);
+
+      expect(result.success).toBe(false);
+      expect(result.action).toBe('error');
+      expect(result.message).toContain('requires a project path');
+      expect(result.message).toContain('devin');
+      expect(mockMcpRegistration.ensureRegistration).not.toHaveBeenCalled();
+    });
+
+    it('delegates to registration service with cwd when projectPath is provided', async () => {
+      // Platform-native path: validateProjectPath compares normalize(projectPath)
+      // against registered rootPaths, so POSIX literals fail on Windows.
+      const projectPath = path.normalize('/home/user/project');
+      mockStorage.listProjects.mockResolvedValue({
+        items: [
+          {
+            id: 'project-1',
+            workspaceId: 'ws-1',
+            name: 'Project 1',
+            description: null,
+            rootPath: projectPath,
+            isTemplate: false,
+            createdAt: '2024-01-01T00:00:00.000Z',
+            updatedAt: '2024-01-01T00:00:00.000Z',
+          },
+        ],
+        total: 1,
+        limit: 1000,
+        offset: 0,
+      });
+      mockMcpRegistration.ensureRegistration.mockResolvedValue({
+        success: true,
+        action: 'added',
+        endpoint: 'http://127.0.0.1:3000/mcp',
+        alias: 'devchain',
+      });
+
+      const result = await service.ensureMcp(devinProvider, projectPath);
+
+      expect(result.success).toBe(true);
+      expect(result.action).toBe('added');
+      expect(mockMcpRegistration.ensureRegistration).toHaveBeenCalledWith(
+        devinProvider,
         { endpoint: 'http://127.0.0.1:3000/mcp', alias: 'devchain' },
         { cwd: projectPath },
       );

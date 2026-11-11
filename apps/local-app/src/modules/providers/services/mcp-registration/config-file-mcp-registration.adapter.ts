@@ -1,10 +1,14 @@
 import { Injectable } from '@nestjs/common';
-import { readFile, writeFile, rename } from 'fs/promises';
+import { readFile, writeFile, rename, mkdir } from 'fs/promises';
 import * as path from 'path';
 import type { Provider } from '../../../storage/models/domain.models';
 import { createLogger } from '../../../../common/logging/logger';
 import { ProviderAdapterFactory } from '../../adapters/provider-adapter.factory';
 import { isConfigFileMcpCapable } from '../../adapters/capabilities';
+import type { ConfigFileMcpCapability } from '../../adapters/capabilities';
+import { addToGitExclude } from '../../../../common/git-exclude';
+import { parseJsonc, setJsoncValue } from '../../../../common/jsonc';
+import { ProcessExecutor } from '../../../terminal/services/process-executor/process-executor.port';
 import type {
   McpRegistrationAdapter,
   McpCommandResult,
@@ -18,7 +22,10 @@ const logger = createLogger('ConfigFileMcpRegistrationAdapter');
 
 @Injectable()
 export class ConfigFileMcpRegistrationAdapter implements McpRegistrationAdapter {
-  constructor(private readonly adapterFactory: ProviderAdapterFactory) {}
+  constructor(
+    private readonly adapterFactory: ProviderAdapterFactory,
+    private readonly executor: ProcessExecutor,
+  ) {}
 
   async register(
     provider: Provider,
@@ -49,10 +56,11 @@ export class ConfigFileMcpRegistrationAdapter implements McpRegistrationAdapter 
 
     const configPath = path.join(cwd, provAdapter.configFileName);
     let config: Record<string, unknown> = {};
+    let content: string | null = null;
 
     try {
-      const content = await readFile(configPath, 'utf-8');
-      const parsed = JSON.parse(content);
+      content = await readFile(configPath, 'utf-8');
+      const parsed = parseConfigText(provAdapter, content);
       if (!isPlainRecord(parsed)) {
         return {
           success: false,
@@ -80,23 +88,21 @@ export class ConfigFileMcpRegistrationAdapter implements McpRegistrationAdapter 
       }
     }
 
+    const rootKey = serverMapKey(provAdapter);
     const entry = provAdapter.buildMcpConfigEntry(options);
-    if (config.mcp !== undefined && !isPlainRecord(config.mcp)) {
-      return {
-        success: false,
-        message: `${provAdapter.configFileName} has invalid "mcp" field (expected object) — please fix it manually`,
-        stdout: '',
-        stderr: '',
-        exitCode: null,
-      };
+    if (config[rootKey] !== undefined && !isPlainRecord(config[rootKey])) {
+      return invalidServerMapResult(provAdapter, rootKey);
     }
-    const mcp = (config.mcp as Record<string, unknown>) ?? {};
-    mcp[entry.key] = entry.value;
-    config.mcp = mcp;
-
-    const tmpPath = configPath + '.tmp';
-    await writeFile(tmpPath, JSON.stringify(config, null, 2) + '\n', 'utf-8');
-    await rename(tmpPath, configPath);
+    let output: string;
+    if (provAdapter.configFileAllowsComments) {
+      output = setJsoncValue(content ?? '{}\n', [rootKey, entry.key], entry.value);
+    } else {
+      const servers = (config[rootKey] as Record<string, unknown>) ?? {};
+      servers[entry.key] = entry.value;
+      config[rootKey] = servers;
+      output = JSON.stringify(config, null, 2) + '\n';
+    }
+    await this.writeConfigFile(provAdapter, cwd, configPath, output);
 
     return {
       success: true,
@@ -184,10 +190,11 @@ export class ConfigFileMcpRegistrationAdapter implements McpRegistrationAdapter 
 
     const configPath = path.join(cwd, provAdapter.configFileName);
     let config: Record<string, unknown>;
+    let content: string;
 
     try {
-      const content = await readFile(configPath, 'utf-8');
-      const parsed = JSON.parse(content);
+      content = await readFile(configPath, 'utf-8');
+      const parsed = parseConfigText(provAdapter, content);
       if (!isPlainRecord(parsed)) {
         return {
           success: false,
@@ -220,17 +227,12 @@ export class ConfigFileMcpRegistrationAdapter implements McpRegistrationAdapter 
       throw error;
     }
 
-    if (config.mcp !== undefined && !isPlainRecord(config.mcp)) {
-      return {
-        success: false,
-        message: `${provAdapter.configFileName} has invalid "mcp" field (expected object) — please fix it manually`,
-        stdout: '',
-        stderr: '',
-        exitCode: null,
-      };
+    const rootKey = serverMapKey(provAdapter);
+    if (config[rootKey] !== undefined && !isPlainRecord(config[rootKey])) {
+      return invalidServerMapResult(provAdapter, rootKey);
     }
-    const mcp = config.mcp as Record<string, unknown> | undefined;
-    if (!mcp || !(alias in mcp)) {
+    const servers = config[rootKey] as Record<string, unknown> | undefined;
+    if (!servers || !(alias in servers)) {
       return {
         success: true,
         message: `MCP entry '${alias}' not found in ${provAdapter.configFileName}`,
@@ -240,12 +242,14 @@ export class ConfigFileMcpRegistrationAdapter implements McpRegistrationAdapter 
       };
     }
 
-    delete mcp[alias];
-    config.mcp = mcp;
-
-    const tmpPath = configPath + '.tmp';
-    await writeFile(tmpPath, JSON.stringify(config, null, 2) + '\n', 'utf-8');
-    await rename(tmpPath, configPath);
+    let output: string;
+    if (provAdapter.configFileAllowsComments) {
+      output = setJsoncValue(content, [rootKey, alias], undefined);
+    } else {
+      delete servers[alias];
+      output = JSON.stringify(config, null, 2) + '\n';
+    }
+    await this.writeConfigFile(provAdapter, cwd, configPath, output);
 
     return {
       success: true,
@@ -254,6 +258,38 @@ export class ConfigFileMcpRegistrationAdapter implements McpRegistrationAdapter 
       stderr: '',
       exitCode: 0,
     };
+  }
+
+  /** Atomic write (temp file + rename), then the git exclude when the adapter asks for it. */
+  private async writeConfigFile(
+    provAdapter: ConfigFileMcpCapability,
+    cwd: string,
+    configPath: string,
+    output: string,
+  ): Promise<void> {
+    const tmpPath = configPath + '.tmp';
+    // The config may live in a subdirectory that does not exist yet on fresh
+    // projects (devin's `<cwd>/.devin/`); create it before the atomic write.
+    await mkdir(path.dirname(configPath), { recursive: true });
+    await writeFile(tmpPath, output, 'utf-8');
+    await rename(tmpPath, configPath);
+    await this.excludeFromGit(provAdapter, cwd);
+  }
+
+  /**
+   * Keep a machine-local config file out of git after DevChain wrote it. The
+   * file is already written, so a failure here only logs a warning.
+   */
+  private async excludeFromGit(provAdapter: ConfigFileMcpCapability, cwd: string): Promise<void> {
+    if (!provAdapter.excludeConfigFileFromGit) return;
+    try {
+      await addToGitExclude(this.executor, cwd, [provAdapter.configFileName]);
+    } catch (error) {
+      logger.warn(
+        { error, cwd, configFileName: provAdapter.configFileName },
+        'Failed to add the MCP config file to the git exclude file',
+      );
+    }
   }
 
   async ensure(
@@ -325,6 +361,33 @@ export class ConfigFileMcpRegistrationAdapter implements McpRegistrationAdapter 
       alias: options.alias,
     };
   }
+}
+
+/**
+ * Key of the server map in the config file. Providers may nest the map under a
+ * non-'mcp' root key (devin: 'mcpServers'); the default stays 'mcp'
+ * (opencode-flat shape).
+ */
+function serverMapKey(adapter: ConfigFileMcpCapability): string {
+  return adapter.mcpConfigRootKey ?? 'mcp';
+}
+
+function invalidServerMapResult(
+  adapter: ConfigFileMcpCapability,
+  rootKey: string,
+): McpCommandResult {
+  return {
+    success: false,
+    message: `${adapter.configFileName} has invalid "${rootKey}" field (expected object) — please fix it manually`,
+    stdout: '',
+    stderr: '',
+    exitCode: null,
+  };
+}
+
+/** Parse config text; throws `SyntaxError` on invalid content. */
+function parseConfigText(adapter: ConfigFileMcpCapability, content: string): unknown {
+  return adapter.configFileAllowsComments ? parseJsonc(content) : JSON.parse(content);
 }
 
 function isPlainRecord(value: unknown): value is Record<string, unknown> {

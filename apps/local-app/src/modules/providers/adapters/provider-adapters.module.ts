@@ -4,6 +4,7 @@ import { CodexAdapter } from './codex.adapter';
 import { OpencodeAdapter } from './opencode.adapter';
 import { AntigravityAdapter } from './antigravity.adapter';
 import { CopilotAdapter } from './copilot.adapter';
+import { DevinAdapter } from './devin.adapter';
 import { ProviderAdapterFactory } from './provider-adapter.factory';
 import { StorageModule } from '../../storage/storage.module';
 import { AntigravityTrustedWorkspacesModule } from '../../core/services/antigravity-trusted-workspaces.module';
@@ -23,6 +24,7 @@ import { CopilotAuthProbeModule } from '../../core/services/copilot-auth-probe.m
     OpencodeAdapter,
     AntigravityAdapter,
     CopilotAdapter,
+    DevinAdapter,
     ProviderAdapterFactory,
   ],
   exports: [ProviderAdapterFactory],

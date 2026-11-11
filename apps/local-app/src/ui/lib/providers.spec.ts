@@ -39,6 +39,14 @@ describe('providers', () => {
       expect(svg).toContain('fill-rule="evenodd"'); // spark knockout
     });
 
+    it('returns SVG for devin', () => {
+      const svg = getProviderIconSvg('devin');
+      expect(svg).not.toBeNull();
+      expect(svg).toContain('<svg');
+      expect(svg).toContain('fill="#E11D48"'); // stylized badge rose, not the official logo
+      expect(svg).toContain('fill-rule="evenodd"'); // "D" bowl knockout
+    });
+
     it('returns null for unknown provider', () => {
       expect(getProviderIconSvg('unknown-provider')).toBeNull();
     });
@@ -101,6 +109,8 @@ describe('providers', () => {
       expect(hasProviderIcon('agy')).toBe(true);
       expect(hasProviderIcon('antigravity')).toBe(true);
       expect(hasProviderIcon('copilot')).toBe(true);
+      expect(hasProviderIcon('devin')).toBe(true);
+      expect(hasProviderIcon('Devin CLI')).toBe(true);
     });
 
     it('returns false for retired gemini/google names', () => {
@@ -159,6 +169,16 @@ describe('providers', () => {
         label: 'returns proper alt text for copilot',
         provider: 'copilot',
         expectedAlt: 'Copilot CLI icon',
+      },
+      {
+        label: 'returns proper alt text for devin',
+        provider: 'devin',
+        expectedAlt: 'Devin CLI icon',
+      },
+      {
+        label: 'returns proper alt text for devin display name',
+        provider: 'Devin CLI',
+        expectedAlt: 'Devin CLI icon',
       },
       { label: 'returns fallback for unknown', provider: null, expectedAlt: 'AI provider icon' },
     ] as const)('$label', ({ provider, expectedAlt }) => {

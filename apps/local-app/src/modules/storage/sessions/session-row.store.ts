@@ -419,6 +419,30 @@ export class SessionRowStore {
     });
   }
 
+  /**
+   * Set provider_session_id only when absent — the guarded counterpart of
+   * bindTranscriptFromHook for confirm-only providers (e.g. Devin) whose hook
+   * carries the authoritative id before any transcript file exists. The
+   * provider-name guard rejects misdelivery to a session launched under a
+   * different provider.
+   */
+  bindProviderSessionIdIfAbsent(input: {
+    sessionId: string;
+    providerSessionId: string;
+    providerName: string;
+    updatedAt: string;
+  }): number {
+    return this.sqlite
+      .prepare(
+        `UPDATE sessions
+         SET provider_session_id = ?, updated_at = ?
+         WHERE id = ?
+           AND provider_session_id IS NULL
+           AND (provider_name_at_launch IS NULL OR LOWER(provider_name_at_launch) = LOWER(?))`,
+      )
+      .run(input.providerSessionId, input.updatedAt, input.sessionId, input.providerName).changes;
+  }
+
   async backfillTranscriptProviderSessionId(
     input: TranscriptBackfillInput,
   ): Promise<TranscriptBackfillOutcome> {

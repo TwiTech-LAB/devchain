@@ -42,6 +42,7 @@ import {
   CopilotHooksConfigService,
   type HookConfigInstaller,
 } from '../../../hooks/services/copilot-hooks-config.service';
+import { DevinHooksConfigService } from '../../../hooks/services/devin-hooks-config.service';
 import { PreflightService } from '../../../core/services/preflight.service';
 import { ProviderMcpEnsureService } from '../../../providers/services/provider-mcp-ensure.service';
 import { EventsService } from '../../../events/services/events.service';
@@ -80,6 +81,7 @@ export class SessionLaunchPipeline {
     private readonly terminalSessionRegistry: TerminalSessionRegistry,
     private readonly hooksConfigService: HooksConfigService,
     private readonly copilotHooksConfigService: CopilotHooksConfigService,
+    private readonly devinHooksConfigService: DevinHooksConfigService,
     private readonly preflightService: PreflightService,
     private readonly mcpEnsureService: ProviderMcpEnsureService,
     private readonly eventsService: EventsService,
@@ -495,19 +497,27 @@ export class SessionLaunchPipeline {
   }
 
   /**
-   * Pick the per-provider hook-config installer for a hook-capable adapter. The
-   * Claude path (and any future adopter) uses the default `HooksConfigService`;
-   * Copilot uses its dedicated user-level installer. Keyed on the adapter's own
-   * `providerName` (its stable identity, compared against the Copilot installer's
-   * own constant) rather than a literal sprinkled through the pipeline — a single
-   * localized dispatch that defaults to the Claude installer, so that path stays
-   * byte-identical.
+   * Pick the per-provider hook-config installer for a hook-capable adapter. Each
+   * non-default installer is selected by comparing the adapter's own
+   * `providerName` (its stable identity) against the installer's own constant —
+   * never a provider literal sprinkled through the pipeline. The Claude path
+   * (and any future adopter) falls through to the default `HooksConfigService`,
+   * so that path stays byte-identical.
    */
   private resolveHookInstaller(adapter: ProviderAdapter): HookConfigInstaller {
-    if (adapter.providerName === this.copilotHooksConfigService.providerName) {
-      return this.copilotHooksConfigService;
+    for (const installer of this.namedHookInstallers) {
+      if (adapter.providerName === installer.providerName) {
+        return installer;
+      }
     }
     return this.hooksConfigService;
+  }
+
+  /** Installers with a stable provider identity, checked in order. */
+  private get namedHookInstallers(): ReadonlyArray<
+    HookConfigInstaller & { readonly providerName: string }
+  > {
+    return [this.copilotHooksConfigService, this.devinHooksConfigService];
   }
 
   private async launchCliAndPastePrompt(

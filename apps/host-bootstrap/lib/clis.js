@@ -5,12 +5,13 @@ const os = require("node:os");
 const path = require("node:path");
 const { replaceSymlink } = require("./system");
 
-const CLI_NAMES = ["claude", "codex", "copilot", "opencode"];
+const CLI_NAMES = ["claude", "codex", "copilot", "opencode", "devin"];
 const PACKAGES = {
   claude: "@anthropic-ai/claude-code",
   codex: "@openai/codex",
   copilot: "@github/copilot",
   opencode: "@opencode/cli",
+  devin: "devin",
 };
 // Managed installs run OpenCode 2 only. The v1 package owns the same `opencode`
 // bin, so npm refuses (EEXIST) to install the v2 package over it.

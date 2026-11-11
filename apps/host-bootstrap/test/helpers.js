@@ -371,6 +371,7 @@ function pinnedCliVersions() {
     codex: defaultPins.codex.version,
     copilot: defaultPins.copilot.version,
     opencode: defaultPins.opencode.version,
+    devin: defaultPins.devin.version,
     agy: "agy 1.0.0",
   };
 }
@@ -384,6 +385,7 @@ const manifestOnlyDevchainCatalog = {
     "@openai/codex",
     "@github/copilot",
     "@opencode/cli",
+    "devin",
   ],
 };
 

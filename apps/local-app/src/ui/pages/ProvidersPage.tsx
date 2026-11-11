@@ -83,7 +83,7 @@ import { useSubNavSearchParam } from '@/ui/hooks/useSubNavSearchParam';
 import { useHomeQueryClient } from '@/ui/components/BackendBoundary';
 import { useOptionalBackend } from '@/ui/lib/backend-context';
 
-type ProviderType = 'codex' | 'claude' | 'opencode' | 'agy' | 'copilot';
+type ProviderType = 'codex' | 'claude' | 'opencode' | 'agy' | 'copilot' | 'devin';
 
 function getDefaultBinPathForType(t: ProviderType) {
   if (t === 'codex') return 'codex';
@@ -91,6 +91,7 @@ function getDefaultBinPathForType(t: ProviderType) {
   if (t === 'opencode') return 'opencode';
   if (t === 'agy') return 'agy';
   if (t === 'copilot') return 'copilot';
+  if (t === 'devin') return 'devin';
   return '';
 }
 
@@ -465,7 +466,7 @@ function ProviderModelsSection({ provider }: { provider: Provider }) {
               </div>
 
               <div className="flex flex-wrap gap-2">
-                {provider.name.toLowerCase() === 'opencode' && (
+                {['opencode', 'devin'].includes(provider.name.toLowerCase()) && (
                   <Button
                     variant="outline"
                     onClick={() => discoverModelsMutation.mutate()}
@@ -1095,7 +1096,9 @@ export function ProvidersPage() {
               ? 'agy'
               : provider.name === 'copilot'
                 ? 'copilot'
-                : 'codex'
+                : provider.name === 'devin'
+                  ? 'devin'
+                  : 'codex'
     ) as ProviderType;
     setProviderType(t);
     setBinPathTouched(false);
@@ -1463,6 +1466,7 @@ export function ProvidersPage() {
                   <SelectItem value="opencode">OpenCode</SelectItem>
                   <SelectItem value="agy">Antigravity CLI</SelectItem>
                   <SelectItem value="copilot">Copilot CLI</SelectItem>
+                  <SelectItem value="devin">Devin CLI</SelectItem>
                 </SelectContent>
               </Select>
               <p className="text-xs text-muted-foreground mt-1">

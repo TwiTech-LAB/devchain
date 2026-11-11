@@ -87,6 +87,7 @@ test("the update waits longer than the host stop timeout and records done", asyn
       `@openai/codex@${pins.codex.version}`,
       `@github/copilot@${pins.copilot.version}`,
       `@opencode/cli@${pins.opencode.version}`,
+      `devin@${pins.devin.version}`,
     ],
   );
   assert.ok(
@@ -134,7 +135,7 @@ test("an update installs changed pins before activating the new version", async 
   });
   t.after(cleanup);
   claimed(sys);
-  for (const name of ["claude", "codex", "copilot", "opencode"]) {
+  for (const name of ["claude", "codex", "copilot", "opencode", "devin"]) {
     const file = path.join(
       sys.paths.cliPrefix,
       "lib/node_modules",

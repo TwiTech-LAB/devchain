@@ -344,9 +344,21 @@ export class ProviderAuthVaultService {
         );
       }
       switch (payload.payloadKind) {
-        case 'env':
+        case 'env': {
           this.addEnv(bundle, payload.envKey, payload.value, entryId);
+          // A static entry may also own a derived login file (e.g. Devin's
+          // credentials.toml — the env var alone leaves the CLI logged out).
+          if (spec.payloadKind === 'env' && spec.claimFile) {
+            this.addFile(
+              bundle,
+              selection.homePath,
+              spec.claimFile.path,
+              spec.claimFile.render(payload.value),
+              entryId,
+            );
+          }
           break;
+        }
         case 'files': {
           if (spec.payloadKind !== 'files') {
             throw new ValidationError(
