@@ -119,6 +119,8 @@ function setup() {
       failures as never,
       ownerCache as never,
       suggestions as never,
+      { evaluate: async () => [] } as never,
+      {} as never,
     );
   const service = createService();
   const tick = (active = () => true) => service.tick('p', 'r', active);

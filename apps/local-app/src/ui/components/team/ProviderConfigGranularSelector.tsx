@@ -10,6 +10,7 @@ interface ProviderConfigGranularSelectorProps<
   configsByProfile: Record<TProfileKey, ConfigItem<TConfigKey>[]>;
   selections: ProfileSelection<TProfileKey, TConfigKey>[];
   onChange: (selections: ProfileSelection<TProfileKey, TConfigKey>[]) => void;
+  allowProfileRemoval?: boolean;
 }
 
 export function ProviderConfigGranularSelector<
@@ -20,6 +21,7 @@ export function ProviderConfigGranularSelector<
   configsByProfile,
   selections,
   onChange,
+  allowProfileRemoval = true,
 }: ProviderConfigGranularSelectorProps<TProfileKey, TConfigKey>) {
   const configs = useMemo(
     () => (focusedProfileKey ? (configsByProfile[focusedProfileKey] ?? []) : []),
@@ -58,7 +60,7 @@ export function ProviderConfigGranularSelector<
 
     if (mode === 'allow-all') {
       onChange([...rest, { profileKey: focusedProfileKey, mode: 'allow-all' }]);
-    } else if (mode === 'remove') {
+    } else if (mode === 'remove' && allowProfileRemoval) {
       onChange([...rest, { profileKey: focusedProfileKey, mode: 'remove' }]);
     } else {
       onChange([...rest, { profileKey: focusedProfileKey, mode: 'subset', configKeys: nextKeys }]);

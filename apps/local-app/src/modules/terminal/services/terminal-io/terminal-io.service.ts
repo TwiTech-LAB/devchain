@@ -1,5 +1,7 @@
+import { replacesDraft } from '../../utils/control-keys';
 import { BeforeApplicationShutdown, Injectable } from '@nestjs/common';
 import { createLogger } from '../../../../common/logging/logger';
+import { SerialQueue } from '../../../../common/serial-queue';
 import { EventsService } from '../../../events/services/events.service';
 import { ProcessExecutor } from '../process-executor/process-executor.port';
 import type {
@@ -36,6 +38,9 @@ const logger = createLogger('TerminalIOService');
 // rest, Enter included. See docs/risks.md#terminal-io.
 const MAX_TYPED_COMMAND_BYTES = 1_000;
 
+// Leave room for the tmux command and target within tmux's command size limit.
+const MAX_LITERAL_SEND_KEYS_BYTES = 4_096;
+
 interface HealthMonitorRecord {
   readonly token: number;
   readonly sessionName: string;
@@ -55,11 +60,6 @@ interface SessionLifecycleState {
   observers: number;
 }
 
-interface PaneDeliveryState {
-  tail: Promise<void>;
-  pendingOperations: number;
-}
-
 export class TerminalIOClosingError extends Error {
   constructor() {
     super('Terminal IO is shutting down');
@@ -72,7 +72,7 @@ export class TerminalIOService implements BeforeApplicationShutdown {
   private readonly gap: SendGap;
   private readonly healthMonitors = new Map<string, HealthMonitorRecord>();
   private readonly lifecycleStates = new Map<string, SessionLifecycleState>();
-  private readonly paneDeliveryStates = new Map<string, PaneDeliveryState>();
+  private readonly paneDeliveryStates = new Map<string, SerialQueue>();
   private nextMonitorToken = 0;
   private destroyed = false;
   private closing = false;
@@ -94,7 +94,9 @@ export class TerminalIOService implements BeforeApplicationShutdown {
     }
     this.healthMonitors.clear();
 
-    const deliveryTails = [...this.paneDeliveryStates.values()].map((state) => state.tail);
+    const deliveryTails = [...this.paneDeliveryStates.values()].map((queue) =>
+      queue.run(() => undefined),
+    );
     if (deliveryTails.length > 0) {
       await Promise.all(deliveryTails);
     }
@@ -155,8 +157,8 @@ export class TerminalIOService implements BeforeApplicationShutdown {
     return lifecycle.listSessions(this.executor);
   }
 
-  async sessionExists(target: SessionTarget): Promise<boolean> {
-    return lifecycle.sessionExists(this.executor, target);
+  async sessionExists(target: SessionTarget, signal?: AbortSignal): Promise<boolean> {
+    return lifecycle.sessionExists(this.executor, target, signal);
   }
 
   async createEmptySession(
@@ -211,6 +213,7 @@ export class TerminalIOService implements BeforeApplicationShutdown {
     }
 
     await this.gap.ensureGap(target.name);
+    this.humanPromptState.takePaneContinuation(target.name);
 
     const literalResult = await this.executor.run({
       argv: ['tmux', 'send-keys', '-t', `=${target.name}:`, '-l', '--', commandString],
@@ -226,10 +229,12 @@ export class TerminalIOService implements BeforeApplicationShutdown {
       );
     }
 
-    const enterResult = await this.executor.run({
-      argv: ['tmux', 'send-keys', '-t', `=${target.name}:`, 'Enter'],
-      mode: 'pipe',
-    });
+    const enterResult = await this.executor
+      .run({
+        argv: ['tmux', 'send-keys', '-t', `=${target.name}:`, 'Enter'],
+        mode: 'pipe',
+      })
+      .finally(() => this.humanPromptState.invalidateDraftTarget(target.name));
     if (!enterResult.success || enterResult.timedOut) {
       throw new TypeCommandFailedError(
         target.name,
@@ -256,8 +261,9 @@ export class TerminalIOService implements BeforeApplicationShutdown {
     target: SessionTarget,
     lines = 2000,
     includeEscapes = true,
+    options: capture.CaptureHistoryOptions = {},
   ): Promise<CaptureResult> {
-    return capture.captureHistory(this.executor, target, lines, includeEscapes);
+    return capture.captureHistory(this.executor, target, lines, includeEscapes, options);
   }
 
   async captureStrict(target: SessionTarget, tailLines = 10): Promise<CaptureResult> {
@@ -496,24 +502,84 @@ export class TerminalIOService implements BeforeApplicationShutdown {
 
   // ── Delivery ────────────────────────────────────────────────────────────
 
+  withComposer<T>(
+    target: SessionTarget,
+    operation: (pane: {
+      previousContinuation?: symbol;
+      checkpoint(): symbol;
+      snapshot(paneId: string): Promise<string | null>;
+      pasteText(
+        text: string,
+        assertCurrent: deliveryMod.ComposerGuard,
+      ): Promise<'delivered' | 'uncertain'>;
+      submit(assertCurrent: deliveryMod.ComposerGuard): Promise<'submitted' | 'uncertain'>;
+      pasteImage(
+        path: string,
+        provider: string,
+        assertCurrent: deliveryMod.ComposerGuard,
+      ): Promise<deliveryMod.ImageWriteResult>;
+    }) => Promise<T>,
+    signal?: AbortSignal,
+  ): Promise<T> {
+    const commandBudget = () => {
+      const timeout = AbortSignal.timeout(5000);
+      return signal ? AbortSignal.any([signal, timeout]) : timeout;
+    };
+    return this.runPaneOperation(
+      target,
+      (previousContinuation) =>
+        operation({
+          previousContinuation,
+          checkpoint: () => this.humanPromptState.rememberPaneContinuation(target.name),
+          snapshot: (paneId) =>
+            capture.composerSnapshot(this.executor, paneId, commandBudget()).catch(() => null),
+          pasteText: (text, assertCurrent) =>
+            deliveryMod.pasteDraftText(this.executor, target, text, assertCurrent, commandBudget()),
+          submit: (assertCurrent) =>
+            deliveryMod.submitDraft(
+              this.executor,
+              target,
+              assertCurrent,
+              () => this.humanPromptState.invalidateDraftTarget(target.name),
+              commandBudget(),
+            ),
+          pasteImage: (path, provider, assertCurrent) =>
+            deliveryMod.pasteDraftImage(
+              this.executor,
+              target,
+              path,
+              provider,
+              assertCurrent,
+              commandBudget(),
+            ),
+        }),
+      undefined,
+      signal,
+    );
+  }
+
   async deliver(
     target: SessionTarget,
     text: string,
     options: DeliveryOptions,
   ): Promise<DeliveryResult> {
-    return this.runPaneOperation(target, async () => {
-      const foregroundCheck = this.foregroundCheck(target, options);
-      await foregroundCheck?.();
-      return deliveryMod.deliver(
-        this.executor,
-        this.gap,
-        target,
-        text,
-        this.applyFollowNoteGate(options),
-        foregroundCheck,
-        this.submitGuard(target),
-      );
-    });
+    return this.runPaneOperation(
+      target,
+      async () => {
+        const foregroundCheck = this.foregroundCheck(target, options);
+        await foregroundCheck?.();
+        return deliveryMod.deliver(
+          this.executor,
+          this.gap,
+          target,
+          text,
+          this.applyFollowNoteGate(options),
+          foregroundCheck,
+          this.submitGuard(target),
+        );
+      },
+      () => changesComposer(options),
+    );
   }
 
   async deliverImmediate(
@@ -521,23 +587,49 @@ export class TerminalIOService implements BeforeApplicationShutdown {
     text: string,
     options: Omit<DeliveryOptions, 'agentId'>,
   ): Promise<DeliveryResult> {
-    return this.runPaneOperation(target, async () => {
-      const foregroundCheck = this.foregroundCheck(target, options);
-      await foregroundCheck?.();
-      return deliveryMod.deliverImmediate(
-        this.executor,
-        target,
-        text,
-        this.applyFollowNoteGate(options),
-        foregroundCheck,
-        this.submitGuard(target),
-      );
-    });
+    return this.runPaneOperation(
+      target,
+      async () => {
+        const foregroundCheck = this.foregroundCheck(target, options);
+        await foregroundCheck?.();
+        return deliveryMod.deliverImmediate(
+          this.executor,
+          target,
+          text,
+          this.applyFollowNoteGate(options),
+          foregroundCheck,
+          this.submitGuard(target),
+        );
+      },
+      () => changesComposer(options),
+    );
   }
 
   async sendControl(target: SessionTarget, keys: readonly string[]): Promise<void> {
-    return this.runPaneOperation(target, () =>
-      deliveryMod.sendControl(this.executor, target, keys),
+    return this.runPaneOperation(
+      target,
+      () => deliveryMod.sendControl(this.executor, target, keys),
+      () => replacesDraft(keys),
+    );
+  }
+
+  async sendLiteralText(target: SessionTarget, data: string): Promise<void> {
+    const keys = ['-l', '--', data];
+    return this.runPaneOperation(
+      target,
+      async () => {
+        if (Buffer.byteLength(data, 'utf8') <= MAX_LITERAL_SEND_KEYS_BYTES) {
+          await deliveryMod.sendControl(this.executor, target, keys);
+        } else {
+          await deliveryMod.deliverImmediate(this.executor, target, data, {
+            bracketed: false,
+            submitKeys: [],
+            requireForegroundProgram: false,
+            postPasteDelayMs: 0,
+          });
+        }
+      },
+      () => replacesDraft(keys),
     );
   }
 
@@ -548,28 +640,37 @@ export class TerminalIOService implements BeforeApplicationShutdown {
     quietSnapshot: HumanPromptQuietSnapshot | undefined,
     mutationFence?: GuardedDeliveryMutationFence,
   ): Promise<GuardedDeliveryResult> {
-    return this.runPaneOperation<GuardedDeliveryResult>(target, async () => {
-      const foregroundCheck = this.foregroundCheck(target, options);
-      await foregroundCheck?.();
-      return deliveryMod.deliverGuarded(
-        this.executor,
-        this.gap,
-        target,
-        text,
-        this.applyFollowNoteGate(options),
-        () => {
-          // Cancellation, prompt release, and claim mutation form one synchronous commit boundary.
-          if (mutationFence && !mutationFence.canStartMutation()) return false;
-          if (quietSnapshot && !this.humanPromptState.releaseIfQuiet(target.name, quietSnapshot)) {
-            return false;
-          }
-          mutationFence?.markMutationStarted();
-          return true;
-        },
-        foregroundCheck,
-        this.submitGuard(target),
-      );
-    });
+    let mutated = false;
+    return this.runPaneOperation<GuardedDeliveryResult>(
+      target,
+      async () => {
+        const foregroundCheck = this.foregroundCheck(target, options);
+        await foregroundCheck?.();
+        return deliveryMod.deliverGuarded(
+          this.executor,
+          this.gap,
+          target,
+          text,
+          this.applyFollowNoteGate(options),
+          () => {
+            // Cancellation, prompt release, and claim mutation form one synchronous commit boundary.
+            if (mutationFence && !mutationFence.canStartMutation()) return false;
+            if (
+              quietSnapshot &&
+              !this.humanPromptState.releaseIfQuiet(target.name, quietSnapshot)
+            ) {
+              return false;
+            }
+            mutationFence?.markMutationStarted();
+            mutated = true;
+            return true;
+          },
+          foregroundCheck,
+          this.submitGuard(target),
+        );
+      },
+      () => mutated && changesComposer(options),
+    );
   }
 
   // Automated delivery checks the pane's foreground before the send-gap wait and
@@ -603,31 +704,31 @@ export class TerminalIOService implements BeforeApplicationShutdown {
     return options;
   }
 
-  private runPaneOperation<T>(target: SessionTarget, operation: () => Promise<T> | T): Promise<T> {
+  private runPaneOperation<T>(
+    target: SessionTarget,
+    operation: (previousContinuation?: symbol) => Promise<T> | T,
+    endsDraft?: () => boolean,
+    admissionSignal?: AbortSignal,
+  ): Promise<T> {
     if (this.closing) return Promise.reject(new TerminalIOClosingError());
 
     const key = sanitizeTmuxSessionName(target.name);
     if (!key) return Promise.reject(new Error('Tmux session name must contain a safe character'));
 
-    let state = this.paneDeliveryStates.get(key);
-    if (!state) {
-      state = { tail: Promise.resolve(), pendingOperations: 0 };
-      this.paneDeliveryStates.set(key, state);
-    }
-
-    state.pendingOperations += 1;
-    const result = state.tail.then(operation);
-    state.tail = result.then(
-      () => undefined,
-      () => undefined,
-    );
-
-    return result.finally(() => {
-      state.pendingOperations -= 1;
-      if (state.pendingOperations === 0 && this.paneDeliveryStates.get(key) === state) {
-        this.paneDeliveryStates.delete(key);
-      }
-    });
+    const queue = this.paneDeliveryStates.get(key) ?? new SerialQueue();
+    this.paneDeliveryStates.set(key, queue);
+    return queue
+      .run(async () => {
+        try {
+          return await operation(this.humanPromptState.takePaneContinuation(key));
+        } finally {
+          if (endsDraft?.()) this.humanPromptState.invalidateDraftTarget(key);
+        }
+      }, admissionSignal)
+      .finally(() => {
+        if (queue.idle && this.paneDeliveryStates.get(key) === queue)
+          this.paneDeliveryStates.delete(key);
+      });
   }
 }
 
@@ -677,4 +778,8 @@ class InMemorySendGap implements SendGap {
     this.lastByAgent.clear();
     this.tailByAgent.clear();
   }
+}
+
+function changesComposer(options: Pick<DeliveryOptions, 'submitKeys' | 'preKeys'>): boolean {
+  return (options.submitKeys ?? ['Enter']).length > 0 || replacesDraft(options.preKeys ?? []);
 }

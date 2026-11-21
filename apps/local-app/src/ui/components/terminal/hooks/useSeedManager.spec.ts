@@ -18,12 +18,18 @@ jest.mock('@/ui/lib/socket', () => ({
   getAppSocket: () => mockSocket,
 }));
 
+const BRACKETED_PASTE_ON = '\x1b[?2004h';
+
 describe('useSeedManager', () => {
   let mockTerminal: jest.Mocked<Terminal>;
   let mockFitAddon: jest.Mocked<FitAddon>;
   let mockDispatch: jest.Mock;
   let expectingSeedRef: React.MutableRefObject<boolean>;
   let historySync: TerminalHistorySync;
+
+  // The seed path also writes the bracketed-paste mode. These are the writes with content.
+  const contentWrites = (terminal: jest.Mocked<Terminal> = mockTerminal) =>
+    terminal.write.mock.calls.filter(([data]) => data !== BRACKETED_PASTE_ON);
 
   beforeEach(() => {
     mockTerminal = {
@@ -150,8 +156,14 @@ describe('useSeedManager', () => {
       result.current.handleSeedChunk({ chunk: 0, totalChunks: 1, data: 'fresh' });
     });
 
-    expect(mockTerminal.write).toHaveBeenNthCalledWith(1, 'initial', expect.any(Function));
-    expect(mockTerminal.write).toHaveBeenNthCalledWith(2, 'fresh', expect.any(Function));
+    expect(mockTerminal.write.mock.calls.map(([data]) => data)).toEqual([
+      BRACKETED_PASTE_ON,
+      BRACKETED_PASTE_ON,
+      'initial',
+      BRACKETED_PASTE_ON,
+      BRACKETED_PASTE_ON,
+      'fresh',
+    ]);
     expect(expectingSeedRef.current).toBe(false);
   });
 
@@ -159,9 +171,9 @@ describe('useSeedManager', () => {
     const sessionId = 'test-session';
     const xtermRef = { current: mockTerminal };
     const fitAddonRef = { current: mockFitAddon };
-    const writeCallbacks: Array<(() => void) | undefined> = [];
+    const writeCallbacks: Array<() => void> = [];
     mockTerminal.write.mockImplementation((_data, callback) => {
-      writeCallbacks.push(callback);
+      if (callback) writeCallbacks.push(callback);
     });
 
     const { result } = renderHook(() =>
@@ -187,7 +199,7 @@ describe('useSeedManager', () => {
     });
 
     expect(mockTerminal.scrollToBottom).toHaveBeenCalled();
-    expect(mockTerminal.write).toHaveBeenNthCalledWith(2, '\x1b[5;4H', expect.any(Function));
+    expect(contentWrites()[1]).toEqual(['\x1b[5;4H', expect.any(Function)]);
     expect(historySync.hasMore()).toBe(false);
     expect(mockDispatch).not.toHaveBeenCalledWith({ type: 'SEED_COMPLETE' });
 
@@ -327,7 +339,7 @@ describe('useSeedManager', () => {
         jest.advanceTimersByTime(30000);
       });
 
-      expect(mockTerminal.write).not.toHaveBeenCalled();
+      expect(contentWrites()).toEqual([]);
       expect(pump.getSnapshot().status).toBe('recovering');
       expect(expectingSeedRef.current).toBe(true);
       expect(onRecoveryTimeout).toHaveBeenCalledWith(
@@ -374,8 +386,12 @@ describe('useSeedManager', () => {
         });
       });
 
-      expect(mockTerminal.write).toHaveBeenCalledTimes(1);
-      expect(mockTerminal.write).toHaveBeenCalledWith('fresh-snapshot', expect.any(Function));
+      expect(mockTerminal.write.mock.calls.map(([data]) => data)).toEqual([
+        BRACKETED_PASTE_ON,
+        BRACKETED_PASTE_ON,
+        BRACKETED_PASTE_ON,
+        'fresh-snapshot',
+      ]);
       expect(onRecoveryComplete).toHaveBeenCalledTimes(1);
       expect(onRecoveryComplete).toHaveBeenCalledWith({
         sessionId: 'recovery-timeout-session',
@@ -414,7 +430,7 @@ describe('useSeedManager', () => {
         [{ sessionId: 'recovery-timeout-session', recoveryEpoch: 4 }, true],
         [{ sessionId: 'recovery-timeout-session', recoveryEpoch: 5 }, false],
       ]);
-      expect(mockTerminal.write).not.toHaveBeenCalled();
+      expect(contentWrites()).toEqual([]);
       expect(pump.getSnapshot().status).toBe('recovering');
     });
 
@@ -548,7 +564,7 @@ describe('useSeedManager', () => {
         });
       });
       expect(heldWrites.length).toBeGreaterThan(0);
-      expect(holdingTerminal.write).toHaveBeenCalledTimes(1);
+      expect(contentWrites(holdingTerminal)).toHaveLength(1);
 
       // The server sequence-domain switches to B before A's write settles.
       act(() => {
@@ -571,7 +587,7 @@ describe('useSeedManager', () => {
       // The retired replacement write must not scroll the new domain's viewport, and it must not
       // queue A's cursor-position sequence: only the original held 'A-RECOVERED' write ever happened.
       expect(holdingTerminal.scrollToBottom).not.toHaveBeenCalled();
-      expect(holdingTerminal.write).toHaveBeenCalledTimes(1);
+      expect(contentWrites(holdingTerminal)).toHaveLength(1);
 
       // Domain B's own recovery 1 completes normally.
       act(() => {
@@ -698,9 +714,9 @@ describe('useSeedManager', () => {
     it('does NOT call onSeedReady when the final chunk arrives but the write has not settled', () => {
       const onSeedReady = jest.fn();
       // Hold the write callback open so we can observe the pre-settle state.
-      const writeCallbacks: Array<(() => void) | undefined> = [];
+      const writeCallbacks: Array<() => void> = [];
       mockTerminal.write.mockImplementation((_data, callback) => {
-        writeCallbacks.push(callback);
+        if (callback) writeCallbacks.push(callback);
       });
 
       const { result } = renderHook(() =>
@@ -743,10 +759,10 @@ describe('useSeedManager', () => {
     });
 
     it('emits one recovery completion immediately after the final write callback', () => {
-      const writeCallbacks: Array<(() => void) | undefined> = [];
+      const writeCallbacks: Array<() => void> = [];
       const onRecoveryComplete = jest.fn();
       mockTerminal.write.mockImplementation((_data, callback) => {
-        writeCallbacks.push(callback);
+        if (callback) writeCallbacks.push(callback);
       });
       const { result } = renderHook(() =>
         useSeedManager(
@@ -791,7 +807,7 @@ describe('useSeedManager', () => {
           capturedSequence: 17,
         });
       });
-      expect(mockTerminal.write).toHaveBeenCalledTimes(1);
+      expect(contentWrites()).toHaveLength(1);
       expect(onRecoveryComplete).toHaveBeenCalledTimes(1);
     });
 
@@ -829,8 +845,8 @@ describe('useSeedManager', () => {
         });
       });
 
-      expect(mockTerminal.write).toHaveBeenNthCalledWith(1, 'first', expect.any(Function));
-      expect(mockTerminal.write).toHaveBeenNthCalledWith(2, 'replacement', expect.any(Function));
+      expect(contentWrites()[0]).toEqual(['first', expect.any(Function)]);
+      expect(contentWrites()[1]).toEqual(['replacement', expect.any(Function)]);
       expect(onRecoveryComplete).toHaveBeenNthCalledWith(1, {
         sessionId: 'replacement-sess',
         recoveryEpoch: 4,

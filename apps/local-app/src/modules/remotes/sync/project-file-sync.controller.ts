@@ -1,8 +1,27 @@
-import { Body, Controller, Get, HttpCode, Param, ParseUUIDPipe, Post, Put } from '@nestjs/common';
-import { ApiOperation, ApiResponse, ApiTags } from '@nestjs/swagger';
+import {
+  Body,
+  Controller,
+  Get,
+  HttpCode,
+  Param,
+  ParseUUIDPipe,
+  Post,
+  Put,
+  Query,
+  Req,
+  Res,
+} from '@nestjs/common';
+import { ApiOperation, ApiQuery, ApiResponse, ApiTags } from '@nestjs/swagger';
+import type { FastifyReply, FastifyRequest } from 'fastify';
+import { requestAbortSignal } from '../../../common/http/request-abort-signal';
 import { IgnoresBodySchema } from '../../file-sync/file-sync.dto';
 import { AutoFixBodySchema, type FileSyncAutoFix } from '../../file-sync/file-sync-auto-fix.dto';
-import type { SaveProjectIgnoresResult, ProjectFileSyncFailures } from './remote-file-sync.dto';
+import type {
+  SaveProjectIgnoresResult,
+  ProjectFileSyncFailures,
+  ManagedExclusionRow,
+} from './remote-file-sync.dto';
+import { ManagedExclusionsCheckService } from './managed-exclusions-check.service';
 import { FileSyncFailuresService } from './file-sync-failures.service';
 import { RemoteFileSyncService } from './remote-file-sync.service';
 import { RemoteLiveSyncService } from './remote-live-sync.service';
@@ -23,7 +42,23 @@ export class ProjectFileSyncController {
     private readonly suggestions: FileSyncSuggestionsService,
     private readonly failures: FileSyncFailuresService,
     private readonly previews: FileSyncPatternPreviewService,
+    private readonly managed: ManagedExclusionsCheckService,
   ) {}
+
+  @Get('managed-exclusions')
+  @ApiOperation({ summary: 'List Docker data folders and check which can rejoin file sync' })
+  @ApiQuery({ name: 'remoteId', required: false, schema: { type: 'string', format: 'uuid' } })
+  @ApiResponse({ status: 200, description: 'Stored Docker exclusions and their status' })
+  async managedExclusions(
+    @Param('id', ParseUUIDPipe) projectId: string,
+    @Query('remoteId', new ParseUUIDPipe({ optional: true })) remoteId: string | undefined,
+    @Req() req: FastifyRequest,
+    @Res({ passthrough: true }) reply: FastifyReply,
+  ): Promise<{ exclusions: ManagedExclusionRow[] }> {
+    return {
+      exclusions: await this.managed.evaluate(projectId, remoteId, requestAbortSignal(req, reply)),
+    };
+  }
 
   @Get('ignores')
   getIgnores(@Param('id', ParseUUIDPipe) projectId: string): {

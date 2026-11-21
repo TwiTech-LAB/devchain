@@ -10,7 +10,7 @@ const EXEC =
   '- To use secrets, run the command through `devchain vault exec --only NAME,NAME2 -- <command> [args…]`. Only that command gets them, as $NAME; a file entry gives the path of a file. Example: `devchain vault exec --only API_TOKEN -- sh -c \'curl -H "Authorization: Bearer $API_TOKEN" https://api.example.com\'`';
 const ONLY = '- Always name the entries the command needs with --only.';
 const REQUEST =
-  '- If you need a secret you do not have, call devchain_vault_request. Never ask for a secret value in a message.';
+  '- If you need a secret you do not have, call devchain_vault_request. The user can give an existing entry with another name; then the notice gives the name to use with --only. Never ask for a secret value in a message.';
 const APPROVAL =
   "- An entry can need the user's approval. Then `devchain vault exec` stops and DevChain asks the user. When you get the approval notice, run the command again.";
 const LOCKED =

@@ -10,6 +10,8 @@ import { NotFoundError } from '../../../common/errors/error-types';
 import { CloudSessionManagerService } from '../../cloud/services/cloud-session-manager.service';
 import { E2eeDeviceStoreService } from '../../e2ee/services/e2ee-device-store.service';
 import { E2eePairingService } from '../../e2ee/services/e2ee-pairing.service';
+import type { MobileRpcWorkspaceAccessService } from './mobile-rpc-workspace-access.service';
+import type { MobileVaultRpcService } from './mobile-vault-rpc.service';
 
 jest.mock('../../../common/logging/logger', () => {
   const testLogger = {
@@ -1608,5 +1610,61 @@ describe('TunnelHandlerService', () => {
       expect(bind).not.toHaveBeenCalled();
       expect(resp.error?.code).toBe(-32602); // schema rejection — invalid params
     });
+  });
+
+  it('gives the device workspace authorization to the Vault list and answer handlers', async () => {
+    const REQUEST_ID = '00000000-0000-4000-8000-000000000301';
+    const authorization = { allowedWorkspaceIds: new Set(['ws-1']) };
+    const mobileVault = {
+      listRequests: jest.fn().mockResolvedValue([]),
+      listRequestCandidates: jest.fn().mockResolvedValue([]),
+      fulfillRequest: jest.fn().mockResolvedValue({
+        requestId: REQUEST_ID,
+        status: 'fulfilled',
+        permanent: true,
+        entryId: 'entry-1',
+      }),
+    };
+    const service = new TunnelHandlerService(
+      {},
+      mobileChat,
+      mobileBoard,
+      mobileViewport,
+      {} as E2eeTrustService,
+      terminalKeyInputStub,
+      activeSessionsStub,
+      cloudSessionStub,
+      deviceStoreStub,
+      pairingStub,
+      broadcasterStub,
+      {
+        authorize: jest.fn().mockResolvedValue(authorization),
+      } as unknown as MobileRpcWorkspaceAccessService,
+      undefined,
+      false,
+      mobileVault as unknown as MobileVaultRpcService,
+    );
+    const calls = [
+      ['vault.listRequests', {}],
+      ['vault.listRequestCandidates', { requestId: REQUEST_ID }],
+      ['vault.fulfillRequest', { requestId: REQUEST_ID, entryId: 'entry-1', permanent: true }],
+    ] as const;
+
+    const errors = [];
+    for (const [method, params] of calls) {
+      errors.push((await service.handle({ jsonrpc: '2.0', id: method, method, params })).error);
+    }
+
+    expect(errors).toEqual([undefined, undefined, undefined]);
+
+    expect(mobileVault.listRequests).toHaveBeenCalledWith({}, undefined, authorization);
+    expect(mobileVault.listRequestCandidates).toHaveBeenCalledWith(
+      { requestId: REQUEST_ID },
+      authorization,
+    );
+    expect(mobileVault.fulfillRequest).toHaveBeenCalledWith(
+      { requestId: REQUEST_ID, entryId: 'entry-1', permanent: true },
+      authorization,
+    );
   });
 });

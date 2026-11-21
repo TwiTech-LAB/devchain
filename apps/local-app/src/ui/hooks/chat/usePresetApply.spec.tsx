@@ -2,6 +2,7 @@ import { renderHook, act, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type { ReactNode } from 'react';
 import { agentQueryKeys } from '@/ui/lib/agents';
+import { teamsQueryKeys } from '@/ui/lib/teams';
 import { usePresetApply, type UsePresetApplyOptions } from './usePresetApply';
 
 const toast = jest.fn();
@@ -111,7 +112,7 @@ describe('usePresetApply', () => {
       ok: true,
       json: async () => ({
         applied: 1,
-        warnings: [],
+        warnings: ['A team was skipped'],
         agents: [{ id: 'a1', name: 'Coder', providerConfigId: 'new' }],
       }),
     });
@@ -140,9 +141,11 @@ describe('usePresetApply', () => {
     await waitFor(() => expect(showSuccess).toHaveBeenCalled());
     expect(markAgentsForRestart).toHaveBeenCalledWith(['main:a1']);
     expect(invalidate).toHaveBeenCalledWith({ queryKey: agentQueryKeys.project('p1') });
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: teamsQueryKeys.teams('p1') });
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: teamsQueryKeys.details });
     expect(showSuccess).toHaveBeenCalledWith({
       title: 'Preset applied',
-      description: '1 agent(s) updated. Restart sessions to apply.',
+      description: '1 agent(s) updated (1 warning(s)). Restart sessions to apply.',
     });
   });
 

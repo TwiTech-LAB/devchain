@@ -3,6 +3,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useNavigate } from 'react-router-dom';
 import { projectPresetQueries } from '@/ui/lib/project-presets';
 import { profileQueries, type ProfileListItem } from '@/ui/lib/profiles';
+import { invalidateProjectTeams } from '@/ui/lib/teams';
 import {
   fetchProviderConfigsByProfiles,
   type ProfileProviderConfig,
@@ -46,11 +47,11 @@ import { Label } from '@/ui/components/ui/label';
 import { Loader2, AlertTriangle, Settings, Info, AlertCircle } from 'lucide-react';
 import { fetchAgentPresence, type AgentPresenceMap } from '@/ui/lib/sessions';
 import { cn } from '@/ui/lib/utils';
-import { useFetchFactory, useHomeFetch } from '@/ui/hooks/useFetchFactory';
+import { useFetchFactory } from '@/ui/hooks/useFetchFactory';
 import { validatePresetAvailability } from '@/ui/lib/preset-validation';
 import type { Preset } from '@/ui/lib/preset-types';
 import { providersQueryKeys, fetchProviders } from '@/ui/lib/providers-query-keys';
-import { HOME_BACKEND, apiFetch as apiFetchTransport } from '@/ui/lib/api-transport';
+import type { FetchFn } from '@/ui/lib/api-transport';
 
 interface ProjectConfigurationModalProps {
   projectId: string;
@@ -59,18 +60,15 @@ interface ProjectConfigurationModalProps {
 }
 
 async function applyPreset(
+  fetchFn: FetchFn,
   projectId: string,
   presetName: string,
 ): Promise<{ applied: number; warnings: string[]; agents: Agent[] }> {
-  const res = await apiFetchTransport(
-    `/api/projects/${projectId}/presets/apply`,
-    {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ presetName }),
-    },
-    { backend: HOME_BACKEND },
-  );
+  const res = await fetchFn(`/api/projects/${projectId}/presets/apply`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ presetName }),
+  });
   if (!res.ok) throw new Error('Failed to apply preset');
   return res.json() as Promise<{ applied: number; warnings: string[]; agents: Agent[] }>;
 }
@@ -81,7 +79,6 @@ export function ProjectConfigurationModal({
   onOpenChange,
 }: ProjectConfigurationModalProps) {
   const fetchFn = useFetchFactory();
-  const homeFetch = useHomeFetch();
   const { toast } = useToast();
   const { confirmIfActiveSessions, dialogProps: activeSessionDialogProps } =
     useActiveSessionConfirm();
@@ -120,7 +117,7 @@ export function ProjectConfigurationModal({
 
   // Fetch presets
   const { data: presetsData, isLoading: presetsLoading } = useQuery({
-    ...projectPresetQueries.list(homeFetch, projectId),
+    ...projectPresetQueries.list(fetchFn, projectId),
     enabled: open && !!projectId,
   });
 
@@ -217,7 +214,7 @@ export function ProjectConfigurationModal({
   const applyPresetInner = async () => {
     setIsSaving(true);
     try {
-      const result = await applyPreset(projectId, presetToApply);
+      const result = await applyPreset(fetchFn, projectId, presetToApply);
 
       toast({
         title: 'Preset applied',
@@ -229,8 +226,10 @@ export function ProjectConfigurationModal({
         }),
       });
 
-      // Refresh agents and presence
-      await queryClient.invalidateQueries({ queryKey: agentQueryKeys.project(projectId) });
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: agentQueryKeys.project(projectId) }),
+        invalidateProjectTeams(queryClient, projectId),
+      ]);
       fetchAgentPresence(projectId, apiFetch).then(setPresence).catch(console.error);
 
       // Reset selection

@@ -11,6 +11,9 @@ import { RemoteProviderCliSettingsService } from './services/remote-provider-cli
 import { HostProviderUsageSettingsController } from './host/host-provider-usage-settings.controller';
 import { HostProviderUsageSettingsService } from './host/host-provider-usage-settings.service';
 import { RemoteProviderUsageSettingsService } from './services/remote-provider-usage-settings.service';
+import { HostProviderSettingsController } from './host/host-provider-settings.controller';
+import { HostProviderSettingsService } from './host/host-provider-settings.service';
+import { RemoteProviderSettingsService } from './services/remote-provider-settings.service';
 import { RemoteVaultPushService } from './services/remote-vault-push.service';
 import { VaultModule } from '../vault/vault.module';
 import { RemoteSkillSettingsService } from './services/remote-skill-settings.service';
@@ -24,6 +27,8 @@ import { GitModule } from '../git/git.module';
 import { RemoteFileSyncService } from './sync/remote-file-sync.service';
 import { GitOwnerStore } from './git-owner.store';
 import { FileSyncSuggestionsService } from './sync/file-sync-suggestions.service';
+import { ManagedExclusionsCheckService } from './sync/managed-exclusions-check.service';
+import { ManagedExclusionsRemovalStore } from './sync/managed-exclusions-removal.store';
 import { FileSyncFailuresService } from './sync/file-sync-failures.service';
 import { FileSyncPatternPreviewService } from './sync/file-sync-pattern-preview.service';
 import { ProjectFileSyncController } from './sync/project-file-sync.controller';
@@ -81,6 +86,7 @@ import { AttachOperation } from './operations/attach.operation';
 import { DetachOperation } from './operations/detach.operation';
 import { DisconnectAllOperation } from './operations/disconnect-all.operation';
 import { ForceSyncOperation } from './operations/force-sync.operation';
+import { ShareFolderOperation } from './operations/share-folder.operation';
 import { DockerImportInventoryStore } from './operations/docker-import-inventory.store';
 import { RemoteOperationRunner } from './operations/remote-operation.runner';
 import { RemoteOperationsService } from './operations/remote-operations.service';
@@ -106,6 +112,11 @@ import { HostInstallService } from './host-install/host-install.service';
 import { SshRunner } from './host-install/ssh-runner';
 import { ConnectChoicesController } from './connect-choices.controller';
 import { ConnectChoicesStore } from './connect-choices.store';
+import { SharedFoldersController } from './shared-folders/shared-folders.controller';
+import { SharedFoldersService } from './shared-folders/shared-folders.service';
+import { SharedFoldersStore } from './shared-folders/shared-folders.store';
+import { SharedFoldersLifecycle } from './shared-folders/shared-folders.lifecycle';
+import { SHARED_FOLDER_ENTRIES } from './ports/shared-folder-entries.port';
 import { InstallHostOperation } from './operations/install-host.operation';
 import { SshKeyService } from './host-install/ssh-key.service';
 import { HostSshKeysController } from './host/host-ssh-keys.controller';
@@ -167,10 +178,12 @@ import {
   controllers: [
     HomeGitWriteController,
     ConnectChoicesController,
+    SharedFoldersController,
     ProjectFileSyncController,
     RemoteApiKeyController,
     HostProviderCliSettingsController,
     HostProviderUsageSettingsController,
+    HostProviderSettingsController,
     HostSkillSettingsController,
     HostVaultController,
     RemotesController,
@@ -203,11 +216,17 @@ import {
     { provide: HOME_GIT_WRITE_TIMINGS, useValue: DEFAULT_HOME_GIT_WRITE_TIMINGS },
     RemoteWorktreeGuard,
     ConnectChoicesStore,
+    SharedFoldersStore,
+    SharedFoldersService,
+    SharedFoldersLifecycle,
+    { provide: SHARED_FOLDER_ENTRIES, useExisting: SharedFoldersStore },
     RemoteApiKeyManagementService,
     HostProviderCliSettingsService,
     RemoteProviderCliSettingsService,
     HostProviderUsageSettingsService,
     RemoteProviderUsageSettingsService,
+    HostProviderSettingsService,
+    RemoteProviderSettingsService,
     RemoteVaultPushService,
     HostSkillSettingsService,
     RemotesService,
@@ -241,6 +260,8 @@ import {
     RemoteFileSyncService,
     GitOwnerStore,
     FileSyncSuggestionsService,
+    ManagedExclusionsCheckService,
+    ManagedExclusionsRemovalStore,
     FileSyncFailuresService,
     FileSyncPatternPreviewService,
     RemoteHostClient,
@@ -256,6 +277,7 @@ import {
     DetachOperation,
     DisconnectAllOperation,
     ForceSyncOperation,
+    ShareFolderOperation,
     ClaimOperation,
     UpdateLoginsOperation,
     UpdateHostOperation,

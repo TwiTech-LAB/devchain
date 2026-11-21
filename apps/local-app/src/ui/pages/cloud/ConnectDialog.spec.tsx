@@ -206,13 +206,15 @@ let suggestions: {
 };
 let suggestionFailure: boolean;
 
-/** Answers the ignore-list routes; every other call goes to `plans`. */
+/** Answers the supporting Files routes; container plans go to `plans`. */
 function route(
   plans: (url: string, init?: RequestInit) => Promise<Response>,
   presence: () => Promise<Response> = async () => response({ state: 'present' }),
+  exclusions: () => Promise<Response> = async () => response({ exclusions: [] }),
 ) {
   mockApiFetch.mockImplementation(async (url, init) => {
     if (String(url).endsWith('/docker/presence')) return presence();
+    if (String(url).includes('/managed-exclusions?')) return exclusions();
     if (String(url).endsWith('/suggestions')) {
       if (suggestionFailure) throw new Error('PC scan failed');
       return response(suggestions);
@@ -309,6 +311,51 @@ describe('ConnectDialog remembered choices', () => {
       ['r2', vmStatus('ready', 'Ready')],
     ]),
   };
+
+  it.each([200, 503])(
+    'keeps Next usable while the selected VM exclusions return %i',
+    async (status) => {
+      let answer!: (value: Response) => void;
+      route(
+        async () => response(plan()),
+        async () => response({ state: 'absent' }),
+        () =>
+          new Promise<Response>((resolve) => {
+            answer = resolve;
+          }),
+      );
+      renderFlow({ ...twoVms, initialRemoteId: 'r2' });
+      await next();
+      const section = screen.getByRole('region', { name: 'Excluded now' });
+      expect(within(section).getByRole('status')).toBeInTheDocument();
+      const filesNext = screen.getByRole('button', { name: 'Next' });
+      await waitFor(() => expect(filesNext).toBeEnabled());
+      expect(mockApiFetch).toHaveBeenCalledWith(
+        '/api/projects/p1/file-sync/managed-exclusions?remoteId=r2',
+        { signal: expect.any(AbortSignal) },
+        { backend: HOME_BACKEND },
+      );
+
+      if (status === 503) {
+        answer(response({ message: 'Docker data check failed.' }, status));
+        expect(await within(section).findByRole('alert')).toHaveTextContent(
+          'Docker data check failed.',
+        );
+      } else {
+        answer(
+          response({
+            exclusions: [{ pattern: '/docker-cache', status: 'will-remove', containers: ['web'] }],
+          }),
+        );
+        expect(await within(section).findByRole('listitem')).toHaveTextContent(
+          /\/docker-cache.*web.*when this Connect finishes/,
+        );
+      }
+      expect(filesNext).toBeEnabled();
+      await userEvent.click(filesNext);
+      expect(screen.getByRole('button', { name: 'Connect' })).toBeEnabled();
+    },
+  );
 
   it.each([
     { cached: null, state: 'absent' },

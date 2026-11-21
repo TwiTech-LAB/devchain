@@ -220,22 +220,35 @@ describe('ChangeLoginsDialog', () => {
     expect(changeBody).toEqual({ providerAuth: { codex: 'generate' }, force: true });
   });
 
-  it('names the overriding keys the VM reports for a changed provider', async () => {
-    renderDialog([
-      { key: 'CLAUDE_CODE_OAUTH_TOKEN', source: 'provider-env', provider: 'claude' },
-      { key: 'COPILOT_GITHUB_TOKEN', source: 'provider-config', provider: 'copilot' },
-    ]);
-    await settleSessions();
+  it.each([
+    [
+      'provider-env',
+      'Scope it at home to the projects that stay on this PC, or remove it at home.',
+    ],
+    [
+      'provider-env-scoped',
+      'Scope it at home to the projects that stay on this PC, or remove it at home.',
+    ],
+    ['provider-config', "Remove it in that VM's Edit Provider."],
+  ] as const)(
+    'names the overriding %s key the VM reports for a changed provider',
+    async (source, remedy) => {
+      renderDialog([
+        { key: 'CLAUDE_CODE_OAUTH_TOKEN', source, provider: 'claude' },
+        { key: 'COPILOT_GITHUB_TOKEN', source: 'provider-config', provider: 'copilot' },
+      ]);
+      await settleSessions();
 
-    await choose('claude', 'None');
-    await waitFor(() =>
-      expect(screen.getByTestId('override-warning')).toHaveTextContent(
-        "The VM's provider settings hold CLAUDE_CODE_OAUTH_TOKEN (provider-env), which overrides this login. Remove it in that VM's Edit Provider.",
-      ),
-    );
-    // Copilot was not changed, so its override stays unmentioned.
-    expect(screen.queryAllByTestId('override-warning')).toHaveLength(1);
-  });
+      await choose('claude', 'None');
+      await waitFor(() =>
+        expect(screen.getByTestId('override-warning')).toHaveTextContent(
+          `The VM's provider settings hold CLAUDE_CODE_OAUTH_TOKEN (${source}), which overrides this login. ${remedy}`,
+        ),
+      );
+      // Copilot was not changed, so its override stays unmentioned.
+      expect(screen.queryAllByTestId('override-warning')).toHaveLength(1);
+    },
+  );
 
   it("selects a token added through the step's Add a token link", async () => {
     renderDialog();

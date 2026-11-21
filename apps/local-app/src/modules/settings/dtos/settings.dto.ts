@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { ProviderUsageSettingsSchema } from '@devchain/shared';
+import { PresetTeamConfigsSchema, ProviderUsageSettingsSchema } from '@devchain/shared';
 import {
   MIN_TERMINAL_SCROLLBACK,
   MAX_TERMINAL_SCROLLBACK,
@@ -68,7 +68,11 @@ export const TemplatePresetSchema = z.object({
   name: z.string().min(1),
   description: z.string().nullable().optional(),
   agentConfigs: z.array(TemplatePresetAgentConfigSchema),
+  teamConfigs: PresetTeamConfigsSchema.optional(),
+  origin: z.literal('user').optional(),
 });
+
+export const PresetInputSchema = TemplatePresetSchema.omit({ origin: true });
 
 // Per-project preset storage: projectId -> array of presets
 const ProjectPresetsSchema = z.record(z.string(), z.array(TemplatePresetSchema));

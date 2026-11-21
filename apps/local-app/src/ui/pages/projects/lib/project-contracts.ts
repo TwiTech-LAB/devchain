@@ -1,3 +1,13 @@
+import type {
+  FamilyAlternative,
+  PreservationIssue,
+  PreservationReview,
+} from '@/common/project-preservation.contract';
+export type {
+  FamilyAlternative,
+  PreserveTeamSetup,
+  PreservationReview,
+} from '@/common/project-preservation.contract';
 import type { ExportData, ManifestData } from '@devchain/shared';
 import type { PromptTransferCounts } from '@/common/prompt-transfer';
 import type { PromptReferenceValidationFailure } from '@/common/prompt-references';
@@ -19,14 +29,6 @@ export interface TeamOverridePayload {
     profileName: string;
     configNames: string[];
   }>;
-}
-
-export interface FamilyAlternative {
-  familySlug: string;
-  defaultProvider: string;
-  defaultProviderAvailable: boolean;
-  availableProviders: string[];
-  hasAlternatives: boolean;
 }
 
 export interface SetupPreviewProviderSummary {
@@ -119,6 +121,7 @@ export interface ProjectTemplate {
   source: 'bundled' | 'registry' | 'file';
   versions: string[] | null;
   latestVersion: string | null;
+  description?: string | null;
 }
 
 export interface PathStatResult {
@@ -137,6 +140,7 @@ export interface ProvisioningWarning {
 export type ProjectPromptReferenceFailure = PromptReferenceValidationFailure;
 
 export type ImportReadinessIssue =
+  | PreservationIssue
   | {
       code: 'prompt_reference_validation';
       message: string;
@@ -179,6 +183,7 @@ export interface ImportReadiness {
 }
 
 export interface ProjectPreMutationFailure {
+  preservationPlan?: PreservationReview;
   success: false;
   mutationStarted: false;
   error: string;
@@ -232,6 +237,7 @@ export type CreateFromTemplateResponse =
   | ProjectPromptReferenceFailure;
 
 export interface ImportDryRunSuccess {
+  preservationPlan?: PreservationReview;
   dryRun: true;
   success?: false;
   mutationStarted?: false;
@@ -248,6 +254,7 @@ export interface ImportDryRunSuccess {
 export type ImportDryRunResponse = ImportDryRunSuccess;
 
 export interface ImportProjectSuccess {
+  preservationPlan?: PreservationReview;
   success: true;
   counts: { imported: Record<string, number>; deleted: Record<string, number> };
   mappings: Record<string, Record<string, string>>;
@@ -260,12 +267,14 @@ export interface ImportProjectSuccess {
 export type ImportProjectResponse = ImportProjectSuccess | ProjectPreMutationFailure;
 
 export interface UpgradeProjectSuccess {
+  preservationPlan?: PreservationReview;
   success: true;
   newVersion: string;
   promptTransfer?: PromptTransferCounts;
 }
 
 export interface UpgradeProjectFailure {
+  preservationPlan?: PreservationReview;
   success: false;
   error?: string;
   mutationStarted?: boolean;

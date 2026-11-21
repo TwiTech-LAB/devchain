@@ -43,6 +43,11 @@ export function formatProjectPreMutationFailure(failure: ProjectPreMutationFailu
   if (isProjectPromptReferenceFailure(failure)) {
     return formatProjectPromptReferenceFailure(failure);
   }
-  const issueMessages = failure.readiness?.issues.map((issue) => issue.message) ?? [];
+  const issueMessages =
+    failure.readiness?.issues.map((issue) =>
+      issue.code === 'provider_mapping_required'
+        ? 'A selected provider cannot run one or more agents. Select another provider.'
+        : issue.message,
+    ) ?? [];
   return issueMessages.length > 0 ? issueMessages.join(' ') : failure.error;
 }

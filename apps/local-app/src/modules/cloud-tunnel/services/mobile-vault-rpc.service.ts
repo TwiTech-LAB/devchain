@@ -1,16 +1,27 @@
-import { Inject, Injectable } from '@nestjs/common';
-import { canAccessWorkspace } from '../../e2ee/services/paired-device-workspace-access.service';
-import { STORAGE_SERVICE, type ProjectStorage } from '../../storage/interfaces/storage.interface';
+import { Injectable } from '@nestjs/common';
 import {
   VaultRequestFulfillService,
+  type VaultRequestCandidate,
   type VaultRequestFulfillResult,
   type VaultRequestApproveResult,
   type VaultRequestView,
 } from '../../vault-requests/vault-request-fulfill.service';
+import type { VaultDeviceScope } from '../../vault-requests/vault-request-selection';
 import type { VaultUseDecision } from '../../vault-requests/vault-use-decision';
 import type { MobileRpcWorkspaceAuthorization } from './mobile-rpc-workspace-access.service';
 import type { RpcCryptoContext } from './tunnel-rpc-crypto.service';
 import { VaultUseOptInRegistry } from './vault-use-opt-in';
+
+/**
+ * The Vault scope of the device. A null set is full access, not single-workspace mode:
+ * a fail-closed snapshot also gives a set.
+ */
+function deviceScope(
+  authorization: MobileRpcWorkspaceAuthorization | undefined,
+): VaultDeviceScope | undefined {
+  const allowedWorkspaceIds = authorization?.allowedWorkspaceIds;
+  return allowedWorkspaceIds ? { allowedWorkspaceIds } : undefined;
+}
 
 /**
  * The phone's answers to agent Vault requests. The same service as the web routes does the
@@ -21,14 +32,15 @@ import { VaultUseOptInRegistry } from './vault-use-opt-in';
 export class MobileVaultRpcService {
   constructor(
     private readonly requests: VaultRequestFulfillService,
-    @Inject(STORAGE_SERVICE) private readonly storage: Pick<ProjectStorage, 'getProject'>,
     private readonly useOptIns: VaultUseOptInRegistry,
   ) {}
 
   /**
    * Pending requests of the projects in the device's workspaces; all of them in
-   * one-workspace mode. `use` requests only when `params.types` names them: an older
-   * phone build rejects the whole list when it holds a type it does not know.
+   * one-workspace mode. The device scope does both this and the `grant` request rule
+   * (`VaultRequestFulfillService.listPending`). `use` requests only when `params.types`
+   * names them: an older phone build rejects the whole list when it holds a type it does
+   * not know.
    */
   async listRequests(
     params: Record<string, unknown>,
@@ -37,35 +49,30 @@ export class MobileVaultRpcService {
   ): Promise<VaultRequestView[]> {
     const wantsUse = (params['types'] as string[] | undefined)?.includes('use') === true;
     if (wantsUse && cryptoCtx?.senderKid) this.useOptIns.record(cryptoCtx.senderKid);
-    const pending = (await this.requests.listPending()).filter(
-      (request) => wantsUse || request.type !== 'use',
-    );
-    const allowed = authorization?.allowedWorkspaceIds;
-    if (!allowed) return pending;
-    // The phone polls this list; requests share projects, so read each project once.
-    const workspaceIds = new Map<string, string | null>();
-    const visible: VaultRequestView[] = [];
-    for (const request of pending) {
-      let workspaceId = workspaceIds.get(request.projectId);
-      if (workspaceId === undefined) {
-        workspaceId = await this.storage
-          .getProject(request.projectId)
-          .then((project) => project.workspaceId)
-          .catch(() => null);
-        workspaceIds.set(request.projectId, workspaceId);
-      }
-      if (workspaceId && canAccessWorkspace({ workspaceIds: [...allowed] }, workspaceId)) {
-        visible.push(request);
-      }
-    }
-    return visible;
+    const pending = await this.requests.listPending(deviceScope(authorization));
+    return pending.filter((request) => wantsUse || request.type !== 'use');
   }
 
-  fulfillRequest(params: Record<string, unknown>): Promise<VaultRequestFulfillResult> {
-    return this.requests.fulfill(params['requestId'] as string, {
-      value: params['value'] as string | undefined,
-      permanent: params['permanent'] as boolean,
-    });
+  listRequestCandidates(
+    params: Record<string, unknown>,
+    authorization: MobileRpcWorkspaceAuthorization | undefined,
+  ): Promise<VaultRequestCandidate[]> {
+    return this.requests.listCandidates(params['requestId'] as string, deviceScope(authorization));
+  }
+
+  fulfillRequest(
+    params: Record<string, unknown>,
+    authorization?: MobileRpcWorkspaceAuthorization,
+  ): Promise<VaultRequestFulfillResult> {
+    return this.requests.fulfill(
+      params['requestId'] as string,
+      {
+        value: params['value'] as string | undefined,
+        permanent: params['permanent'] as boolean,
+        entryId: params['entryId'] as string | undefined,
+      },
+      deviceScope(authorization),
+    );
   }
 
   approveUse(params: Record<string, unknown>): Promise<VaultRequestApproveResult> {

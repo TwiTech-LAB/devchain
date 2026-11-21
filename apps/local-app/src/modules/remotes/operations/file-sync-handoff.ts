@@ -11,6 +11,7 @@ import {
   ConflictBaselineSchema,
   CONFLICT_BASELINE_MAX,
   RECEIVE_ONLY_SAMPLE_MAX,
+  shareFolderIdOf,
   type FolderSyncStatus,
   type SyncFolderPatch,
   type SyncStatusOptions,
@@ -26,6 +27,7 @@ import {
   evaluateCompletion,
   type FolderNeed,
   type ProjectFolder,
+  type SyncedFolder,
   type SyncProgress,
 } from '../../file-sync/file-sync.service';
 import { FileSyncManagedExclusionsStore } from '../../file-sync/file-sync-managed-exclusions.store';
@@ -42,6 +44,8 @@ const logger = createLogger('FileSyncHandoff');
 
 /** How long a sync may run before its step fails; the step can be retried. */
 const SYNC_TIMEOUT_MS = 30 * 60_000;
+/** A share copy has no size bound, so it fails only after this long without progress. */
+export const SHARE_STALL_TIMEOUT_MS = 10 * 60_000;
 const CONNECT_TIMEOUT_MS = 60_000;
 const POLL_MS = 500;
 const GIT_SETTLE_TIMEOUT_MS = 2 * 60_000;
@@ -66,13 +70,58 @@ export class FileSyncNotConnectedError extends AppError {
 }
 
 type Side = 'home' | 'host';
+type Devices = { home: string; host: string };
 /** How a sync error message names each side. */
 const SIDE_NAMES: Record<Side, string> = { home: 'this PC', host: 'the VM' };
 
+/** The receiver's files a copy replaced or deleted. */
+export interface ReplacedReport {
+  count: number;
+  sample: string[];
+}
+
 export interface ForceSyncDetails {
   backups: { side: 'home' | 'vm'; kind: ProjectFolder['kind']; path: string }[];
-  replaced?: { count: number; sample: string[] };
+  replaced?: ReplacedReport;
   verified: boolean;
+}
+
+/** What the share steps keep in `operation.details.shareFolder`. */
+export interface ShareFolderCopyDetails {
+  /** The VM folder that keeps the files the first copy replaced or deleted there. */
+  backupPath?: string;
+  replaced?: ReplacedReport;
+  verified?: boolean;
+}
+
+/** A shared user folder as the share steps receive it. */
+export interface ShareFolderInput {
+  shareId: string;
+  path: string;
+  ignores: string[];
+}
+
+/** How long a copy wait may last: from its start, or, with `stall`, from its last progress. */
+interface WaitLimit {
+  timeoutMs: number;
+  stall: boolean;
+}
+
+const SYNC_WAIT: WaitLimit = { timeoutMs: SYNC_TIMEOUT_MS, stall: false };
+
+/** One copy that rebuilds both indexes of some folders from one side. */
+interface FolderCopy<F extends SyncedFolder> {
+  folders: F[];
+  sender: Side;
+  /** Creates both sides paused: the sender `sendonly`, the receiver `receiveonly` with a backup. */
+  create(folder: F, devices: Devices): Promise<void>;
+  wait: WaitLimit;
+  signal?: AbortSignal;
+  /** What an earlier attempt recorded, so a Retry keeps its evidence. */
+  earlier?: ReplacedReport;
+  record(replaced: ReplacedReport): Promise<void>;
+  /** Names the copy in its failure message, for example "Force sync". */
+  label: string;
 }
 
 function forceErrors(status: FolderSyncStatus) {
@@ -310,6 +359,146 @@ export class FileSyncHandoff {
     await this.followVmGit(remoteId, projectId);
     await this.guard.remove(projectId, { refreshIndex: false });
     await this.host.removeGitGuard(remoteId, projectId, {}, this.gitOwner.fence(projectId));
+    const ignores = this.syncIgnores(projectId);
+    await this.copyFolders(run, {
+      folders,
+      sender,
+      create: async (folder, devices) => {
+        const request = {
+          projectId,
+          kind: folder.kind,
+          ignores: folder.kind === 'code' ? ignores : gitIgnores(false),
+          paused: true,
+        };
+        await this.fileSync.ensureFolder({
+          ...request,
+          type: sender === 'home' ? 'sendonly' : 'receiveonly',
+          peerDeviceId: devices.host,
+          ...(receiver === 'home' && { forceCopy: { operationId } }),
+        });
+        await this.host.syncFolders(
+          remoteId,
+          {
+            ...request,
+            type: sender === 'host' ? 'sendonly' : 'receiveonly',
+            peerDeviceId: devices.home,
+            ...(receiver === 'host' && { forceCopy: { operationId } }),
+          },
+          ...this.gitFence(folder.id),
+        );
+      },
+      wait: SYNC_WAIT,
+      earlier: this.forceDetails(run).replaced as ForceSyncDetails['replaced'],
+      record: (replaced) => this.forceProgress(run, { replaced }),
+      label: 'Force sync',
+    });
+    await this.forceProgress(run, { verified: true });
+  }
+
+  /**
+   * Share step "copy": this PC's files replace the VM folder, whose replaced and deleted files go
+   * to a backup on the VM. Removing both folders first drops any old index, so VM-only and
+   * VM-newer files cannot survive. A cancel stops the waits.
+   */
+  async copyShare(run: RemoteOperationStepRun, share: ShareFolderInput): Promise<void> {
+    const controller = new AbortController();
+    this.active.set(run.operation.id, controller);
+    try {
+      const { remoteId, id: operationId } = run.operation;
+      const backup = { operationId };
+      const folderId = shareFolderIdOf(share.shareId);
+      const backupPath =
+        this.shareDetails(run).backupPath ??
+        (await this.host.syncShareBackup(remoteId, { shareId: share.shareId, backup })).path;
+      await this.shareProgress(run, { backupPath, verified: false });
+      const request = { path: share.path, ignores: share.ignores, paused: true };
+      await this.copyFolders(run, {
+        folders: [{ id: folderId, kind: 'share' }],
+        sender: 'home',
+        create: async (_folder, devices) => {
+          await this.fileSync.ensureShareFolder(
+            { ...request, type: 'sendonly', peerDeviceId: devices.host },
+            { createMissing: false },
+          );
+          const created = await this.host.syncShareFolder(remoteId, {
+            ...request,
+            type: 'receiveonly',
+            peerDeviceId: devices.home,
+            backup,
+          });
+          assertSameShare(created.id, folderId);
+        },
+        wait: { timeoutMs: SHARE_STALL_TIMEOUT_MS, stall: true },
+        signal: controller.signal,
+        earlier: this.shareDetails(run).replaced,
+        record: (replaced) => this.shareProgress(run, { replaced }),
+        label: 'Sharing the folder',
+      });
+      await this.shareProgress(run, { verified: true });
+    } finally {
+      if (this.active.get(run.operation.id) === controller) this.active.delete(run.operation.id);
+    }
+  }
+
+  /**
+   * Share step "sync": both folders again without a backup, two-way, the VM first. Only a new
+   * folder configuration drops the trashcan versioning; a type change keeps it.
+   */
+  async syncShareBothWays(run: RemoteOperationStepRun, share: ShareFolderInput): Promise<void> {
+    if (this.shareDetails(run).verified !== true)
+      throw new AppError(
+        'The first copy of the folder has not been verified.',
+        'SHARE_COPY_NOT_VERIFIED',
+        409,
+      );
+    const { remoteId } = run.operation;
+    const folderId = shareFolderIdOf(share.shareId);
+    const devices = await this.pair(remoteId);
+    const request = {
+      path: share.path,
+      ignores: share.ignores,
+      type: 'sendreceive' as const,
+      paused: true,
+    };
+    const created = await this.host.syncShareFolder(remoteId, {
+      ...request,
+      peerDeviceId: devices.home,
+    });
+    assertSameShare(created.id, folderId);
+    await this.fileSync.ensureShareFolder(
+      { ...request, peerDeviceId: devices.host },
+      { createMissing: false },
+    );
+    await this.unpauseAll(remoteId, [{ id: folderId, kind: 'share' }]);
+  }
+
+  /**
+   * Stops sharing the folder on both sides; files stay. Returns why the VM folder was not
+   * removed; the next share of the path removes it first.
+   */
+  async removeShare(remoteId: string, shareId: string): Promise<string | null> {
+    const folderId = shareFolderIdOf(shareId);
+    await this.fileSync.removeFolder(folderId);
+    try {
+      await this.host.syncRemoveFolder(remoteId, folderId);
+      return null;
+    } catch (error) {
+      logger.warn({ remoteId, folderId }, 'Remote share folder was not removed');
+      return error instanceof Error ? error.message : String(error);
+    }
+  }
+
+  /**
+   * The shared copy order. Removing both folders first drops the old Syncthing indexes. Revert
+   * on the receiver happens only after the source index reached it (`waitAll`).
+   */
+  private async copyFolders<F extends SyncedFolder>(
+    run: RemoteOperationStepRun,
+    copy: FolderCopy<F>,
+  ): Promise<void> {
+    const { remoteId } = run.operation;
+    const { folders, sender, signal } = copy;
+    const receiver: Side = sender === 'home' ? 'host' : 'home';
     for (const folder of folders) {
       for (const side of ['home', 'host'] as const) {
         try {
@@ -326,45 +515,21 @@ export class FileSyncHandoff {
         }
       }
     }
-    const devices = await this.pair(remoteId);
-    const ignores = this.syncIgnores(projectId);
-    for (const folder of folders) {
-      const request = {
-        projectId,
-        kind: folder.kind,
-        ignores: folder.kind === 'code' ? ignores : gitIgnores(false),
-        paused: true,
-      };
-      await this.fileSync.ensureFolder({
-        ...request,
-        type: sender === 'home' ? 'sendonly' : 'receiveonly',
-        peerDeviceId: devices.host,
-        ...(receiver === 'home' && { forceCopy: { operationId } }),
-      });
-      await this.host.syncFolders(
-        remoteId,
-        {
-          ...request,
-          type: sender === 'host' ? 'sendonly' : 'receiveonly',
-          peerDeviceId: devices.home,
-          ...(receiver === 'host' && { forceCopy: { operationId } }),
-        },
-        ...this.gitFence(folder.id),
-      );
-    }
+    const devices = await this.pair(remoteId, signal);
+    for (const folder of folders) await copy.create(folder, devices);
     await this.unpauseAll(remoteId, folders);
     for (const folder of folders) {
       await Promise.all([
-        this.scan(sender, remoteId, folder.id),
-        this.scan(receiver, remoteId, folder.id),
+        this.scan(sender, remoteId, folder.id, signal),
+        this.scan(receiver, remoteId, folder.id, signal),
       ]);
     }
     for (const folder of folders) {
-      await this.waitBarrier(remoteId, folder.id, sender);
+      await this.waitBarrier(remoteId, folder.id, sender, copy.wait, signal);
       if (sender === 'home') await this.fileSync.override(folder.id);
       else await this.host.syncOverride(remoteId, folder.id, ...this.gitFence(folder.id));
     }
-    const replaced = { count: 0, sample: [] as string[] };
+    const replaced: ReplacedReport = { count: 0, sample: [] };
     for (const folder of folders) {
       const changed =
         receiver === 'home'
@@ -379,15 +544,14 @@ export class FileSyncHandoff {
     }
     // A Retry sees only what earlier attempts did not revert, and a replay sees the same
     // files again: keep the larger count, so earlier evidence stays and nothing counts twice.
-    const earlier = this.forceDetails(run).replaced as ForceSyncDetails['replaced'];
-    if (earlier) {
-      replaced.count = Math.max(replaced.count, earlier.count);
-      replaced.sample = [...new Set([...earlier.sample, ...replaced.sample])].slice(
+    if (copy.earlier) {
+      replaced.count = Math.max(replaced.count, copy.earlier.count);
+      replaced.sample = [...new Set([...copy.earlier.sample, ...replaced.sample])].slice(
         0,
         RECEIVE_ONLY_SAMPLE_MAX,
       );
     }
-    await this.forceProgress(run, { replaced });
+    await copy.record(replaced);
     let waitError: unknown;
     try {
       await this.waitAll(run, folders, {
@@ -395,13 +559,15 @@ export class FileSyncHandoff {
         devices,
         symmetricCode: false,
         requireNoReceiveOnlyChanges: true,
+        wait: copy.wait,
+        signal,
       });
     } catch (error) {
       waitError = error;
     }
-    await this.verifyForceCopy(remoteId, folders, sender, devices);
+    signal?.throwIfAborted();
+    await this.verifyCopy(remoteId, folders, sender, devices, copy.label);
     if (waitError) throw waitError;
-    await this.forceProgress(run, { verified: true });
   }
 
   /** Restores complete connected records, including any missing after a restart. */
@@ -481,15 +647,45 @@ export class FileSyncHandoff {
     return run.progress({ forceSync: { ...this.forceDetails(run), ...patch } }, { durable: true });
   }
 
-  private async waitBarrier(remoteId: string, folderId: string, sender: Side): Promise<void> {
+  private shareDetails(run: RemoteOperationStepRun): ShareFolderCopyDetails {
+    const value = run.details.shareFolder;
+    return value && typeof value === 'object' && !Array.isArray(value)
+      ? (value as ShareFolderCopyDetails)
+      : {};
+  }
+
+  private shareProgress(run: RemoteOperationStepRun, patch: ShareFolderCopyDetails): Promise<void> {
+    return run.progress(
+      { shareFolder: { ...this.shareDetails(run), ...patch } },
+      { durable: true },
+    );
+  }
+
+  private async waitBarrier(
+    remoteId: string,
+    folderId: string,
+    sender: Side,
+    wait: WaitLimit,
+    signal?: AbortSignal,
+  ): Promise<void> {
     const receiver = sender === 'home' ? 'host' : 'home';
-    const deadline = Date.now() + SYNC_TIMEOUT_MS;
+    let deadline = Date.now() + wait.timeoutMs;
+    let seen: string | null = null;
     for (;;) {
+      signal?.throwIfAborted();
       const [source, target] = await Promise.all([
         this.status(sender, remoteId, folderId),
         this.status(receiver, remoteId, folderId),
       ]);
       if (senderIndexReached(source, target)) return;
+      const position = [
+        source.localFiles,
+        source.localDirectories,
+        target.globalFiles,
+        target.globalDirectories,
+      ].join('/');
+      if (wait.stall && position !== seen) deadline = Date.now() + wait.timeoutMs;
+      seen = position;
       if (Date.now() >= deadline)
         throw new FileSyncTimeoutError(
           folderId,
@@ -500,11 +696,12 @@ export class FileSyncHandoff {
     }
   }
 
-  private async verifyForceCopy(
+  private async verifyCopy(
     remoteId: string,
-    folders: ProjectFolder[],
+    folders: SyncedFolder[],
     sender: Side,
-    devices: { home: string; host: string },
+    devices: Devices,
+    label: string,
   ): Promise<void> {
     const receiver: Side = sender === 'home' ? 'host' : 'home';
     const problems: string[] = [];
@@ -535,7 +732,7 @@ export class FileSyncHandoff {
     }
     if (problems.length)
       throw new AppError(
-        `Force sync failed: ${[...problems, ...failedFiles].join('; ')}`,
+        `${label} failed: ${[...problems, ...failedFiles].join('; ')}`,
         'FORCE_SYNC_INCOMPLETE',
         500,
       );
@@ -733,10 +930,7 @@ export class FileSyncHandoff {
   }
 
   /** Makes each side trust the other and waits until they are connected. */
-  private async pair(
-    remoteId: string,
-    signal?: AbortSignal,
-  ): Promise<{ home: string; host: string }> {
+  async pair(remoteId: string, signal?: AbortSignal): Promise<Devices> {
     const home = this.fileSync.device();
     const host = await this.host.syncDevice(remoteId);
     await this.fileSync.addPeer(host);
@@ -751,7 +945,7 @@ export class FileSyncHandoff {
   }
 
   /** Starts both sides of every folder; each side already has its type. */
-  private async unpauseAll(remoteId: string, folders: ProjectFolder[]): Promise<void> {
+  private async unpauseAll(remoteId: string, folders: SyncedFolder[]): Promise<void> {
     for (const folder of folders) {
       await this.update('host', remoteId, folder.id, { paused: false });
       await this.update('home', remoteId, folder.id, { paused: false });
@@ -779,12 +973,13 @@ export class FileSyncHandoff {
 
   private async waitAll(
     run: RemoteOperationStepRun,
-    folders: ProjectFolder[],
+    folders: SyncedFolder[],
     options: {
-      sender: Side | ((folder: ProjectFolder) => Side);
-      devices: { home: string; host: string };
+      sender: Side | ((folder: SyncedFolder) => Side);
+      devices: Devices;
       symmetricCode?: boolean;
       requireNoReceiveOnlyChanges?: boolean;
+      wait?: WaitLimit;
       signal?: AbortSignal;
     },
   ): Promise<void> {
@@ -832,7 +1027,8 @@ export class FileSyncHandoff {
               }
               return status;
             },
-            timeoutMs: SYNC_TIMEOUT_MS,
+            timeoutMs: (options.wait ?? SYNC_WAIT).timeoutMs,
+            stallTimeout: (options.wait ?? SYNC_WAIT).stall,
             sides: { sender: SIDE_NAMES[sender], receiver: SIDE_NAMES[receiver] },
             onProgress: (current) => {
               progress[folder.id] = current;
@@ -950,6 +1146,16 @@ export class FileSyncHandoff {
     this.gitOwner.remember(projectId, record);
     return record.owner;
   }
+}
+
+/** Both sides compute the share id from the same path; another id means another path. */
+function assertSameShare(created: string, expected: string): void {
+  if (created !== expected)
+    throw new AppError(
+      `The VM shared the folder as ${created}, not ${expected}: the paths differ.`,
+      'SHARE_FOLDER_ID_MISMATCH',
+      409,
+    );
 }
 
 function sleep(ms: number): Promise<void> {

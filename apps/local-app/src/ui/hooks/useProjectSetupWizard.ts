@@ -13,6 +13,8 @@ export interface WizardStep {
   title: string;
   /** Optional step-specific dialog description; the shell falls back to the flow-level one. */
   description?: string;
+  /** Use the wider dialog for this step. */
+  wide?: boolean;
   /**
    * When true the step is hidden entirely — not rendered, not counted, not reachable. Derive from
    * SESSION-STABLE data (e.g. "template has no configurable teams"), not from values the user

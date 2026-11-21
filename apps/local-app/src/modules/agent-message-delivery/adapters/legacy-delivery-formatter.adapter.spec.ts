@@ -86,6 +86,16 @@ describe('LegacyDeliveryFormatterAdapter', () => {
     });
 
     describe("framing:'sender-footer'", () => {
+      it.each([
+        ['/compact', '/compact'],
+        ['/compact keep the test results', '/compact keep the test results'],
+        ['Please run /compact', 'Please run /compact\n[SentBy:"Desk Phone"]'],
+      ])('uses the first character to decide whether to add a footer to %j', (body, expected) => {
+        expect(
+          formatter.format(msg({ body, senderName: 'Desk Phone', framing: 'sender-footer' })),
+        ).toBe(expected);
+      });
+
       it('appends a JSON-quoted sanitized sender on one line with no trailing newline', () => {
         const out = formatter.format(
           msg({

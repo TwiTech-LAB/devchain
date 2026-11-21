@@ -14,6 +14,17 @@ export interface SaveProjectIgnoresResult {
   message: string;
 }
 
+export type ManagedExclusionReason =
+  | { kind: 'docker'; side: 'home' | 'vm' | 'compose'; name: string }
+  | { kind: 'permissions'; side: 'home' | 'vm'; owners: string[] }
+  | { kind: 'covered'; by: string }
+  | { kind: 'unchecked'; cause: string };
+
+export type ManagedExclusionRow = { pattern: string; containers: string[] } & (
+  | { status: 'stays'; reason: ManagedExclusionReason }
+  | { status: 'will-remove'; remainingRule?: string }
+);
+
 export interface FileSyncFailedCounts {
   home: number;
   vm: number;

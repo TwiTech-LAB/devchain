@@ -172,6 +172,11 @@ export const STORAGE_ROUTES = {
     scope: 'exempt',
     reason: HOME_OWNED_VAULT_REASON,
   },
+  grantVaultEntryToRequester: {
+    delegate: 'vaultEntry',
+    scope: 'exempt',
+    reason: HOME_OWNED_VAULT_REASON,
+  },
   listVaultUseFamilyApprovals: { delegate: 'vaultEntry', scope: 'read' },
   addVaultUseFamilyApproval: {
     delegate: 'vaultEntry',
@@ -356,11 +361,16 @@ export const STORAGE_ROUTES = {
   },
   getProviderEnvForProject: { delegate: 'provider', scope: 'read' },
   listEnvScopesByProviderIds: { delegate: 'provider', scope: 'read' },
-  updateProviderWithScopes: {
+  // Home owns provider env scopes, also for memberships of remote-owned or frozen projects.
+  updateProviderWithScopes: { delegate: 'provider', scope: 'global' },
+  applyHomeProviderSettings: {
     delegate: 'provider',
-    scope: ([id, , envScopes, currentEnvKeys], lookup) =>
-      lookup.changedProviderScopeProjects(id, envScopes, currentEnvKeys),
+    scope: 'exempt',
+    reason:
+      'Home owns provider settings; the VM mirrors them also while a handoff freezes a project.',
   },
+  listProviderSettingsSources: { delegate: 'provider', scope: 'read' },
+  readProviderSettingsFingerprint: { delegate: 'provider', scope: 'read' },
   getProviderMcpMetadata: { delegate: 'provider', scope: 'read' },
   updateProviderMcpMetadata: { delegate: 'provider', scope: 'global' },
   getSourceProjectEnabled: { delegate: 'skillSource', scope: 'read' },

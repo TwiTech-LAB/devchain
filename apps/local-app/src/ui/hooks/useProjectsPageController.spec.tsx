@@ -213,10 +213,7 @@ async function advanceWizard(
   }
 }
 
-async function submitCreate(
-  result: ReturnType<typeof renderController>['result'],
-  expectedSteps: number,
-) {
+async function submitCreate(result: ReturnType<typeof renderController>['result']) {
   act(() => result.current.table.openCreate());
   await waitFor(() =>
     expect(result.current.dialogs.create.source.values.templateId).toBe('starter'),
@@ -228,7 +225,10 @@ async function submitCreate(
   act(() => result.current.dialogs.create.source.submit());
   await waitFor(() => expect(result.current.dialogs.create.wizard.isLoading).toBe(false));
   expect(result.current.dialogs.create.wizard.open).toBe(true);
-  await advanceWizard(() => result.current.dialogs.create.wizard.controller, expectedSteps);
+  await advanceWizard(
+    () => result.current.dialogs.create.wizard.controller,
+    result.current.dialogs.create.wizard.controller.totalSteps,
+  );
   act(() => result.current.dialogs.create.wizard.controller.submit());
 }
 
@@ -484,7 +484,7 @@ describe('useProjectsPageController semantic presentation', () => {
     const { result } = renderController(api);
     const [row] = await readyRows(result);
 
-    await submitCreate(result, 2);
+    await submitCreate(result);
     await waitFor(() => expect(api.calls.createFromTemplate).toHaveLength(1));
     expect(api.calls.createFromTemplate[0][0]).toEqual(
       expect.objectContaining({ workspaceId: 'default' }),
@@ -1035,6 +1035,7 @@ describe('useProjectsPageController semantic presentation', () => {
     );
     await waitFor(() => expect(result.current.dialogs.create.source.open).toBe(true));
     expect(result.current.dialogs.create.source.values.rootPath).toBe('/work/new/');
+    expect(result.current.dialogs.create.source.values.name).toBe('new');
     expect(api.calls.listProjects.length).toBeGreaterThan(1);
     expect(api.calls.listWorkspaces.length).toBeGreaterThan(1);
   });
@@ -1086,7 +1087,7 @@ describe('useProjectsPageController semantic presentation', () => {
     });
     const { result } = renderController(api);
     await readyRows(result);
-    await submitCreate(result, 3);
+    await submitCreate(result);
     await waitFor(() => expect(result.current.dialogs.create.providerMapping).not.toBeNull());
     const firstPayload = api.calls.createFromTemplate[0][0];
     expect(firstPayload.selectedProviderNames).toEqual(['codex']);
@@ -1099,6 +1100,45 @@ describe('useProjectsPageController semantic presentation', () => {
       ...firstPayload,
       familyProviderMappings: { reasoning: 'codex' },
     });
+  });
+
+  it('reuses the selected template preview when the create wizard opens', async () => {
+    const api = new InMemoryProjectsPageApi({
+      projects: { items: [project('one')] },
+      templates: [template],
+      setupPreview: emptyPreview(),
+    });
+    const { result } = renderController(api);
+    await readyRows(result);
+    act(() => result.current.table.openCreate());
+    await waitFor(() =>
+      expect(result.current.dialogs.create.source.selectedTemplatePreview).not.toBeNull(),
+    );
+    act(() => {
+      result.current.dialogs.create.source.changeRootPath('/work/created');
+    });
+    act(() => result.current.dialogs.create.source.submit());
+    await waitFor(() => expect(result.current.dialogs.create.wizard.isLoading).toBe(false));
+
+    expect(result.current.dialogs.create.wizard.open).toBe(true);
+    expect(api.calls.loadSetupPreview).toEqual([[{ slug: 'starter' }]]);
+  });
+
+  it('reads the setup preview again for each opening of the Create dialog', async () => {
+    // The preview holds the installed providers. A provider added between two openings must show.
+    const api = new InMemoryProjectsPageApi({
+      projects: { items: [project('one')] },
+      templates: [template],
+      setupPreview: emptyPreview(),
+    });
+    const { result } = renderController(api);
+    await readyRows(result);
+    act(() => result.current.table.openCreate());
+    await waitFor(() => expect(api.calls.loadSetupPreview).toHaveLength(1));
+
+    act(() => result.current.dialogs.create.source.onOpenChange(false));
+    act(() => result.current.table.openCreate());
+    await waitFor(() => expect(api.calls.loadSetupPreview).toHaveLength(2));
   });
 
   it('hands template and file import sources to the active import wizard', async () => {
@@ -1165,7 +1205,7 @@ describe('useProjectsPageController semantic presentation', () => {
     });
     const { result } = renderController(api);
     await readyRows(result);
-    await submitCreate(result, 2);
+    await submitCreate(result);
     await waitFor(() => expect(result.current.dialogs.create.warning.open).toBe(true));
     expect(mockToast).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -1198,7 +1238,7 @@ describe('useProjectsPageController semantic presentation', () => {
     });
     const { result } = renderController(api);
     await readyRows(result);
-    await submitCreate(result, 2);
+    await submitCreate(result);
 
     await waitFor(() => expect(result.current.dialogs.create.wizard.open).toBe(false));
     expect(result.current.dialogs.create.source.open).toBe(false);

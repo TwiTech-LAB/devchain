@@ -1,5 +1,5 @@
 import type { ProcessExecutor } from '../process-executor/process-executor.port';
-import type { SessionTarget } from './types';
+import { tmuxPaneTarget, type PinnedPane, type SessionTarget } from './types';
 
 export interface ForegroundState {
   readonly panePid: number;
@@ -12,10 +12,11 @@ export interface ForegroundState {
  */
 export async function readForegroundState(
   executor: ProcessExecutor,
-  target: SessionTarget,
+  target: SessionTarget | PinnedPane,
+  signal?: AbortSignal,
 ): Promise<ForegroundState | null> {
   const readProcessId = async (argv: readonly string[]): Promise<number> => {
-    const result = await executor.run({ argv, mode: 'pipe', timeout: 2000 });
+    const result = await executor.run({ argv, mode: 'pipe', timeout: 2000, signal });
     const value = result.stdout.trim();
     const processId = Number(value);
     if (
@@ -37,7 +38,7 @@ export async function readForegroundState(
       'display-message',
       '-p',
       '-t',
-      `=${target.name}:`,
+      tmuxPaneTarget(target),
       '#{pane_pid}',
     ]);
     const foregroundGroup = await readProcessId(['ps', '-o', 'tpgid=', '-p', String(panePid)]);

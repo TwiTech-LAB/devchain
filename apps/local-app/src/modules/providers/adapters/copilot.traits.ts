@@ -4,4 +4,5 @@ export const COPILOT_TRAITS: ProviderTraits = Object.freeze({
   activity: 'stop-hook',
   transcriptTurns: false,
   draftClearKeys: Object.freeze([]),
+  imagePasteChip: Object.freeze({ prompt: '❯', prefixes: Object.freeze(['[image: ', '[📷 ']) }),
 });

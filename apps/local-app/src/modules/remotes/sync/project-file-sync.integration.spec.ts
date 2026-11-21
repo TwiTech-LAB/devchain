@@ -1,3 +1,4 @@
+import { ManagedExclusionsRemovalStore } from './managed-exclusions-removal.store';
 import { FastifyAdapter, type NestFastifyApplication } from '@nestjs/platform-fastify';
 import { Test } from '@nestjs/testing';
 import { AllExceptionsFilter } from '../../../common/filters/http-exception.filter';
@@ -17,6 +18,9 @@ import type {
 import { RemotesController } from '../controllers/remotes.controller';
 import { RemotesService } from '../services/remotes.service';
 import { FileSyncSuggestionsService } from './file-sync-suggestions.service';
+import { ManagedExclusionsCheckService } from './managed-exclusions-check.service';
+import { DockerPlanSourceService } from '../docker/docker-plan-source.service';
+import { DockerImportInventoryStore } from '../operations/docker-import-inventory.store';
 import { FileSyncFailuresService } from './file-sync-failures.service';
 import { FileSyncPatternPreviewService } from './file-sync-pattern-preview.service';
 import type { FolderSyncStatus, SyncStatusOptions } from '../../file-sync/file-sync.dto';
@@ -50,6 +54,9 @@ describe('project file sync settings routes', () => {
   const binding = { state: 'local', remoteId, projectId };
   const autoSettings = { enabled: true, actions: [] };
   const record = jest.fn();
+  const managedPatterns = jest.fn<string[], [string]>(() => []);
+  const listContainers = jest.fn();
+  const connectDocker = jest.fn(async () => ({ json: listContainers }));
   const readRevision = async () => {
     const current = await app.inject({
       method: 'GET',
@@ -95,6 +102,13 @@ describe('project file sync settings routes', () => {
         { provide: RemotesService, useValue: {} },
         RemoteLiveSyncService,
         FileSyncSuggestionsService,
+        ManagedExclusionsCheckService,
+        { provide: ManagedExclusionsRemovalStore, useValue: {} },
+        {
+          provide: DockerPlanSourceService,
+          useValue: { connect: connectDocker },
+        },
+        { provide: DockerImportInventoryStore, useValue: { get: () => null } },
         FileSyncFailuresService,
         FileSyncPatternPreviewService,
         SyncPathInspector,
@@ -130,7 +144,7 @@ describe('project file sync settings routes', () => {
         { provide: RemoteHostClient, useValue: host },
         { provide: ProjectReplicaApplier, useValue: {} },
         { provide: ProjectReplicaBuilder, useValue: {} },
-        { provide: FileSyncManagedExclusionsStore, useValue: { get: () => [] } },
+        { provide: FileSyncManagedExclusionsStore, useValue: { get: managedPatterns } },
         { provide: GitService, useValue: {} },
         { provide: HomeGitGuardService, useValue: {} },
       ],
@@ -144,6 +158,40 @@ describe('project file sync settings routes', () => {
   afterAll(async () => {
     await app?.close();
     rmSync(root, { recursive: true, force: true });
+  });
+
+  it('serves stored Docker exclusions offline and evaluates them for a selected remote', async () => {
+    const url = `/api/projects/${projectId}/file-sync/managed-exclusions`;
+    managedPatterns.mockReturnValueOnce(['/logs']).mockReturnValueOnce(['/logs']);
+    const stored = await app.inject({ method: 'GET', url });
+    expect(stored.statusCode).toBe(200);
+    expect(stored.json()).toEqual({
+      exclusions: [
+        {
+          pattern: '/logs',
+          containers: [],
+          status: 'stays',
+          reason: { kind: 'unchecked', cause: 'not-connected' },
+        },
+      ],
+    });
+    expect(connectDocker).not.toHaveBeenCalled();
+    listContainers.mockResolvedValueOnce([
+      { Names: ['/logger'], Mounts: [{ Type: 'bind', Source: join(root, 'logs') }] },
+    ]);
+    const checked = await app.inject({ method: 'GET', url: url + '?remoteId=' + remoteId });
+    expect(checked.statusCode).toBe(200);
+    expect(checked.json()).toEqual({
+      exclusions: [
+        {
+          pattern: '/logs',
+          containers: [],
+          status: 'stays',
+          reason: { kind: 'docker', side: 'home', name: 'logger' },
+        },
+      ],
+    });
+    expect((await app.inject({ method: 'GET', url: url + '?remoteId=bad' })).statusCode).toBe(400);
   });
 
   it('refuses ignore saves during a persisted force_sync hold before storing the desired list', async () => {

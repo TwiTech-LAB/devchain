@@ -1248,6 +1248,19 @@ const vaultRequestSchema = z
   })
   .passthrough();
 
+/** An existing entry that can answer a `create` request. Never carries a value. */
+const vaultRequestCandidateSchema = z
+  .object({
+    id: z.string().min(1),
+    name: z.string().min(1),
+    kind: z.enum(['secret', 'file']),
+    description: z.string(),
+    ownerProjectId: z.string().nullable(),
+    ownerProjectName: z.string().nullable(),
+    alreadyAvailable: z.boolean(),
+  })
+  .passthrough();
+
 const vaultCatalog = {
   'vault.listRequests': {
     // Without `use` in `types`, the PC leaves out `use` requests: a build that predates
@@ -1256,6 +1269,14 @@ const vaultCatalog = {
     resultSchema: z.array(vaultRequestSchema),
     paramsMode: passthrough,
     cryptoMode: conditionalSeal,
+  },
+  // Names, descriptions and project names of many entries; their only use is an answer,
+  // which is sealed-only.
+  'vault.listRequestCandidates': {
+    paramsSchema: z.object({ requestId: uuidSchema }).strict(),
+    resultSchema: z.array(vaultRequestCandidateSchema),
+    paramsMode: strict,
+    cryptoMode: sealedOnly,
   },
   // The value travels only sealed; a plaintext lane cannot carry it.
   'vault.fulfillRequest': {
@@ -1267,6 +1288,7 @@ const vaultCatalog = {
           .max(256 * 1024)
           .optional(),
         permanent: z.boolean(),
+        entryId: z.string().min(1).max(255).optional(),
       })
       .strict(),
     resultSchema: z
@@ -1290,9 +1312,7 @@ const vaultCatalog = {
   },
   // A `use` answer carries no value, so the plaintext lane may carry it.
   'vault.approveUse': {
-    paramsSchema: z
-      .object({ requestId: uuidSchema, decision: vaultUseDecisionSchema })
-      .strict(),
+    paramsSchema: z.object({ requestId: uuidSchema, decision: vaultUseDecisionSchema }).strict(),
     resultSchema: z
       .object({
         requestId: uuidSchema,
@@ -1366,6 +1386,7 @@ export const MOBILE_RPC_METHODS = [
   'e2ee.revokeDeviceKey',
   'e2ee.bindNotificationRoutingIdentity',
   'vault.listRequests',
+  'vault.listRequestCandidates',
   'vault.fulfillRequest',
   'vault.denyRequest',
   'vault.approveUse',

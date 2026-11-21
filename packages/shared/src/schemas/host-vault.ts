@@ -163,24 +163,36 @@ const HostVaultSessionValueSchema = z
   })
   .strict();
 
-/**
- * Home's answer to a VM request. A stored or granted answer has no `sessionValue`: the
- * VM reads the entry from its pushed Vault cache. `approved` answers a `use` request
- * only, and carries no value.
- */
 /** How long an approved `use` lasts: this session, one delivery, or the agent's family. */
 export const HostVaultUseDecisionSchema = z.enum(['session', 'once', 'family']);
 
-export const HostVaultRequestResolveSchema = z.discriminatedUnion('status', [
-  z
-    .object({
-      status: z.literal('fulfilled'),
-      sessionValue: HostVaultSessionValueSchema.optional(),
-    })
-    .strict(),
-  z.object({ status: z.literal('approved'), decision: HostVaultUseDecisionSchema }).strict(),
-  z.object({ status: z.literal('denied'), reason: z.string().max(200).optional() }).strict(),
-]);
+/**
+ * Home's answer to a VM request. A stored or granted answer has no `sessionValue`: the
+ * VM reads the entry from its pushed Vault cache. `entryId` names an existing entry that
+ * answered a `create` request, possibly under another name; it never comes with a
+ * `sessionValue`. `approved` answers a `use` request only, and carries no value.
+ */
+export const HostVaultRequestResolveSchema = z
+  .discriminatedUnion('status', [
+    z
+      .object({
+        status: z.literal('fulfilled'),
+        sessionValue: HostVaultSessionValueSchema.optional(),
+        entryId: z.string().min(1).max(255).optional(),
+      })
+      .strict(),
+    z.object({ status: z.literal('approved'), decision: HostVaultUseDecisionSchema }).strict(),
+    z.object({ status: z.literal('denied'), reason: z.string().max(200).optional() }).strict(),
+  ])
+  .superRefine((answer, context) => {
+    if (answer.status === 'fulfilled' && answer.sessionValue && answer.entryId !== undefined) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['entryId'],
+        message: 'An existing entry and a session value are exclusive',
+      });
+    }
+  });
 
 export type HostVaultUseDecision = z.infer<typeof HostVaultUseDecisionSchema>;
 export type HostVaultEntry = z.infer<typeof HostVaultEntrySchema>;

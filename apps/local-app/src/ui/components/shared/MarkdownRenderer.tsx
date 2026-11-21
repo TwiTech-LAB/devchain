@@ -7,14 +7,24 @@
  * SECURITY: Output is sanitized with DOMPurify to prevent XSS attacks.
  */
 
-import { memo, useMemo } from 'react';
+import { memo, useMemo, type MouseEvent } from 'react';
 import DOMPurify from 'dompurify';
+import { toast } from '@/ui/hooks/use-toast';
 import { cn } from '@/ui/lib/utils';
 
 export interface MarkdownRendererProps {
   content: string;
   className?: string;
+  /** Show a Copy button on each code block. It copies the exact code text. */
+  copyableCode?: boolean;
 }
+
+export interface RenderMarkdownOptions {
+  copyableCode?: boolean;
+}
+
+const COPY_CODE_SELECTOR = 'button[data-copy-code]';
+const COPIED_MS = 1500;
 
 export interface Heading {
   id: string;
@@ -92,7 +102,7 @@ function parseList(lines: string[], startIndex: number, isOrdered: boolean): [st
 /**
  * Parse markdown code block
  */
-function parseCodeBlock(lines: string[], startIndex: number): [string, number] {
+function parseCodeBlock(lines: string[], startIndex: number, copyable: boolean): [string, number] {
   const firstLine = lines[startIndex];
   const langMatch = firstLine.match(/^```(\w*)$/);
   const language = langMatch?.[1] || '';
@@ -112,10 +122,12 @@ function parseCodeBlock(lines: string[], startIndex: number): [string, number] {
 
   const code = escapeHtml(codeLines.join('\n'));
   const langAttr = language ? ` data-language="${language}"` : '';
-  return [
-    `<pre class="bg-muted text-foreground p-4 rounded-md text-sm overflow-x-auto my-4"${langAttr}><code class="font-mono">${code}</code></pre>`,
-    i,
-  ];
+  const pre = `<pre class="bg-muted text-foreground p-4 rounded-md text-sm overflow-x-auto my-4"${langAttr}><code class="font-mono">${code}</code></pre>`;
+  if (!copyable) return [pre, i];
+  // The click is handled by delegation in MarkdownRendererComponent.
+  const button =
+    '<button type="button" data-copy-code aria-label="Copy code" class="absolute right-2 top-2 rounded border border-border bg-background/90 px-1.5 py-0.5 font-sans text-[10px] text-muted-foreground opacity-0 transition-opacity hover:text-foreground focus:opacity-100 group-hover/code:opacity-100">Copy</button>';
+  return [`<div class="group/code relative">${pre}${button}</div>`, i];
 }
 
 /**
@@ -124,7 +136,7 @@ function parseCodeBlock(lines: string[], startIndex: number): [string, number] {
  * Parses block elements first (headings, code blocks, lists, paragraphs),
  * then applies inline transformations within each block.
  */
-export function renderMarkdown(content: string): string {
+export function renderMarkdown(content: string, options: RenderMarkdownOptions = {}): string {
   const lines = content.split(/\r?\n/);
   const output: string[] = [];
   let i = 0;
@@ -140,7 +152,7 @@ export function renderMarkdown(content: string): string {
 
     // Code block
     if (line.startsWith('```')) {
-      const [html, nextIndex] = parseCodeBlock(lines, i);
+      const [html, nextIndex] = parseCodeBlock(lines, i, options.copyableCode ?? false);
       output.push(html);
       i = nextIndex;
       continue;
@@ -256,6 +268,8 @@ export function renderMarkdown(content: string): string {
   // SECURITY: Sanitize the final HTML with DOMPurify
   return DOMPurify.sanitize(output.join('\n'), {
     ALLOWED_TAGS: [
+      'div',
+      'button',
       'h1',
       'h2',
       'h3',
@@ -272,7 +286,7 @@ export function renderMarkdown(content: string): string {
       'hr',
       'blockquote',
     ],
-    ALLOWED_ATTR: ['href', 'class', 'target', 'rel', 'id', 'data-language'],
+    ALLOWED_ATTR: ['href', 'class', 'target', 'rel', 'id', 'data-language', 'type', 'aria-label'],
     ALLOW_DATA_ATTR: true,
   });
 }
@@ -311,12 +325,35 @@ export function extractHeadings(content: string): Heading[] {
  *
  * Renders markdown content with proper styling and XSS protection.
  */
-function MarkdownRendererComponent({ content, className }: MarkdownRendererProps) {
-  const html = useMemo(() => renderMarkdown(content), [content]);
+function copyCodeBlock(event: MouseEvent<HTMLDivElement>) {
+  const button = (event.target as Element).closest<HTMLButtonElement>(COPY_CODE_SELECTOR);
+  if (!button) return;
+  // textContent of <code> is the original code: the HTML entities are already decoded.
+  const code = button.parentElement?.querySelector('code')?.textContent ?? '';
+  navigator.clipboard.writeText(code).then(
+    () => {
+      button.textContent = 'Copied';
+      setTimeout(() => {
+        button.textContent = 'Copy';
+      }, COPIED_MS);
+    },
+    () => {
+      toast({
+        title: 'Clipboard write blocked',
+        description: 'Allow clipboard access, then try again.',
+        variant: 'destructive',
+      });
+    },
+  );
+}
+
+function MarkdownRendererComponent({ content, className, copyableCode }: MarkdownRendererProps) {
+  const html = useMemo(() => renderMarkdown(content, { copyableCode }), [content, copyableCode]);
 
   return (
     <div
       className={cn('prose prose-sm max-w-none dark:prose-invert', className)}
+      onClick={copyableCode ? copyCodeBlock : undefined}
       dangerouslySetInnerHTML={{ __html: html }}
     />
   );

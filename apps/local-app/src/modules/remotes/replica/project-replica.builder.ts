@@ -13,6 +13,7 @@ import {
   type ProjectReplicaSettingKey,
 } from '@devchain/shared';
 import { createLogger } from '../../../common/logging/logger';
+import { tryParseProviderEnv } from '../../storage/local/helpers/storage-helpers';
 import type {
   ProjectReplicaSource,
   ProjectReplicaStorage,
@@ -432,21 +433,6 @@ function buildSessionWatermarks(
   );
 }
 
-/** Returns `null` for no env, `undefined` when the stored JSON is not a string map. */
-function parseEnv(envJson: string | null): Record<string, string> | null | undefined {
-  if (!envJson) return null;
-  try {
-    const parsed: unknown = JSON.parse(envJson);
-    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return undefined;
-    const entries = Object.entries(parsed);
-    return entries.every(([, value]) => typeof value === 'string')
-      ? (Object.fromEntries(entries) as Record<string, string>)
-      : undefined;
-  } catch {
-    return undefined;
-  }
-}
-
 /**
  * Instance-level provider tables for the referenced providers: scalars, the
  * two catalogs (with configured-but-uncataloged names synthesized so the
@@ -487,7 +473,7 @@ function buildProviderInstanceTables(
     scopesByProvider.set(scope.provider_id, scopes);
   }
   const provider_settings = byProviderName(source.provider_settings, (row, name) => {
-    const env = parseEnv(providersById.get(row.provider_id)!.env);
+    const env = tryParseProviderEnv(providersById.get(row.provider_id)!.env);
     if (env === undefined) errors.add({ code: 'PROVIDER_ENV_INVALID', providerName: name });
     return {
       providerName: name,

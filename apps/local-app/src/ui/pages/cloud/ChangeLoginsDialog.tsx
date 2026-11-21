@@ -100,7 +100,11 @@ export function ChangeLoginsDialog({
       .filter((entry) => entry.provider === provider)
       .map(
         (entry) =>
-          `The VM's provider settings hold ${entry.key} (${entry.source}), which overrides this login. Remove it in that VM's Edit Provider.`,
+          `The VM's provider settings hold ${entry.key} (${entry.source}), which overrides this login. ${
+            entry.source === 'provider-config'
+              ? "Remove it in that VM's Edit Provider."
+              : 'Scope it at home to the projects that stay on this PC, or remove it at home.'
+          }`,
       ),
   );
   const count = runningAgents === null ? 'An unknown number of' : String(runningAgents);

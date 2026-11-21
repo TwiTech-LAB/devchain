@@ -1248,6 +1248,7 @@ export class SessionsMessagePoolService implements OnModuleDestroy {
   @OnCatalogEvent(sessionHumanPromptStateChangedEvent.name, { suppressErrors: false })
   async handleHumanPromptStateChanged(
     event: SessionHumanPromptStateChangedEventPayload,
+    signal?: AbortSignal,
   ): Promise<void> {
     const session = this.sessions.getSession(event.sessionId);
     if (!session?.agentId || session.tmuxSessionId !== event.tmuxSessionName) return;
@@ -1255,24 +1256,28 @@ export class SessionsMessagePoolService implements OnModuleDestroy {
 
     while (true) {
       const step: { done: true } | { detachment: DeferredLaneDetachment } =
-        await this.coordinator.withAgentLock(agentId, async () => {
-          const activeSession = this.sessions.getActiveSessionForAgent(agentId);
-          const existingLane = this.deferredLanes.get(agentId);
-          if (
-            activeSession?.id === event.sessionId &&
-            existingLane &&
-            existingLane.sessionId !== event.sessionId
-          ) {
-            return {
-              detachment: this.detachDeferredLaneUnderAgentLock(
-                existingLane,
-                'Target session was replaced before deferred delivery',
-              ),
-            };
-          }
-          await this.handleHumanPromptStateChangedUnderAgentLock(agentId, event);
-          return { done: true };
-        });
+        await this.coordinator.withAgentLock(
+          agentId,
+          async () => {
+            const activeSession = this.sessions.getActiveSessionForAgent(agentId);
+            const existingLane = this.deferredLanes.get(agentId);
+            if (
+              activeSession?.id === event.sessionId &&
+              existingLane &&
+              existingLane.sessionId !== event.sessionId
+            ) {
+              return {
+                detachment: this.detachDeferredLaneUnderAgentLock(
+                  existingLane,
+                  'Target session was replaced before deferred delivery',
+                ),
+              };
+            }
+            await this.handleHumanPromptStateChangedUnderAgentLock(agentId, event);
+            return { done: true };
+          },
+          signal,
+        );
       if ('done' in step) return;
       await this.settleDeferredLaneDetachment(step.detachment);
     }

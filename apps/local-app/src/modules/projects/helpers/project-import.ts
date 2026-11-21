@@ -1,5 +1,20 @@
 import { ExportSchema } from '@devchain/shared';
-import { StorageError } from '../../../common/errors/error-types';
+import { StorageError, ValidationError } from '../../../common/errors/error-types';
+import type {
+  PreservationIssue,
+  PreservationReview,
+  PreserveTeamSetup,
+} from '../../../common/project-preservation.contract';
+import type { TeamsService } from '../../teams/services/teams.service';
+import {
+  mixesPreserveTeamSetup,
+  PRESERVE_SETUP_EXCLUSIVE_MESSAGE,
+} from '../dtos/preserve-team-setup.schema';
+import {
+  composePreservedRoster,
+  preservedProfileDependencyIds,
+  resolvePreservedRoster,
+} from './project-preservation';
 import { createLogger } from '../../../common/logging/logger';
 import {
   buildPromptReferenceValidationFailure,
@@ -31,7 +46,9 @@ import type { SnapshotPromptWriter } from '../../storage/interfaces/snapshot-pro
 import type { UnifiedTemplateService } from '../../registry/services/unified-template.service';
 import {
   collectReferencedProviderNames,
+  computeFamilyAlternatives,
   derivePresetProviderCoverage,
+  profileOptionProviderNames,
   resolveProvidersFromStorage,
   selectProfilesForFamilies,
   type FamilyAlternative,
@@ -42,7 +59,12 @@ import {
   findDuplicateAgentNames,
   planAndApplySessionPreservation,
 } from './project-import-sessions';
-import type { PresetAgentConfig } from './project-presets.helpers';
+import type { ApplyPresetFn, PresetAgentConfig } from './project-presets.helpers';
+import { getPresetSkippedTeamNames } from './team-overrides.helpers';
+import {
+  restoreSnapshotEpicAssignments,
+  type SnapshotEpicAssignments,
+} from './snapshot-epic-assignments';
 import { ImportContext } from '../template-codec/import-context';
 import { TemplatePipeline } from '../template-codec/template-pipeline';
 import type { CodecApplyRuntime } from '../template-codec/template-section-codec';
@@ -64,6 +86,7 @@ type SelectedProfilesByFamily = ReturnType<
 >;
 
 type ExistingProjectData = Awaited<ReturnType<typeof loadExistingProjectData>>;
+type ProjectEpics = Awaited<ReturnType<StorageService['listEpics']>>;
 type UnmatchedStatus = {
   id: string;
   label: string;
@@ -74,6 +97,7 @@ type UnmatchedStatus = {
 export type ActiveSessionSummary = { id: string; agentId: string | null };
 
 export type ImportReadinessIssue =
+  | PreservationIssue
   | {
       code: 'prompt_reference_validation';
       message: string;
@@ -133,6 +157,8 @@ type ImportPreparation = {
   existing: ExistingProjectData;
   unmatchedStatuses: UnmatchedStatus[];
   readiness: ImportReadiness;
+  preservationPlan?: PreservationReview;
+  existingTeamCount?: number;
 };
 
 export interface ImportProjectInputLike {
@@ -141,6 +167,9 @@ export interface ImportProjectInputLike {
   dryRun?: boolean;
   /** Internal-only. Public import requests always use the default template policy. */
   promptTransferPolicy?: PromptTransferPolicy;
+  /** Assignments from the internal upgrade backup, keyed by surviving epic ID. */
+  snapshotEpicAssignments?: SnapshotEpicAssignments;
+  preserveTeamSetup?: PreserveTeamSetup;
   statusMappings?: Record<string, string>;
   familyProviderMappings?: Record<string, string>;
   /** Template preset to apply after the imported presets have been persisted. */
@@ -236,29 +265,10 @@ interface ImportProjectDeps {
       configLookupMap: Map<string, string>;
     },
   ) => Promise<{ applied: number; warnings: string[] }>;
-  applyPreset: (
-    projectId: string,
-    presetName: string,
-    nameMaps: {
-      agentNameToId: Map<string, string>;
-      configLookupMap: Map<string, string>;
-    },
-  ) => Promise<{ applied: number; warnings: string[] }>;
-  teamsService?: {
-    createTeam: (data: {
-      projectId: string;
-      name: string;
-      description?: string | null;
-      teamLeadAgentId?: string | null;
-      maxMembers?: number;
-      maxConcurrentTasks?: number;
-      memberAgentIds: string[];
-      profileIds?: string[];
-      profileConfigSelections?: Array<{ profileId: string; configIds: string[] }>;
-    }) => Promise<{ id: string }>;
-    deleteTeamsByProject: (projectId: string) => Promise<void>;
-    deleteTeamsByIds: (ids: string[]) => Promise<void>;
-  };
+  applyPreset: ApplyPresetFn;
+  teamsService?: NonNullable<CodecApplyRuntime['teamsService']> &
+    Pick<TeamsService, 'deleteTeamsByProject'> &
+    Partial<Pick<TeamsService, 'getTeam'>>;
   scheduledEpicsRefresh?: {
     refreshScheduleWindow: () => void;
   };
@@ -285,15 +295,28 @@ export async function importProjectWithHelper(
   }
 
   if (!context.readiness.ready) {
-    return buildReadinessFailure(context.readiness, context.providerMappingRequired);
+    return buildReadinessFailure(
+      context.readiness,
+      context.providerMappingRequired,
+      context.preservationPlan,
+    );
   }
+
+  // SQLite clears epic assignments when their old agents are deleted.
+  const previousEpicAssignments = context.preservationPlan
+    ? captureEpicAgentAssignments(await listProjectEpics(input.projectId, deps.storage))
+    : undefined;
 
   // Recheck the mutable session condition immediately before the first write. The preparation
   // result powers dry-run and normal preflight; this second guard closes the preflight-to-mutation
   // race and remains a structured, explicitly non-mutating outcome.
   const lateActiveSessions = getActiveSessions(input.projectId, deps);
   if (lateActiveSessions.length > 0) {
-    return buildReadinessFailure(buildActiveSessionReadiness(lateActiveSessions), null);
+    return buildReadinessFailure(
+      buildActiveSessionReadiness(lateActiveSessions),
+      null,
+      context.preservationPlan,
+    );
   }
 
   try {
@@ -346,6 +369,7 @@ export async function importProjectWithHelper(
       existingStatuses: context.existing.statuses.items,
       installedProviders: context.installedProviders,
       selectedProviders: context.selectedProviders,
+      applyPreservedRoster: context.preservationPlan !== undefined,
       teamsService: deps.teamsService,
       teamOverrides: input.teamOverrides,
       scheduledEpicsRefresh: deps.scheduledEpicsRefresh,
@@ -378,18 +402,14 @@ export async function importProjectWithHelper(
     const agentIdMap = pipelineCtx.get('agentIdMap');
     const agentNameToId = pipelineCtx.get('agentNameToId');
 
-    // Per-agent config overrides (wizard/API) — a NEW import capability applied right after the
-    // profiles+agents batch, while the freshly-created agents' name→id + config lookup maps are
-    // in the ImportContext. It NEVER marks an active preset; the presets codec (batch-6 below)
-    // still owns preset store/clear semantics unchanged. Unknown agent/config names surface as
-    // warnings (not silent), mirroring preset apply.
+    // An explicit per-agent override can use a config from any installed provider.
     if (input.agentOverrides && input.agentOverrides.length > 0) {
       const { applied, warnings } = await deps.applyAgentConfigs(
         input.projectId,
         input.agentOverrides,
         {
           agentNameToId: new Map(Object.entries(agentNameToId)),
-          configLookupMap: pipelineCtx.get('selectionEligibleConfigLookupMap'),
+          configLookupMap: pipelineCtx.get('configLookupMap'),
         },
       );
       logger.info(
@@ -442,12 +462,21 @@ export async function importProjectWithHelper(
     // Epic agent remap keys on agent name(lowercased) -> new id. The agents codec's
     // `agentNameToId` (Record) is content-identical to the legacy buildNameToIdMaps result
     // (both map name(lowercased) -> created id, last-occurrence wins); adapt it to a Map.
-    const epicResult = await remapEpicAgentAssignments(
-      input.projectId,
-      oldAgentIdToName,
-      new Map(Object.entries(agentNameToId)),
-      deps.storage,
-    );
+    const recreatedAgents = new Map(Object.entries(agentNameToId));
+    const epicResult = input.snapshotEpicAssignments
+      ? await restoreSnapshotEpicAssignments(
+          input.projectId,
+          input.snapshotEpicAssignments,
+          recreatedAgents,
+          deps.storage,
+        )
+      : await remapEpicAgentAssignments(
+          input.projectId,
+          oldAgentIdToName,
+          recreatedAgents,
+          deps.storage,
+          previousEpicAssignments,
+        );
 
     // projectSettings codec — owns the projectSettings + initialPrompt resolution. It reads
     // createdPrompts/promptIdMap (prompts) + templateLabelToStatusId (statuses) from the context.
@@ -467,7 +496,6 @@ export async function importProjectWithHelper(
     // + an install timestamp); intentionally NOT a codec (see project-settings.codec header).
     await updateTemplateMetadata(input.projectId, context.payload, deps);
 
-    // presets codec — set-or-clear semantics (template WITH presets replaces; WITHOUT clears).
     await pipeline.applySections(
       ['presets'],
       context.payload,
@@ -479,11 +507,18 @@ export async function importProjectWithHelper(
     // Apply only after the presets codec has stored the target presets. The fresh maps constrain
     // lookup to the agents/configs created by this run; applyPresetWithHelper alone decides whether
     // the full-match rule is satisfied and activePreset may be set.
-    if (input.presetName) {
-      await deps.applyPreset(input.projectId, input.presetName, {
-        agentNameToId: new Map(Object.entries(agentNameToId)),
-        configLookupMap: pipelineCtx.get('selectionEligibleConfigLookupMap'),
-      });
+    if (context.preservationPlan) {
+      await deps.settings.setProjectActivePreset(input.projectId, null);
+    } else if (input.presetName) {
+      await deps.applyPreset(
+        input.projectId,
+        input.presetName,
+        {
+          agentNameToId: new Map(Object.entries(agentNameToId)),
+          configLookupMap: pipelineCtx.get('selectionEligibleConfigLookupMap'),
+        },
+        getPresetSkippedTeamNames(input.teamOverrides),
+      );
     }
 
     // providerSettings + providerModels + providerEfforts + vaultAccess codecs (matrix
@@ -499,7 +534,7 @@ export async function importProjectWithHelper(
       codecRuntime,
     );
 
-    return buildImportSuccessResponse({
+    const result = buildImportSuccessResponse({
       payload: context.payload,
       existing: context.existing,
       statusIdMap,
@@ -512,7 +547,11 @@ export async function importProjectWithHelper(
       epicsTotal: epicResult.epicsTotal,
       epicsRemapped: epicResult.epicsRemapped,
       epicsCleared: epicResult.epicsCleared,
+      profilesImported: context.preservationPlan
+        ? context.selectedProfilesByFamily.profilesToCreate.length
+        : context.payload.profiles.length,
       teamsImported,
+      teamsDeleted: context.existingTeamCount,
       scheduledEpicsImported,
       sessionPreservation,
       statusesDeleted,
@@ -521,6 +560,10 @@ export async function importProjectWithHelper(
         ...clearedPrompts,
       },
     });
+    return {
+      ...result,
+      ...(context.preservationPlan ? { preservationPlan: context.preservationPlan } : {}),
+    };
   } catch (error) {
     logger.error({ error, projectId: input.projectId }, 'Import failed');
     const message = deps.getImportErrorMessage(error);
@@ -534,23 +577,50 @@ async function prepareImportContext(
 ): Promise<ImportPreparation> {
   const isDryRun = input.dryRun ?? false;
   const promptTransferPolicy = input.promptTransferPolicy ?? PROMPT_TRANSFER_POLICY.Template;
-  const payload = ExportSchema.parse(input.payload ?? {});
+  const template = ExportSchema.parse(input.payload ?? {});
+  if (mixesPreserveTeamSetup(input)) {
+    throw new ValidationError(PRESERVE_SETUP_EXCLUSIVE_MESSAGE);
+  }
+  if (input.preserveTeamSetup && promptTransferPolicy === PROMPT_TRANSFER_POLICY.Snapshot) {
+    throw new ValidationError('Snapshot restore cannot use preserveTeamSetup');
+  }
+  if (input.snapshotEpicAssignments && promptTransferPolicy !== PROMPT_TRANSFER_POLICY.Snapshot) {
+    throw new ValidationError('Epic assignment recovery requires Snapshot restore');
+  }
 
-  const familyResult = await deps.computeFamilyAlternatives(
-    payload.profiles,
-    payload.agents,
-    input.selectedProviderNames,
-  );
+  const preserved = input.preserveTeamSetup
+    ? await preparePreservedRoster(input.projectId, template, input.preserveTeamSetup, deps)
+    : undefined;
+  let payload = preserved
+    ? { ...template, profiles: preserved.roster.profiles, agents: preserved.roster.agents }
+    : template;
+
   const referencedProviderNames = collectReferencedProviderNames(payload.profiles);
-  const {
-    installed,
-    selected,
-    missing: missingProviders,
-  } = await resolveProvidersFromStorage(
+  const { installed, selected, missing } = await resolveProvidersFromStorage(
     deps.storage,
     referencedProviderNames,
     input.selectedProviderNames,
   );
+  const familyResult = preserved
+    ? computeFamilyAlternatives(
+        payload.profiles,
+        payload.agents,
+        new Set(selected.keys()),
+        logger,
+        new Set(installed.keys()),
+        preservedProfileDependencyIds(
+          preserved.roster,
+          preserved.current,
+          preserved.choices,
+          payload.watchers,
+          selected,
+        ),
+      )
+    : await deps.computeFamilyAlternatives(
+        payload.profiles,
+        payload.agents,
+        input.selectedProviderNames,
+      );
 
   const selectedPreset = input.presetName
     ? payload.presets.find((preset) => preset.name === input.presetName)
@@ -570,26 +640,49 @@ async function prepareImportContext(
     familyResult,
     input.familyProviderMappings,
     presetCoversAllAgents,
+    !preserved,
   )
     ? buildProviderMappingRequired(familyResult)
     : null;
 
-  // Validate against the FULL installed map: an installed-but-deselected provider is available for
-  // profile creation/binding (deselection only narrows wizard family choices, not persistence).
+  // An installed but deselected provider can still supply options for persistence.
   const selectedProfilesByFamily = selectProfilesForFamilies(
     payload.profiles,
     payload.agents,
     input.familyProviderMappings,
     installed,
-    presetCoverage
-      ? {
-          presetCoveredAgentNames: presetCoverage.coveredAgentNames,
-          presetAgentResolvedProviders: presetCoverage.agentResolvedProviders,
-        }
-      : undefined,
+    preserved
+      ? { familySelectionProviders: selected, requireInstalledOptions: true }
+      : presetCoverage
+        ? {
+            presetCoveredAgentNames: presetCoverage.coveredAgentNames,
+            presetAgentResolvedProviders: presetCoverage.agentResolvedProviders,
+          }
+        : undefined,
   );
 
-  const existing = await loadExistingProjectData(input.projectId, deps.storage);
+  const preservation =
+    preserved &&
+    resolvePreservedRoster({
+      roster: preserved.roster,
+      current: preserved.current,
+      choices: preserved.choices,
+      selectedProfiles: selectedProfilesByFamily,
+      familyAlternatives: familyResult.alternatives,
+      installedProviders: installed,
+      selectedProviders: selected,
+    });
+  if (preservation) {
+    payload = {
+      ...payload,
+      profiles: selectedProfilesByFamily.profilesToCreate,
+      agents: preservation.agents,
+      teams: preservation.teams,
+    };
+  }
+
+  const existing =
+    preserved?.existing ?? (await loadExistingProjectData(input.projectId, deps.storage));
   const incomingPromptPartition = partitionPromptsForTransfer(
     payload.prompts,
     promptTransferPolicy,
@@ -616,11 +709,10 @@ async function prepareImportContext(
   const unavailableSelectedProviderNames = (input.selectedProviderNames ?? []).filter(
     (name) => !installed.has(name.trim().toLowerCase()),
   );
-  const unavailableSelectedProfiles = getUnavailableSelectedProfileProviders(
-    selectedProfilesByFamily,
-    installed,
-  );
-  const duplicateAgentNames = findDuplicateAgentNames(payload.agents);
+  const unavailableSelectedProfiles = preserved
+    ? []
+    : getUnavailableSelectedProfileProviders(selectedProfilesByFamily, installed);
+  const duplicateAgentNames = findDuplicateAgentNames(template.agents);
   const readiness = buildImportReadiness({
     promptReferenceIssues,
     unavailableSelectedProviderNames,
@@ -630,6 +722,12 @@ async function prepareImportContext(
     unavailableSelectedProfiles,
     activeSessions,
     duplicateAgentNames,
+    preservationIssues: preservation
+      ? [
+          ...preservation.issues,
+          ...checkPreservedReferences(payload, selectedProfilesByFamily.profileNameRemapMap),
+        ]
+      : [],
   });
 
   return {
@@ -648,12 +746,91 @@ async function prepareImportContext(
     providerMappingRequired,
     installedProviders: installed,
     selectedProviders: selected,
-    missingProviders,
+    missingProviders: preserved
+      ? [...new Set(payload.profiles.flatMap(profileOptionProviderNames))].filter(
+          (name) => !installed.has(name),
+        )
+      : missing,
     selectedProfilesByFamily,
     existing,
     unmatchedStatuses,
     readiness,
+    preservationPlan: preservation?.review,
+    existingTeamCount: preserved?.current.teams.length,
   };
+}
+
+async function preparePreservedRoster(
+  projectId: string,
+  template: ParsedTemplatePayload,
+  choices: PreserveTeamSetup,
+  deps: ImportProjectDeps,
+) {
+  const { storage, teamsService } = deps;
+  if (!teamsService?.listTeams || !teamsService.getTeam) {
+    throw new ValidationError('Current teams are unavailable for preservation');
+  }
+  const [existing, { items: teamSummaries }] = await Promise.all([
+    loadExistingProjectData(projectId, storage),
+    teamsService.listTeams(projectId, { limit: 10000 }),
+  ]);
+  const getTeam = teamsService.getTeam.bind(teamsService);
+  const teams = await Promise.all(teamSummaries.map(({ id }) => getTeam(id)));
+  const agents = existing.agents.items;
+  const configIds = new Set([
+    ...agents.map(({ providerConfigId }) => providerConfigId),
+    ...teams.flatMap(
+      (team) => team?.profileConfigSelections.flatMap(({ configIds }) => configIds) ?? [],
+    ),
+  ]);
+  const configs = configIds.size
+    ? await storage.listProfileProviderConfigsByIds([...configIds])
+    : [];
+  const current = {
+    teams: teams.filter((team) => team !== null),
+    agents,
+    profiles: existing.profiles.items,
+    configs,
+  };
+  return { existing, current, choices, roster: composePreservedRoster(template, current, choices) };
+}
+
+function checkPreservedReferences(
+  payload: ParsedTemplatePayload,
+  profileNameRemapMap: ReadonlyMap<string, string>,
+): PreservationIssue[] {
+  const agentNames = new Set(payload.agents.map(({ name }) => name.trim().toLowerCase()));
+  const profileNames = new Set(payload.profiles.map(({ name }) => name.trim().toLowerCase()));
+  const issues: PreservationIssue[] = [];
+  const check = (
+    section: 'watchers' | 'scheduledEpics',
+    name: string,
+    agentName: string | null | undefined,
+  ) => {
+    if (!agentName || agentNames.has(agentName.trim().toLowerCase())) return;
+    issues.push({
+      code: 'preserve_agent_reference',
+      message: `"${name}" references "${agentName}", an agent outside the roster. Select the addition or update the template reference.`,
+      details: { agentName, section, name },
+    });
+  };
+  for (const watcher of payload.watchers) {
+    if (watcher.scope === 'agent') check('watchers', watcher.name, watcher.scopeFilterName);
+    if (watcher.scope !== 'profile') continue;
+    const original = watcher.scopeFilterName?.trim().toLowerCase();
+    const remap = original ? profileNameRemapMap.get(original) : undefined;
+    if ((!original || !profileNames.has(original)) && (!remap || !profileNames.has(remap))) {
+      issues.push({
+        code: 'preserve_profile_reference',
+        message: `Watcher "${watcher.name}" needs an available profile${watcher.scopeFilterName ? ` for "${watcher.scopeFilterName}"` : ''}. Select an eligible provider or update the watcher in the template.`,
+        details: { watcherName: watcher.name, profileName: watcher.scopeFilterName ?? null },
+      });
+    }
+  }
+  for (const schedule of payload.scheduledEpics ?? []) {
+    check('scheduledEpics', schedule.name, schedule.templateAgentName);
+  }
+  return issues;
 }
 
 async function loadExistingProjectData(
@@ -713,6 +890,7 @@ async function collectUnmatchedStatuses(
 function buildDryRunResponse(context: ImportPreparation) {
   const response: {
     dryRun: true;
+    preservationPlan?: PreservationReview;
     success?: false;
     mutationStarted?: false;
     error?: string;
@@ -735,6 +913,7 @@ function buildDryRunResponse(context: ImportPreparation) {
         watchers: number;
         subscribers: number;
         scheduledEpics: number;
+        teams?: number;
       };
       toDelete: {
         prompts: number;
@@ -744,11 +923,13 @@ function buildDryRunResponse(context: ImportPreparation) {
         watchers: number;
         subscribers: number;
         scheduledEpics: number;
+        teams?: number;
       };
     };
     promptTransfer: PromptTransferCounts;
   } = {
     dryRun: true,
+    ...(context.preservationPlan ? { preservationPlan: context.preservationPlan } : {}),
     readiness: context.readiness,
     missingProviders: context.missingProviders,
     unmatchedStatuses: context.unmatchedStatuses,
@@ -765,6 +946,7 @@ function buildDryRunResponse(context: ImportPreparation) {
         watchers: context.payload.watchers.length,
         subscribers: context.payload.subscribers.length,
         scheduledEpics: context.payload.scheduledEpics?.length ?? 0,
+        ...(context.preservationPlan ? { teams: context.payload.teams.length } : {}),
       },
       toDelete: {
         prompts: context.promptTransfer.deleted,
@@ -774,6 +956,7 @@ function buildDryRunResponse(context: ImportPreparation) {
         watchers: context.existing.watchers.length,
         subscribers: context.existing.subscribers.length,
         scheduledEpics: context.existing.scheduledEpics?.total ?? 0,
+        ...(context.existingTeamCount !== undefined ? { teams: context.existingTeamCount } : {}),
       },
     },
     promptTransfer: context.promptTransfer,
@@ -817,6 +1000,7 @@ function hasUnresolvedFamilySelection(
   familyResult: FamilyAlternativesResult,
   mappings: Record<string, string> | undefined,
   presetCoversAllAgents: boolean,
+  requireMappingForUnavailableDefault: boolean,
 ): boolean {
   if (presetCoversAllAgents) return false;
   if (!familyResult.canImport) return true;
@@ -832,6 +1016,8 @@ function hasUnresolvedFamilySelection(
       return true;
     }
   }
+
+  if (!requireMappingForUnavailableDefault) return false;
 
   for (const alternative of familyResult.alternatives) {
     if (alternative.defaultProviderAvailable) continue;
@@ -860,6 +1046,7 @@ function buildImportReadiness(input: {
   unavailableSelectedProfiles: string[];
   activeSessions: ActiveSessionSummary[];
   duplicateAgentNames: string[];
+  preservationIssues: PreservationIssue[];
 }): ImportReadiness {
   const issues: ImportReadinessIssue[] = [];
   const promptFailure = buildPromptReferenceValidationFailure(input.promptReferenceIssues);
@@ -910,6 +1097,7 @@ function buildImportReadiness(input: {
       details: { agentNames: input.duplicateAgentNames },
     });
   }
+  issues.push(...input.preservationIssues);
   return { ready: issues.length === 0, issues };
 }
 
@@ -930,9 +1118,11 @@ export function buildActiveSessionReadiness(
 function buildReadinessFailure(
   readiness: ImportReadiness,
   providerMappingRequired: ReturnType<typeof buildProviderMappingRequired> | null,
+  preservationPlan?: PreservationReview,
 ) {
   return {
     ...buildReadinessFailureProperties(readiness, providerMappingRequired),
+    ...(preservationPlan ? { preservationPlan } : {}),
     readiness,
   };
 }
@@ -1007,40 +1197,42 @@ async function clearExistingProjectData(
   };
 }
 
+function listProjectEpics(
+  projectId: string,
+  storage: Pick<StorageService, 'listEpics'>,
+): Promise<ProjectEpics> {
+  return storage.listEpics(projectId, { limit: 100000, offset: 0 });
+}
+
+function captureEpicAgentAssignments(epics: ProjectEpics): Map<string, string> {
+  return new Map(epics.items.flatMap(({ id, agentId }) => (agentId ? [[id, agentId]] : [])));
+}
+
 async function remapEpicAgentAssignments(
   projectId: string,
   oldAgentIdToName: Map<string, string>,
   agentNameToNewId: Map<string, string>,
   storage: Pick<StorageService, 'listEpics' | 'updateEpic'>,
+  previousAssignments?: Map<string, string>,
 ) {
-  const existingEpics = await storage.listEpics(projectId, {
-    limit: 100000,
-    offset: 0,
-  });
+  const existingEpics = await listProjectEpics(projectId, storage);
 
   let epicsRemapped = 0;
   let epicsCleared = 0;
 
   for (const epic of existingEpics.items) {
-    if (!epic.agentId) {
-      continue;
-    }
+    const previousAgentId = epic.agentId ?? previousAssignments?.get(epic.id);
+    if (!previousAgentId) continue;
 
-    const oldAgentName = oldAgentIdToName.get(epic.agentId);
-    if (oldAgentName) {
-      const newAgentId = agentNameToNewId.get(oldAgentName);
-      if (newAgentId) {
-        await storage.updateEpic(epic.id, { agentId: newAgentId }, epic.version);
-        epicsRemapped++;
-      } else {
-        await storage.updateEpic(epic.id, { agentId: null }, epic.version);
-        epicsCleared++;
-      }
-      continue;
+    const oldAgentName = oldAgentIdToName.get(previousAgentId);
+    const newAgentId = oldAgentName ? agentNameToNewId.get(oldAgentName) : undefined;
+    if (newAgentId) {
+      await storage.updateEpic(epic.id, { agentId: newAgentId }, epic.version);
+      epicsRemapped++;
+    } else {
+      if (epic.agentId) await storage.updateEpic(epic.id, { agentId: null }, epic.version);
+      epicsCleared++;
     }
-
-    await storage.updateEpic(epic.id, { agentId: null }, epic.version);
-    epicsCleared++;
   }
 
   logger.info({ epicsRemapped, epicsCleared }, 'Epic agent references updated after import');
@@ -1096,7 +1288,9 @@ function buildImportSuccessResponse(args: {
   epicsTotal: number;
   epicsRemapped: number;
   epicsCleared: number;
+  profilesImported: number;
   teamsImported?: number;
+  teamsDeleted?: number;
   scheduledEpicsImported?: number;
   sessionPreservation: { preservedCount: number; removedCount: number };
   statusesDeleted: number;
@@ -1110,7 +1304,7 @@ function buildImportSuccessResponse(args: {
     counts: {
       imported: {
         prompts: args.promptTransfer.imported,
-        profiles: args.payload.profiles.length,
+        profiles: args.profilesImported,
         agents: args.payload.agents.length,
         statuses: args.payload.statuses.length,
         watchers: args.payload.watchers.length,
@@ -1123,6 +1317,7 @@ function buildImportSuccessResponse(args: {
         profiles: args.existing.profiles.total,
         agents: args.existing.agents.total,
         statuses: args.statusesDeleted,
+        ...(args.teamsDeleted !== undefined ? { teams: args.teamsDeleted } : {}),
         watchers: args.existing.watchers.length,
         subscribers: args.existing.subscribers.length,
         scheduledEpics: args.existing.scheduledEpics?.total ?? 0,

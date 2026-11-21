@@ -23,7 +23,58 @@ describe('TerminalIOService', () => {
     svc = new TerminalIOService(fake, events, humanPromptState, settings);
   });
 
-  // ── Lifecycle ───────────────────────────────────────────────────────────
+  // The executor boundary verifies the exact tmux commands and stdin without a live pane.
+  describe('sendLiteralText', () => {
+    const target = { name: 'agent-pane' };
+
+    it('sends exactly 4,096 bytes as one literal command', async () => {
+      const data = '-' + 'a'.repeat(4_095);
+      const takeContinuation = jest.spyOn(humanPromptState, 'takePaneContinuation');
+
+      await svc.sendLiteralText(target, data);
+
+      expect(fake.calls.map(({ argv }) => argv)).toEqual([
+        ['tmux', 'send-keys', '-t', '=agent-pane:', '-l', '--', data],
+      ]);
+      expect(takeContinuation).toHaveBeenCalledTimes(1);
+    });
+
+    it.each([
+      ['4,097 ASCII bytes', 'a'.repeat(4_097)],
+      ['3,000 Cyrillic characters', 'я'.repeat(3_000)],
+    ])('buffers %s in a single pane operation', async (_label, data) => {
+      const takeContinuation = jest.spyOn(humanPromptState, 'takePaneContinuation');
+      const run = jest.spyOn(fake, 'run');
+
+      await svc.sendLiteralText(target, data);
+
+      const bufferName = fake.calls[0]?.argv[3];
+      expect(fake.calls.map(({ argv }) => argv)).toEqual([
+        ['tmux', 'load-buffer', '-b', expect.any(String), '-'],
+        ['tmux', 'paste-buffer', '-b', bufferName, '-t', target.name],
+        ['tmux', 'delete-buffer', '-b', bufferName],
+      ]);
+      expect(run.mock.calls[0][0].input).toBe(data);
+      expect(takeContinuation).toHaveBeenCalledTimes(1);
+    });
+
+    it.each([
+      ['a CR outside bracketed paste', 'a'.repeat(4_096) + '\r', false],
+      [
+        'a CR inside complete bracketed paste',
+        '\x1b[200~' + 'a'.repeat(4_096) + '\r\x1b[201~',
+        true,
+      ],
+    ])('handles the draft target for %s', async (_label, data, remainsCurrent) => {
+      const draftTarget = humanPromptState.captureDraftTarget(target.name);
+      const run = jest.spyOn(fake, 'run');
+
+      await svc.sendLiteralText(target, data);
+
+      expect(run.mock.calls[0][0].input).toBe(data);
+      expect(humanPromptState.isCurrentDraftTarget(target.name, draftTarget)).toBe(remainsCurrent);
+    });
+  });
 
   // Executor-backed service tests observe both the foreground reads and absence of pane writes.
   describe('foreground program guard', () => {
@@ -365,6 +416,31 @@ describe('TerminalIOService', () => {
       const exists = await svc.sessionExists({ name: 'gone' });
       expect(exists).toBe(false);
     });
+
+    // The executor boundary lets a slow live probe finish without depending on host load.
+    it('waits for a slow live session when the caller has no deadline', async () => {
+      jest.useFakeTimers();
+      // Node's native AbortSignal.timeout uses an internal clock outside Jest's fake timers.
+      const timeout = jest.spyOn(AbortSignal, 'timeout').mockImplementation((ms) => {
+        const controller = new AbortController();
+        setTimeout(() => controller.abort(), ms);
+        return controller.signal;
+      });
+      try {
+        const run = fake.run.bind(fake);
+        jest.spyOn(fake, 'run').mockImplementationOnce(async (options) => {
+          await new Promise((resolve) => setTimeout(resolve, 2400));
+          if (options.signal?.aborted) fake.enqueueResponse({ type: 'timeout' });
+          return run(options);
+        });
+        const probe = svc.sessionExists({ name: 'slow-live-session' });
+        await jest.advanceTimersByTimeAsync(2400);
+        await expect(probe).resolves.toBe(true);
+      } finally {
+        timeout.mockRestore();
+        jest.useRealTimers();
+      }
+    });
   });
 
   // ── Capture ─────────────────────────────────────────────────────────────
@@ -386,6 +462,19 @@ describe('TerminalIOService', () => {
         '=sess:',
         '-e',
       ]);
+    });
+
+    it('joins soft-wrapped rows with -J only when asked, also on the fallback', async () => {
+      fake.enqueueResponse({ type: 'success', stdout: 'text' });
+      await svc.captureHistory({ name: 'sess' }, 100);
+      expect(fake.calls[0].argv).not.toContain('-J');
+
+      fake.enqueueResponse({ type: 'failure', stderr: 'unknown option -- e' });
+      fake.enqueueResponse({ type: 'success', stdout: 'fallback text' });
+      await svc.captureHistory({ name: 'sess' }, 100, true, { joinWrappedLines: true });
+      expect(fake.calls[1].argv).toEqual(expect.arrayContaining(['-J', '-e']));
+      expect(fake.calls[2].argv).toContain('-J');
+      expect(fake.calls[2].argv).not.toContain('-e');
     });
 
     it('sends argv without -e when includeEscapes is false', async () => {

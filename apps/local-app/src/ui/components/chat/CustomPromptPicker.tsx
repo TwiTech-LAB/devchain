@@ -1,4 +1,5 @@
 import { useCallback, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { Portal as TooltipPortal } from '@radix-ui/react-tooltip';
 import { useQueryClient } from '@tanstack/react-query';
 import { FileText, Loader2, Search, Trash2 } from 'lucide-react';
 import type { TerminalHandle } from '@/ui/components/Terminal';
@@ -294,13 +295,16 @@ export function CustomPromptPicker({ open, target, onOpenChange }: CustomPromptP
                             </div>
                           </TooltipTrigger>
                           {prompt.contentPreview ? (
-                            <TooltipContent
-                              side="right"
-                              align="start"
-                              className="max-w-sm whitespace-pre-wrap break-words text-xs"
-                            >
-                              {prompt.contentPreview}
-                            </TooltipContent>
+                            <TooltipPortal>
+                              <TooltipContent
+                                side="bottom"
+                                align="start"
+                                collisionPadding={8}
+                                className="max-h-[var(--radix-tooltip-content-available-height)] max-w-[min(24rem,calc(100vw-1rem))] overflow-y-auto whitespace-pre-wrap break-words text-xs"
+                              >
+                                {prompt.contentPreview}
+                              </TooltipContent>
+                            </TooltipPortal>
                           ) : null}
                         </Tooltip>
                       );

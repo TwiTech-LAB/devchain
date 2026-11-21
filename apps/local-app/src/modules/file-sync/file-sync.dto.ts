@@ -19,10 +19,34 @@ export const PeerAddressSchema = z
 export const FolderTypeSchema = z.enum(['sendonly', 'receiveonly', 'sendreceive']);
 export type FolderType = z.infer<typeof FolderTypeSchema>;
 
+/** The id of a user folder shared with a VM, without its `share:` prefix: a hash of its path. */
+const SHARE_ID_PATTERN = '[0-9a-f]{16}';
+export const SHARE_FOLDER_PREFIX = 'share:';
+/** The folder to share does not exist on this PC: one code for the request, the operation and file sync. */
+export const SHARED_FOLDER_MISSING = 'SHARED_FOLDER_MISSING';
+
 export const FolderIdSchema = z
   .string()
   .max(200)
-  .regex(/^((?:code|git):[^:\s]+|tx:[a-z0-9-]+:[^:\s]+)$/);
+  .regex(
+    new RegExp(
+      `^((?:code|git):[^:\\s]+|${SHARE_FOLDER_PREFIX}${SHARE_ID_PATTERN}|tx:[a-z0-9-]+:[^:\\s]+)$`,
+    ),
+  );
+
+export const ShareIdSchema = z.string().regex(new RegExp(`^${SHARE_ID_PATTERN}$`));
+export const ShareFolderIdSchema = z
+  .string()
+  .regex(new RegExp(`^${SHARE_FOLDER_PREFIX}${SHARE_ID_PATTERN}$`));
+
+/** The Syncthing folder id of a share id. */
+export function shareFolderIdOf(shareId: string): string {
+  return `${SHARE_FOLDER_PREFIX}${shareId}`;
+}
+
+export function isShareFolderId(id: string): boolean {
+  return ShareFolderIdSchema.safeParse(id).success;
+}
 
 /** The kind of a code or git folder id, the kinds of folder DevChain syncs for a project. */
 export function projectFolderKind(id: string): 'code' | 'git' | null {
@@ -42,8 +66,8 @@ const RESCAN_INTERVAL_S = 300;
  */
 const GIT_RESCAN_INTERVAL_S = 10;
 
-/** The full rescan interval DevChain sets on a project folder. */
-export function projectFolderRescanIntervalS(kind: 'code' | 'git'): number {
+/** The full rescan interval DevChain sets on a project folder or a shared user folder. */
+export function folderRescanIntervalS(kind: 'code' | 'git' | 'share'): number {
   return kind === 'git' ? GIT_RESCAN_INTERVAL_S : RESCAN_INTERVAL_S;
 }
 
@@ -146,6 +170,34 @@ export const SyncFolderRequestSchema = z
     message: 'Force copy backups require a receive-only folder',
   });
 export type SyncFolderRequest = z.infer<typeof SyncFolderRequestSchema>;
+
+/** The patterns installed on a shared user folder; it has no system pattern. */
+export const ShareIgnoresSchema = z.array(IgnorePatternSchema).max(2 * IGNORE_PATTERNS_MAX);
+
+/** Each side computes the folder id from `path` and checks the path itself. */
+export const ShareFolderRequestSchema = z
+  .object({
+    path: z.string().min(1).max(4096),
+    type: FolderTypeSchema,
+    peerDeviceId: DeviceIdSchema,
+    ignores: ShareIgnoresSchema,
+    /** Leaves the folder paused, so the caller can unpause both sides in order. */
+    paused: z.boolean().optional(),
+    /** Keeps replaced and deleted files of the first copy in a backup. */
+    backup: ForceCopySchema.optional(),
+  })
+  .strict()
+  .refine((request) => !request.backup || request.type === 'receiveonly', {
+    message: 'Share backups require a receive-only folder',
+  });
+export type ShareFolderRequest = z.infer<typeof ShareFolderRequestSchema>;
+
+export const ShareBackupRequestSchema = z
+  .object({ shareId: ShareIdSchema, backup: ForceCopySchema })
+  .strict();
+export type ShareBackupRequest = z.infer<typeof ShareBackupRequestSchema>;
+
+export const ShareIgnoresRequestSchema = z.object({ ignores: ShareIgnoresSchema }).strict();
 
 export const SyncFolderSchema = z.object({
   id: FolderIdSchema,

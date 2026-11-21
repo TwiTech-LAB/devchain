@@ -8,7 +8,11 @@ import {
   optimisticRemoveById,
   useCrudMutation,
 } from '@/ui/hooks/useCrudMutations';
-import { useCreateProjectWizard } from '@/ui/hooks/useCreateProjectWizard';
+import {
+  setupPreviewQueryOptions,
+  toPreviewRequest,
+  useCreateProjectWizard,
+} from '@/ui/hooks/useCreateProjectWizard';
 import { useConfirmDialog, useFormDialog } from '@/ui/hooks/useFormDialog';
 import { useImportProjectWizard, useUpgradeProjectWizard } from '@/ui/hooks/useImportProjectWizard';
 import { useSelectedProject } from '@/ui/hooks/useProjectSelection';
@@ -229,6 +233,18 @@ export function useProjectsPageController(
   });
   const { setTemplateFormData, resetTemplateForm, submitTemplate } = templateForm;
 
+  const selectedTemplatePreviewRequest =
+    templateForm.templateSourceTab === 'template'
+      ? toPreviewRequest({
+          templateId: templateForm.templateFormData.templateId,
+          version: templateForm.templateFormData.version,
+        })
+      : null;
+  const selectedTemplatePreviewQuery = useQuery({
+    ...setupPreviewQueryOptions(api, selectedTemplatePreviewRequest),
+    enabled: showCreateSource && selectedTemplatePreviewRequest !== null,
+  });
+
   useEffect(() => {
     if (!showCreateSource || !defaultWorkspace || templateForm.templateFormData.workspaceId) return;
     setTemplateFormData((current) => ({
@@ -328,14 +344,21 @@ export function useProjectsPageController(
       }),
   });
 
+  // Each opening of the Create dialog reads the setup preview again, so a provider added since
+  // the last opening is seen. Inside one opening the dialog and the wizard share the cached copy.
+  const showCreateDialog = useCallback(() => {
+    queryClient.removeQueries({ queryKey: projectsQueryKeys.setupPreviews() });
+    setShowCreateSource(true);
+  }, [queryClient]);
+
   const openCreateInWorkspace = useCallback(
     (workspaceId: string) => {
       if (!workspaces.some((workspace) => workspace.id === workspaceId)) return;
       resetTemplateForm();
       setTemplateFormData((current) => ({ ...current, workspaceId }));
-      setShowCreateSource(true);
+      showCreateDialog();
     },
-    [resetTemplateForm, setTemplateFormData, workspaces],
+    [resetTemplateForm, setTemplateFormData, showCreateDialog, workspaces],
   );
 
   const openCreateProject = useCallback(() => {
@@ -344,8 +367,8 @@ export function useProjectsPageController(
       return;
     }
     resetTemplateForm();
-    setShowCreateSource(true);
-  }, [defaultWorkspace, openCreateInWorkspace, resetTemplateForm]);
+    showCreateDialog();
+  }, [defaultWorkspace, openCreateInWorkspace, resetTemplateForm, showCreateDialog]);
 
   const openRenameWorkspace = useCallback((workspace: ProjectWorkspace) => {
     setRenameWorkspaceTarget(workspace);
@@ -847,13 +870,14 @@ export function useProjectsPageController(
         rootPath: newProjectPath,
         workspaceId: current.workspaceId || defaultWorkspace?.id || '',
       }));
-      setShowCreateSource(true);
+      showCreateDialog();
     }
   }, [
     location.search,
     projectsQuery.data,
     projectsQuery.isSuccess,
     setTemplateFormData,
+    showCreateDialog,
     defaultWorkspace?.id,
   ]);
 
@@ -1036,7 +1060,8 @@ export function useProjectsPageController(
           sourceTab: templateForm.templateSourceTab,
           changeSourceTab: templateForm.setTemplateSourceTab,
           values: templateForm.templateFormData,
-          changeName: (name) => setTemplateFormData((current) => ({ ...current, name })),
+          changeName: templateForm.handleNameChange,
+          isNameAutomatic: templateForm.isNameAutomatic,
           changeDescription: (description) =>
             setTemplateFormData((current) => ({ ...current, description })),
           changeVersion: (version) => setTemplateFormData((current) => ({ ...current, version })),
@@ -1046,6 +1071,7 @@ export function useProjectsPageController(
             setTemplateFormData((current) => ({ ...current, workspaceId })),
           templates,
           selectedTemplateSource: templateForm.selectedTemplate?.source,
+          selectedTemplatePreview: selectedTemplatePreviewQuery.data ?? null,
           sortedVersions: templateForm.sortedVersions,
           selectTemplate: templateForm.handleTemplateChange,
           changeRootPath: templateForm.handleTemplatePathChange,
@@ -1060,8 +1086,8 @@ export function useProjectsPageController(
           onOpenChange: createWizard.onOpenChange,
           controller: createWizard.controller,
           title: 'Set up project',
-          description: 'Configure providers, agents, and teams before creating the project.',
-          submitLabel: 'Create',
+          description: 'Review what the template creates before creating the project.',
+          submitLabel: 'Create project',
           isLoading: createWizard.isLoading,
           isSubmitting: createWizard.isSubmitting,
           errorMessage: createWizard.isError

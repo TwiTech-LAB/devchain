@@ -1,6 +1,6 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { mkdir, readFile, stat, writeFile } from 'fs/promises';
-import { dirname, join } from 'path';
+import { dirname, join, resolve } from 'path';
 import { z } from 'zod';
 import { SYNCTHING_GIT_EXCLUDES } from '../../common/constants/syncthing-markers';
 import { AppError } from '../../common/errors/error-types';
@@ -8,9 +8,11 @@ import { STORAGE_SERVICE, type ProjectStorage } from '../storage/interfaces/stor
 import { FILE_SYNC_PATHS, assertShareableFolder, type FileSyncPaths } from './file-sync-paths';
 import {
   SCAN_TIMEOUT_MS,
+  SHARED_FOLDER_MISSING,
   FILE_SYNC_REPORT_SAMPLE,
   CONFLICT_BASELINE_MAX,
   ForceCopyBackupRequestSchema,
+  ShareBackupRequestSchema,
   RECEIVE_ONLY_SAMPLE_MAX,
   FolderSyncStatusSchema,
   SyncFolderConfigurationSchema,
@@ -28,8 +30,12 @@ import {
   type ForceCopyBackupRequest,
   type ForceCopyBackup,
   type ReceiveOnlyChanges,
-  projectFolderRescanIntervalS,
+  type ShareBackupRequest,
+  type ShareFolderRequest,
+  folderRescanIntervalS,
+  isShareFolderId,
 } from './file-sync.dto';
+import { assertSharePath, shareFolderId, shareId } from './share-paths';
 import { projectRepository } from './project-repository';
 import { FileSyncIgnoresStore } from './file-sync-ignores.store';
 import { SyncthingManager } from './syncthing-manager.service';
@@ -70,8 +76,29 @@ const ConnectionsSchema = z.object({
   connections: z.record(z.object({ connected: z.boolean() })),
 });
 
-export interface ProjectFolder {
+const ConfiguredFoldersSchema = z.array(z.object({ id: z.string(), path: z.string() }));
+
+/** The Syncthing folder settings that differ between DevChain's folder kinds. */
+interface FolderSettings {
   id: string;
+  path: string;
+  type: FolderType;
+  peerDeviceId: string;
+  ignores: string[];
+  paused?: boolean;
+  rescanIntervalS: number;
+  backupPath?: string;
+  /** Applies only without a backup; a backup keeps every conflict copy. */
+  maxConflicts: number;
+}
+
+/** A folder DevChain shares with a VM: a project's code or `.git` folder, or a user folder. */
+export interface SyncedFolder {
+  id: string;
+  kind: 'code' | 'git' | 'share';
+}
+
+export interface ProjectFolder extends SyncedFolder {
   kind: 'code' | 'git';
 }
 
@@ -232,6 +259,11 @@ export interface WaitForCompleteOptions {
   sender: () => Promise<FolderSyncStatus>;
   receiver: () => Promise<FolderSyncStatus>;
   timeoutMs: number;
+  /**
+   * With this set, `timeoutMs` counts from the last poll whose need items or need bytes changed,
+   * so a long transfer fails only when it stops moving.
+   */
+  stallTimeout?: boolean;
   onProgress?: (progress: SyncProgress) => void;
   pollIntervalMs?: number;
   symmetric?: boolean;
@@ -383,39 +415,106 @@ export class FileSyncService {
         ).path
       : undefined;
     const path = await this.folderPath(request.projectId, request.kind);
-    const id = projectFolderId(request.projectId, request.kind);
     await mkdir(path, { recursive: true });
     if (request.kind === 'code') await excludeMarkersFromGit(path);
-    const client = this.client();
-    await client.request('PUT', `/rest/config/folders/${enc(id)}`, {
-      id,
-      label: id,
+    return this.putFolder({
+      id: projectFolderId(request.projectId, request.kind),
       path,
       type: request.type,
-      devices: [{ deviceID: request.peerDeviceId }],
-      paused: true,
-      copyOwnershipFromParent: this.syncthing.getState().privileged,
-      fsWatcherEnabled: true,
-      fsWatcherDelayS: FOLDER_WATCHER_DELAY_S,
-      rescanIntervalS: projectFolderRescanIntervalS(request.kind),
-      ...(backupPath
-        ? {
-            maxConflicts: -1,
-            versioning: {
-              type: 'trashcan',
-              fsPath: backupPath,
-              fsType: 'basic',
-              params: { cleanoutDays: '0' },
-            },
-          }
-        : { versioning: { type: '' }, maxConflicts: request.kind === 'git' ? 0 : 10 }),
+      peerDeviceId: request.peerDeviceId,
+      ignores: request.ignores,
+      paused: request.paused,
+      rescanIntervalS: folderRescanIntervalS(request.kind),
+      backupPath,
+      maxConflicts: request.kind === 'git' ? 0 : 10,
     });
-    await client.request('POST', `/rest/db/ignores?folder=${enc(id)}`, {
-      ignore: request.ignores,
+  }
+
+  /**
+   * Creates or replaces a shared user folder `share:<id>` the same way as a project folder. Home
+   * shares only an existing folder; the VM, which receives the path, creates a missing one.
+   */
+  async ensureShareFolder(
+    request: ShareFolderRequest,
+    options: { createMissing: boolean },
+  ): Promise<SyncFolder> {
+    if (request.backup && request.type !== 'receiveonly')
+      throw new AppError('Share backups require a receive-only folder', 'INVALID_FORCE_COPY', 400);
+    const path = resolve(request.path);
+    await this.assertSharePath(path);
+    const id = shareFolderId(path);
+    const info = await stat(path).catch((error: NodeJS.ErrnoException) => {
+      if (error.code === 'ENOENT') return null;
+      throw error;
     });
-    const paused = request.paused ?? false;
-    if (!paused) await this.updateFolder(id, { paused: false });
-    return { id, path, type: request.type, paused, ...(backupPath && { backupPath }) };
+    if (!info && !options.createMissing)
+      throw new AppError(
+        `Cannot share ${path}: the folder does not exist.`,
+        SHARED_FOLDER_MISSING,
+        404,
+      );
+    if (info && !info.isDirectory())
+      throw new AppError(
+        `Cannot share ${path}: it is not a folder.`,
+        'FILE_SYNC_SHARE_NOT_FOLDER',
+        400,
+      );
+    if (!info) await mkdir(path, { recursive: true });
+    await excludeMarkersFromGit(path);
+    const backupPath = request.backup
+      ? (
+          await this.shareBackup({
+            shareId: shareId(path),
+            backup: request.backup,
+          })
+        ).path
+      : undefined;
+    return this.putFolder({
+      id,
+      path,
+      type: request.type,
+      peerDeviceId: request.peerDeviceId,
+      ignores: request.ignores,
+      paused: request.paused,
+      rescanIntervalS: folderRescanIntervalS('share'),
+      backupPath,
+      maxConflicts: 10,
+    });
+  }
+
+  /**
+   * Checks a share path against this side's DevChain data, projects and other shares. Home also
+   * passes the shares it keeps for VMs in `otherShares`.
+   */
+  async assertSharePath(path: string, otherShares: readonly string[] = []): Promise<string> {
+    const ownId = shareFolderId(path);
+    const configured = ConfiguredFoldersSchema.parse(
+      await this.client().request('GET', '/rest/config/folders'),
+    );
+    return assertSharePath(path, {
+      devchainHome: dirname(this.paths.syncthingHome()),
+      projectRoots: await this.projectRoots(),
+      otherShares: [
+        ...configured
+          .filter((folder) => isShareFolderId(folder.id) && folder.id !== ownId)
+          .map((folder) => folder.path),
+        ...otherShares,
+      ],
+    });
+  }
+
+  /** Computes and creates a share's backup directory on this side. */
+  async shareBackup(request: ShareBackupRequest): Promise<ForceCopyBackup> {
+    const { shareId, backup } = ShareBackupRequestSchema.parse(request);
+    const path = join(
+      dirname(this.paths.syncthingHome()),
+      'sync-backups',
+      'shares',
+      shareId,
+      backup.operationId,
+    );
+    await mkdir(path, { recursive: true });
+    return { path };
   }
 
   /** Computes and creates a local backup directory without touching any share record. */
@@ -453,6 +552,55 @@ export class FileSyncService {
       ...configuration,
       fsWatcherDelayS: FOLDER_WATCHER_DELAY_S,
     });
+  }
+
+  private async putFolder(folder: FolderSettings): Promise<SyncFolder> {
+    const client = this.client();
+    await client.request('PUT', `/rest/config/folders/${enc(folder.id)}`, {
+      id: folder.id,
+      label: folder.id,
+      path: folder.path,
+      type: folder.type,
+      devices: [{ deviceID: folder.peerDeviceId }],
+      paused: true,
+      copyOwnershipFromParent: this.syncthing.getState().privileged,
+      fsWatcherEnabled: true,
+      fsWatcherDelayS: FOLDER_WATCHER_DELAY_S,
+      rescanIntervalS: folder.rescanIntervalS,
+      ...(folder.backupPath
+        ? {
+            maxConflicts: -1,
+            versioning: {
+              type: 'trashcan',
+              fsPath: folder.backupPath,
+              fsType: 'basic',
+              params: { cleanoutDays: '0' },
+            },
+          }
+        : { versioning: { type: '' }, maxConflicts: folder.maxConflicts }),
+    });
+    await client.request('POST', `/rest/db/ignores?folder=${enc(folder.id)}`, {
+      ignore: folder.ignores,
+    });
+    const paused = folder.paused ?? false;
+    if (!paused) await this.updateFolder(folder.id, { paused: false });
+    return {
+      id: folder.id,
+      path: folder.path,
+      type: folder.type,
+      paused,
+      ...(folder.backupPath && { backupPath: folder.backupPath }),
+    };
+  }
+
+  private async projectRoots(): Promise<string[]> {
+    const roots: string[] = [];
+    for (let offset = 0; ; ) {
+      const page = await this.storage.listProjects({ limit: 500, offset });
+      roots.push(...page.items.map((project) => this.paths.codeFolder(project)));
+      offset += page.items.length;
+      if (page.items.length === 0 || offset >= page.total) return roots;
+    }
   }
 
   async folderConfiguration(folderId: string) {
@@ -649,7 +797,7 @@ export class FileSyncService {
    * Each poll waits for both callbacks, also when one fails.
    */
   async waitForComplete(folderId: string, options: WaitForCompleteOptions): Promise<SyncProgress> {
-    const deadline = Date.now() + options.timeoutMs;
+    let deadline = Date.now() + options.timeoutMs;
     const sides = options.sides ?? { sender: 'the sender', receiver: 'the receiver' };
     let progress: SyncProgress | null = null;
     let lastError: string | null = null;
@@ -673,6 +821,12 @@ export class FileSyncService {
         const result = options.symmetric
           ? evaluateSymmetricCompletion(sender, receiver)
           : evaluateCompletion(sender, receiver);
+        if (
+          options.stallTimeout &&
+          (progress?.needItems !== result.progress.needItems ||
+            progress.needBytes !== result.progress.needBytes)
+        )
+          deadline = Date.now() + options.timeoutMs;
         progress = result.progress;
         lastError = null;
         options.onProgress?.(progress);
@@ -710,7 +864,7 @@ export class FileSyncService {
 
 /**
  * Keeps Syncthing's markers, conflict copies and partial-pull temp files out
- * of git in a code folder that is a repository, through `.git/info/exclude`,
+ * of git in a folder that is a repository, through `.git/info/exclude`,
  * so the committed `.gitignore` stays untouched.
  */
 async function excludeMarkersFromGit(root: string): Promise<void> {

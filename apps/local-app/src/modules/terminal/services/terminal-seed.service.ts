@@ -129,6 +129,7 @@ export class TerminalSeedService {
         { name: tmuxSessionId },
         scrollbackLines,
         true,
+        { joinWrappedLines: true },
       );
       const snapshot = result.ok ? result.output : null;
 

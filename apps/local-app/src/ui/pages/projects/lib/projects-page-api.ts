@@ -17,6 +17,7 @@ import type {
   UpgradeProjectResponse,
 } from '@/ui/pages/projects/lib/project-contracts';
 import type { BackendId } from '@/ui/lib/api-transport';
+import type { ExportData } from '@devchain/shared';
 
 export interface ProjectsPageApi {
   listProjects(): Promise<ProjectsQueryData>;
@@ -47,6 +48,8 @@ export interface ProjectsPageApi {
     input: Record<string, unknown>,
     backend?: BackendId,
   ): Promise<ImportDryRunResponse>;
+  /** The project's current export (`GET /api/projects/:id/export`) from the instance that owns it. */
+  loadProjectExport(projectId: string, backend?: BackendId): Promise<ExportData>;
   commitImport(projectId: string, input: Record<string, unknown>): Promise<ImportProjectResponse>;
   commitUpgrade(
     projectId: string,

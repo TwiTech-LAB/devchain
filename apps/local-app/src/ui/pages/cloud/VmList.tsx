@@ -101,18 +101,21 @@ export interface VmMenuItem {
 
 /**
  * The menu items that apply to a VM. Items that start a host operation hide
- * while one is open, because the server refuses them then.
+ * while one is open, and items that change or remove the VM also hide while a
+ * shared folder operation is open, because the server refuses them then.
  */
 export function vmMenuItems(
   remote: RemoteListItemDto,
   status: VmStatus,
   failedVmOperation: boolean,
   projectCount = 0,
+  shareOperationOpen = false,
 ): VmMenuItem[] {
   const items: VmMenuItem[] = [];
   const add = (key: VmMenuKey, label: string, danger = false) => items.push({ key, label, danger });
   const removed = status.state === 'removed';
   const hostFree = status.state !== 'busy' && status.state !== 'stopped';
+  const lifecycleFree = !shareOperationOpen;
   const proxmox = remote.kind === 'proxmox';
   const reachable = vmReachable(remote);
 
@@ -123,26 +126,35 @@ export function vmMenuItems(
   // Change logins cancels a failed login change itself before it sends the new one.
   const loginChangeStopped =
     status.state === 'stopped' && status.operation?.kind === 'update_logins';
-  if ((hostFree || loginChangeStopped) && reachable && remote.versionMatches && remote.logins) {
+  if (
+    (hostFree || loginChangeStopped) &&
+    lifecycleFree &&
+    reachable &&
+    remote.versionMatches &&
+    remote.logins
+  ) {
     add('change-logins', 'Change logins');
   }
   if (
     hostFree &&
+    lifecycleFree &&
     reachable &&
     remote.version &&
     !(remote.docker?.installed && remote.docker.userInGroup)
   ) {
     add('install-docker', 'Install Docker');
   }
-  if (hostFree && reachable && !remote.versionMatches) add('update', 'Update');
+  if (hostFree && lifecycleFree && reachable && !remote.versionMatches) add('update', 'Update');
   if (hostFree && proxmox && remote.powerState === 'stopped') add('power-on', 'Power on');
   if (!removed) {
     add('rename', 'Rename');
     add('view', 'View details');
   }
-  if (hostFree && proxmox && remote.vmIdentity && remote.vmSpec) add('reset', 'Reset VM', true);
-  add('remove', 'Remove', true);
+  if (hostFree && lifecycleFree && proxmox && remote.vmIdentity && remote.vmSpec)
+    add('reset', 'Reset VM', true);
+  if (lifecycleFree) add('remove', 'Remove', true);
   if (
+    lifecycleFree &&
     !removed &&
     status.state !== 'busy' &&
     proxmox &&
@@ -309,6 +321,7 @@ export function VmList({
   loading,
   statuses,
   failedVmOperations,
+  shareOperationRemotes,
   connectionNames,
   projectCounts,
   highlightedId,
@@ -327,6 +340,8 @@ export function VmList({
   loading: boolean;
   statuses: ReadonlyMap<string, VmStatus>;
   failedVmOperations: ReadonlySet<string>;
+  /** VMs with an open shared folder operation; see `vmMenuItems`. */
+  shareOperationRemotes: ReadonlySet<string>;
   connectionNames: ReadonlyMap<string, string>;
   projectCounts: ReadonlyMap<string, number>;
   highlightedId: string | null;
@@ -396,6 +411,7 @@ export function VmList({
                     status,
                     failedVmOperations.has(remote.id),
                     projectCounts.get(remote.id) ?? 0,
+                    shareOperationRemotes.has(remote.id),
                   )}
                   where={vmWhere(remote, connectionNames)}
                   projectCount={projectCounts.get(remote.id) ?? 0}

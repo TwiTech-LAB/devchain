@@ -3,8 +3,10 @@ import { readdir, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { createLogger } from '../../common/logging/logger';
 import type { ProviderSessionArtifacts } from '../runtime-context-capture/provider-artifacts.types';
+import { existingImageDirectories, isImagePartial } from './session-image-files';
 import {
   RUNTIME_DIRECTORY_HOST,
+  SESSION_FILES_DIRECTORY,
   type ResolvedRuntimeDirectory,
   type RuntimeDirectoryHost,
   type RuntimeProtection,
@@ -16,8 +18,7 @@ import {
 const logger = createLogger('RuntimeDirectoryService');
 
 export const LAUNCH_SCRIPT_DIRECTORY = 'launch';
-/** Not `sessions/`: `<db dir>/runtime-context/sessions/` holds Claude runtime-context files. */
-export const SESSION_FILES_DIRECTORY = 'session-files';
+export { SESSION_FILES_DIRECTORY };
 
 const SAFE_SESSION_ID = /^[A-Za-z0-9][A-Za-z0-9_-]*$/;
 
@@ -44,6 +45,10 @@ export class RuntimeDirectoryService implements ProviderSessionArtifacts {
 
   resolve(): Promise<ResolvedRuntimeDirectory> {
     return resolveRuntimeDirectory(this.host);
+  }
+
+  instanceRoots(): string[] {
+    return runtimeDirectoryCandidates(this.host, false);
   }
 
   resolveSystemd(): Promise<{ path: string; tmpfs: boolean } | null> {
@@ -73,6 +78,9 @@ export class RuntimeDirectoryService implements ProviderSessionArtifacts {
         join(root, SESSION_FILES_DIRECTORY),
         (name) => !liveSessionIds.has(name),
       );
+    }
+    for await (const { directory } of existingImageDirectories(this.instanceRoots())) {
+      await this.removeEntries(directory, isImagePartial);
     }
   }
 

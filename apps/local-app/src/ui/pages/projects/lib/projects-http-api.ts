@@ -22,6 +22,7 @@ import { isProjectPreMutationFailure } from '@/ui/pages/projects/lib/project-fai
 import type { ProjectsPageApi } from '@/ui/pages/projects/lib/projects-page-api';
 import type { WorkspaceTransitionDevice } from '@/ui/pages/projects/lib/projects-page-api';
 import { HOME_BACKEND, apiFetch, type BackendId } from '@/ui/lib/api-transport';
+import type { ExportData } from '@devchain/shared';
 
 type ErrorBody = { message?: string; error?: string };
 
@@ -152,12 +153,13 @@ export class ProjectsHttpApi implements ProjectsPageApi {
     const response = await apiFetch('/api/templates', undefined, { backend: HOME_BACKEND });
     if (!response.ok) throw new Error('Failed to fetch templates');
     const data = (await response.json()) as { templates: ProjectTemplate[] };
-    return data.templates.map(({ slug, name, source, versions, latestVersion }) => ({
+    return data.templates.map(({ slug, name, source, versions, latestVersion, description }) => ({
       slug,
       name,
       source,
       versions,
       latestVersion,
+      description: description ?? null,
     }));
   }
 
@@ -266,6 +268,19 @@ export class ProjectsHttpApi implements ProjectsPageApi {
       throw new Error(failureText(result as ErrorBody, 'Failed to load upgrade preview'));
     }
     return result as SetupPreviewResponse;
+  }
+
+  async loadProjectExport(
+    projectId: string,
+    backend: BackendId = HOME_BACKEND,
+  ): Promise<ExportData> {
+    const response = await apiFetch(
+      `/api/projects/${encodeURIComponent(projectId)}/export`,
+      undefined,
+      { backend },
+    );
+    if (!response.ok) throw new Error(await serverFailureMessage(response));
+    return (await response.json()) as ExportData;
   }
 
   runImportDryRun(

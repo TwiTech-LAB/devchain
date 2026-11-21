@@ -53,6 +53,7 @@ function seedCtx(
 function makeTeamsService() {
   return {
     createTeam: jest.fn().mockResolvedValue({ id: 'team-1' }),
+    listTeams: jest.fn().mockResolvedValue({ items: [] }),
     deleteTeamsByIds: jest.fn().mockResolvedValue(undefined),
     deleteTeamsByProject: jest.fn().mockResolvedValue(undefined),
   };
@@ -112,6 +113,44 @@ describe('teams codec — declaration', () => {
 });
 
 describe('teams codec — apply (resolution against live storage)', () => {
+  it('uses the recreated profile ID for preserved permissions beyond the live profile page', async () => {
+    const teamsService = makeTeamsService();
+    const runtime = {
+      ...rt(teamsService, makeStorage({ profiles: [] })),
+      applyPreservedRoster: true,
+    };
+    const result = await teamsCodec.apply(
+      teamSection([
+        {
+          name: 'Planning',
+          memberAgentNames: ['Agent A', 'Agent B'],
+          teamLeadAgentName: 'Agent A',
+          maxMembers: 8,
+          maxConcurrentTasks: 5,
+          allowTeamLeadCreateAgents: false,
+          profileNames: ['Profile 1'],
+          profileSelections: [{ profileName: 'Profile 1', configNames: ['cfg-a'] }],
+        },
+      ]),
+      seedCtx(),
+      'replace',
+      runtime,
+    );
+
+    expect(result.log).toEqual({ teams: 1 });
+    expect(teamsService.createTeam).toHaveBeenCalledWith(
+      expect.objectContaining({
+        teamLeadAgentId: 'agent-1',
+        memberAgentIds: ['agent-1', 'agent-2'],
+        maxMembers: 8,
+        maxConcurrentTasks: 5,
+        allowTeamLeadCreateAgents: false,
+        profileIds: ['profile-new-1'],
+        profileConfigSelections: [{ profileId: 'profile-new-1', configIds: ['config-1'] }],
+      }),
+    );
+  });
+
   it('resolves members/lead/profiles/configs and creates teams', async () => {
     const teamsService = makeTeamsService();
     const result = await teamsCodec.apply(

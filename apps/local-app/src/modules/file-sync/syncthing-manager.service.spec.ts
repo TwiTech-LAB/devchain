@@ -33,6 +33,8 @@ const managerLogger = jest
   .mock.results.find((r, i) => jest.mocked(createLogger).mock.calls[i][0] === 'SyncthingManager')
   ?.value as { warn: jest.Mock };
 
+const SHARE = 'share:0123456789abcdef';
+
 describe('SyncthingManager ownership', () => {
   let moduleRef: TestingModule;
   let manager: SyncthingManager;
@@ -66,6 +68,7 @@ describe('SyncthingManager ownership', () => {
       { id: 'code:p1', copyOwnershipFromParent: false, rescanIntervalS: 300 },
       { id: 'git:p1', rescanIntervalS: 10 },
       { id: 'other', copyOwnershipFromParent: false, rescanIntervalS: 3600 },
+      { id: SHARE, copyOwnershipFromParent: false, rescanIntervalS: 3600 },
     ];
     jest
       .spyOn(SyncthingRestClient.prototype, 'request')
@@ -116,7 +119,7 @@ describe('SyncthingManager ownership', () => {
     await jest.advanceTimersByTimeAsync(DEFAULT_SYNCTHING_MANAGER_TIMINGS.restartBaseDelayMs * 4);
   }
 
-  it('checks the worker after API readiness and reconciles true then false on relaunch', async () => {
+  it('checks the worker after API readiness and reconciles project and share folders true then false on relaunch', async () => {
     await manager.ensureRunning();
     expect(launcher.hasOwnershipCapabilities).toHaveBeenCalledWith(101);
     expect(
@@ -127,6 +130,7 @@ describe('SyncthingManager ownership', () => {
       { id: 'code:p1', copyOwnershipFromParent: true, rescanIntervalS: 300 },
       { id: 'git:p1', copyOwnershipFromParent: true, rescanIntervalS: 10 },
       { id: 'other', copyOwnershipFromParent: false, rescanIntervalS: 3600 },
+      { id: SHARE, copyOwnershipFromParent: true, rescanIntervalS: 300 },
     ]);
     launcher.hasOwnershipCapabilities.mockResolvedValue(false);
     await crash();
@@ -136,6 +140,7 @@ describe('SyncthingManager ownership', () => {
       { id: 'code:p1', copyOwnershipFromParent: false, rescanIntervalS: 300 },
       { id: 'git:p1', copyOwnershipFromParent: false, rescanIntervalS: 10 },
       { id: 'other', copyOwnershipFromParent: false, rescanIntervalS: 3600 },
+      { id: SHARE, copyOwnershipFromParent: false, rescanIntervalS: 300 },
     ]);
   });
 
@@ -151,6 +156,11 @@ describe('SyncthingManager ownership', () => {
         { copyOwnershipFromParent: true, rescanIntervalS: 300 },
       ],
       ['PATCH', '/rest/config/folders/git%3Ap1', { copyOwnershipFromParent: true }],
+      [
+        'PATCH',
+        `/rest/config/folders/${encodeURIComponent(SHARE)}`,
+        { copyOwnershipFromParent: true, rescanIntervalS: 300 },
+      ],
     ]);
     request.mockClear();
     folders[0].rescanIntervalS = 3600;

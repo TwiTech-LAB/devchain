@@ -295,6 +295,7 @@ describe('claim and update_host operations', () => {
       } as never,
       { pushIfChanged: async () => undefined } as never,
       { pushIfChanged: async () => undefined } as never,
+      { pushIfChanged: async () => undefined } as never,
       { registerRemoteCheck: () => () => undefined } as never,
       apiKeys,
       sharedVmGuardStub(),

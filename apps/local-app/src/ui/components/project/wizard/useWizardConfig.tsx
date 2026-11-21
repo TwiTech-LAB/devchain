@@ -1,167 +1,103 @@
-import { useCallback } from 'react';
+import { useCallback, type ComponentType } from 'react';
 import type { Dispatch, SetStateAction } from 'react';
+import type { ExportData } from '@devchain/shared';
 import type {
   AgentOverridePayload,
   SetupPreviewResponse,
 } from '@/ui/pages/projects/lib/project-contracts';
 import type { WizardStep } from '@/ui/hooks/useProjectSetupWizard';
-import { Step1Providers } from './Step1Providers';
-import { Step2Agents } from './Step2Agents';
-import { Step3Teams } from './Step3Teams';
-import { deriveFamilyProviderMappings, getUncoveredFamilies } from './providerSelection';
+import { SetupReviewProvider } from './SetupReviewContext';
+import type { WizardConfigHandlers, WizardConfigState } from './wizardConfigTypes';
+import {
+  defaultSelectedProviders,
+  deriveFamilyProviderMappings,
+  installedProviderNames,
+  setupProviderList,
+} from './providerSelection';
 import {
   agentKey,
   applyPresetToRows,
   buildAgentOverrides,
   buildAgentPlanEmission,
-  defaultSetupProviders,
-  initialAgentRows,
+  configProviderName,
+  eqName,
+  profileForAgent,
+  resolveAgentRow,
   selectablePresetNames,
+  selectablePresetsNewestFirst,
+  templateAgentRows,
+  withoutProviderFallback,
   type AgentRow,
-  type TemplateProfile,
 } from './agentPlan';
 import {
   buildTeamOverrides,
   configurableTeams,
-  initialTeamStates,
+  templateTeamStates,
   type ParsedTemplateProfile,
   type ParsedTemplateTeam,
   type TeamPanelState,
 } from './teamPlan';
 
-/**
- * The Steps 1-3 domain state shared by BOTH the create and import wizards (Providers → Agents →
- * Teams). Lifted to each flow controller so Back/Next never lose it. The create-only submit fields
- * and the import-only dry-run/status state live in their respective hooks — this module owns only the
- * common config surface + its emission, so the two flows can't drift.
- */
-export interface WizardConfigState {
-  /** Step 1 selection. Starts EMPTY — the user must explicitly opt into providers. */
-  selectedProviderNames: string[];
-  /** Step 2 per-agent rows (config + model/effort overrides), keyed by lowercased agent name. */
-  agentRows: Record<string, AgentRow>;
-  /** Step 2 applied preset (null = custom). */
-  agentPresetName: string | null;
-  /** True once an applied preset was hand-edited (forces agentOverrides emission over presetName). */
-  agentPresetModified: boolean;
-  /**
-   * True while the preset (or null) came from auto-derivation. In auto mode every Step-1 selection
-   * change re-derives rows + the newest selectable preset; the flag flips off once the user takes
-   * over the plan (picker apply/clear or a row edit) so their choice is never switched away.
-   * Never emitted.
-   */
-  presetAuto: boolean;
-  /** Step 3 per-team panel state (byte-identical emission to the legacy Configure Teams dialog). */
-  teamStates: Map<string, TeamPanelState>;
-}
+export type { WizardConfigHandlers, WizardConfigState };
 
-/**
- * Derive the agent-plan slice for a provider selection as if the wizard had been opened with it:
- * fresh template rows, then the most recently updated selectable preset applied. Storage order
- * represents update time (newest appended last) — the same convention the Agents page's
- * PresetSelector sorts by. The user can switch or clear the preset on Step 2.
- */
-function deriveDefaultAgentPlan(
+export function wizardConfigStateFor(
   preview: SetupPreviewResponse,
   selectedProviderNames: string[],
-): Pick<WizardConfigState, 'agentRows' | 'agentPresetName'> {
-  let agentRows = initialAgentRows(preview.payload.agents ?? []);
-  const selectable = selectablePresetNames(preview.presetProviderCoverage, selectedProviderNames);
-  const defaultPreset = [...(preview.payload.presets ?? [])]
-    .reverse()
-    .find((p) => selectable.has(p.name));
-  if (defaultPreset) {
-    agentRows = applyPresetToRows(agentRows, defaultPreset);
+  {
+    presetName,
+    useSuggestedPreset = true,
+  }: { presetName?: string | null; useSuggestedPreset?: boolean } = {},
+): WizardConfigState {
+  let agentRows = templateAgentRows(preview.payload, selectedProviderNames);
+  const presets = selectablePresetsNewestFirst(preview, selectedProviderNames);
+  const preset =
+    presets.find((candidate) => eqName(candidate.name, presetName)) ??
+    (useSuggestedPreset ? presets[0] : undefined);
+  if (preset) {
+    agentRows = applyPresetToRows(agentRows, preset);
   }
-  return { agentRows, agentPresetName: defaultPreset?.name ?? null };
-}
-
-/** Build the initial Steps 1-3 state from a resolved setup-preview. */
-export function initialWizardConfigState(preview: SetupPreviewResponse): WizardConfigState {
-  // Preselect the providers the template's DEFAULT (non-preset) setup requires — the wizard
-  // opens ready to create the template as authored, and the user only opts into extras.
-  // Required-but-not-installed providers stay unchecked (Step 1 renders them disabled with a
-  // "Not installed" hint); other referenced providers start deselected.
-  const required = defaultSetupProviders(
-    preview.payload.agents ?? [],
-    (preview.payload.profiles ?? []) as TemplateProfile[],
-  );
-  const selectedProviderNames = preview.providerSummary
-    .filter((entry) => entry.available && required.has(entry.name.trim().toLowerCase()))
-    .map((entry) => entry.name);
 
   return {
     selectedProviderNames,
-    ...deriveDefaultAgentPlan(preview, selectedProviderNames),
+    agentRows,
+    agentPresetName: preset?.name ?? null,
     agentPresetModified: false,
-    presetAuto: true,
-    teamStates: initialTeamStates(
-      configurableTeams((preview.payload.teams ?? []) as ParsedTemplateTeam[]),
-    ),
+    teamStates: templateTeamStates(preview.payload, selectedProviderNames, preset),
   };
 }
 
-export interface WizardConfigHandlers {
-  setSelectedProviderNames: (next: string[]) => void;
-  onAgentRowChange: (agentName: string, patch: Partial<AgentRow>) => void;
-  onApplyPreset: (name: string) => void;
-  onClearPreset: () => void;
-  onTeamStateChange: (teamName: string, patch: Partial<TeamPanelState>) => void;
+export function initialWizardConfigState(
+  preview: SetupPreviewResponse,
+  useSuggestedPreset = true,
+  currentExport?: ExportData | null,
+): WizardConfigState {
+  return wizardConfigStateFor(
+    preview,
+    defaultSelectedProviders(setupProviderList(preview, currentExport)),
+    { useSuggestedPreset },
+  );
 }
 
 /**
- * Memoized setters for the shared Steps 1-3 state. `setState` is the flow controller's own
- * `useState` setter over a superset of {@link WizardConfigState}; the callbacks patch only the config
- * slice, so create/import can each carry extra fields untouched.
+ * Memoized setters for the shared setup state. `setState` is the flow controller's own `useState`
+ * setter over a superset of {@link WizardConfigState}; the callbacks patch only the config slice,
+ * so create/import can each carry extra fields untouched.
  */
 export function useWizardConfigHandlers<S extends WizardConfigState>(
   preview: SetupPreviewResponse | null,
   setState: Dispatch<SetStateAction<S | null>>,
 ): WizardConfigHandlers {
-  const setSelectedProviderNames = useCallback(
+  const onSelectedProvidersChange = useCallback(
     (next: string[]) => {
-      setState((prev) => {
-        if (!prev) return prev;
-        if (!preview) {
-          return { ...prev, selectedProviderNames: next };
-        }
-        // Auto mode (the user never took over the plan): every selection change re-derives rows +
-        // the newest selectable preset, as if the wizard had been opened with this selection.
-        if (prev.presetAuto) {
-          return {
-            ...prev,
-            selectedProviderNames: next,
-            ...deriveDefaultAgentPlan(preview, next),
-            agentPresetModified: false,
-          };
-        }
-        // Manual mode: an explicit Custom (null) or a still-fitting user-picked preset is never
-        // switched away, and hand-edited rows are never clobbered.
-        if (
-          !prev.agentPresetName ||
-          selectablePresetNames(preview.presetProviderCoverage, next).has(prev.agentPresetName)
-        ) {
-          return { ...prev, selectedProviderNames: next };
-        }
-        // The user-picked preset no longer fits the selection. Hand-edited rows are kept and the
-        // state honestly becomes Custom; an unedited pick falls back to auto-derivation (the pick
-        // is impossible, so the default takes over again).
-        if (prev.agentPresetModified) {
-          return {
-            ...prev,
-            selectedProviderNames: next,
-            agentPresetName: null,
-            agentPresetModified: false,
-          };
-        }
-        return {
-          ...prev,
-          selectedProviderNames: next,
-          ...deriveDefaultAgentPlan(preview, next),
-          agentPresetModified: false,
-          presetAuto: true,
-        };
-      });
+      if (!preview || next.length === 0) return;
+      setState((prev) =>
+        prev
+          ? {
+              ...prev,
+              ...wizardConfigStateFor(preview, next, { presetName: prev.agentPresetName }),
+            }
+          : prev,
+      );
     },
     [preview, setState],
   );
@@ -175,41 +111,34 @@ export function useWizardConfigHandlers<S extends WizardConfigState>(
         if (!existing) return prev;
         return {
           ...prev,
-          agentRows: { ...prev.agentRows, [key]: { ...existing, ...patch } },
+          agentRows: {
+            ...prev.agentRows,
+            [key]: patchAgentRow(preview, prev.selectedProviderNames, existing, patch),
+          },
           agentPresetModified: prev.agentPresetName ? true : prev.agentPresetModified,
-          presetAuto: false,
         };
       });
     },
-    [setState],
+    [preview, setState],
   );
 
   const onApplyPreset = useCallback(
     (name: string) => {
-      const preset = preview?.payload.presets?.find((p) => p.name === name);
-      if (!preset) return;
+      if (!preview) return;
       setState((prev) =>
         prev
           ? {
               ...prev,
-              agentRows: applyPresetToRows(prev.agentRows, preset),
-              agentPresetName: name,
-              agentPresetModified: false,
-              presetAuto: false,
+              ...wizardConfigStateFor(preview, prev.selectedProviderNames, {
+                presetName: name,
+                useSuggestedPreset: false,
+              }),
             }
           : prev,
       );
     },
     [preview, setState],
   );
-
-  const onClearPreset = useCallback(() => {
-    setState((prev) =>
-      prev
-        ? { ...prev, agentPresetName: null, agentPresetModified: false, presetAuto: false }
-        : prev,
-    );
-  }, [setState]);
 
   const onTeamStateChange = useCallback(
     (teamName: string, patch: Partial<TeamPanelState>) => {
@@ -225,106 +154,90 @@ export function useWizardConfigHandlers<S extends WizardConfigState>(
     [setState],
   );
 
-  return {
-    setSelectedProviderNames,
-    onAgentRowChange,
-    onApplyPreset,
-    onClearPreset,
-    onTeamStateChange,
-  };
-}
-
-export interface ConfigStepsResult {
-  /** The Providers / Agents / Teams wizard steps, in order. */
-  steps: WizardStep[];
-  /** Agent names that cannot resolve a config under the current selection (Step-2 hard block). */
-  unresolvedAgents: string[];
+  return { onSelectedProvidersChange, onAgentRowChange, onApplyPreset, onTeamStateChange };
 }
 
 /**
- * Build the three shared wizard steps (Providers → Agents → Teams) with their gates + renders. Teams
- * is skipped when the template has no configurable team. Returns the unresolved-agent list too so the
- * caller can surface a Next block / status.
+ * Apply a user edit to a row. A config change on another provider clears the model and effort
+ * overrides (they name models of the old provider) unless the patch sets them itself; any config
+ * change ends the row's fallback state.
  */
-export function buildConfigSteps(params: {
+function patchAgentRow(
+  preview: SetupPreviewResponse | null,
+  selectedProviderNames: string[],
+  existing: AgentRow,
+  patch: Partial<AgentRow>,
+): AgentRow {
+  if (patch.configName === undefined || patch.configName === existing.configName) {
+    return { ...existing, ...patch };
+  }
+  const agent = preview?.payload.agents?.find(
+    (a) => agentKey(a.name) === agentKey(existing.agentName),
+  );
+  const profile = agent ? profileForAgent(agent, preview?.payload.profiles ?? []) : undefined;
+  const currentConfigName =
+    existing.configName ??
+    resolveAgentRow(
+      existing,
+      profile,
+      selectedProviderNames,
+      preview ? installedProviderNames(preview) : [],
+    ).resolvedConfigName;
+  const fromProvider = configProviderName(profile, currentConfigName);
+  const toProvider = configProviderName(profile, patch.configName);
+  const providerChanged =
+    fromProvider !== undefined && toProvider !== undefined && fromProvider !== toProvider;
+  return {
+    ...withoutProviderFallback(existing),
+    ...(providerChanged ? { modelOverride: null, effortOverride: null } : {}),
+    ...patch,
+  };
+}
+
+/**
+ * Build the shared "Review setup" step. `Review` is the flow's composition of the setup sections;
+ * it renders inside a {@link SetupReviewProvider} for this state. Unresolved agent rows block the
+ * step.
+ */
+export function buildSetupStep(params: {
   preview: SetupPreviewResponse | null;
   state: WizardConfigState | null;
   handlers: WizardConfigHandlers;
-}): ConfigStepsResult {
-  const { preview, state, handlers } = params;
-  const selectedProviders = state?.selectedProviderNames ?? [];
-
-  const uncoveredFamilies = preview
-    ? getUncoveredFamilies(preview.familyAlternatives, selectedProviders)
-    : [];
+  Review: ComponentType;
+  currentExport?: ExportData | null;
+  validateTemplateAgents?: boolean;
+}): WizardStep {
+  const { preview, state, handlers, Review, currentExport } = params;
 
   const unresolvedAgents =
-    preview && state
+    params.validateTemplateAgents !== false && preview && state
       ? buildAgentOverrides(
           state.agentRows,
           preview.payload.agents ?? [],
           preview.payload.profiles ?? [],
-          selectedProviders,
+          state.selectedProviderNames,
+          installedProviderNames(preview),
         ).unresolvedAgents
       : [];
 
-  const visibleTeams = configurableTeams((preview?.payload.teams ?? []) as ParsedTemplateTeam[]);
-
-  const steps: WizardStep[] = [
-    {
-      id: 'providers',
-      title: 'Providers',
-      description: 'Select which providers you would like to use in this project.',
-      canProceed:
-        (preview?.providerSummary.length ?? 0) === 0 ||
-        (selectedProviders.length > 0 && uncoveredFamilies.length === 0),
-      render: () =>
-        state && preview ? (
-          <Step1Providers
-            providerSummary={preview.providerSummary}
-            selectedProviderNames={selectedProviders}
-            uncoveredFamilies={uncoveredFamilies}
-            onSelectedChange={handlers.setSelectedProviderNames}
-          />
-        ) : null,
-    },
-    {
-      id: 'agents',
-      title: 'Agents',
-      canProceed: unresolvedAgents.length === 0,
-      render: () =>
-        state && preview ? (
-          <Step2Agents
-            preview={preview}
-            selectedProviderNames={selectedProviders}
-            rows={state.agentRows}
-            presetName={state.agentPresetName}
-            presetModified={state.agentPresetModified}
-            onRowChange={handlers.onAgentRowChange}
-            onApplyPreset={handlers.onApplyPreset}
-            onClearPreset={handlers.onClearPreset}
-          />
-        ) : null,
-    },
-    {
-      id: 'teams',
-      title: 'Teams',
-      skipped: visibleTeams.length === 0,
-      canProceed: true,
-      render: () =>
-        state && preview ? (
-          <Step3Teams
-            visibleTeams={visibleTeams}
-            profiles={(preview.payload.profiles ?? []) as ParsedTemplateProfile[]}
-            selectedProviderNames={selectedProviders}
-            teamStates={state.teamStates}
-            onTeamStateChange={handlers.onTeamStateChange}
-          />
-        ) : null,
-    },
-  ];
-
-  return { steps, unresolvedAgents };
+  return {
+    id: 'setup',
+    title: 'Review setup',
+    description: 'Check what the template creates. Change any value in place.',
+    wide: true,
+    canProceed: unresolvedAgents.length === 0,
+    render: () =>
+      state && preview ? (
+        <SetupReviewProvider
+          preview={preview}
+          state={state}
+          handlers={handlers}
+          currentExport={currentExport}
+        >
+          <Review />
+        </SetupReviewProvider>
+      ) : null,
+  };
 }
 
 export interface ConfigEmission {
@@ -333,17 +246,25 @@ export interface ConfigEmission {
   agentOverrides?: AgentOverridePayload[];
   teamOverrides?: ReturnType<typeof buildTeamOverrides>;
   /**
-   * Step-1 family→provider mappings (slug → selected available alternative), derived from the
-   * same selection as selectedProviderNames. Omitted when empty — this is how the wizard's Step 1
-   * ABSORBS the legacy ProviderMappingModal. Present only when non-empty so callers can spread
+   * Family→provider mappings (slug → selected available alternative), derived from the same
+   * selection as selectedProviderNames. Present only when non-empty so callers can spread
    * directly, matching the create/import "conditional spread" contract.
    */
   familyProviderMappings?: Record<string, string>;
 }
 
+/** `selectedProviderNames` for a request body: present only when a provider is selected. */
+export function selectedProvidersEmission(
+  state: WizardConfigState,
+): Pick<ConfigEmission, 'selectedProviderNames'> {
+  return state.selectedProviderNames.length > 0
+    ? { selectedProviderNames: state.selectedProviderNames }
+    : {};
+}
+
 /**
- * The shared Steps 1-3 contribution to a create/import payload: transient provider choice metadata,
- * the family→provider mappings absorbed from Step 1, the agent plan (presetName XOR agentOverrides,
+ * The shared setup contribution to a create/import payload: transient provider choice metadata,
+ * the family→provider mappings, the agent plan (presetName XOR agentOverrides,
  * delta-6), and the team overrides. Each field is present only when it carries content, so callers
  * can spread it directly. ONE emission path consumed by BOTH useCreateProjectWizard and
  * useImportProjectWizard — the two flows cannot drift.
@@ -352,10 +273,7 @@ export function buildConfigEmission(
   preview: SetupPreviewResponse | null,
   state: WizardConfigState,
 ): ConfigEmission {
-  const emission: ConfigEmission = {};
-  if (state.selectedProviderNames.length > 0) {
-    emission.selectedProviderNames = state.selectedProviderNames;
-  }
+  const emission: ConfigEmission = selectedProvidersEmission(state);
 
   if (preview) {
     const familyProviderMappings = deriveFamilyProviderMappings(
@@ -371,6 +289,7 @@ export function buildConfigEmission(
       agents: preview.payload.agents ?? [],
       profiles: preview.payload.profiles ?? [],
       selectedProviderNames: state.selectedProviderNames,
+      installedProviderNames: installedProviderNames(preview),
       presetName: state.agentPresetName,
       presetModified: state.agentPresetModified,
       selectablePresets: selectablePresetNames(

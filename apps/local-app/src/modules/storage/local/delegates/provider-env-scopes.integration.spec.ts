@@ -5,6 +5,7 @@ import type { BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
 import { drizzle } from 'drizzle-orm/better-sqlite3';
 import { ProviderStorageDelegate } from './provider.delegate';
 import { createStorageDelegateContext } from './base-storage.delegate';
+import { TransactionRunner } from '../../db/transaction-runner';
 import type { Provider } from '../../models/domain.models';
 
 describe('ProviderStorageDelegate — env scopes (integration)', () => {
@@ -332,6 +333,161 @@ describe('ProviderStorageDelegate — env scopes (integration)', () => {
       await expect(
         delegate.updateProviderWithScopes(randomUUID(), {}, undefined, []),
       ).rejects.toThrow('not found');
+    });
+  });
+
+  // ─── applyHomeProviderSettings / readProviderSettingsFingerprint ───
+
+  describe('applyHomeProviderSettings', () => {
+    const LAUNCH = '{"permissions":{"defaultMode":"plan"}}';
+
+    function homeRow(
+      providerName: string,
+      env: Record<string, string> | null,
+      envScopes: Record<string, string[]> = {},
+    ) {
+      return {
+        providerName,
+        env,
+        envScopes,
+        auto_compact_threshold: 70,
+        claude_launch_settings_json: LAUNCH,
+      };
+    }
+
+    function providerState(providerId: string) {
+      return {
+        provider: sqlite
+          .prepare(
+            'SELECT env, auto_compact_threshold, claude_launch_settings_json FROM providers WHERE id = ?',
+          )
+          .get(providerId),
+        scopes: sqlite
+          .prepare(
+            'SELECT env_key, project_id FROM provider_env_scopes WHERE provider_id = ? ORDER BY env_key, project_id',
+          )
+          .all(providerId),
+      };
+    }
+
+    it('makes env, scopes and both scalars equal to home by the Connect rule in one transaction', async () => {
+      const onVm = seedProject();
+      const provider = seedProvider(
+        { VM_ONLY: 'vm', SHARED: 'old', VM_SCOPED: 'vm' },
+        { name: 'claude' },
+      );
+      insertScopeRow(provider.id, 'VM_SCOPED', onVm);
+      insertScopeRow(provider.id, 'SHARED', onVm);
+      const runImmediate = jest.spyOn(TransactionRunner.prototype, 'runImmediate');
+
+      await delegate.applyHomeProviderSettings([
+        homeRow(
+          'claude',
+          { SHARED: 'new', GLOBAL: 'g', SCOPED: 's', ABSENT_ONLY: 'a' },
+          { SCOPED: [onVm, 'home-only'], ABSENT_ONLY: ['home-only'] },
+        ),
+      ]);
+
+      expect(runImmediate).toHaveBeenCalledTimes(1);
+      runImmediate.mockRestore();
+      expect(providerState(provider.id)).toEqual({
+        provider: {
+          env: JSON.stringify({ SHARED: 'new', GLOBAL: 'g', SCOPED: 's' }),
+          auto_compact_threshold: 70,
+          claude_launch_settings_json: LAUNCH,
+        },
+        scopes: [{ env_key: 'SCOPED', project_id: onVm }],
+      });
+    });
+
+    it('skips a provider name this instance does not have and applies the other rows', async () => {
+      const provider = seedProvider({ OLD: 'x' }, { name: 'claude' });
+
+      const result = await delegate.applyHomeProviderSettings([
+        homeRow('not-installed', { KEY: 'v' }),
+        homeRow('claude', { KEY: 'v' }),
+      ]);
+
+      expect(result.skippedProviderNames).toEqual(['not-installed']);
+      expect(providerState(provider.id).provider).toMatchObject({ env: '{"KEY":"v"}' });
+    });
+
+    it('returns the fingerprint that the read returns directly after it', async () => {
+      seedProvider({ OLD: 'x' }, { name: 'claude' });
+      const before = delegate.readProviderSettingsFingerprint();
+
+      const { fingerprint } = await delegate.applyHomeProviderSettings([
+        homeRow('claude', { KEY: 'v' }),
+      ]);
+
+      expect(fingerprint).not.toBe(before);
+      expect(delegate.readProviderSettingsFingerprint()).toBe(fingerprint);
+    });
+  });
+
+  describe('readProviderSettingsFingerprint', () => {
+    it.each<[string, (ctx: { providerId: string; projectId: string }) => void]>([
+      [
+        'an env value',
+        ({ providerId }) =>
+          sqlite
+            .prepare(`UPDATE providers SET env = '{"KEY":"changed"}' WHERE id = ?`)
+            .run(providerId),
+      ],
+      [
+        'a scope row add',
+        ({ providerId, projectId }) => insertScopeRow(providerId, 'KEY', projectId),
+      ],
+      [
+        'a scope row remove',
+        ({ providerId, projectId }) =>
+          sqlite
+            .prepare('DELETE FROM provider_env_scopes WHERE provider_id = ? AND project_id = ?')
+            .run(providerId, projectId),
+      ],
+      [
+        'auto_compact_threshold',
+        ({ providerId }) =>
+          sqlite
+            .prepare('UPDATE providers SET auto_compact_threshold = 50 WHERE id = ?')
+            .run(providerId),
+      ],
+      [
+        'claude_launch_settings_json',
+        ({ providerId }) =>
+          sqlite
+            .prepare(`UPDATE providers SET claude_launch_settings_json = '{}' WHERE id = ?`)
+            .run(providerId),
+      ],
+      ['a new provider row', () => seedProvider()],
+      ['a new project row', () => seedProject()],
+      [
+        'a removed project row',
+        ({ projectId }) => sqlite.prepare('DELETE FROM projects WHERE id = ?').run(projectId),
+      ],
+    ])('changes after %s change', (_change, mutate) => {
+      const providerId = seedProvider({ KEY: 'v', OTHER: 'o' }).id;
+      const projectId = seedProject();
+      insertScopeRow(providerId, 'OTHER', projectId);
+      const before = delegate.readProviderSettingsFingerprint();
+
+      mutate({ providerId, projectId });
+
+      expect(delegate.readProviderSettingsFingerprint()).not.toBe(before);
+    });
+
+    it('ignores timestamps and the stored order of env keys', () => {
+      const providerId = seedProvider({ A: '1', B: '2' }).id;
+      const before = delegate.readProviderSettingsFingerprint();
+
+      sqlite
+        .prepare(
+          `UPDATE providers SET env = '{"B":"2","A":"1"}', updated_at = '2030-01-01T00:00:00.000Z' WHERE id = ?`,
+        )
+        .run(providerId);
+      sqlite.prepare(`UPDATE projects SET updated_at = '2030-01-01T00:00:00.000Z'`).run();
+
+      expect(delegate.readProviderSettingsFingerprint()).toBe(before);
     });
   });
 

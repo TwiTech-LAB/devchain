@@ -43,6 +43,8 @@ export const providerAuthKeys = {
 };
 export const fileSyncAutoFixQueryKey = (projectId: string) =>
   [HOME_BACKEND, 'file-sync-auto-fix', projectId] as const;
+export const managedExclusionsQueryKey = (projectId: string, remoteId?: string) =>
+  [HOME_BACKEND, 'file-sync-managed-exclusions', projectId, remoteId] as const;
 export const fileSyncFailuresQueryKey = (projectId: string) =>
   [HOME_BACKEND, 'file-sync-failed', projectId] as const;
 export const projectIgnoresQueryKey = (projectId: string | null) =>
@@ -57,3 +59,7 @@ export const fileSyncStatusQueryKey = (projectId: string) =>
   [HOME_BACKEND, 'file-sync', projectId, 'status'] as const;
 export const disconnectAllChecksQueryKey = (remoteId: string, projectId: string, force: boolean) =>
   [HOME_BACKEND, 'disconnect-all-checks', remoteId, projectId, force] as const;
+export const sharedFoldersQueryKey = (remoteId: string) =>
+  [HOME_BACKEND, 'shared-folders', remoteId] as const;
+export const folderListQueryKey = (path: string | null, showHidden: boolean) =>
+  [HOME_BACKEND, 'fs-list', path, showHidden] as const;

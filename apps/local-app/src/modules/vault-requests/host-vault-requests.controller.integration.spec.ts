@@ -324,19 +324,26 @@ describe('Host Vault request routes on a claimed VM', () => {
   });
 
   it.each([
-    ['the snapshot has no grant for the name', async () => undefined],
+    ['the snapshot has no grant for the name', {}, async () => undefined],
     [
       'the value cache lacks the granted entry',
+      {},
       async () => {
         await cache.apply(GRANTED_PUSH);
         rmSync(join(runtimeDir, VAULT_VM_CACHE_FILE));
       },
     ],
-  ])('keeps a stored answer pending with 409 when %s', async (_name, arrange) => {
+    [
+      // The requested name is granted and cached: an existing-entry answer checks its id.
+      "the agent's grants do not give the answered entry",
+      { entryId: 'e-other' },
+      () => cache.apply(GRANTED_PUSH),
+    ],
+  ])('keeps a stored answer pending with 409 when %s', async (_name, extra, arrange) => {
     const requestId = await pendingId();
     await arrange();
 
-    const response = await answer(requestId, { status: 'fulfilled' });
+    const response = await answer(requestId, { status: 'fulfilled', ...extra });
 
     expect([response.statusCode, response.json().details]).toEqual([
       409,

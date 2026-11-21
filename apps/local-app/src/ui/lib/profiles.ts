@@ -7,6 +7,7 @@ export type { ProfileListItem, ProfilesResponse };
 
 export const profileQueryKeys = {
   project: (projectId: string | null | undefined) => ['profiles', projectId] as const,
+  detail: (profileId: string) => ['profiles', 'detail', profileId] as const,
 };
 
 export function fetchProfiles(fetchFn: FetchFn, projectId: string): Promise<ProfilesResponse> {
@@ -23,5 +24,16 @@ export const profileQueries = {
     queryOptions({
       queryKey: profileQueryKeys.project(projectId),
       queryFn: () => fetchProfiles(fetchFn, projectId!),
+    }),
+  detail: (fetchFn: FetchFn, profileId: string) =>
+    queryOptions({
+      queryKey: profileQueryKeys.detail(profileId),
+      queryFn: () =>
+        fetchJsonOrThrow<Pick<ProfileListItem, 'id' | 'name'>>(
+          `/api/profiles/${encodeURIComponent(profileId)}`,
+          {},
+          'Failed to fetch profile',
+          fetchFn,
+        ),
     }),
 };

@@ -23,7 +23,7 @@ export const vaultMetadata: ToolMetadataEntry[] = [
   {
     name: 'devchain_vault_request',
     description:
-      'Ask the user for a Vault entry you need. Returns at once and never blocks: `available` when you already have it; otherwise `pending` with a requestId (or `already_pending` for the same name). The user answers in the DevChain UI; you then get a message saying the secret is available (use `devchain vault exec --only NAME -- <cmd>`) or that the user denied it. Never send a value: there is no field for one.',
+      'Ask the user for a Vault entry you need. Returns at once and never blocks: `available` when you already have it; otherwise `pending` with a requestId (or `already_pending` for the same name). The user answers in the DevChain UI; you then get a message saying the secret is available (use `devchain vault exec --only NAME -- <cmd>`) or that the user denied it. The user can give an existing entry that has another name: then the message gives the name to use in `devchain vault exec`. Never send a value: there is no field for one.',
     inputSchema: {
       type: 'object',
       required: ['sessionId', 'name', 'description'],

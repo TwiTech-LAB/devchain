@@ -1,4 +1,5 @@
-import { Inject, Injectable } from '@nestjs/common';
+import { Inject, Injectable, Optional } from '@nestjs/common';
+import { SharedFoldersLifecycle } from '../shared-folders/shared-folders.lifecycle';
 import { ConflictError, NotFoundError } from '../../../common/errors/error-types';
 import { createLogger } from '../../../common/logging/logger';
 import {
@@ -72,6 +73,7 @@ export class DestroyVmOperation implements RemoteOperationDefinition {
     private readonly writeback: ProviderAuthWritebackService,
     private readonly lifecycle: ProxmoxVmLifecycleService,
     private readonly sharedVm: RemoteSharedVmService,
+    @Optional() private readonly sharedFolders?: SharedFoldersLifecycle,
   ) {}
 
   assertCancellable(operation: RemoteOperation): void {
@@ -92,6 +94,7 @@ export class DestroyVmOperation implements RemoteOperationDefinition {
       'Destroyed managed VM; removing remote registration',
     );
     await this.storage.deleteRemote(operation.remoteId);
+    await this.sharedFolders?.forgetRemote(operation.remoteId);
   }
 
   private async preflight({ operation, details }: RemoteOperationStepRun): Promise<void> {

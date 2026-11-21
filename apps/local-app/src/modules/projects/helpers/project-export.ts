@@ -15,6 +15,7 @@ import type {
   WatcherStorage,
 } from '../../storage/interfaces/storage.interface';
 import { resolveExportPresets } from './profile-mapping.helpers';
+import type { ProjectPreset } from './project-presets.helpers';
 // Export builders colocated with their section codecs (moved out of this file).
 import { loadExportPrompts } from '../template-codec/codecs/prompts.codec';
 import { buildExportStatuses } from '../template-codec/codecs/statuses.codec';
@@ -34,16 +35,7 @@ const logger = createLogger('ProjectExport');
 
 export interface ExportProjectOptions {
   manifestOverrides?: Partial<ManifestData>;
-  presets?: Array<{
-    name: string;
-    description?: string | null;
-    agentConfigs: Array<{
-      agentName: string;
-      providerConfigName: string;
-      modelOverride?: string | null;
-      effortOverride?: string | null;
-    }>;
-  }>;
+  presets?: Omit<ProjectPreset, 'origin'>[];
   /** Internal-only. Public export requests always use the default sanitized transform. */
   profileConfigEnvTransform?: (
     env: Record<string, string> | null | undefined,
@@ -157,10 +149,10 @@ export async function exportProjectWithHelper(
     deps.slugify,
     manifestOverrides,
   );
-  const exportPresets = resolveExportPresets(
+  const exportPresets = resolveExportPresets<ProjectPreset>(
     presetsOverride,
     deps.settings.getProjectPresets(projectId),
-  );
+  )?.map(({ origin, ...preset }) => preset);
 
   return {
     _manifest: manifest,

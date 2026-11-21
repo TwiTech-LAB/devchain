@@ -76,6 +76,38 @@ describe('resolveBackend', () => {
     );
   });
 
+  // The pure resolver covers route precedence without a fetch or a mounted UI.
+  it.each(['/presets', '/presets/apply'])('routes %s to the named project backend', (suffix) => {
+    expect(
+      resolveBackend(`/api/projects/${BOUND_OTHER}${suffix}`, undefined, undefined, context),
+    ).toBe(REMOTE_B);
+    expect(
+      resolveBackend(`/api/projects/${LOCAL_PROJECT}${suffix}`, undefined, undefined, context),
+    ).toBe(HOME_BACKEND);
+  });
+
+  it('honors an explicit home backend for a remote project preset route', () => {
+    expect(
+      resolveBackend(
+        `/api/projects/${BOUND_OTHER}/presets`,
+        undefined,
+        { backend: HOME_BACKEND },
+        context,
+      ),
+    ).toBe(HOME_BACKEND);
+  });
+
+  it('keeps a project route with a similar preset path segment on home', () => {
+    expect(
+      resolveBackend(
+        `/api/projects/${BOUND_OTHER}/presetsx?projectId=${BOUND_OTHER}`,
+        { method: 'POST', body: JSON.stringify({ projectId: BOUND_OTHER }) },
+        undefined,
+        context,
+      ),
+    ).toBe(HOME_BACKEND);
+  });
+
   it('sends entity-id routes to the active project backend', () => {
     expect(resolveBackend('/api/epics/e1', undefined, undefined, context)).toBe(REMOTE_A);
     expect(resolveBackend('/api/epics/e1', undefined, undefined, localActiveContext)).toBe(
@@ -239,6 +271,12 @@ describe('resolveBackend', () => {
 
 describe('resolveBackend with unknown routing authority', () => {
   const unknown: BackendResolutionContext = { ...context, authority: 'unknown' };
+
+  it.each(['/presets', '/presets/apply'])('refuses %s until project routing is known', (suffix) => {
+    expect(() =>
+      resolveBackend(`/api/projects/${BOUND_OTHER}${suffix}`, undefined, undefined, unknown),
+    ).toThrow(RoutingUnknownError);
+  });
 
   it('resolves home-always, non-API and explicit-home requests', () => {
     expect(resolveBackend('/api/remotes/bindings', undefined, undefined, unknown)).toBe(

@@ -1,7 +1,11 @@
 // Real SQLite and the storage facade are the cheapest reliable layer for row
 // hops, bulk ownership, rejected writes, fan-out and outer transaction joins.
 import { randomUUID } from 'node:crypto';
-import { NotFoundError, ProjectFrozenError } from '../../../common/errors/error-types';
+import {
+  NotFoundError,
+  ProjectFrozenError,
+  ProjectRemoteError,
+} from '../../../common/errors/error-types';
 import { createTestDatabase } from '../../../common/test/test-database.helper';
 import type { ExistingProjectsEnablement } from '../interfaces/storage.interface';
 import type { EnvScopesMap } from '../models/domain.models';
@@ -527,41 +531,74 @@ describe('LocalStorageService project write admission', () => {
     },
   );
 
-  it.each(['add', 'remove', 'prune'] as const)(
-    'refuses to %s blocked provider env scope membership before provider or scope writes',
-    async (operation) => {
-      const providerId = writable.provider.id;
-      if (operation !== 'add')
-        database.sqlite
-          .prepare(
-            'INSERT INTO provider_env_scopes (provider_id, env_key, project_id, created_at) VALUES (?, ?, ?, ?)',
-          )
-          .run(providerId, 'TOKEN', blocked.project.id, frozenAt);
-      const beforeProvider = await storage.getProvider(providerId);
-      const beforeScopes = database.sqlite.prepare('SELECT * FROM provider_env_scopes').all();
-      const scopes: EnvScopesMap | undefined =
-        operation === 'prune'
-          ? undefined
-          : operation === 'add'
-            ? { TOKEN: [blocked.project.id] }
-            : {};
-      const keys = operation === 'prune' ? [] : ['TOKEN'];
+  it.each([
+    ['frozen', 'add'],
+    ['frozen', 'remove'],
+    ['frozen', 'prune'],
+    ['remote-owned', 'add'],
+    ['remote-owned', 'remove'],
+    ['remote-owned', 'prune'],
+  ] as const)('home accepts a %s project provider env scope %s', async (owner, operation) => {
+    let projectId = blocked.project.id;
+    if (owner === 'remote-owned') {
+      projectId = (
+        await storage.createProject({
+          name: 'Remote',
+          rootPath: '/tmp/Remote',
+          description: null,
+          isTemplate: false,
+        })
+      ).id;
+      const remote = await storage.createRemote({
+        name: 'Build VM',
+        baseUrl: 'https://build.example.test',
+        kind: 'address',
+      });
+      await storage.createRemoteProjectBinding({ projectId, remoteId: remote.id });
+      await storage.updateRemoteProjectBinding(projectId, { state: 'remote' });
+      await gate.refresh();
+      expect(() => gate.assertWritable(projectId)).toThrow(ProjectRemoteError);
+    }
+    const providerId = writable.provider.id;
+    if (operation !== 'add')
+      database.sqlite
+        .prepare(
+          'INSERT INTO provider_env_scopes (provider_id, env_key, project_id, created_at) VALUES (?, ?, ?, ?)',
+        )
+        .run(providerId, 'TOKEN', projectId, frozenAt);
+    const scopes: EnvScopesMap | undefined =
+      operation === 'prune' ? undefined : operation === 'add' ? { TOKEN: [projectId] } : {};
+    const keys = operation === 'prune' ? [] : ['TOKEN'];
 
-      await expect(
-        storage.updateProviderWithScopes(
-          providerId,
-          { name: 'Changed', env: { TOKEN: 'new' } },
-          scopes,
-          keys,
-        ),
-      ).rejects.toThrow(ProjectFrozenError);
+    const provider = await storage.updateProviderWithScopes(
+      providerId,
+      { env: { TOKEN: 'new' } },
+      scopes,
+      keys,
+    );
 
-      expect(await storage.getProvider(providerId)).toEqual(beforeProvider);
-      expect(database.sqlite.prepare('SELECT * FROM provider_env_scopes').all()).toEqual(
-        beforeScopes,
-      );
-    },
-  );
+    expect(provider.env).toEqual({ TOKEN: 'new' });
+    expect(
+      database.sqlite.prepare('SELECT env_key, project_id FROM provider_env_scopes').all(),
+    ).toEqual(operation === 'add' ? [{ env_key: 'TOKEN', project_id: projectId }] : []);
+  });
+
+  it('applies home provider settings to a frozen project', async () => {
+    const { fingerprint } = await storage.applyHomeProviderSettings([
+      {
+        providerName: writable.provider.name,
+        env: { TOKEN: 'home' },
+        envScopes: { TOKEN: [blocked.project.id] },
+        auto_compact_threshold: null,
+        claude_launch_settings_json: null,
+      },
+    ]);
+
+    expect(storage.getProviderEnvForProject(writable.provider.id, blocked.project.id)).toEqual({
+      TOKEN: 'home',
+    });
+    expect(storage.readProviderSettingsFingerprint()).toBe(fingerprint);
+  });
 
   it('preserves unchanged blocked provider scope rows while filtering non-current keys', async () => {
     const providerId = writable.provider.id;

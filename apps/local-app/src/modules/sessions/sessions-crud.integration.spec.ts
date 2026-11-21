@@ -4,6 +4,7 @@
  * Boots one real NestJS app from the migrated SQLite snapshot for the file.
  */
 import { readFileSync } from 'fs';
+import { randomUUID } from 'node:crypto';
 import { mkdtemp, rm } from 'fs/promises';
 import { join } from 'path';
 import { tmpdir } from 'os';
@@ -15,6 +16,7 @@ import { DB_CONNECTION } from '../storage/db/db.provider';
 import type Database from 'better-sqlite3';
 
 import { EventEmitter2 } from '@nestjs/event-emitter';
+import { EventsService } from '../events/services/events.service';
 import { applyExternalBoundaryMocks } from '../../common/test/app-bootstrap.helper';
 import { createTestDatabase } from '../../common/test/test-database.helper';
 import { SettingsService } from '../settings/services/settings.service';
@@ -23,6 +25,9 @@ import { ProviderAdapterFactory } from '../providers/adapters';
 import { TerminalIOService } from '../terminal/services/terminal-io/terminal-io.service';
 import { PtyService } from '../terminal/services/pty.service';
 import { TerminalSessionRegistry } from '../terminal/services/terminal-session/terminal-session-registry';
+import { TerminalGateway } from '../terminal/gateways/terminal.gateway';
+import { SessionImageStore } from '../runtime-directory/session-image-store.service';
+import type { Socket } from 'socket.io';
 
 jest.mock('../../common/logging/logger', () => ({
   createLogger: () => ({ info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() }),
@@ -56,6 +61,7 @@ const mockTerminalIO = {
   deliver: jest.fn().mockResolvedValue({ confirmed: true, method: 'bracketed-paste' }),
   deliverImmediate: jest.fn().mockResolvedValue({ confirmed: true, method: 'bracketed-paste' }),
   sendControl: jest.fn().mockResolvedValue(undefined),
+  withComposer: jest.fn(),
 };
 const mockPty = {
   setOutputHandler: jest.fn(),
@@ -689,17 +695,19 @@ describe('POST /api/sessions/:id/restore', () => {
     expect(mockTerminalIO.deliver).not.toHaveBeenCalled();
   });
 
-  it('CLI command includes --resume flag with providerSessionId (Claude adapter)', async () => {
+  // The restored registry instance and migrated row are both consulted by image admission.
+  it('resumes a legacy session and keeps its launched provider for TTY and form images', async () => {
     const projectId = uuid(7);
     const agentId = uuid(60);
     const sessionId = uuid(600);
 
-    seedRestoreAgent(sqlite!, { projectId, agentId, providerName: 'claude' });
+    const { ppcId } = seedRestoreAgent(sqlite!, { projectId, agentId, providerName: 'claude' });
+    const providerSessionId = randomUUID();
     seedRestoreSession(sqlite!, {
       sessionId,
       agentId,
-      providerSessionId: 'prov-session-XYZ',
-      providerNameAtLaunch: 'claude',
+      providerSessionId,
+      providerNameAtLaunch: null,
     });
 
     const res = await app!
@@ -719,37 +727,102 @@ describe('POST /api/sessions/:id/restore', () => {
     // Should contain --resume and the providerSessionId
     const command = readFileSync(typedArgs[1], 'utf8');
     expect(command).toContain('--resume');
-    expect(command).toContain('prov-session-XYZ');
+    expect(command).toContain(providerSessionId);
+
+    const nextProviderId = randomUUID();
+    sqlite
+      .prepare('INSERT INTO providers (id, name, created_at, updated_at) VALUES (?, ?, ?, ?)')
+      .run(nextProviderId, 'codex', NOW, NOW);
+    sqlite
+      .prepare('UPDATE profile_provider_configs SET provider_id = ? WHERE id = ?')
+      .run(nextProviderId, ppcId);
+
+    const registry = app.get(TerminalSessionRegistry);
+    const client = { id: 'writer' } as Socket;
+    registry.get(sessionId)!.subscribe(client.id);
+    const gateway = app.get(TerminalGateway);
+    const gesture = { sessionId, projectId, gestureId: randomUUID() };
+    expect(
+      (await gateway.handleImageBegin(client, { ...gesture, projectId: randomUUID() })).status,
+    ).toBe('stale');
+    expect((await gateway.handleImageBegin(client, gesture)).status).toBe('ready');
+
+    const attachmentId = randomUUID() + '.png';
+    const staged = join(rootDir, attachmentId);
+    const lookup = jest.spyOn(app.get(SessionImageStore), 'resolvePath').mockResolvedValue(staged);
+    const pasteImage = jest.fn().mockResolvedValue('delivered');
+    const pane = { pasteImage, submit: jest.fn().mockResolvedValue('submitted') };
+    mockTerminalIO.withComposer.mockImplementation((_target, write) => write(pane));
+    try {
+      const paste = { ...gesture, kind: 'image-paste' as const, index: 0, attachmentId };
+      await expect(gateway.handleInput(client, paste)).resolves.toMatchObject({
+        status: 'delivered',
+      });
+      await expect(
+        gateway.handleInput(client, {
+          kind: 'form-send',
+          sessionId,
+          projectId,
+          sendId: randomUUID(),
+          resume: false,
+          segments: [{ kind: 'image', attachmentId }],
+        }),
+      ).resolves.toMatchObject({ status: 'submitted', acknowledgedImages: 1 });
+      expect(pasteImage.mock.calls.map(([path, provider]) => [path, provider])).toEqual([
+        [staged, 'claude'],
+        [staged, 'claude'],
+      ]);
+    } finally {
+      lookup.mockRestore();
+      mockTerminalIO.withComposer.mockReset();
+    }
+
+    registry.dispose(sessionId);
+    registry.create(sessionId, 'unrelated-tmux-session').subscribe(client.id);
+    expect(
+      (await gateway.handleImageBegin(client, { ...gesture, gestureId: randomUUID() })).status,
+    ).toBe('stale');
   });
 
-  it('rollback: reverts status to stopped when sendCommandArgs fails', async () => {
+  it('restores the stopped legacy row on command or event publication failure', async () => {
     const projectId = uuid(8);
     const agentId = uuid(70);
     const sessionId = uuid(700);
 
     seedRestoreAgent(sqlite!, { projectId, agentId, providerName: 'claude' });
-    seedRestoreSession(sqlite!, { sessionId, agentId });
+    seedRestoreSession(sqlite!, { sessionId, agentId, providerNameAtLaunch: null });
+    const row = sqlite.prepare('SELECT status, provider_name_at_launch FROM sessions WHERE id = ?');
+    const restore = () =>
+      app
+        .getHttpAdapter()
+        .getInstance()
+        .inject({
+          method: 'POST',
+          url: `/api/sessions/${sessionId}/restore`,
+          payload: { projectId },
+        });
 
     mockTerminalIO.typeCommand.mockRejectedValueOnce(new Error('CLI spawn failed'));
-
-    const res = await app!
-      .getHttpAdapter()
-      .getInstance()
-      .inject({
-        method: 'POST',
-        url: `/api/sessions/${sessionId}/restore`,
-        payload: { projectId },
-      });
-    expect(res.statusCode).toBe(500);
-
-    // DB row must be rolled back to 'stopped'
-    const row = sqlite!.prepare('SELECT status FROM sessions WHERE id = ?').get(sessionId) as {
-      status: string;
-    };
-    expect(row.status).toBe('stopped');
-
-    // Tmux session must be destroyed
+    expect((await restore()).statusCode).toBe(500);
+    expect(row.get(sessionId)).toEqual({ status: 'stopped', provider_name_at_launch: null });
     expect(mockTerminalIO.destroyExpectedSession).toHaveBeenCalledTimes(1);
+
+    let rowAtPublication: unknown;
+    const publish = jest
+      .spyOn(app.get(EventsService), 'publish')
+      .mockImplementationOnce(async () => {
+        rowAtPublication = row.get(sessionId);
+        throw new Error('Event publication failed');
+      });
+    try {
+      expect((await restore()).statusCode).toBe(500);
+      expect(publish).toHaveBeenCalledWith('session.restored', expect.anything());
+      expect(rowAtPublication).toEqual({ status: 'running', provider_name_at_launch: 'claude' });
+      expect(row.get(sessionId)).toEqual({ status: 'stopped', provider_name_at_launch: null });
+      expect(mockTerminalIO.destroyExpectedSession).toHaveBeenCalledTimes(2);
+    } finally {
+      publish.mockRestore();
+    }
   });
 
   it('event emission: session.restored published; session.started NOT published', async () => {

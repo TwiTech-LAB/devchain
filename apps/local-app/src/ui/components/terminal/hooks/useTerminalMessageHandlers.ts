@@ -10,6 +10,7 @@ import { useTerminalWritePump } from './useTerminalWritePump';
 import type { TerminalWritePumpApi } from './terminal-write-pump';
 import type { TerminalHistorySync } from '../terminal-history-sync';
 import type { ScrollIntentController } from '../scroll-intent-binding';
+import { resetTerminal } from '../xterm-utils';
 import type {
   TerminalSeedPayload,
   TerminalSeedEmptyPayload,
@@ -370,8 +371,7 @@ export function useTerminalMessageHandlers(
             kind: 'history',
             beforeWrite: () => {
               xterm.options.scrollback = scrollbackLines;
-              xterm.reset();
-              xterm.clear();
+              resetTerminal(xterm, 'keep');
             },
             onComplete: flushBufferedFrames,
           });

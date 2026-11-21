@@ -1,4 +1,5 @@
 import { Inject, Injectable } from '@nestjs/common';
+import { assertNoOpenShareOperation } from './share-operation-lock';
 import { ConflictError, NotFoundError } from '../../../common/errors/error-types';
 import { ProviderAuthVaultService } from '../../provider-auth/provider-auth-vault.service';
 import { STORAGE_SERVICE, type RemoteStorage } from '../../storage/interfaces/storage.interface';
@@ -110,6 +111,7 @@ export class VmOperationsService {
       throw new ConflictError('Only a registered Proxmox VM can be reset.');
     }
     await this.operations.assertNoOpenHostOperation(remoteId);
+    await assertNoOpenShareOperation(this.storage, remoteId);
     const [bindings, families, lastClaims] = await Promise.all([
       this.storage.listRemoteProjectBindings(),
       this.vault.familiesOfRemote(remoteId),
@@ -218,6 +220,7 @@ export class VmOperationsService {
         remoteId,
       });
     }
+    await assertNoOpenShareOperation(this.storage, remoteId);
     const bindings = await this.storage.listRemoteProjectBindings();
     if (bindings.some((binding) => binding.remoteId === remoteId)) {
       throw new ConflictError('Disconnect every project before destroying its VM.', {

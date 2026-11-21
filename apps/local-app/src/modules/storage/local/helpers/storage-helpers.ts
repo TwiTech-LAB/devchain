@@ -1,5 +1,6 @@
 import type Database from 'better-sqlite3';
 import type { ListOptions } from '../../interfaces/storage.interface';
+import type { EnvScopesMap } from '../../models/domain.models';
 import { ValidationError } from '../../../../common/errors/error-types';
 import { createLogger } from '../../../../common/logging/logger';
 
@@ -137,6 +138,23 @@ export function parseProviderEnv(
       providerId,
       rawValue: envJson.slice(0, 100) + (envJson.length > 100 ? '...' : ''),
     });
+  }
+}
+
+/** Returns `null` for no env, `undefined` when the stored JSON is not a string map. */
+export function tryParseProviderEnv(
+  envJson: string | null,
+): Record<string, string> | null | undefined {
+  if (!envJson) return null;
+  try {
+    const parsed: unknown = JSON.parse(envJson);
+    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return undefined;
+    const entries = Object.entries(parsed);
+    return entries.every(([, value]) => typeof value === 'string')
+      ? (Object.fromEntries(entries) as Record<string, string>)
+      : undefined;
+  } catch {
+    return undefined;
   }
 }
 
@@ -417,4 +435,42 @@ export function slugify(value: string): string {
     .replace(/[^a-z0-9]+/g, '-')
     .replace(/-{2,}/g, '-')
     .replace(/^-+|-+$/g, '');
+}
+
+export interface ProviderScopeMembership {
+  envKey: string;
+  projectId: string;
+}
+
+export function readProviderScopeChanges(
+  sqlite: Database.Database,
+  providerId: string,
+  envScopes: EnvScopesMap | undefined,
+  currentEnvKeys: readonly string[],
+): { removed: ProviderScopeMembership[]; added: ProviderScopeMembership[] } {
+  const existing = sqlite
+    .prepare('SELECT env_key, project_id FROM provider_env_scopes WHERE provider_id = ?')
+    .all(providerId) as Array<{ env_key: string; project_id: string }>;
+  const before = new Map<string, ProviderScopeMembership>();
+  const after = new Map<string, ProviderScopeMembership>();
+  const key = (envKey: string, projectId: string): string => JSON.stringify([envKey, projectId]);
+  for (const row of existing) {
+    const membership = { envKey: row.env_key, projectId: row.project_id };
+    before.set(key(row.env_key, row.project_id), membership);
+    if (envScopes === undefined && currentEnvKeys.includes(row.env_key)) {
+      after.set(key(row.env_key, row.project_id), membership);
+    }
+  }
+  if (envScopes !== undefined) {
+    for (const [envKey, projectIds] of Object.entries(envScopes)) {
+      if (!currentEnvKeys.includes(envKey)) continue;
+      for (const projectId of projectIds) {
+        after.set(key(envKey, projectId), { envKey, projectId });
+      }
+    }
+  }
+  return {
+    removed: [...before].filter(([entry]) => !after.has(entry)).map(([, row]) => row),
+    added: [...after].filter(([entry]) => !before.has(entry)).map(([, row]) => row),
+  };
 }

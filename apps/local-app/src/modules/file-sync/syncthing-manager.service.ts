@@ -12,7 +12,7 @@ import { createServer } from 'net';
 import { join } from 'path';
 import { getEnvConfig } from '../../common/config/env.config';
 import { createLogger } from '../../common/logging/logger';
-import { projectFolderKind, projectFolderRescanIntervalS } from './file-sync.dto';
+import { folderRescanIntervalS, isShareFolderId, projectFolderKind } from './file-sync.dto';
 import { FILE_SYNC_PATHS, type FileSyncPaths } from './file-sync-paths';
 import { SyncthingLauncher, type SyncthingProcess } from './syncthing-launcher';
 import { SyncthingRestClient, SyncthingRestError } from './syncthing-rest.client';
@@ -286,10 +286,10 @@ export class SyncthingManager implements OnApplicationBootstrap, BeforeApplicati
       )
       .parse(await instance.client.request('GET', '/rest/config/folders'));
     for (const folder of folders) {
-      const kind = projectFolderKind(folder.id);
+      const kind = projectFolderKind(folder.id) ?? (isShareFolderId(folder.id) ? 'share' : null);
       if (kind) {
         // A PATCH keeps omitted fields, so folders created earlier keep their old interval.
-        const rescanIntervalS = projectFolderRescanIntervalS(kind);
+        const rescanIntervalS = folderRescanIntervalS(kind);
         const patch = {
           ...(folder.copyOwnershipFromParent !== privileged && {
             copyOwnershipFromParent: privileged,

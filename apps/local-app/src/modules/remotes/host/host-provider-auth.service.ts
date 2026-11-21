@@ -28,6 +28,7 @@ import { STORAGE_SERVICE, type ProviderStorage } from '../../storage/interfaces/
 import { ProviderCliVersionProbe } from '../../providers/services/provider-cli-version-probe.service';
 import { ProcessExecutor } from '../../terminal/services/process-executor/process-executor.port';
 import { HostHelperService } from './host-helper.service';
+import { REFUSED_FILES } from './host-home-files';
 import type { HostProviderApplyInput, HostProviderAuthRemoveSpec } from './host-provider-auth.dto';
 import {
   logoutDevchainOpencodeCredentialsV2,
@@ -43,16 +44,6 @@ const SUMMARY_LIMIT = 1_000;
 const MAX_FILES = 32;
 export const MAX_FILE_BYTES = 256 * 1024;
 const MAX_REMOVE_ENV_KEYS = 64;
-/**
- * Stored Claude credentials win over `CLAUDE_CODE_OAUTH_TOKEN`, and the TLS
- * files are the VM identity home pins; the bootstrap refuses them too.
- */
-export const REFUSED_FILES = [
-  '.claude/.credentials.json',
-  '.devchain/host.env',
-  '.devchain/tls/key.pem',
-  '.devchain/tls/cert.pem',
-];
 
 export interface HostProviderVerifyResult {
   ok: boolean;

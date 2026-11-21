@@ -4,6 +4,7 @@ import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter } from 'react-router-dom';
 import { ProvidersPage } from './ProvidersPage';
+import { BackendBoundary } from '@/ui/components/BackendBoundary';
 import { DEFAULT_CLAUDE_LAUNCH_SETTINGS_JSON } from '@devchain/shared';
 
 const mockToast = jest.fn();
@@ -2477,8 +2478,10 @@ describe('ProvidersPage - CLI versions section and managed Binary Path', () => {
     });
     fireEvent.click(screen.getByRole('button', { name: 'Update' }));
 
-    // A VM's cards save directly: no own-install confirmation for home.
-    await waitFor(() => expect(updateCalls).toHaveLength(1));
+    // A VM's cards save directly: no own-install confirmation for home. Home
+    // has the same provider here, so the save also writes home's settings.
+    await waitFor(() => expect(updateCalls).toHaveLength(2));
+    expect(updateCalls[0]?.body).toEqual({ binPath: '/opt/custom/claude' });
     expect(
       screen.queryByRole('dialog', { name: 'Switch to your own install?' }),
     ).not.toBeInTheDocument();
@@ -2487,5 +2490,331 @@ describe('ProvidersPage - CLI versions section and managed Binary Path', () => {
     const cached = queryClient.getQueryData(['provider-clis']) as ReturnType<typeof clisOverview>;
     expect(cached.providers.claude.setting.homeManaged).toBe(true);
     expect(clisGetCalls()).toBe(1);
+  });
+});
+
+// Page-level: the routing under test spans two query clients and two
+// backends, which only the mounted page with BackendBoundary wires together.
+describe('ProvidersPage - remote project: home-owned provider settings', () => {
+  const remoteId = '33333333-3333-4333-8333-333333333333';
+  // The VM's bound fetch prefixes its requests so the mock tells them apart.
+  const VM = '/vm';
+
+  const row = (overrides: Record<string, unknown>) => ({
+    mcpConfigured: false,
+    mcpEndpoint: null,
+    mcpRegisteredAt: null,
+    createdAt: '2024-01-01',
+    updatedAt: '2024-01-01',
+    ...overrides,
+  });
+  const vmClaude = row({
+    id: 'vm-claude',
+    name: 'claude',
+    binPath: '/vm/claude',
+    autoCompactThreshold: 50,
+    claudeLaunchSettingsJson: '{"vm":true}',
+    env: { VM_ONLY: 'v' },
+    envScopes: {},
+  });
+  const vmCodex = row({
+    id: 'vm-codex',
+    name: 'codex',
+    binPath: '/vm/codex',
+    autoCompactThreshold: null,
+    claudeLaunchSettingsJson: null,
+    env: { CODEX_VM: 'c' },
+    envScopes: {},
+  });
+  const homeClaude = row({
+    id: 'home-claude',
+    name: 'claude',
+    binPath: '/home/claude',
+    autoCompactThreshold: 70,
+    claudeLaunchSettingsJson: '{"home":true}',
+    env: { HOME_KEY: 'h' },
+    envScopes: { HOME_KEY: ['proj-1'] },
+  });
+
+  type Target = 'vm' | 'home';
+  let homeList: 'pending' | 'fail' | unknown[];
+  let putFailures: Partial<Record<Target, { message: string; field: string }>>;
+  let puts: Array<{ target: Target; url: string; body: Record<string, unknown> }>;
+  let posts: Array<Record<string, unknown>>;
+
+  const reply = (body: unknown, status = 200) =>
+    Promise.resolve({ ok: status < 400, status, json: async () => body } as Response);
+
+  beforeEach(() => {
+    homeList = [homeClaude];
+    putFailures = {};
+    puts = [];
+    posts = [];
+    mockToast.mockClear();
+    mockBackendContext = {
+      activeBackend: remoteId,
+      activeRemote: {
+        id: remoteId,
+        name: 'lab-vm',
+        online: true,
+        version: '1.0.0',
+        versionMatches: true,
+      },
+      bindings: new Map(),
+      ready: true,
+      bindingsError: null,
+      retry: () => {},
+      apiFetch: (input, init) => (global.fetch as typeof fetch)(`${VM}${String(input)}`, init),
+      buildApiUrl: (_backendId, path) => path,
+    };
+    (Element as unknown as { prototype: { scrollIntoView: unknown } }).prototype.scrollIntoView =
+      jest.fn();
+    (global as unknown as { fetch: unknown }).fetch = jest.fn(
+      (input: RequestInfo | URL, init?: RequestInit) => {
+        const raw = String(input);
+        const target: Target = raw.startsWith(VM) ? 'vm' : 'home';
+        const url = target === 'vm' ? raw.slice(VM.length) : raw;
+        const method = init?.method ?? 'GET';
+        if (method === 'PUT') {
+          const body = JSON.parse(init!.body as string);
+          puts.push({ target, url, body });
+          const failure = putFailures[target];
+          return failure
+            ? reply({ message: failure.message, details: { field: failure.field } }, 400)
+            : reply(body);
+        }
+        if (method === 'POST' && url === '/api/providers') {
+          posts.push(JSON.parse(init!.body as string));
+          return reply({ provider: { name: 'claude' } });
+        }
+        if (url === '/api/providers') {
+          if (target === 'vm') return reply({ items: [vmClaude, vmCodex] });
+          if (homeList === 'pending') return new Promise<Response>(() => {});
+          if (homeList === 'fail') return reply({ message: 'down' }, 500);
+          return reply({ items: homeList });
+        }
+        if (url.startsWith('/api/projects')) {
+          return reply({ items: [{ id: 'proj-1', name: 'Alpha' }] });
+        }
+        if (url.endsWith('/models')) return reply([]);
+        if (url.endsWith('/efforts')) {
+          return reply({ efforts: [], supportsEffort: false, requiresModelForEffort: false });
+        }
+        return reply({});
+      },
+    );
+  });
+
+  afterEach(() => {
+    mockBackendContext = undefined;
+  });
+
+  function renderRemote() {
+    render(
+      <MemoryRouter initialEntries={['/providers']}>
+        <QueryClientProvider client={createQueryClient()}>
+          <BackendBoundary>
+            <ProvidersPage />
+          </BackendBoundary>
+        </QueryClientProvider>
+      </MemoryRouter>,
+    );
+  }
+
+  const card = (name: string) =>
+    screen.getByRole('heading', { name }).closest('div.bg-card') as HTMLElement;
+
+  // Home's claude card value proves home's list has loaded.
+  const homeListLoaded = () => screen.findByText('Default threshold: 70%');
+
+  async function openEdit(name: string) {
+    await screen.findByRole('heading', { name });
+    fireEvent.click(within(card(name)).getByRole('button', { name: 'Edit' }));
+    return screen.findByRole('dialog', { name: 'Edit Provider' });
+  }
+
+  const homeFields = (dialog: HTMLElement) =>
+    within(dialog).getByRole('group', { name: 'Settings owned by this PC' });
+
+  it("shows home's threshold, launch settings, env and scopes in the dialog", async () => {
+    renderRemote();
+    await homeListLoaded();
+    const dialog = await openEdit('claude');
+
+    expect(within(dialog).getByLabelText('Binary Path')).toHaveValue('/vm/claude');
+    expect(within(dialog).getByLabelText('Default Threshold (%)')).toHaveValue(70);
+    expect(within(dialog).getByLabelText('Advanced: Claude Launch Settings JSON')).toHaveValue(
+      '{"home":true}',
+    );
+    expect(within(dialog).getByDisplayValue('HOME_KEY')).toBeInTheDocument();
+    expect(within(dialog).queryByDisplayValue('VM_ONLY')).not.toBeInTheDocument();
+    expect(
+      within(dialog).getByRole('button', { name: 'Scope HOME_KEY to projects' }),
+    ).toHaveTextContent('(1)');
+  });
+
+  it("shows home's threshold and env key names on the card of a provider home has", async () => {
+    renderRemote();
+    await homeListLoaded();
+
+    expect(within(card('claude')).getByText('HOME_KEY')).toBeInTheDocument();
+    expect(within(card('claude')).queryByText('VM_ONLY')).not.toBeInTheDocument();
+    // Home has no codex: its card keeps the VM's values.
+    expect(within(card('codex')).getByText('CODEX_VM')).toBeInTheDocument();
+  });
+
+  it("saves the binary path on the VM and the other fields at home under home's id", async () => {
+    renderRemote();
+    await homeListLoaded();
+    const dialog = await openEdit('claude');
+
+    fireEvent.change(within(dialog).getByLabelText('Binary Path'), {
+      target: { value: '/opt/claude' },
+    });
+    fireEvent.change(within(dialog).getByLabelText('Default Threshold (%)'), {
+      target: { value: '60' },
+    });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Update' }));
+
+    await waitFor(() =>
+      expect(screen.queryByRole('dialog', { name: 'Edit Provider' })).not.toBeInTheDocument(),
+    );
+    expect(puts).toEqual([
+      { target: 'vm', url: '/api/providers/vm-claude', body: { binPath: '/opt/claude' } },
+      {
+        target: 'home',
+        url: '/api/providers/home-claude',
+        body: {
+          autoCompactThreshold: 60,
+          claudeLaunchSettingsJson: '{"home":true}',
+          env: { HOME_KEY: 'h' },
+          envScopes: { HOME_KEY: ['proj-1'] },
+        },
+      },
+    ]);
+  });
+
+  it('sends no VM request when the binary path did not change', async () => {
+    renderRemote();
+    await homeListLoaded();
+    const dialog = await openEdit('claude');
+
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Update' }));
+
+    await waitFor(() =>
+      expect(screen.queryByRole('dialog', { name: 'Edit Provider' })).not.toBeInTheDocument(),
+    );
+    expect(puts.map((put) => put.target)).toEqual(['home']);
+  });
+
+  it.each([
+    ['loading', 'pending', "Loading this PC's settings for this provider…"],
+    [
+      'failed',
+      'fail',
+      "Could not load this PC's settings for this provider. Only the binary path can be saved.",
+    ],
+  ] as const)(
+    "locks the home-owned fields without the VM's values while home's list is %s",
+    async (_label, list, status) => {
+      homeList = list;
+      renderRemote();
+      const dialog = await openEdit('claude');
+
+      expect(await within(dialog).findByRole('status')).toHaveTextContent(status);
+      const threshold = within(dialog).getByLabelText('Default Threshold (%)');
+      expect(threshold).toBeDisabled();
+      expect(threshold).toHaveValue(null);
+      expect(within(dialog).getByLabelText('Advanced: Claude Launch Settings JSON')).toHaveValue(
+        '',
+      );
+      expect(within(dialog).queryByDisplayValue('VM_ONLY')).not.toBeInTheDocument();
+      expect(within(dialog).getByPlaceholderText('NEW_KEY')).toBeDisabled();
+    },
+  );
+
+  it("saves only the binary path on the VM when home's list failed", async () => {
+    homeList = 'fail';
+    renderRemote();
+    const dialog = await openEdit('claude');
+    await within(dialog).findByRole('status');
+
+    fireEvent.change(within(dialog).getByLabelText('Binary Path'), {
+      target: { value: '/opt/claude' },
+    });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Update' }));
+
+    await waitFor(() =>
+      expect(screen.queryByRole('dialog', { name: 'Edit Provider' })).not.toBeInTheDocument(),
+    );
+    expect(puts).toEqual([
+      { target: 'vm', url: '/api/providers/vm-claude', body: { binPath: '/opt/claude' } },
+    ]);
+  });
+
+  it.each([
+    ['VM', 'vm', { message: 'Binary not found', field: 'binPath' }, false],
+    ['home', 'home', { message: 'Unknown project', field: 'envScopes.HOME_KEY' }, true],
+  ] as const)(
+    'keeps the dialog open and shows the %s error when only that part fails',
+    async (_label, target, failure, inHomeFields) => {
+      putFailures = { [target]: failure };
+      renderRemote();
+      await homeListLoaded();
+      const dialog = await openEdit('claude');
+
+      fireEvent.change(within(dialog).getByLabelText('Binary Path'), {
+        target: { value: '/opt/claude' },
+      });
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Update' }));
+
+      const error = await within(dialog).findByText(failure.message);
+      expect(puts.map((put) => put.target)).toEqual(['vm', 'home']);
+      expect(homeFields(dialog).contains(error)).toBe(inHomeFields);
+      expect(screen.getByRole('dialog', { name: 'Edit Provider' })).toBeInTheDocument();
+      expect(mockToast).toHaveBeenCalledWith(
+        expect.objectContaining({ description: failure.message, variant: 'destructive' }),
+      );
+      expect(mockToast).not.toHaveBeenCalledWith(expect.objectContaining({ title: 'Success' }));
+    },
+  );
+
+  it('saves every field on the VM for a provider home does not have', async () => {
+    renderRemote();
+    await homeListLoaded();
+    const dialog = await openEdit('codex');
+
+    expect(within(dialog).getByDisplayValue('CODEX_VM')).toBeInTheDocument();
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Update' }));
+
+    await waitFor(() => expect(puts).toHaveLength(1));
+    expect(puts[0]).toEqual({
+      target: 'vm',
+      url: '/api/providers/vm-codex',
+      body: {
+        binPath: '/vm/codex',
+        autoCompactThreshold: null,
+        env: { CODEX_VM: 'c' },
+        envScopes: {},
+      },
+    });
+  });
+
+  it('hides the home-owned fields and omits them when adding a provider home has', async () => {
+    renderRemote();
+    await homeListLoaded();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Add Provider' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Add Provider' });
+    fireEvent.click(within(dialog).getByLabelText('Provider Type'));
+    const claudeOptions = await screen.findAllByText('Claude');
+    fireEvent.click(claudeOptions[claudeOptions.length - 1]);
+
+    expect(within(dialog).queryByLabelText('Default Threshold (%)')).not.toBeInTheDocument();
+    expect(within(dialog).queryByPlaceholderText('NEW_KEY')).not.toBeInTheDocument();
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Create' }));
+
+    await waitFor(() => expect(posts).toHaveLength(1));
+    expect(posts[0]).toEqual({ name: 'claude', binPath: 'claude' });
   });
 });

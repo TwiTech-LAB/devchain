@@ -71,6 +71,36 @@ export function sanitizeTmuxSessionName(name: string): string {
 export class HumanPromptStateService {
   private readonly states = new Map<string, HumanPromptState>();
   private readonly draftTracking = new Map<string, DraftTrackingState>();
+  private readonly draftTargets = new Map<string, symbol>();
+  private readonly paneContinuations = new Map<string, symbol>();
+
+  rememberPaneContinuation(name: string): symbol {
+    const token = Symbol();
+    this.paneContinuations.set(this.keyFor(name), token);
+    return token;
+  }
+
+  takePaneContinuation(name: string): symbol | undefined {
+    const key = this.keyFor(name);
+    const token = this.paneContinuations.get(key);
+    this.paneContinuations.delete(key);
+    return token;
+  }
+
+  captureDraftTarget(name: string): symbol {
+    const key = this.keyFor(name);
+    const target = this.draftTargets.get(key) ?? Symbol();
+    this.draftTargets.set(key, target);
+    return target;
+  }
+
+  isCurrentDraftTarget(name: string, target: symbol): boolean {
+    return this.draftTargets.get(this.keyFor(name)) === target;
+  }
+
+  invalidateDraftTarget(name: string): void {
+    this.draftTargets.delete(this.keyFor(name));
+  }
 
   getState(tmuxSessionName: string): HumanPromptState {
     return this.states.get(this.keyFor(tmuxSessionName)) ?? INITIAL_STATE;
@@ -164,6 +194,7 @@ export class HumanPromptStateService {
     tmuxSessionName: string,
     expectedGeneration: number,
     allowPendingWrite = false,
+    boundary: 'draft-replaced' | 'unwritten' = 'draft-replaced',
   ): PromptAwaitingTransitionResult {
     const key = this.keyFor(tmuxSessionName);
     const current = this.states.get(key) ?? INITIAL_STATE;
@@ -176,7 +207,7 @@ export class HumanPromptStateService {
       return { accepted: false, state: current };
     }
 
-    const next = this.moveToAwaiting(key, current);
+    const next = this.moveToAwaiting(key, current, boundary);
     return { accepted: true, state: next };
   }
 
@@ -275,11 +306,15 @@ export class HumanPromptStateService {
 
   clearSession(tmuxSessionName: string): void {
     const key = this.keyFor(tmuxSessionName);
+    this.paneContinuations.delete(key);
+    this.draftTargets.delete(key);
     this.states.delete(key);
     this.draftTracking.delete(key);
   }
 
   clear(): void {
+    this.paneContinuations.clear();
+    this.draftTargets.clear();
     this.states.clear();
     this.draftTracking.clear();
   }
@@ -287,7 +322,9 @@ export class HumanPromptStateService {
   private moveToAwaiting(
     key: string,
     current: DraftActiveHumanPromptState,
+    boundary: 'draft-replaced' | 'unwritten' = 'draft-replaced',
   ): AwaitingStableIdleHumanPromptState {
+    if (boundary === 'draft-replaced') this.draftTargets.delete(key);
     const next: AwaitingStableIdleHumanPromptState = {
       ...current,
       phase: 'awaiting_stable_idle',

@@ -104,6 +104,24 @@ export const HOST_LIFECYCLE_KINDS = [
 ] as const;
 
 /**
+ * The states in which a `share_folder` operation holds its share and its VM's lifecycle actions.
+ * A share operation has no project, so the per-project open-operation index does not protect it.
+ */
+export const OPEN_SHARE_STATES = ['running', 'failed'] as const;
+
+/** A running or failed `share_folder` operation; with `shareId`, only one of that share. */
+export function isOpenShareOperation(
+  operation: { kind: string; state: string; details: Record<string, unknown> },
+  shareId?: string,
+): boolean {
+  return (
+    operation.kind === 'share_folder' &&
+    (OPEN_SHARE_STATES as readonly string[]).includes(operation.state) &&
+    (shareId === undefined || operation.details.shareId === shareId)
+  );
+}
+
+/**
  * The operation as a composed definition sees it: only the steps under
  * `prefix`, with the prefix removed from their ids.
  */

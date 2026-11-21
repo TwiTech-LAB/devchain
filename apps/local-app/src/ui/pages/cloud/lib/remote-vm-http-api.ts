@@ -14,6 +14,7 @@ import type {
   ProviderAuthGenerationView,
   StartProviderAuthGenerationInput,
   ProjectFileSyncFailures,
+  ManagedExclusionRow,
   FileSyncAutoFix,
   ProjectIgnores,
   SaveProjectIgnoresResult,
@@ -54,6 +55,11 @@ import type {
   UpdateLoginsRequestBody,
   VmProviderConnectionView,
   RemoteNoticeDto,
+  FolderList,
+  CreateSharedFolderRequest,
+  SharedFolderDto,
+  SharedFolderEntry,
+  StopSharingResult,
 } from './remote-vm-contracts';
 
 /** The server's `message` from an error response, or `fallback`. */
@@ -633,6 +639,23 @@ export class RemoteVmHttpApi implements RemoteVmApi {
     return FileSyncAutoFixSchema.parse(await response.json());
   }
 
+  async readManagedExclusions(
+    projectId: string,
+    remoteId: string | undefined,
+    signal: AbortSignal,
+  ): Promise<{ exclusions: ManagedExclusionRow[] }> {
+    const query = remoteId === undefined ? '' : `?remoteId=${encodeURIComponent(remoteId)}`;
+    const response = await home(
+      `/api/projects/${encodeURIComponent(projectId)}/file-sync/managed-exclusions${query}`,
+      { signal },
+    );
+    await okOrThrow(response, 'Could not read Docker data folders.');
+    const body = (await response.json()) as { exclusions: ManagedExclusionRow[] } | null;
+    if (!Array.isArray(body?.exclusions))
+      throw new Error('The server returned no Docker data list.');
+    return body;
+  }
+
   async readProjectIgnores(projectId: string, signal: AbortSignal): Promise<ProjectIgnores> {
     const response = await home(
       `/api/file-sync/projects/${encodeURIComponent(projectId)}/ignores`,
@@ -785,6 +808,52 @@ export class RemoteVmHttpApi implements RemoteVmApi {
       includeDocker: body.includeDocker === true,
       git: body.git === 'missing' ? 'missing' : 'present',
     };
+  }
+
+  async listSharedFolders(remoteId: string, signal: AbortSignal): Promise<SharedFolderDto[]> {
+    const response = await home(`/api/remotes/${remoteId}/shared-folders`, { signal });
+    await okOrThrow(response, 'Could not read the shared folders.');
+    return ((await response.json()) as { items?: SharedFolderDto[] }).items ?? [];
+  }
+
+  async shareFolder(
+    remoteId: string,
+    input: CreateSharedFolderRequest,
+  ): Promise<RemoteOperationDto> {
+    const response = await home(`/api/remotes/${remoteId}/shared-folders`, jsonPost(input));
+    await okOrThrow(response, 'Could not share the folder.');
+    return (await response.json()) as RemoteOperationDto;
+  }
+
+  async stopSharingFolder(remoteId: string, shareId: string): Promise<StopSharingResult> {
+    const response = await home(
+      `/api/remotes/${remoteId}/shared-folders/${encodeURIComponent(shareId)}`,
+      { method: 'DELETE' },
+    );
+    await okOrThrow(response, 'Could not stop sharing the folder.');
+    return (await response.json()) as StopSharingResult;
+  }
+
+  async saveSharedFolderIgnores(
+    remoteId: string,
+    shareId: string,
+    ignores: string[],
+  ): Promise<SharedFolderEntry> {
+    const response = await home(
+      `/api/remotes/${remoteId}/shared-folders/${encodeURIComponent(shareId)}/ignores`,
+      jsonBody('PUT', { ignores }),
+    );
+    await okOrThrow(response, 'Could not save the patterns.');
+    return (await response.json()) as SharedFolderEntry;
+  }
+
+  async listFolders(
+    input: { path?: string; showHidden: boolean },
+    signal: AbortSignal,
+  ): Promise<FolderList> {
+    const response = await home('/api/fs/list', { ...jsonPost(input), signal });
+    await okOrThrow(response, 'Could not read the folder.');
+    return (await response.json()) as FolderList;
   }
 }
 

@@ -12,6 +12,12 @@ export const vaultRequestResolvedEvent = {
     status: z.enum(['fulfilled', 'denied', 'expired']),
     /** The user's short note with a denial; null otherwise. */
     reason: z.string().max(200).nullable(),
+    /**
+     * The existing entry that fulfilled a `create` request under another name; both are
+     * null for any other end. The agent uses this name in `devchain vault exec`.
+     */
+    grantedName: z.string().min(1).nullable(),
+    grantedKind: z.enum(['secret', 'file']).nullable(),
   }),
 } as const;
 

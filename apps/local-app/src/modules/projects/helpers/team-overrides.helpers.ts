@@ -28,6 +28,19 @@ export interface TeamOverrideEntry {
   profileSelections?: TeamProfileSelection[];
 }
 
+export function getPresetSkippedTeamNames(
+  overrides: readonly TeamOverrideEntry[] = [],
+): Set<string> {
+  return new Set(
+    overrides
+      .filter(
+        (override) =>
+          override.profileSelections !== undefined || override.profileNames !== undefined,
+      )
+      .map((override) => override.teamName),
+  );
+}
+
 /** Shape of a team that can be override-merged and profile-remapped. */
 export interface RemappableTeam {
   name: string;

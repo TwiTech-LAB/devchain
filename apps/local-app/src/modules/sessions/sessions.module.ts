@@ -12,6 +12,8 @@ import {
   SessionRestorePipeline,
 } from './services/session-runtime';
 import { SessionsController } from './controllers/sessions.controller';
+import { SessionImagesController } from './controllers/session-images.controller';
+import { SessionImageUploadService } from './services/session-image-upload.service';
 import { TerminalModule } from '../terminal/terminal.module';
 import { CoreNormalModule } from '../core/core-normal.module';
 import { StorageModule } from '../storage/storage.module';
@@ -56,6 +58,7 @@ import { VaultModule } from '../vault/vault.module';
   ],
   providers: [
     SessionsService,
+    SessionImageUploadService,
     SessionCoordinatorService,
     SessionsMessagePoolService,
     MessageActivityStreamService,
@@ -80,7 +83,7 @@ import { VaultModule } from '../vault/vault.module';
     SessionLauncherFacade,
     TeamsStore,
   ],
-  controllers: [SessionsController],
+  controllers: [SessionsController, SessionImagesController],
   exports: [
     SessionsService,
     SessionCoordinatorService,

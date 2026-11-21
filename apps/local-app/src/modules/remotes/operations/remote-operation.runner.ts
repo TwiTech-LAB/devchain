@@ -36,6 +36,7 @@ import { UpdateLoginsOperation } from './update-logins.operation';
 import { InstallHostOperation } from './install-host.operation';
 import { MAX_ERROR_MESSAGE_LENGTH } from './remote-operation.errors';
 import { ForceSyncOperation } from './force-sync.operation';
+import { ShareFolderOperation } from './share-folder.operation';
 import { DisconnectAllOperation } from './disconnect-all.operation';
 
 const logger = createLogger('RemoteOperationRunner');
@@ -75,6 +76,7 @@ export class RemoteOperationRunner implements OnApplicationBootstrap, OnApplicat
     @Optional() updateLogins?: UpdateLoginsOperation,
     @Optional() forceSync?: ForceSyncOperation,
     @Optional() disconnectAll?: DisconnectAllOperation,
+    @Optional() shareFolder?: ShareFolderOperation,
   ) {
     this.definitions = new Map<RemoteOperationKind, RemoteOperationDefinition>([
       [attach.kind, attach],
@@ -82,6 +84,7 @@ export class RemoteOperationRunner implements OnApplicationBootstrap, OnApplicat
       [detach.kind, detach],
       ...(disconnectAll ? [[disconnectAll.kind, disconnectAll] as const] : []),
       ...(forceSync ? [[forceSync.kind, forceSync] as const] : []),
+      ...(shareFolder ? [[shareFolder.kind, shareFolder] as const] : []),
       [claim.kind, claim],
       [updateHost.kind, updateHost],
       ...(installHost ? [[installHost.kind, installHost] as const] : []),

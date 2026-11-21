@@ -1,5 +1,7 @@
 import {
+  agentsThatCannotRun,
   applyPresetToRows,
+  applyProviderFallback,
   buildAgentGroups,
   buildAgentOverrides,
   buildAgentPlanEmission,
@@ -97,10 +99,11 @@ describe('agentPlan — grouping', () => {
 
 describe('agentPlan — resolution / Step-1 filtering', () => {
   const profiles = makeProfiles();
+  const installed = ['claude', 'codex'];
 
   it('resolves a named config when its provider is selected', () => {
     const rows = initialAgentRows([agent({ name: 'A', providerConfigName: 'codex-cfg' })]);
-    const resolved = resolveAgentRow(rows['a'], profiles[0], ['claude', 'codex']);
+    const resolved = resolveAgentRow(rows['a'], profiles[0], ['claude', 'codex'], installed);
     expect(resolved).toEqual({
       agentName: 'A',
       resolvedConfigName: 'codex-cfg',
@@ -108,24 +111,85 @@ describe('agentPlan — resolution / Step-1 filtering', () => {
     });
   });
 
-  it('flags a named config as unresolved when its provider is deselected (NO auto-fallback)', () => {
-    const rows = initialAgentRows([agent({ name: 'A', providerConfigName: 'codex-cfg' })]);
-    const resolved = resolveAgentRow(rows['a'], profiles[0], ['claude']);
-    expect(resolved).toEqual({ agentName: 'A', resolvedConfigName: null, unresolved: true });
-  });
+  // Pure resolution is the cheapest layer that can distinguish popover choices from other pins.
+  it.each([
+    ['installed, manually chosen', installed, true, false],
+    ['installed, template-named', installed, undefined, true],
+    ['uninstalled, manually chosen', ['claude'], true, true],
+  ])(
+    'resolves a deselected provider according to its pin and installation: %s',
+    (_, providers, marked, unresolved) => {
+      const option = profiles[0].providerConfigs!.find(
+        ({ providerName }) => providerName === 'codex',
+      )!;
+      const rows = initialAgentRows([agent({ name: 'A', providerConfigName: option.name })]);
+      const row = marked ? { ...rows.a, userSelectedOption: marked } : rows.a;
+
+      expect(resolveAgentRow(row, profiles[0], ['claude'], providers)).toEqual({
+        agentName: 'A',
+        resolvedConfigName: unresolved ? null : option.name,
+        unresolved,
+      });
+    },
+  );
 
   it('auto-picks the first available config for an agent with no named config', () => {
     const rows = initialAgentRows([agent({ name: 'A' })]);
     // Only codex selected → claude-cfg filtered out, codex-cfg auto-picked.
-    const resolved = resolveAgentRow(rows['a'], profiles[0], ['codex']);
+    const resolved = resolveAgentRow(rows['a'], profiles[0], ['codex'], installed);
     expect(resolved.resolvedConfigName).toBe('codex-cfg');
     expect(resolved.unresolved).toBe(false);
   });
 
   it('marks unpinned agents unresolved when no config survives the selection', () => {
     const rows = initialAgentRows([agent({ name: 'A' })]);
-    const resolved = resolveAgentRow(rows['a'], profiles[0], ['openai']);
+    const resolved = resolveAgentRow(rows['a'], profiles[0], ['openai'], installed);
     expect(resolved).toEqual({ agentName: 'A', resolvedConfigName: null, unresolved: true });
+  });
+});
+
+// Pure row transforms: unit tests over the functions are the cheapest layer.
+describe('agentPlan — provider fallback', () => {
+  const profiles = makeProfiles();
+  const codexAgent = agent({
+    name: 'A',
+    providerConfigName: 'codex-cfg',
+    modelOverride: 'gpt-5-mini',
+    effortOverride: 'low',
+  });
+  const templateRow = initialAgentRows([codexAgent])['a'];
+
+  it.each([
+    [
+      'moves a missing provider to the first installed config',
+      ['claude'],
+      {
+        ...templateRow,
+        configName: 'claude-cfg',
+        pinned: true,
+        modelOverride: null,
+        effortOverride: null,
+        fallbackFromConfigName: 'codex-cfg',
+      },
+    ],
+    ['keeps a config whose provider is installed', ['codex', 'claude'], templateRow],
+    ['keeps the row when no config is on an installed provider', ['copilot'], templateRow],
+  ])('%s', (_case, installed, expected) => {
+    const rows = applyProviderFallback({ a: templateRow }, [codexAgent], profiles, installed);
+    expect(rows['a']).toEqual(expected);
+  });
+
+  it('lists the agents with no config on an installed provider', () => {
+    const payload = {
+      profiles,
+      agents: [
+        agent({ name: 'OnCoder' }),
+        agent({ name: 'OnReviewer', profileId: 'profile-2' }),
+        agent({ name: 'NoProfile', profileId: 'missing' }),
+      ],
+    } as unknown as Parameters<typeof agentsThatCannotRun>[0];
+
+    expect(agentsThatCannotRun(payload, ['Codex'])).toEqual(['OnReviewer', 'NoProfile']);
   });
 });
 
@@ -155,7 +219,11 @@ describe('agentPlan — preset filtering + apply', () => {
   });
 
   it('applies a preset by pinning configs + setting overrides, leaving unmentioned agents alone', () => {
-    const rows = initialAgentRows([agent({ name: 'A' }), agent({ name: 'B' })]);
+    const initial = initialAgentRows([agent({ name: 'A' }), agent({ name: 'B' })]);
+    const rows: Record<string, AgentRow> = {
+      ...initial,
+      a: { ...initial['a'], fallbackFromConfigName: 'gone-cfg' },
+    };
     const next = applyPresetToRows(rows, {
       name: 'Mixed',
       agentConfigs: [
@@ -167,7 +235,9 @@ describe('agentPlan — preset filtering + apply', () => {
         },
       ],
     });
-    expect(next['a']).toMatchObject({
+    expect(next['a']).toEqual({
+      agentName: 'A',
+      profileId: 'profile-1',
       configName: 'codex-cfg',
       pinned: true,
       modelOverride: 'gpt-5',
@@ -203,6 +273,7 @@ describe('agentPlan — computeOverridePayload (delta 6)', () => {
 
 describe('agentPlan — buildAgentOverrides (emission)', () => {
   const profiles = makeProfiles();
+  const installed = ['claude', 'codex'];
 
   it('emits nothing for a fully untouched plan', () => {
     const agents = [
@@ -210,7 +281,7 @@ describe('agentPlan — buildAgentOverrides (emission)', () => {
       agent({ name: 'B', profileId: 'profile-2', providerConfigName: 'claude-only' }),
     ];
     const rows = initialAgentRows(agents);
-    const result = buildAgentOverrides(rows, agents, profiles, ['claude', 'codex']);
+    const result = buildAgentOverrides(rows, agents, profiles, ['claude', 'codex'], installed);
     expect(result.overrides).toEqual([]);
     expect(result.unresolvedAgents).toEqual([]);
   });
@@ -219,7 +290,7 @@ describe('agentPlan — buildAgentOverrides (emission)', () => {
     const agents = [agent({ name: 'A', providerConfigName: 'claude-cfg' })];
     const rows = initialAgentRows(agents);
     rows['a'] = { ...rows['a'], configName: 'codex-cfg', pinned: true };
-    const result = buildAgentOverrides(rows, agents, profiles, ['claude', 'codex']);
+    const result = buildAgentOverrides(rows, agents, profiles, ['claude', 'codex'], installed);
     expect(result.overrides).toEqual([{ agentName: 'A', providerConfigName: 'codex-cfg' }]);
   });
 
@@ -227,7 +298,7 @@ describe('agentPlan — buildAgentOverrides (emission)', () => {
     const agents = [agent({ name: 'A', providerConfigName: 'claude-cfg', modelOverride: 'opus' })];
     const rows = initialAgentRows(agents);
     rows['a'] = { ...rows['a'], modelOverride: null };
-    const result = buildAgentOverrides(rows, agents, profiles, ['claude', 'codex']);
+    const result = buildAgentOverrides(rows, agents, profiles, ['claude', 'codex'], installed);
     expect(result.overrides).toEqual([
       { agentName: 'A', providerConfigName: 'claude-cfg', modelOverride: null },
     ]);
@@ -237,7 +308,7 @@ describe('agentPlan — buildAgentOverrides (emission)', () => {
     const agents = [agent({ name: 'A', providerConfigName: 'claude-cfg' })];
     const rows = initialAgentRows(agents);
     rows['a'] = { ...rows['a'], modelOverride: 'opus' };
-    const result = buildAgentOverrides(rows, agents, profiles, ['claude', 'codex']);
+    const result = buildAgentOverrides(rows, agents, profiles, ['claude', 'codex'], installed);
     expect(result.overrides).toEqual([
       { agentName: 'A', providerConfigName: 'claude-cfg', modelOverride: 'opus' },
     ]);
@@ -246,7 +317,7 @@ describe('agentPlan — buildAgentOverrides (emission)', () => {
   it('collects unresolved agents and omits them from overrides', () => {
     const agents = [agent({ name: 'A', providerConfigName: 'codex-cfg' })];
     const rows = initialAgentRows(agents);
-    const result = buildAgentOverrides(rows, agents, profiles, ['claude']);
+    const result = buildAgentOverrides(rows, agents, profiles, ['claude'], installed);
     expect(result.overrides).toEqual([]);
     expect(result.unresolvedAgents).toEqual(['A']);
   });
@@ -255,6 +326,7 @@ describe('agentPlan — buildAgentOverrides (emission)', () => {
 describe('agentPlan — buildAgentPlanEmission', () => {
   const profiles = makeProfiles();
   const agents = [agent({ name: 'A', providerConfigName: 'claude-cfg' })];
+  const installedProviderNames = ['claude', 'codex'];
 
   function baseRows(): Record<string, AgentRow> {
     return initialAgentRows(agents);
@@ -266,6 +338,7 @@ describe('agentPlan — buildAgentPlanEmission', () => {
       agents,
       profiles,
       selectedProviderNames: ['claude', 'codex'],
+      installedProviderNames,
       presetName: 'Mixed',
       presetModified: false,
       selectablePresets: new Set(['Mixed']),
@@ -281,6 +354,7 @@ describe('agentPlan — buildAgentPlanEmission', () => {
       agents,
       profiles,
       selectedProviderNames: ['claude', 'codex'],
+      installedProviderNames,
       presetName: 'Mixed',
       presetModified: true,
       selectablePresets: new Set(['Mixed']),
@@ -296,11 +370,38 @@ describe('agentPlan — buildAgentPlanEmission', () => {
       agents,
       profiles,
       selectedProviderNames: ['claude'],
+      installedProviderNames,
       presetName: 'Mixed',
       presetModified: false,
       selectablePresets: new Set(['AllClaude']),
     });
     expect(emission).toEqual({}); // nothing changed → no overrides, no preset
+  });
+
+  it('emits agentOverrides for all rows when the preset does not name a fallback agent', () => {
+    // B's template option is on codex (not installed) and carries a codex model. The preset names
+    // only A, so presetName alone would leave B's template model override in place.
+    const twoAgents = [
+      agent({ name: 'A', providerConfigName: 'claude-cfg' }),
+      agent({ name: 'B', providerConfigName: 'codex-cfg', modelOverride: 'gpt-5-high' }),
+    ];
+    const rows = applyPresetToRows(
+      applyProviderFallback(initialAgentRows(twoAgents), twoAgents, profiles, ['claude']),
+      { name: 'OnlyA', agentConfigs: [{ agentName: 'A', providerConfigName: 'claude-cfg' }] },
+    );
+    const emission = buildAgentPlanEmission({
+      rows,
+      agents: twoAgents,
+      profiles,
+      selectedProviderNames: ['claude'],
+      installedProviderNames: ['claude'],
+      presetName: 'OnlyA',
+      presetModified: false,
+      selectablePresets: new Set(['OnlyA']),
+    });
+    expect(emission).toEqual({
+      agentOverrides: [{ agentName: 'B', providerConfigName: 'claude-cfg', modelOverride: null }],
+    });
   });
 
   it('emits {} for a custom, untouched plan', () => {
@@ -309,6 +410,7 @@ describe('agentPlan — buildAgentPlanEmission', () => {
       agents,
       profiles,
       selectedProviderNames: ['claude', 'codex'],
+      installedProviderNames,
       presetName: null,
       presetModified: false,
       selectablePresets: new Set(),

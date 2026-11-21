@@ -1,6 +1,8 @@
 import { RemoteApiKeyManagementService } from '../auth/remote-api-key-management.service';
+import { SharedFoldersLifecycle } from '../shared-folders/shared-folders.lifecycle';
+import { assertNoOpenShareOperation } from '../operations/share-operation-lock';
 import { RemoteApiKeyService } from '../auth/remote-api-key.service';
-import { Inject, Injectable } from '@nestjs/common';
+import { Inject, Injectable, Optional } from '@nestjs/common';
 import { RemoteStorage, STORAGE_SERVICE } from '../../storage/interfaces/storage.interface';
 import type { Remote } from '../../storage/models/domain.models';
 import {
@@ -35,6 +37,7 @@ export class RemotesService {
     private readonly runner: RemoteOperationRunner,
     private readonly keyManagement: RemoteApiKeyManagementService,
     private readonly apiKeys: RemoteApiKeyService,
+    @Optional() private readonly sharedFolders?: SharedFoldersLifecycle,
   ) {}
 
   /**
@@ -104,6 +107,7 @@ export class RemotesService {
 
   async delete(id: string): Promise<void> {
     await this.storage.getRemote(id);
+    await assertNoOpenShareOperation(this.storage, id);
     if (
       (await this.storage.listRemoteProjectBindings()).some((binding) => binding.remoteId === id)
     ) {
@@ -120,7 +124,8 @@ export class RemotesService {
       if (error instanceof NotFoundError || error instanceof VaultUnavailableError) throw error;
       logger.warn({ err: error, remoteId: id }, 'Family pull before remote delete failed');
     });
-    return this.storage.deleteRemote(id);
+    await this.storage.deleteRemote(id);
+    await this.sharedFolders?.forgetRemote(id);
   }
 
   /**

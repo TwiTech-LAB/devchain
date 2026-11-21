@@ -14,7 +14,8 @@ import { HostInstallService, parseVersionsEnv } from '../host-install/host-insta
 import { HOME_ROOTS, USER_NAME } from '../operations/claim.operation';
 import { MIN_HOST_IMAGE_VERSION } from '../host-image';
 import { MIN_VM_MEMORY_MIB } from '../operations/vm-operations.dto';
-import { REFUSED_FILES, renderHostEnvFile } from './host-provider-auth.service';
+import { renderHostEnvFile } from './host-provider-auth.service';
+import { REFUSED_FILES } from './host-home-files';
 
 interface BootstrapValidationModule {
   USER_NAME: RegExp;

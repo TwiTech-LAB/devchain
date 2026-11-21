@@ -225,6 +225,7 @@ const PARAM_FIXTURES = {
     routingKid: 'kPrK_qmxVWaYVA9wwBF6Iuo3vVzz7TxHCTwXBygrS4k',
   },
   'vault.listRequests': { types: ['create', 'grant', 'use'] },
+  'vault.listRequestCandidates': { requestId: '00000000-0000-4000-8000-000000000301' },
   'vault.fulfillRequest': {
     requestId: '00000000-0000-4000-8000-000000000301',
     value: 'value',
@@ -473,6 +474,17 @@ const RESULT_FIXTURES = {
       expiresAt: 2,
     },
   ],
+  'vault.listRequestCandidates': [
+    {
+      id: 'entry-1',
+      name: 'API_TOKEN',
+      kind: 'secret',
+      description: 'Deploys',
+      ownerProjectId: null,
+      ownerProjectName: null,
+      alreadyAvailable: false,
+    },
+  ],
   'vault.fulfillRequest': {
     requestId: '00000000-0000-4000-8000-000000000301',
     status: 'fulfilled',
@@ -488,9 +500,9 @@ const RESULT_FIXTURES = {
 } satisfies Record<MobileRpcMethod, unknown>;
 
 describe('mobile RPC catalog', () => {
-  it('contains exactly 47 methods with the canonical domain counts', () => {
-    expect(MOBILE_RPC_METHODS).toHaveLength(47);
-    expect(new Set(MOBILE_RPC_METHODS).size).toBe(47);
+  it('contains exactly 48 methods with the canonical domain counts', () => {
+    expect(MOBILE_RPC_METHODS).toHaveLength(48);
+    expect(new Set(MOBILE_RPC_METHODS).size).toBe(48);
     expect(Object.keys(MOBILE_RPC_CATALOG)).toEqual(MOBILE_RPC_METHODS);
 
     const counts = Object.groupBy(MOBILE_RPC_METHODS, (method) => method.split('.')[0]);
@@ -498,7 +510,7 @@ describe('mobile RPC catalog', () => {
     expect(counts.chat).toHaveLength(25);
     expect(counts.terminal).toHaveLength(3);
     expect(counts.e2ee).toHaveLength(3);
-    expect(counts.vault).toHaveLength(4);
+    expect(counts.vault).toHaveLength(5);
   });
 
   it('accepts unknown provider usage values and extra fields in chat.getProviderUsage results', () => {
@@ -530,7 +542,7 @@ describe('mobile RPC catalog', () => {
     expect(getMobileRpcResultSchema('chat.getProviderUsage').safeParse(result).success).toBe(true);
   });
 
-  it('has seven strict params schemas and 40 passthrough schemas', () => {
+  it('has eight strict params schemas and 40 passthrough schemas', () => {
     const strictMethods = MOBILE_RPC_METHODS.filter(
       (method) => MOBILE_RPC_CATALOG[method].paramsMode === MOBILE_RPC_PARAMS_MODES.strict,
     );
@@ -539,6 +551,7 @@ describe('mobile RPC catalog', () => {
       'chat.getCustomPrompt',
       'chat.getPendingMessages',
       'terminal.sendKey',
+      'vault.listRequestCandidates',
       'vault.fulfillRequest',
       'vault.denyRequest',
       'vault.approveUse',
@@ -556,16 +569,26 @@ describe('mobile RPC catalog', () => {
     expect(MOBILE_RPC_METHODS).toHaveLength(strictMethods.length + 40);
   });
 
-  it('has crypto counts 42/1/4 and the exact exceptional methods', () => {
+  it('has crypto counts 42/1/5 and the exact exceptional methods', () => {
     const byMode = Object.groupBy(MOBILE_RPC_METHODS, getMobileRpcCryptoMode);
     expect(byMode[MOBILE_RPC_CRYPTO_MODES.conditionalSeal]).toHaveLength(42);
     expect(byMode[MOBILE_RPC_CRYPTO_MODES.plaintextBootstrap]).toEqual(['e2ee.adoptDeviceKey']);
     expect(byMode[MOBILE_RPC_CRYPTO_MODES.sealedOnly]).toEqual([
       'e2ee.revokeDeviceKey',
       'e2ee.bindNotificationRoutingIdentity',
+      'vault.listRequestCandidates',
       'vault.fulfillRequest',
       'vault.denyRequest',
     ]);
+  });
+
+  it('accepts an existing entry in place of a value on vault.fulfillRequest', () => {
+    const params = { requestId: '00000000-0000-4000-8000-000000000301', permanent: true };
+
+    expect(
+      getMobileRpcParamsSchema('vault.fulfillRequest').safeParse({ ...params, entryId: 'entry-1' })
+        .success,
+    ).toBe(true);
   });
 
   it.each([

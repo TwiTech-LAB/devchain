@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
+import { waitWithSignal } from '../../../common/wait-with-signal';
 import { emitHumanPromptStateChangedBarrier } from '../../events/catalog/session.human-prompt-state-changed';
 import {
   HumanPromptStateService,
@@ -12,6 +13,8 @@ import {
 export type PromptInput =
   | { kind: 'text'; characterCount?: number }
   | { kind: 'paste' }
+  | { kind: 'image-paste'; signal?: AbortSignal }
+  | { kind: 'form-send'; submitted: () => boolean; signal?: AbortSignal }
   | { kind: 'submit-text' }
   | {
       kind: 'control';
@@ -23,6 +26,7 @@ export type PromptInput =
 interface PromptInputSession {
   readonly sessionId: string;
   readonly tmuxSessionName: string;
+  readonly disposedSignal?: AbortSignal;
   signalInput(): void;
 }
 
@@ -64,19 +68,48 @@ export class HumanPromptInputService {
       return value;
     }
 
+    const imageInput = input.kind === 'image-paste' || input.kind === 'form-send';
+    const signal = imageInput ? input.signal : undefined;
+    signal?.throwIfAborted();
+    const imageStartsDraft =
+      imageInput && this.humanPromptState.getState(tmuxSessionName).phase !== 'draft_active';
     const state = this.humanPromptState.recordPromptText(
       tmuxSessionName,
       input.kind === 'text' ? input.characterCount : undefined,
       true,
     );
-    await this.publish(session, state);
-    session.signalInput();
-    const value = await write();
+    let value: T;
+    try {
+      const activation = this.publish(session, state, signal);
+      await (signal ? waitWithSignal(activation, signal) : activation);
+      signal?.throwIfAborted();
+      session.signalInput();
+      value = await write();
+    } catch (error) {
+      // Image delivery returns an explicit uncertain outcome once a write is possible.
+      // A rejection here can therefore release just this unexecuted reservation.
+      if (imageInput && !session.disposedSignal?.aborted) {
+        this.humanPromptState.confirmPromptTextWritten(tmuxSessionName, state.generation);
+        if (imageStartsDraft)
+          await this.publishIfAccepted(
+            session,
+            this.humanPromptState.transitionToAwaiting(
+              tmuxSessionName,
+              state.generation,
+              false,
+              'unwritten',
+            ),
+            signal,
+          );
+      }
+      throw error;
+    }
     this.humanPromptState.confirmPromptTextWritten(tmuxSessionName, state.generation);
-    if (input.kind === 'submit-text') {
+    if (input.kind === 'submit-text' || (input.kind === 'form-send' && input.submitted())) {
       await this.publishIfAccepted(
         session,
         this.humanPromptState.transitionToAwaiting(tmuxSessionName, state.generation),
+        signal,
       );
     }
     return value;
@@ -85,19 +118,33 @@ export class HumanPromptInputService {
   private async publishIfAccepted(
     session: PromptInputSession,
     result: PromptAwaitingTransitionResult | PromptControlInputResult,
+    signal?: AbortSignal,
   ): Promise<void> {
-    if (result.accepted) await this.publish(session, result.state);
+    if (!result.accepted) return;
+    const published = this.publish(session, result.state);
+    if (!signal) return published;
+    // The state transition must reach listeners even if the client stops waiting for its receipt.
+    try {
+      await waitWithSignal(published, signal);
+    } catch (error) {
+      if (!signal.aborted) throw error;
+    }
   }
 
   private publish(
     session: PromptInputSession,
     state: DraftActiveHumanPromptState | AwaitingStableIdleHumanPromptState,
+    signal?: AbortSignal,
   ): Promise<void> {
-    return emitHumanPromptStateChangedBarrier(this.eventEmitter, {
-      sessionId: session.sessionId,
-      tmuxSessionName: session.tmuxSessionName,
-      generation: state.generation,
-      phase: state.phase,
-    });
+    return emitHumanPromptStateChangedBarrier(
+      this.eventEmitter,
+      {
+        sessionId: session.sessionId,
+        tmuxSessionName: session.tmuxSessionName,
+        generation: state.generation,
+        phase: state.phase,
+      },
+      signal,
+    );
   }
 }

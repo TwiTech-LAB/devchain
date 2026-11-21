@@ -21,6 +21,10 @@ export function notAUseRequest(): ValidationError {
   return wrongAnswer('Only a use request is approved. Fulfill or deny this request.');
 }
 
+export function existingEntryNotAccepted(): ValidationError {
+  return wrongAnswer('Only a create request takes an existing entry. Send no entry.');
+}
+
 export function useRequestNotFulfillable(): ValidationError {
   return wrongAnswer('A use request has no value to fulfill. Approve or deny it.');
 }

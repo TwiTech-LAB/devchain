@@ -67,6 +67,8 @@ import type {
   ForceCopyBackupRequest,
   ForceCopyBackup,
   ReceiveOnlyChanges,
+  ShareBackupRequest,
+  ShareFolderRequest,
 } from '../../file-sync/file-sync.dto';
 import type {
   SyncInspectRequest,
@@ -94,6 +96,8 @@ import {
 import type {
   HostProviderUsageSettings,
   HostProviderUsageSettingsStatus,
+  HostProviderSettings,
+  HostProviderSettingsStatus,
   HostProviderVerify,
   HostRoute,
   HostRouteBody,
@@ -894,6 +898,19 @@ export class RemoteHostClient {
     return (await this.call(remoteId, hostRoutes.syncForceCopyBackup, {}, { body: request })).body;
   }
 
+  /** The VM checks the path, computes the folder id and creates a missing folder. */
+  async syncShareFolder(remoteId: string, request: ShareFolderRequest): Promise<SyncFolder> {
+    return (await this.call(remoteId, hostRoutes.syncShareFolder, {}, { body: request })).body;
+  }
+
+  async syncShareBackup(remoteId: string, request: ShareBackupRequest): Promise<ForceCopyBackup> {
+    return (await this.call(remoteId, hostRoutes.syncShareBackup, {}, { body: request })).body;
+  }
+
+  async syncShareIgnores(remoteId: string, folderId: string, ignores: string[]): Promise<void> {
+    await this.call(remoteId, hostRoutes.syncShareIgnores, { folderId }, { body: { ignores } });
+  }
+
   async syncFolderType(
     remoteId: string,
     folderId: string,
@@ -991,8 +1008,12 @@ export class RemoteHostClient {
     ).body.names;
   }
 
-  async syncInspect(remoteId: string, input: SyncInspectRequest): Promise<SyncPathInspection> {
-    return (await this.call(remoteId, hostRoutes.syncInspect, {}, { body: input })).body;
+  async syncInspect(
+    remoteId: string,
+    input: SyncInspectRequest,
+    signal?: AbortSignal,
+  ): Promise<SyncPathInspection> {
+    return (await this.call(remoteId, hostRoutes.syncInspect, {}, { body: input, signal })).body;
   }
 
   /** Sets the host's tunnel-attestation label; keeps the phone's instance name in sync. */
@@ -1178,6 +1199,17 @@ export class RemoteHostClient {
 
   async putProviderUsageSettings(remoteId: string, body: HostProviderUsageSettings): Promise<void> {
     const route = hostRoutes.putProviderUsageSettings;
+    const response = await this.call(remoteId, route, {}, { body });
+    checkSettingsRevision(remoteId, route.path({}), response, body.revision);
+  }
+
+  async getProviderSettingsStatus(remoteId: string): Promise<HostProviderSettingsStatus> {
+    return (await this.call(remoteId, hostRoutes.getProviderSettingsStatus, {})).body;
+  }
+
+  /** `body` holds provider env values: errors name the route only, never the body. */
+  async putProviderSettings(remoteId: string, body: HostProviderSettings): Promise<void> {
+    const route = hostRoutes.putProviderSettings;
     const response = await this.call(remoteId, route, {}, { body });
     checkSettingsRevision(remoteId, route.path({}), response, body.revision);
   }

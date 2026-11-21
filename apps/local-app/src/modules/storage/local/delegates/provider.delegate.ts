@@ -1,5 +1,11 @@
-import { readProviderScopeChanges } from '../../write-gate/storage-write-scope';
-import type { ProviderStorage, ListOptions, ListResult } from '../../interfaces/storage.interface';
+import type {
+  ProviderStorage,
+  ListOptions,
+  ListResult,
+  HomeProviderSettingsApplyResult,
+  ProviderSettingsSource,
+  ReplicaProviderSettingsRow,
+} from '../../interfaces/storage.interface';
 import type {
   CreateProvider,
   EnvScopesMap,
@@ -16,7 +22,16 @@ import {
 import { NotFoundError, ValidationError } from '../../../../common/errors/error-types';
 import { createLogger } from '../../../../common/logging/logger';
 import { providers as providersTable } from '../../db/schema';
-import { normalizeEnvForStorage, parseProviderEnv } from '../helpers/storage-helpers';
+import {
+  normalizeEnvForStorage,
+  parseProviderEnv,
+  readProviderScopeChanges,
+} from '../helpers/storage-helpers';
+import {
+  applyHomeProviderRow,
+  listInstanceProjectIds,
+  readProviderSettingsFingerprint,
+} from '../helpers/provider-settings-apply';
 import { BaseStorageDelegate, type StorageDelegateContext } from './base-storage.delegate';
 
 const logger = createLogger('ProviderStorageDelegate');
@@ -85,6 +100,9 @@ export class ProviderStorageDelegate
       | 'getProviderEnvForProject'
       | 'listEnvScopesByProviderIds'
       | 'updateProviderWithScopes'
+      | 'applyHomeProviderSettings'
+      | 'listProviderSettingsSources'
+      | 'readProviderSettingsFingerprint'
       | 'getProviderMcpMetadata'
       | 'updateProviderMcpMetadata'
     >
@@ -333,6 +351,48 @@ export class ProviderStorageDelegate
     }
 
     return Object.keys(filtered).length > 0 ? filtered : null;
+  }
+
+  /**
+   * Makes each named provider's env, scope rows and two scalars equal to
+   * home's, by the Connect rule. A provider name this instance does not have
+   * is skipped.
+   */
+  async applyHomeProviderSettings(
+    rows: ReplicaProviderSettingsRow[],
+  ): Promise<HomeProviderSettingsApplyResult> {
+    return this.txRunner.runImmediate(() => {
+      const now = new Date().toISOString();
+      const projectIds = listInstanceProjectIds(this.rawClient);
+      const findProvider = this.rawClient.prepare('SELECT id FROM providers WHERE name = ?');
+      const skippedProviderNames: string[] = [];
+      for (const row of rows) {
+        const provider = findProvider.get(row.providerName) as { id: string } | undefined;
+        if (!provider) {
+          skippedProviderNames.push(row.providerName);
+          continue;
+        }
+        applyHomeProviderRow(this.rawClient, provider.id, row, projectIds, now);
+      }
+      return {
+        fingerprint: readProviderSettingsFingerprint(this.rawClient),
+        skippedProviderNames,
+      };
+    });
+  }
+
+  listProviderSettingsSources(): ProviderSettingsSource[] {
+    return this.rawClient
+      .prepare(
+        `SELECT id, name, env, auto_compact_threshold AS autoCompactThreshold,
+                claude_launch_settings_json AS claudeLaunchSettingsJson
+         FROM providers ORDER BY name`,
+      )
+      .all() as ProviderSettingsSource[];
+  }
+
+  readProviderSettingsFingerprint(): string {
+    return readProviderSettingsFingerprint(this.rawClient);
   }
 
   async updateProviderWithScopes(

@@ -26,6 +26,8 @@ export const SyncInspectRequestSchema = z
       ),
     scan: z.boolean(),
     paths: z.array(SyncRelativePathSchema),
+    /** Walk only the explicit subtrees, including normally skipped entries inside them. */
+    requestedTreesOnly: z.literal(true).optional(),
     patterns: IgnorePatternsSchema.optional(),
     skipIgnores: FolderIgnoresSchema.optional(),
   })
@@ -49,6 +51,7 @@ export const SyncPathFactsSchema = z.object({
   owner: SyncPathOwnerSchema,
   foreignOwner: z.boolean(),
   foreignOwners: z.array(SyncPathOwnerSchema),
+  incomplete: z.literal(true).optional(),
   fileCount: z.number().int().nonnegative(),
   ignored: z.boolean().nullable(),
   ignoreRule: SyncIgnoreRuleSchema.nullable(),

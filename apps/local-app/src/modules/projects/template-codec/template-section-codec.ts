@@ -26,6 +26,7 @@ import type {
   SubscriberStorage,
 } from '../../storage/interfaces/storage.interface';
 import type { SnapshotPromptWriter } from '../../storage/interfaces/snapshot-prompt-writer.interface';
+import type { TeamsService } from '../../teams/services/teams.service';
 import type { WatchersService } from '../../watchers/services/watchers.service';
 import type { TeamOverrideEntry } from '../helpers/team-overrides.helpers';
 import type { ImportContext, ImportContextKey, StorageStateFlag } from './import-context';
@@ -105,6 +106,8 @@ export interface CodecApplyRuntime {
    * falls back to `installedProviders` (no narrowing), so the no-allowlist path is unchanged.
    */
   readonly selectedProviders?: Map<string, string>;
+  /** Agent bindings and team permissions already resolved and validated by the roster planner. */
+  readonly applyPreservedRoster?: boolean;
   /**
    * Existing statuses snapshot taken BEFORE clear (replace mode). Statuses are merged by
    * label, not deleted, to preserve epic references — the codec needs the pre-clear set
@@ -121,7 +124,7 @@ export interface CodecApplyRuntime {
   readonly settings?: SettingsService;
   /** Watchers service for the watchers codec (createWatcher). */
   readonly watchersService?: Pick<WatchersService, 'createWatcher'>;
-  /** Teams service for the teams codec (createTeam + scoped failure cleanup). */
+  /** Teams service for team creation, scoped failure cleanup, and the saved preset roster. */
   readonly teamsService?: CodecTeamsService;
   /** Per-team overrides from the import request (teams codec merges them post-remap). */
   readonly teamOverrides?: readonly TeamOverrideEntry[];
@@ -132,11 +135,9 @@ export interface CodecApplyRuntime {
 }
 
 /**
- * The slice of the teams service the teams codec depends on: create one team, and delete a
- * specific batch (scoped partial-failure cleanup). Structurally compatible with the full
- * TeamsService / ImportProjectDeps.teamsService shape.
+ * The team operations used to apply team and preset sections.
  */
-export interface CodecTeamsService {
+export interface CodecTeamsService extends Pick<TeamsService, 'listTeams'> {
   createTeam: (data: {
     projectId: string;
     name: string;

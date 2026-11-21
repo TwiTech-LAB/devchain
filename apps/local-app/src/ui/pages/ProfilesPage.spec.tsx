@@ -474,6 +474,82 @@ describe('ProfilesPage update flow persists order', () => {
     fetchMock.mockReset();
   });
 
+  it.each(['add', 'edit'] as const)(
+    '%s saves the configuration independently and restores the unsaved profile',
+    async (mode) => {
+      const existing = { id: 'cfg-1', providerId: 'prov-1', name: 'codex-default', env: {} };
+      const listUrl = '/api/profiles/prof-1/provider-configs';
+      const saveUrl = mode === 'add' ? listUrl : '/api/provider-configs/cfg-1';
+      const method = mode === 'add' ? 'POST' : 'PUT';
+      const baseFetch = fetchMock.getMockImplementation()!;
+      const json = (body: unknown, ok = true) => ({ ok, json: async () => body });
+      const writes: unknown[] = [];
+      let configs = [existing];
+      fetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
+        if (url === saveUrl && init?.method === method) {
+          const body = JSON.parse(String(init.body));
+          writes.push(body);
+          if (writes.length === 1) return json({ message: 'Save failed' }, false);
+          const saved = { ...existing, ...body, id: mode === 'add' ? 'cfg-2' : existing.id };
+          configs = mode === 'add' ? [existing, saved] : [saved];
+          return json(saved);
+        }
+        if (url === listUrl) return json(configs);
+        if (url.endsWith('/models')) return json([]);
+        if (url.endsWith('/efforts')) return json({ supportsEffort: false, efforts: [] });
+        return baseFetch(url, init);
+      });
+      render(<ProfilesPage />, { wrapper: createWrapper().Wrapper });
+      fireEvent.click(await screen.findByRole('button', { name: /^edit$/i }));
+      const parent = await screen.findByRole('dialog', { name: 'Edit Profile' });
+      const profileName = within(parent).getByLabelText(/Name \*/);
+      fireEvent.change(profileName, { target: { value: 'Unsaved profile' } });
+      const trigger = await within(parent).findByRole('button', {
+        name: mode === 'add' ? 'Add Provider Configuration' : 'Edit configuration codex-default',
+      });
+      const title =
+        mode === 'add' ? 'Add provider configuration' : 'Edit configuration · codex-default';
+      fireEvent.click(trigger);
+      const first = await screen.findByRole('dialog', { name: title });
+      fireEvent.change(within(first).getByLabelText('Name'), { target: { value: 'Discard me' } });
+      fireEvent.keyDown(first, { key: 'Escape' });
+      await waitFor(() => expect(trigger).toHaveFocus());
+      expect(writes).toHaveLength(0);
+
+      fireEvent.click(trigger);
+      const dialog = await screen.findByRole('dialog', { name: title });
+      const name = within(dialog).getByLabelText('Name');
+      expect(name).toHaveValue(mode === 'edit' ? existing.name : '');
+      if (mode === 'add')
+        fireEvent.change(within(dialog).getByLabelText('Provider'), {
+          target: { value: 'prov-1' },
+        });
+      fireEvent.change(name, { target: { value: 'saved-option' } });
+      fireEvent.change(within(dialog).getByPlaceholderText('NEW_KEY'), {
+        target: { value: 'LOG_LEVEL' },
+      });
+      fireEvent.change(within(dialog).getByPlaceholderText('value'), {
+        target: { value: 'debug' },
+      });
+      const save = within(dialog).getByRole('button', { name: 'Save configuration' });
+      fireEvent.click(save);
+      expect(await within(dialog).findByRole('alert')).toHaveTextContent('Save failed');
+      expect(name).toHaveValue('saved-option');
+      fireEvent.click(save);
+      await waitFor(() => expect(trigger).toHaveFocus());
+      expect(
+        await within(parent).findByRole('button', { name: 'Edit configuration saved-option' }),
+      ).toBeVisible();
+      expect(profileName).toHaveValue('Unsaved profile');
+      expect(fetchMock).not.toHaveBeenCalledWith(
+        '/api/profiles/prof-1',
+        expect.objectContaining({ method: 'PUT' }),
+      );
+      expect(writes).toHaveLength(2);
+      expect(writes[1]).toMatchObject({ name: 'saved-option', env: { LOG_LEVEL: 'debug' } });
+    },
+  );
+
   it('reorders via UI and sends ordered promptIds on update', async () => {
     const { Wrapper } = createWrapper();
 

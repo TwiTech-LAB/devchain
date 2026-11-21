@@ -80,6 +80,7 @@ function createGateway() {
       dispose: jest.fn(),
     } as never,
     { registerCacheStatsProvider: jest.fn(), registerStatsProvider: jest.fn() } as never,
+    {} as never,
   );
 
   const serverEmit = jest.fn();

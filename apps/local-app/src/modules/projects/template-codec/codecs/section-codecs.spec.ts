@@ -15,14 +15,10 @@ jest.mock('../../../../common/logging/logger', () => ({
 type SettingsMock = jest.Mocked<
   Pick<
     SettingsService,
-    | 'updateSettings'
-    | 'getSettings'
-    | 'setProjectPoolSettings'
-    | 'setProjectPresets'
-    | 'clearProjectPresets'
+    'updateSettings' | 'getSettings' | 'setProjectPoolSettings' | 'mergeProjectTemplatePresets'
   >
 >;
-type StorageMock = jest.Mocked<Pick<StorageService, 'createSubscriber'>>;
+type StorageMock = jest.Mocked<Pick<StorageService, 'createSubscriber' | 'listAgents'>>;
 
 function makeRt(
   overrides: Partial<CodecApplyRuntime> = {},
@@ -31,11 +27,11 @@ function makeRt(
     updateSettings: jest.fn().mockResolvedValue(undefined),
     getSettings: jest.fn().mockReturnValue({}),
     setProjectPoolSettings: jest.fn().mockResolvedValue(undefined),
-    setProjectPresets: jest.fn().mockResolvedValue(undefined),
-    clearProjectPresets: jest.fn().mockResolvedValue(undefined),
+    mergeProjectTemplatePresets: jest.fn().mockResolvedValue(undefined),
   };
   const storage: StorageMock = {
     createSubscriber: jest.fn().mockResolvedValue({ id: 'sub-1' }),
+    listAgents: jest.fn().mockResolvedValue({ items: [{ name: 'Coder' }] }),
   };
   // storage/settings are deliberately partial stubs of the injected services.
   return {
@@ -261,24 +257,28 @@ describe('projectSettings codec — initialPrompt resolution', () => {
   });
 });
 
-describe('presets codec — set-or-clear semantics', () => {
-  it('sets presets when the template provides them', async () => {
-    const rt = makeRt();
-    const presets = [{ name: 'P1', agentConfigs: [] }];
-    const result = await presetsCodec.apply(presets, new ImportContext(), 'replace', rt);
+describe('presets codec — saved roster', () => {
+  // The codec owns which roster is passed to the merge boundary in each mode.
+  it.each([
+    { mode: 'replace' as const, teamNames: undefined, presets: [{ name: 'P1', agentConfigs: [] }] },
+    { mode: 'create' as const, teamNames: ['Builders'], presets: [] },
+  ])('merges presets with the saved $mode roster', async ({ mode, teamNames, presets }) => {
+    const rt = makeRt({
+      teamsService: teamNames && {
+        createTeam: jest.fn(),
+        deleteTeamsByIds: jest.fn(),
+        listTeams: jest.fn().mockResolvedValue({ items: teamNames.map((name) => ({ name })) }),
+      },
+    });
+    const result = await presetsCodec.apply(presets, new ImportContext(), mode, rt);
 
-    expect(rt.settings.setProjectPresets).toHaveBeenCalledWith('proj-1', presets);
-    expect(rt.settings.clearProjectPresets).not.toHaveBeenCalled();
-    expect(result.log).toMatchObject({ action: 'set' });
-  });
-
-  it('clears stored presets when the template has none (logged)', async () => {
-    const rt = makeRt();
-    const result = await presetsCodec.apply([], new ImportContext(), 'replace', rt);
-
-    expect(rt.settings.clearProjectPresets).toHaveBeenCalledWith('proj-1');
-    expect(rt.settings.setProjectPresets).not.toHaveBeenCalled();
-    expect(result.log).toMatchObject({ action: 'cleared' });
+    expect(rt.settings.mergeProjectTemplatePresets).toHaveBeenCalledWith(
+      'proj-1',
+      presets,
+      ['Coder'],
+      teamNames,
+    );
+    expect(result.log).toEqual({ presets: presets.length, action: 'merged' });
   });
 });
 

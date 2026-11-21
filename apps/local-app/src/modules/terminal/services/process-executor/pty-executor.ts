@@ -12,6 +12,7 @@ import {
 @Injectable()
 export class PtyExecutor extends ProcessExecutor {
   async run(options: ProcessExecutorOptions): Promise<ExecutorResult> {
+    options.signal?.throwIfAborted();
     if (options.env) validateEnv(options.env);
 
     const [command, ...args] = options.argv;
@@ -43,6 +44,7 @@ export class PtyExecutor extends ProcessExecutor {
       };
 
       let ptyProcess: pty.IPty;
+      const abort = () => ptyProcess.kill(process.platform === 'win32' ? undefined : 'SIGKILL');
       try {
         ptyProcess = pty.spawn(command, [...args], {
           name: 'xterm-256color',
@@ -89,10 +91,11 @@ export class PtyExecutor extends ProcessExecutor {
 
       disposables.push(
         ptyProcess.onExit(({ exitCode }) => {
+          options.signal?.removeEventListener('abort', abort);
           setImmediate(() => {
             cleanup();
             resolve({
-              success: !timedOut && exitCode === 0,
+              success: !timedOut && !options.signal?.aborted && exitCode === 0,
               exitCode: timedOut ? null : exitCode,
               stdout: buffer,
               stderr: '',
@@ -103,6 +106,7 @@ export class PtyExecutor extends ProcessExecutor {
         }),
       );
 
+      options.signal?.addEventListener('abort', abort, { once: true });
       if (options.timeout && options.timeout > 0) {
         timeoutTimer = setTimeout(() => {
           timedOut = true;

@@ -12,7 +12,6 @@ import {
   PROJECT_REPLICA_LIVE_SETTING_KEYS,
   PROJECT_REPLICA_SETTING_KEYS,
   ProjectReplicaV1Schema,
-  validateClaudeLaunchSettingsJson,
   type ProjectReplicaIdSets,
   type ProjectReplicaLiveTables,
   type ProjectReplicaRow,
@@ -21,7 +20,7 @@ import {
 } from '@devchain/shared';
 import { ConflictError, ReplicaApplyError } from '../../../../common/errors/error-types';
 import { createLogger } from '../../../../common/logging/logger';
-import { normalizeEnvForStorage } from '../helpers/storage-helpers';
+import { applyHomeProviderRow, listInstanceProjectIds } from '../helpers/provider-settings-apply';
 import type { PreparedEvent } from '../../../events/services/durable-event-registry.service';
 import { BaseStorageDelegate, type StorageDelegateContext } from './base-storage.delegate';
 import { assertVmImportAllowed } from '../../../../common/config/vm-destroy-fence';
@@ -616,57 +615,14 @@ class ReplicaApplyRun {
       : replicaId;
   }
 
-  private reconcileProviderEnv(rows: ProjectReplicaTables['provider_settings']): void {
+  /** Home is authoritative for the two scalars, the env and its scope rows. */
+  private applyProviderSettings(rows: ProjectReplicaTables['provider_settings']): void {
     // Every project on the VM, not only this replica's (`this.projectIds`).
-    const vmProjectIds = new Set(
-      this.all<{ id: string }>('SELECT id FROM projects').map((row) => row.id),
-    );
+    const vmProjectIds = listInstanceProjectIds(this.db);
     for (const row of rows) {
       const provider = this.providerIdByName(row.providerName);
-      const env: Record<string, string> = Object.create(null);
-      const retainedScopes = new Map<string, Set<string>>();
-      for (const [key, value] of Object.entries(row.env ?? {})) {
-        const homeScopes = Object.hasOwn(row.envScopes, key) ? row.envScopes[key] : [];
-        const scopes = new Set(homeScopes.filter((id) => vmProjectIds.has(id)));
-        // A scoped key must never become global when its projects are absent.
-        if (homeScopes.length > 0 && scopes.size === 0) continue;
-        env[key] = value;
-        retainedScopes.set(key, scopes);
-        for (const projectId of scopes) {
-          this.write('provider_env_scopes', `${provider.id}:${key}`, () =>
-            this.run(
-              'INSERT INTO provider_env_scopes (provider_id, env_key, project_id, created_at) VALUES (?, ?, ?, ?) ON CONFLICT DO NOTHING',
-              provider.id,
-              key,
-              projectId,
-              this.now,
-            ),
-          );
-        }
-      }
-      for (const scope of this.all<{ env_key: string; project_id: string }>(
-        'SELECT env_key, project_id FROM provider_env_scopes WHERE provider_id = ?',
-        provider.id,
-      )) {
-        if (retainedScopes.get(scope.env_key)?.has(scope.project_id)) continue;
-        this.write('provider_env_scopes', `${provider.id}:${scope.env_key}`, () =>
-          this.run(
-            'DELETE FROM provider_env_scopes WHERE provider_id = ? AND env_key = ? AND project_id = ?',
-            provider.id,
-            scope.env_key,
-            scope.project_id,
-          ),
-        );
-      }
-      const envJson = normalizeEnvForStorage(env);
       this.write('providers', provider.id, () =>
-        this.run(
-          'UPDATE providers SET env = ?, updated_at = ? WHERE id = ? AND env IS NOT ?',
-          envJson,
-          this.now,
-          provider.id,
-          envJson,
-        ),
+        applyHomeProviderRow(this.db, provider.id, row, vmProjectIds, this.now),
       );
     }
   }
@@ -678,7 +634,6 @@ class ReplicaApplyRun {
   private applyInstanceProviderConfig(): void {
     if (this.tables.provider_settings) {
       this.applyProviderSettings(this.tables.provider_settings);
-      this.reconcileProviderEnv(this.tables.provider_settings);
     }
     if (this.tables.provider_models) {
       this.applyProviderCatalog('provider_models', this.tables.provider_models);
@@ -688,50 +643,6 @@ class ReplicaApplyRun {
     }
     if (this.tables.provider_plugin_defaults) {
       this.applyProviderPluginDefaults(this.tables.provider_plugin_defaults);
-    }
-  }
-
-  /** Home is authoritative: both scalars overwrite, an explicit null included. */
-  private applyProviderSettings(rows: ProjectReplicaTables['provider_settings']): void {
-    for (const row of rows) {
-      const provider = this.providerIdByName(row.providerName);
-      const current = this.get<{
-        auto_compact_threshold: number | null;
-        claude_launch_settings_json: string | null;
-      }>(
-        'SELECT auto_compact_threshold, claude_launch_settings_json FROM providers WHERE id = ?',
-        provider.id,
-      );
-      if (!current) {
-        throw new ReplicaApplyError('providers', provider.id, 'provider row is missing');
-      }
-      const invalidLaunch =
-        row.claude_launch_settings_json !== null &&
-        !validateClaudeLaunchSettingsJson(row.claude_launch_settings_json).valid;
-      if (invalidLaunch) {
-        logger.warn(
-          { provider: row.providerName },
-          'Skipped invalid Claude launch settings JSON from replica',
-        );
-      }
-      const launchToStore = invalidLaunch
-        ? current.claude_launch_settings_json
-        : row.claude_launch_settings_json;
-      if (
-        row.auto_compact_threshold === current.auto_compact_threshold &&
-        launchToStore === current.claude_launch_settings_json
-      ) {
-        continue;
-      }
-      this.write('providers', provider.id, () =>
-        this.run(
-          'UPDATE providers SET auto_compact_threshold = ?, claude_launch_settings_json = ?, updated_at = ? WHERE id = ?',
-          row.auto_compact_threshold,
-          launchToStore,
-          this.now,
-          provider.id,
-        ),
-      );
     }
   }
 
@@ -1289,7 +1200,7 @@ class ReplicaApplyRun {
     return this.all<T>(`${sqlPrefix} (${ids.map(() => '?').join(', ')})`, ...ids);
   }
 
-  private write(table: string, rowId: string, fn: () => number): number {
+  private write<T>(table: string, rowId: string, fn: () => T): T {
     try {
       return fn();
     } catch (error) {

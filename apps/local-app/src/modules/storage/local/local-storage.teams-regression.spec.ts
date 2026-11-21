@@ -240,8 +240,7 @@ describe('Teams Regression – Destructive Flows', () => {
           settings: {
             updateSettings: jest.fn().mockResolvedValue(undefined),
             setProjectTemplateMetadata: jest.fn().mockResolvedValue(undefined),
-            setProjectPresets: jest.fn().mockResolvedValue(undefined),
-            clearProjectPresets: jest.fn().mockResolvedValue(undefined),
+            mergeProjectTemplatePresets: jest.fn().mockResolvedValue(undefined),
           } as never,
           watchersService: { deleteWatcher: jest.fn().mockResolvedValue(undefined) },
           sessions: { getActiveSessionsForProject: () => [] },
@@ -261,7 +260,7 @@ describe('Teams Regression – Destructive Flows', () => {
           applyProjectSettings: async () => ({ initialPromptSet: false }),
           getImportErrorMessage: (e) => (e instanceof Error ? e.message : String(e)),
           applyAgentConfigs: async () => ({ applied: 0, warnings: [] }),
-          applyPreset: async () => ({ applied: 0, warnings: [] }),
+          applyPreset: async () => ({ applied: 0, warnings: [], teamsApplied: 0 }),
         },
       );
 

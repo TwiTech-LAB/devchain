@@ -4,6 +4,7 @@ import { HostVaultStatusSchema, ProviderCliRuntimeReportSchema } from '@devchain
 import { ProviderCliVersionsService } from '../../providers/services/provider-cli-versions.service';
 import { RemoteProviderCliSettingsService } from './remote-provider-cli-settings.service';
 import { RemoteProviderUsageSettingsService } from './remote-provider-usage-settings.service';
+import { RemoteProviderSettingsService } from './remote-provider-settings.service';
 import { RemoteVaultPushService } from './remote-vault-push.service';
 import {
   RemoteSkillSettingsService,
@@ -101,6 +102,7 @@ export class RemoteHealthService implements RemoteHealthPort, OnModuleInit, OnMo
     private readonly skillSettings: RemoteSkillSettingsService,
     private readonly cliSettings: RemoteProviderCliSettingsService,
     private readonly usageSettings: RemoteProviderUsageSettingsService,
+    private readonly providerSettings: RemoteProviderSettingsService,
     private readonly cliVersions: ProviderCliVersionsService,
     private readonly apiKeys: RemoteApiKeyService,
     private readonly sharedVm: RemoteSharedVmService,
@@ -302,6 +304,7 @@ export class RemoteHealthService implements RemoteHealthPort, OnModuleInit, OnMo
         void this.skillSettings.pushIfChanged(remoteId, skillCycle);
         void this.cliSettings.pushIfChanged(remoteId);
         void this.usageSettings.pushIfChanged(remoteId);
+        void this.providerSettings.pushIfChanged(remoteId);
         void this.vaultPush.pushIfChanged(
           remoteId,
           HostVaultStatusSchema.safeParse(runtime.vault).data,

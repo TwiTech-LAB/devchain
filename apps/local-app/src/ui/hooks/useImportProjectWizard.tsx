@@ -1,5 +1,7 @@
-import { Fragment, useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useQuery, useQueryClient, type QueryKey } from '@tanstack/react-query';
+import type { ExportData } from '@devchain/shared';
+import type { PreserveTeamSetup } from '@/common/project-preservation.contract';
 import {
   formatProjectPreMutationFailure,
   isProjectPreMutationFailure,
@@ -25,19 +27,27 @@ import {
   type WizardStep,
 } from '@/ui/hooks/useProjectSetupWizard';
 import {
-  Step4Review,
-  hasUnmappedStatuses,
-  type ImportDryRunReview,
-} from '@/ui/components/project/wizard/Step4Review';
+  ReplacePrecheckProvider,
+  type ReplacePrecheckValue,
+} from '@/ui/components/project/wizard/ReplacePrecheck';
 import {
   buildConfigEmission,
-  buildConfigSteps,
+  buildSetupStep,
   initialWizardConfigState,
+  selectedProvidersEmission,
   useWizardConfigHandlers,
+  wizardConfigStateFor,
+  type ConfigEmission,
+  type WizardConfigHandlers,
   type WizardConfigState,
 } from '@/ui/components/project/wizard/useWizardConfig';
+import { ReplaceReview } from '@/ui/components/project/wizard/SetupReview';
+import {
+  CurrentSetupProvider,
+  type CurrentSetupValue,
+} from '@/ui/components/project/wizard/KeepCurrentSetup';
+import { canPreserveTeams } from '@/ui/components/project/wizard/currentSetup';
 import { formatPromptTransferCounts, type PromptTransferCounts } from '@/common/prompt-transfer';
-import { Alert, AlertDescription, AlertTitle } from '@/ui/components/ui/alert';
 
 type ToastFn = (args: { title: string; description: string; variant?: 'destructive' }) => void;
 
@@ -52,11 +62,34 @@ export interface UpgradeWizardTarget extends ImportWizardTarget {
   targetVersion: string;
 }
 
-export type ImportDryRunResult = ImportDryRunSuccess;
 export type ImportResult = ImportProjectSuccess;
 
 interface ReplaceWizardState extends WizardConfigState {
-  statusMappings: Record<string, string>;
+  currentExport: ExportData | null;
+  keepCurrentSelected: boolean;
+  preserveTeamSetup: PreserveTeamSetup;
+}
+
+function buildReplaceConfigEmission(
+  preview: SetupPreviewResponse,
+  state: ReplaceWizardState,
+):
+  | ConfigEmission
+  | ({ preserveTeamSetup: PreserveTeamSetup } & Pick<ConfigEmission, 'selectedProviderNames'>) {
+  if (!state.keepCurrentSelected) return buildConfigEmission(preview, state);
+  return { preserveTeamSetup: state.preserveTeamSetup, ...selectedProvidersEmission(state) };
+}
+
+function initialReplaceState(
+  preview: SetupPreviewResponse,
+  currentExport: ExportData | null,
+): ReplaceWizardState {
+  return {
+    ...initialWizardConfigState(preview, true, currentExport),
+    currentExport,
+    keepCurrentSelected: canPreserveTeams(currentExport),
+    preserveTeamSetup: {},
+  };
 }
 
 interface ReplaceFlowAdapter<
@@ -109,35 +142,20 @@ interface UseConfiguredReplaceWizardArgs<
   api: ProjectsPageApi;
 }
 
-function toReview(dry: ImportDryRunResult | null): ImportDryRunReview | null {
-  if (!dry) return null;
-  return {
-    counts: dry.counts,
-    unmatchedStatuses: dry.unmatchedStatuses,
-    templateStatuses: dry.templateStatuses,
-    missingProviders: dry.missingProviders,
-    promptTransfer: dry.promptTransfer,
-  };
-}
-
-function withStatusMappings(
-  body: Record<string, unknown>,
-  statusMappings: Record<string, string>,
-): Record<string, unknown> {
-  return Object.keys(statusMappings).length > 0 ? { ...body, statusMappings } : body;
-}
-
 function buildConfiguredReplaceBody(
   preview: SetupPreviewResponse,
   state: ReplaceWizardState,
 ): Record<string, unknown> {
-  return withStatusMappings(
-    {
-      ...(preview.payload as Record<string, unknown>),
-      ...buildConfigEmission(preview, state),
-    },
-    state.statusMappings,
-  );
+  return {
+    ...preview.payload,
+    ...buildReplaceConfigEmission(preview, state),
+  };
+}
+
+function currentExportKey(target: ImportWizardTarget | null): QueryKey {
+  return target
+    ? projectsQueryKeys.currentExport(target.id, target.backend ?? HOME_BACKEND)
+    : ['project-current-export', 'closed'];
 }
 
 function formatPromptSummary(promptTransfer?: PromptTransferCounts): string {
@@ -159,10 +177,14 @@ function useConfiguredReplaceWizard<
   const [target, setTarget] = useState<TTarget | null>(null);
   const [previewRequest, setPreviewRequest] = useState<SetupPreviewRequest | null>(null);
   const [state, setState] = useState<ReplaceWizardState | null>(null);
-  const [dryRun, setDryRun] = useState<ImportDryRunResult | null>(null);
+  const [dryRun, setDryRun] = useState<ImportDryRunSuccess | null>(null);
   const [preflightFailure, setPreflightFailure] = useState<ProjectPreMutationFailure | null>(null);
   const [isDryRunPending, setIsDryRunPending] = useState(false);
+  const [checkedBody, setCheckedBody] = useState<Record<string, unknown> | null>(null);
   const [isCommitting, setIsCommitting] = useState(false);
+  // Each precheck run and each opening takes a new number. A result is used only when its number
+  // is still the newest, so a slow result of an earlier project or run is ignored.
+  const precheckRunRef = useRef(0);
 
   const previewQuery = useQuery({
     queryKey: target
@@ -177,32 +199,74 @@ function useConfiguredReplaceWizard<
   });
   const preview = previewQuery.data ?? null;
 
+  // The current setup is read once per open (openWizard drops the cached copy); edits never
+  // reload it. A failed read leaves only the template's setups.
+  const currentExportQuery = useQuery({
+    queryKey: currentExportKey(target),
+    queryFn: () => api.loadProjectExport(target!.id, target!.backend),
+    enabled: isOpen && target !== null,
+    staleTime: Infinity,
+    retry: false,
+    refetchOnWindowFocus: false,
+  });
+  const currentExportSettled = currentExportQuery.isSuccess || currentExportQuery.isError;
+
   useEffect(() => {
-    if (isOpen && preview && state === null) {
-      setState({ ...initialWizardConfigState(preview), statusMappings: {} });
+    if (isOpen && preview && currentExportSettled && state === null) {
+      setState(initialReplaceState(preview, currentExportQuery.data ?? null));
     }
-  }, [isOpen, preview, state]);
+  }, [isOpen, preview, currentExportSettled, currentExportQuery.data, state]);
 
-  const handlers = useWizardConfigHandlers(preview, setState);
+  const configHandlers = useWizardConfigHandlers(preview, setState);
+  const handlers = useMemo<WizardConfigHandlers>(
+    () => ({
+      ...configHandlers,
+      onSelectedProvidersChange: (next) => {
+        if (next.length === 0) return;
+        setState((prev) => {
+          if (!prev?.preserveTeamSetup.agentOptions) return prev;
+          const { agentOptions, ...preserveTeamSetup } = prev.preserveTeamSetup;
+          return { ...prev, preserveTeamSetup };
+        });
+        configHandlers.onSelectedProvidersChange(next);
+      },
+      onApplyPreset: (name) => {
+        setState((prev) => (prev ? { ...prev, keepCurrentSelected: false } : prev));
+        configHandlers.onApplyPreset(name);
+      },
+    }),
+    [configHandlers],
+  );
 
-  const onStatusMappingChange = useCallback((statusId: string, templateLabel: string) => {
-    setState((previous) =>
-      previous
-        ? {
-            ...previous,
-            statusMappings: { ...previous.statusMappings, [statusId]: templateLabel },
-          }
-        : previous,
+  const onKeepCurrentSetup = useCallback(() => {
+    setState((prev) =>
+      prev && !prev.keepCurrentSelected && canPreserveTeams(prev.currentExport)
+        ? { ...prev, keepCurrentSelected: true }
+        : prev,
     );
   }, []);
 
-  const review = useMemo(() => toReview(dryRun), [dryRun]);
-  const reviewReady =
-    !isDryRunPending &&
-    dryRun !== null &&
-    dryRun.readiness?.ready !== false &&
-    preflightFailure === null &&
-    !hasUnmappedStatuses(review, state?.statusMappings ?? {});
+  const onUseTemplateSetup = useCallback(() => {
+    if (!preview) return;
+    setState(
+      (prev) =>
+        prev && {
+          ...prev,
+          ...wizardConfigStateFor(preview, prev.selectedProviderNames, {
+            useSuggestedPreset: false,
+          }),
+          keepCurrentSelected: false,
+        },
+    );
+  }, [preview]);
+
+  const updateChoices = useCallback((update: (choices: PreserveTeamSetup) => PreserveTeamSetup) => {
+    setState((prev) =>
+      prev?.keepCurrentSelected
+        ? { ...prev, preserveTeamSetup: update(prev.preserveTeamSetup) }
+        : prev,
+    );
+  }, []);
 
   const invalidate = useCallback(
     (queryKeys: QueryKey[]) => {
@@ -214,58 +278,83 @@ function useConfiguredReplaceWizard<
   );
 
   const closeWizard = useCallback(() => {
+    precheckRunRef.current += 1;
     setIsOpen(false);
     invalidate(adapter.invalidateOnClose);
     onClosed?.();
   }, [adapter, invalidate, onClosed]);
 
-  const dryRunBody = useCallback(() => {
+  const dryRunBody = useMemo(() => {
     if (!preview || !state) return null;
     return buildConfiguredReplaceBody(preview, state);
   }, [preview, state]);
 
   const runDryRun = useCallback(async () => {
-    const body = dryRunBody();
-    if (!target || !body) return;
+    if (!target || !dryRunBody || !state || !isOpen) return;
+    const run = ++precheckRunRef.current;
+    const isCurrent = () => run === precheckRunRef.current;
     setIsDryRunPending(true);
     setPreflightFailure(null);
     try {
       const result: ImportDryRunResponse = await api.runImportDryRun(
         target.id,
-        body,
+        dryRunBody,
         target.backend,
       );
+      if (!isCurrent()) return;
       if (result.dryRun !== true || !result.counts) {
         throw new Error('Precheck returned an invalid result');
+      }
+      if (state.keepCurrentSelected && (!result.preservationPlan || !result.readiness)) {
+        throw new Error('The server did not return a preserved roster check');
       }
       setDryRun(result);
       if (isProjectPreMutationFailure(result)) {
         setPreflightFailure(result);
-        toast({
-          title: `${adapter.name} precheck failed`,
-          description: formatProjectPreMutationFailure(result),
-          variant: 'destructive',
+      } else if (result.readiness?.ready === false) {
+        setPreflightFailure({
+          success: false,
+          mutationStarted: false,
+          error: 'The project is not ready to be replaced',
+          readiness: result.readiness,
         });
       }
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'Unable to compute changes';
+      if (!isCurrent()) return;
+      setDryRun(null);
       setPreflightFailure({
         success: false,
         mutationStarted: false,
-        error: message,
-      });
-      toast({
-        title: `${adapter.name} precheck failed`,
-        description: message,
-        variant: 'destructive',
+        error: error instanceof Error ? error.message : 'Unable to compute changes',
       });
     } finally {
-      setIsDryRunPending(false);
+      if (isCurrent()) {
+        setCheckedBody(dryRunBody);
+        setIsDryRunPending(false);
+      }
     }
-  }, [adapter.name, api, dryRunBody, target, toast]);
+  }, [api, dryRunBody, isOpen, state, target]);
+
+  useEffect(() => {
+    void runDryRun();
+    return () => {
+      precheckRunRef.current += 1;
+    };
+  }, [runDryRun]);
+
+  const isFresh = checkedBody === dryRunBody;
+  const currentFailure = isFresh ? preflightFailure : null;
+  const isReviewCurrent = isFresh && !isDryRunPending && dryRun !== null;
+  const reviewReady =
+    isOpen &&
+    isReviewCurrent &&
+    (state?.keepCurrentSelected
+      ? dryRun.readiness?.ready === true
+      : dryRun.readiness?.ready !== false) &&
+    currentFailure === null;
 
   const submit = useCallback(async () => {
-    if (!target || !preview || !state) return;
+    if (!target || !preview || !state || !reviewReady || isCommitting) return;
     const body = adapter.buildCommitBody(target, preview, state);
     setIsCommitting(true);
     try {
@@ -288,6 +377,10 @@ function useConfiguredReplaceWizard<
           error: result.error || `${adapter.name} could not start`,
         };
         setPreflightFailure(failure);
+        if (failure.preservationPlan) {
+          const plan = failure.preservationPlan;
+          setDryRun((previous) => (previous ? { ...previous, preservationPlan: plan } : previous));
+        }
         toast({
           title: `${adapter.name} failed`,
           description: formatProjectPreMutationFailure(failure),
@@ -312,82 +405,75 @@ function useConfiguredReplaceWizard<
     } finally {
       setIsCommitting(false);
     }
-  }, [adapter, invalidate, onCompleted, preview, state, target, toast]);
+  }, [adapter, invalidate, isCommitting, onCompleted, preview, reviewReady, state, target, toast]);
 
-  const reviewStep = useMemo<WizardStep>(
+  const checkAgain = useCallback(() => void runDryRun(), [runDryRun]);
+
+  const precheck = useMemo<ReplacePrecheckValue>(
     () => ({
-      id: 'review',
-      title: 'Review',
-      canProceed: reviewReady,
-      render: () =>
-        state ? (
-          <Fragment>
-            {preflightFailure && (
-              <Alert variant="destructive" role="alert" className="mb-3">
-                <AlertTitle>{adapter.name} blocked before making changes</AlertTitle>
-                <AlertDescription>
-                  {formatProjectPreMutationFailure(preflightFailure)}
-                </AlertDescription>
-              </Alert>
-            )}
-            {(review || !preflightFailure) && (
-              <Step4Review
-                review={review}
-                isLoading={isDryRunPending || (dryRun === null && isOpen)}
-                statusMappings={state.statusMappings}
-                onStatusMappingChange={onStatusMappingChange}
-                operationName={adapter.name.toLowerCase()}
-                vaultAccess={preview?.payload.vaultAccess}
-              />
-            )}
-          </Fragment>
-        ) : null,
+      operationName: adapter.name,
+      isPending: isDryRunPending || !isFresh,
+      failure: currentFailure,
+      onCheckAgain: checkAgain,
     }),
-    [
-      adapter.name,
-      dryRun,
-      isDryRunPending,
-      isOpen,
-      onStatusMappingChange,
-      preflightFailure,
-      preview,
-      review,
-      reviewReady,
-      state,
-    ],
+    [adapter.name, checkAgain, currentFailure, isDryRunPending, isFresh],
   );
 
-  const steps = useMemo<WizardStep[]>(
-    () => [...buildConfigSteps({ preview, state, handlers }).steps, reviewStep],
-    [handlers, preview, reviewStep, state],
-  );
+  const currentSetup: CurrentSetupValue = {
+    currentExport: state?.currentExport ?? null,
+    selected: state?.keepCurrentSelected ?? false,
+    onKeep: onKeepCurrentSetup,
+    onUseTemplate: onUseTemplateSetup,
+    plan: state?.keepCurrentSelected ? dryRun?.preservationPlan : undefined,
+    isReviewCurrent,
+    choices: state?.preserveTeamSetup ?? {},
+    onUpdateChoices: updateChoices,
+  };
+
+  const step = buildSetupStep({
+    preview,
+    state,
+    handlers,
+    Review: ReplaceReview,
+    currentExport: state?.currentExport,
+    validateTemplateAgents: !state?.keepCurrentSelected,
+  });
+  const steps: WizardStep[] = [
+    {
+      ...step,
+      description: 'Review the project setup before replacing it.',
+      canProceed: step.canProceed !== false && reviewReady,
+      render: () => (
+        <ReplacePrecheckProvider value={precheck}>
+          <CurrentSetupProvider value={currentSetup}>{step.render()}</CurrentSetupProvider>
+        </ReplacePrecheckProvider>
+      ),
+    },
+  ];
 
   const controller = useProjectSetupWizard({ steps, onSubmit: submit, onCancel: closeWizard });
-  const { currentStep, reset } = controller;
-  const currentStepId = currentStep?.id;
-
-  useEffect(() => {
-    if (!isOpen) return;
-    if (currentStepId === 'review') {
-      if (dryRun === null && preflightFailure === null && !isDryRunPending) void runDryRun();
-    } else if (dryRun !== null || preflightFailure !== null) {
-      setDryRun(null);
-      setPreflightFailure(null);
-    }
-  }, [currentStepId, dryRun, isDryRunPending, isOpen, preflightFailure, runDryRun]);
+  const { reset } = controller;
 
   const openWizard = useCallback(
     (nextTarget: TTarget, request?: SetupPreviewRequest) => {
+      precheckRunRef.current += 1;
+      queryClient.removeQueries({ queryKey: currentExportKey(nextTarget), exact: true });
+      // The preview holds the installed providers; read it again for each opening.
+      queryClient.removeQueries({
+        queryKey: adapter.previewQueryKey(nextTarget, request ?? null),
+        exact: true,
+      });
       setTarget(nextTarget);
       setPreviewRequest(request ?? null);
       setState(null);
       setDryRun(null);
       setPreflightFailure(null);
       setIsDryRunPending(false);
+      setCheckedBody(null);
       reset();
       setIsOpen(true);
     },
-    [reset],
+    [adapter, queryClient, reset],
   );
 
   const onOpenChange = useCallback(
@@ -410,7 +496,7 @@ function useConfiguredReplaceWizard<
     isSubmitting: isCommitting,
     preview,
     target,
-    preflightFailure,
+    preflightFailure: currentFailure,
   };
 }
 
@@ -448,14 +534,10 @@ function upgradeAdapter(
     canLoadPreview: () => true,
     loadPreview: (target) =>
       api.loadUpgradePreview(target.id, target.targetVersion, target.backend),
-    buildCommitBody: (target, preview, state) =>
-      withStatusMappings(
-        {
-          targetVersion: target.targetVersion,
-          ...buildConfigEmission(preview, state),
-        },
-        state.statusMappings,
-      ),
+    buildCommitBody: (target, preview, state) => ({
+      targetVersion: target.targetVersion,
+      ...buildReplaceConfigEmission(preview, state),
+    }),
     commit: (target, body) => api.commitUpgrade(target.id, body, target.backend),
     isTerminalFailure: (failure) => failure.mutationStarted !== false,
     successDescription: (target, result) => {

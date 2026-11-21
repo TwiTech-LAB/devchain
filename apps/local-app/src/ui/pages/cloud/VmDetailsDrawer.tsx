@@ -1,7 +1,9 @@
 import { useId, useState, type FormEvent, type ReactNode } from 'react';
 import { Lock, LockOpen, Pencil, X } from 'lucide-react';
+import { useQuery } from '@tanstack/react-query';
 import { PROVIDER_CLI_NAMES } from '@devchain/shared';
 import { REMOTE_NAME_MAX_LENGTH, type RemoteListItemDto } from '@/modules/remotes/dtos/remote.dto';
+import { useHomeQueryClient } from '@/ui/components/BackendBoundary';
 import { RemoteMetricsStrip } from '@/ui/components/remote-metrics/RemoteMetricsStrip';
 import { Button } from '@/ui/components/ui/button';
 import {
@@ -20,12 +22,15 @@ import type { ProviderAuthEntryItem, RemoteOperationDto } from './lib/remote-vm-
 import { userIds } from '@/modules/remotes/vm-user-identity';
 import { getErrorMessage } from '@/ui/lib/toast-helpers';
 import { ActivityGroup } from './ActivityDialog';
+import { useRemoteVmApi } from './lib/remote-vm-api-context';
+import { sharedFoldersQueryKey } from './lib/remote-vm-query-keys';
 import { LOGIN_PROVIDERS, providerName } from './login-choices';
 import type { ActivityNames } from './OperationDetail';
 import type { ProjectListRow } from './ProjectList';
 import {
   colonFingerprint,
   newestFirst,
+  shareBlockedReason,
   VM_CONNECTION_LABELS,
   vmConnectionSecurity,
   vmReachable,
@@ -34,6 +39,7 @@ import {
   type VmStatus,
 } from './remote-status';
 import { isValidRename } from './RenameVmDialog';
+import { SharedFoldersTab } from './SharedFoldersTab';
 import { StatusChip } from './StatusChip';
 import { VmPorts, devchainPort } from './VmPorts';
 import type { VmMenuItem, VmMenuKey } from './VmList';
@@ -418,6 +424,17 @@ export function VmDetailsDrawer({
   renderProjectAction: (row: ProjectListRow) => ReactNode;
 }) {
   const [tab, setTab] = useState('overview');
+  const api = useRemoteVmApi();
+  // Loaded while closed too, for the count in the tab name; polled only while open.
+  const sharedFolders = useQuery(
+    {
+      queryKey: sharedFoldersQueryKey(remote.id),
+      queryFn: ({ signal }) => api.listSharedFolders(remote.id, signal),
+      refetchInterval: tab === 'shared-folders' ? 10_000 : false,
+    },
+    useHomeQueryClient(),
+  );
+  const folders = sharedFolders.data ?? [];
   const { action } = status;
   const changeLogins = menu.some((item) => item.key === 'change-logins');
   const resetApiKey = menu.some((item) => item.key === 'reset-api-key');
@@ -485,6 +502,7 @@ export function VmDetailsDrawer({
           <TabsList className="h-auto flex-wrap">
             <TabsTrigger value="overview">Overview</TabsTrigger>
             <TabsTrigger value="projects">Projects ({projects.length})</TabsTrigger>
+            <TabsTrigger value="shared-folders">Shared folders ({folders.length})</TabsTrigger>
             <TabsTrigger value="logins">Logins</TabsTrigger>
             <TabsTrigger value="activity">Activity</TabsTrigger>
           </TabsList>
@@ -535,6 +553,18 @@ export function VmDetailsDrawer({
                 ))}
               </ul>
             )}
+          </TabsContent>
+          <TabsContent value="shared-folders" className="pt-2">
+            <SharedFoldersTab
+              remoteId={remote.id}
+              vmName={remote.name}
+              homePath={names.homePath ?? null}
+              folders={folders}
+              loading={sharedFolders.isPending}
+              error={sharedFolders.error}
+              blockedReason={shareBlockedReason(status)}
+              onOpenActivity={onOpenActivity}
+            />
           </TabsContent>
           <TabsContent value="logins" className="space-y-3 pt-2">
             <Logins remote={remote} entries={loginEntries} />

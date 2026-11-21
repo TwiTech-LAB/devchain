@@ -40,6 +40,286 @@ describe('PresetSettingsDelegate', () => {
   });
   afterEach(() => db.close());
 
+  describe('mergeProjectTemplatePresets', () => {
+    const builders = { teamName: ' Builders ', profileSelections: [] };
+    const retired = { teamName: 'Retired', profileSelections: [] };
+    const kept = {
+      ...validPreset,
+      name: 'My preset',
+      origin: 'user',
+      description: 'Keep the preset fields',
+      teamConfigs: [builders],
+    };
+    const teamOnly = {
+      name: 'Team only',
+      origin: 'user',
+      agentConfigs: [],
+      teamConfigs: [builders],
+    };
+    const empty = {
+      name: 'No surviving entries',
+      origin: 'user',
+      agentConfigs: validPreset2.agentConfigs,
+      teamConfigs: [retired],
+    };
+    const incoming = { ...validPreset2, name: '  TEST PRESET ' };
+
+    // SQLite verifies the resulting list, including ownership and persisted order.
+    it.each([
+      {
+        rule: 'incoming presets win normalized name collisions and precede surviving user presets',
+        stored: [kept, validPreset2, { ...validPreset, origin: 'user' }, teamOnly],
+        imports: [
+          { ...incoming, origin: 'user' },
+          { ...validPreset2, origin: 'invalid' },
+        ],
+        teams: ['BUILDERS'],
+        expected: [incoming, validPreset2, kept, teamOnly],
+      },
+      {
+        rule: 'prunes missing agent and team references and drops a preset without entries',
+        stored: [
+          {
+            ...kept,
+            agentConfigs: [...kept.agentConfigs, ...validPreset2.agentConfigs],
+            teamConfigs: [builders, retired],
+          },
+          empty,
+        ],
+        imports: [incoming],
+        teams: ['builders'],
+        expected: [incoming, kept],
+      },
+      {
+        rule: 'empty template preset list removes only template presets and prunes users',
+        stored: [validPreset, kept, teamOnly],
+        imports: [],
+        teams: [' builders '],
+        expected: [kept, teamOnly],
+      },
+      {
+        rule: 'unavailable team names preserve existing team entries',
+        stored: [empty],
+        imports: [],
+        teams: undefined,
+        expected: [{ ...empty, agentConfigs: [] }],
+      },
+      {
+        rule: 'an available team roster can be empty',
+        stored: [teamOnly],
+        imports: [],
+        teams: [],
+        expected: [],
+      },
+    ])('$rule', async ({ stored, imports, teams, expected }) => {
+      await delegate.setProjectPresets('proj-1', stored);
+      await delegate.mergeProjectTemplatePresets('proj-1', imports, [' aGENT1 '], teams);
+      expect(delegate.getProjectPresets('proj-1')).toEqual(expected);
+    });
+
+    it('leaves the stored list intact when a template preset fails validation', async () => {
+      await delegate.setProjectPresets('proj-1', [kept]);
+      await expect(
+        delegate.mergeProjectTemplatePresets('proj-1', [incoming, { name: '' }], []),
+      ).rejects.toThrow(ValidationError);
+      expect(delegate.getProjectPresets('proj-1')).toEqual([kept]);
+    });
+  });
+
+  describe('preset name cascades', () => {
+    const builderSelection = { profileName: ' CODER ', configNames: [' CONFIG1 ', 'Other'] };
+    const reviewerSelection = { profileName: 'Reviewer', configNames: ['Config1'] };
+    const builders = {
+      teamName: ' BUILDERS ',
+      profileSelections: [builderSelection, reviewerSelection],
+    };
+    const reviewers = { teamName: 'Reviewers', profileSelections: [] };
+    const coders = { ...builders, teamName: 'Coders' };
+    const original = {
+      name: 'Team setup',
+      description: 'Kept during cascades',
+      origin: 'user',
+      agentConfigs: [
+        { agentName: ' Coder1 ', providerConfigName: 'Config1', effortOverride: 'high' },
+        { agentName: 'Reviewer1', providerConfigName: 'Config1', modelOverride: 'opus' },
+      ],
+      teamConfigs: [builders, reviewers],
+    };
+    const configRename = {
+      profileId: 'profile-coder',
+      profileName: 'Coder',
+      oldName: 'Config1',
+      newName: 'Config2',
+    };
+    const configRenamed = {
+      ...builders,
+      profileSelections: [
+        { ...builderSelection, configNames: ['Config2', 'Other'] },
+        reviewerSelection,
+      ],
+    };
+
+    // SQLite verifies each cascade preserves the rest of the persisted preset.
+    it.each([
+      {
+        rule: 'config rename updates agent and team references for the matching profile',
+        stored: original,
+        cascade: () =>
+          delegate.renameProviderConfigInProjectPresets('proj-1', {
+            ...configRename,
+            agents: [
+              { name: 'Coder1', profileId: 'profile-coder' },
+              { name: 'Reviewer1', profileId: 'profile-reviewer' },
+            ],
+          }),
+        expected: {
+          ...original,
+          agentConfigs: [
+            { ...original.agentConfigs[0], providerConfigName: 'Config2' },
+            original.agentConfigs[1],
+          ],
+          teamConfigs: [configRenamed, reviewers],
+        },
+      },
+      {
+        rule: 'config rename updates team references when no agents use the profile',
+        stored: original,
+        cascade: () =>
+          delegate.renameProviderConfigInProjectPresets('proj-1', { ...configRename, agents: [] }),
+        expected: { ...original, teamConfigs: [configRenamed, reviewers] },
+      },
+      {
+        rule: 'team rename updates the matching entry',
+        stored: original,
+        cascade: () => delegate.renameTeamInProjectPresets('proj-1', 'Builders', 'Coders'),
+        expected: { ...original, teamConfigs: [coders, reviewers] },
+      },
+      {
+        rule: 'team rename keeps the first source entry when the destination already exists',
+        stored: {
+          ...original,
+          teamConfigs: [
+            { teamName: ' CODERS ', profileSelections: [] },
+            builders,
+            { teamName: 'builders', profileSelections: [] },
+            reviewers,
+          ],
+        },
+        cascade: () => delegate.renameTeamInProjectPresets('proj-1', 'Builders', 'Coders'),
+        expected: { ...original, teamConfigs: [coders, reviewers] },
+      },
+      {
+        rule: 'team disband removes all matching entries',
+        stored: { ...original, teamConfigs: [builders, reviewers, { ...builders }] },
+        cascade: () => delegate.removeTeamFromProjectPresets('proj-1', 'Builders'),
+        expected: { ...original, teamConfigs: [reviewers] },
+      },
+      {
+        rule: 'profile rename updates the matching selection',
+        stored: original,
+        cascade: () => delegate.renameProfileInProjectPresets('proj-1', 'Coder', 'Developer'),
+        expected: {
+          ...original,
+          teamConfigs: [
+            {
+              ...builders,
+              profileSelections: [
+                { ...builderSelection, profileName: 'Developer' },
+                reviewerSelection,
+              ],
+            },
+            reviewers,
+          ],
+        },
+      },
+    ])('$rule', async ({ stored, cascade, expected }) => {
+      await delegate.setProjectPresets('proj-1', [stored, validPreset]);
+      await delegate.setProjectPresets('proj-2', [stored]);
+
+      await cascade();
+
+      expect(delegate.getProjectPresets('proj-1')).toEqual([expected, validPreset]);
+      expect(delegate.getProjectPresets('proj-2')).toEqual([stored]);
+    });
+  });
+
+  const teamConfigs = [
+    {
+      teamName: 'Builders',
+      profileSelections: [{ profileName: 'Coder', configNames: ['Config1'] }],
+    },
+  ];
+  const replacement = [{ teamName: 'Reviewers', profileSelections: [] }];
+  const duplicateTeams = [...teamConfigs, { teamName: '  BUILDERS  ', profileSelections: [] }];
+
+  // The in-memory settings database exercises the delegate's persisted JSON contract.
+  it('create sets the user mark and an update keeps it and the team entries', async () => {
+    const projectId = 'proj-1';
+    const created = await delegate.createProjectPreset(projectId, {
+      ...validPreset,
+      name: ' Test Preset ',
+      origin: 'template',
+      teamConfigs,
+    });
+    expect(created).toEqual({ ...validPreset, origin: 'user', teamConfigs });
+    expect(delegate.getProjectPresets(projectId)).toEqual([created]);
+
+    await delegate.updateProjectPreset(projectId, validPreset.name, { description: 'Updated' });
+    expect(delegate.getProjectPresets(projectId)).toEqual([
+      { ...validPreset, origin: 'user', teamConfigs, description: 'Updated' },
+    ]);
+  });
+
+  it.each([
+    {
+      rule: 'an update replaces the team entries without marking a template preset',
+      stored: { ...validPreset, teamConfigs },
+      updates: { teamConfigs: replacement },
+      expected: { ...validPreset, teamConfigs: replacement },
+    },
+    {
+      rule: 'an empty array clears the team entries',
+      stored: { ...validPreset, teamConfigs },
+      updates: { teamConfigs: [] },
+      expected: { ...validPreset, teamConfigs: [] },
+    },
+    {
+      rule: 'renaming a legacy preset marks it as user-owned',
+      stored: validPreset,
+      updates: { name: 'Renamed' },
+      expected: { ...validPreset, name: 'Renamed', origin: 'user' },
+    },
+  ])('$rule', async ({ stored, updates, expected }) => {
+    const projectId = 'proj-1';
+    await delegate.setProjectPresets(projectId, [stored]);
+    await delegate.updateProjectPreset(projectId, validPreset.name, updates);
+    expect(delegate.getProjectPresets(projectId)).toEqual([expected]);
+  });
+
+  it('creating a preset rejects duplicate team names', async () => {
+    const projectId = 'proj-1';
+    await expect(
+      delegate.createProjectPreset(projectId, { ...validPreset, teamConfigs: duplicateTeams }),
+    ).rejects.toThrow(ValidationError);
+    expect(delegate.getProjectPresets(projectId)).toEqual([]);
+  });
+
+  it('updating a preset rejects duplicate team names', async () => {
+    const projectId = 'proj-1';
+    await delegate.setProjectPresets(projectId, [validPreset]);
+    await expect(
+      delegate.updateProjectPreset(projectId, validPreset.name, { teamConfigs: duplicateTeams }),
+    ).rejects.toThrow(ValidationError);
+    expect(delegate.getProjectPresets(projectId)).toEqual([validPreset]);
+  });
+
+  it('reading a stored preset preserves duplicate team entries', async () => {
+    const projectId = 'proj-1';
+    const stored = { ...validPreset, teamConfigs: duplicateTeams };
+    await delegate.setProjectPresets(projectId, [stored]);
+    expect(delegate.getProjectPresets(projectId)).toEqual([stored]);
+  });
+
   describe('Invariant: name uniqueness (case-insensitive)', () => {
     it('rejects creating a preset with a name that differs only in case', async () => {
       await delegate.createProjectPreset('proj-1', validPreset);

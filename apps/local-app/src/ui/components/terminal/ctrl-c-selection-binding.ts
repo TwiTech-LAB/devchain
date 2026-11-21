@@ -10,6 +10,7 @@ interface CtrlCSelectionTerminal {
 interface CtrlCSelectionBindingOptions {
   terminal: CtrlCSelectionTerminal;
   enabled: boolean;
+  beforeKeyEvent?: (event: KeyboardEvent) => boolean;
   onClipboardBlocked?: (error: unknown) => void;
 }
 
@@ -23,6 +24,7 @@ const CONTROL_KEY_CODE = 17;
 export function createCtrlCSelectionBinding({
   terminal,
   enabled,
+  beforeKeyEvent,
   onClipboardBlocked,
 }: CtrlCSelectionBindingOptions): CtrlCSelectionBinding {
   let active = true;
@@ -66,6 +68,7 @@ export function createCtrlCSelectionBinding({
 
   terminal.attachCustomKeyEventHandler((event) => {
     if (!active) return true;
+    if (beforeKeyEvent?.(event) === false) return false;
 
     if (event.type === 'keyup') {
       if (event.keyCode === C_KEY_CODE || event.keyCode === CONTROL_KEY_CODE) {

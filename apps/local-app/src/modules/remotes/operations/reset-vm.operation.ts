@@ -1,6 +1,7 @@
 import { RemoteWorktreeGuard } from './remote-worktree-guard';
+import { SharedFoldersLifecycle } from '../shared-folders/shared-folders.lifecycle';
 import { DockerImportInventoryStore } from './docker-import-inventory.store';
-import { Inject, Injectable } from '@nestjs/common';
+import { Inject, Injectable, Optional } from '@nestjs/common';
 import { ConflictError } from '../../../common/errors/error-types';
 import { STORAGE_SERVICE, type RemoteStorage } from '../../storage/interfaces/storage.interface';
 import type { RemoteOperation } from '../../storage/models/domain.models';
@@ -62,6 +63,7 @@ export class ResetVmOperation implements RemoteOperationDefinition {
     private readonly inventory: DockerImportInventoryStore,
     private readonly worktrees: RemoteWorktreeGuard,
     private readonly sharedVm: RemoteSharedVmService,
+    @Optional() private readonly sharedFolders?: SharedFoldersLifecycle,
   ) {}
 
   stepsFor(raw: Record<string, unknown>): readonly RemoteOperationStepDefinition[] {
@@ -123,6 +125,11 @@ export class ResetVmOperation implements RemoteOperationDefinition {
         },
       );
     }
+  }
+
+  /** The new VM shares no folder, so this PC forgets the old VM's shares. */
+  async completed(operation: RemoteOperation): Promise<void> {
+    await this.sharedFolders?.forgetRemote(operation.remoteId);
   }
 
   async interrupt(id: string): Promise<void> {

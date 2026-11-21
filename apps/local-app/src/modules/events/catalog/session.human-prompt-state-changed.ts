@@ -33,7 +33,10 @@ export type SessionHumanPromptStateChangedEventPayload = z.infer<
 export async function emitHumanPromptStateChangedBarrier(
   eventEmitter: EventEmitter2,
   payload: SessionHumanPromptStateChangedEventPayload,
+  signal?: AbortSignal,
 ): Promise<void> {
   const parsed = sessionHumanPromptStateChangedEvent.schema.parse(payload);
-  await eventEmitter.emitAsync(sessionHumanPromptStateChangedEvent.name, parsed);
+  if (signal)
+    await eventEmitter.emitAsync(sessionHumanPromptStateChangedEvent.name, parsed, signal);
+  else await eventEmitter.emitAsync(sessionHumanPromptStateChangedEvent.name, parsed);
 }

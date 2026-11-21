@@ -63,6 +63,7 @@ export class ProviderConfigsService {
           oldConfig.name,
           updatedConfig.name,
           agents,
+          profile.name,
         );
         return;
       }
@@ -108,9 +109,11 @@ export class ProviderConfigsService {
     oldName: string,
     newName: string,
     agents: Agent[],
+    profileName?: string,
   ): Promise<void> {
     await this.settings.renameProviderConfigInProjectPresets(projectId, {
       profileId,
+      ...(profileName !== undefined ? { profileName } : {}),
       oldName,
       newName,
       agents: agents.map((agent) => ({

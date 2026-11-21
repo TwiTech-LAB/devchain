@@ -14,6 +14,9 @@ export {
 export {
   ExportSchema,
   ManifestSchema,
+  PresetTeamConfigsSchema,
+  presetNameKey,
+  firstPresetTeamEntries,
 } from '../../../../packages/shared/src/schemas/export-schema';
 export {
   PROJECT_REPLICA_VERSION,
@@ -25,6 +28,7 @@ export {
   ProjectReplicaAttachTablesSchema,
   ProjectReplicaDetachTablesSchema,
   ProjectReplicaPreflightErrorSchema,
+  ReplicaProviderSettingsRowSchema,
   PROJECT_REPLICA_CONTENT_TYPE,
   ProjectReplicaIdSetsSchema,
   ProjectReplicaChangesSchema,

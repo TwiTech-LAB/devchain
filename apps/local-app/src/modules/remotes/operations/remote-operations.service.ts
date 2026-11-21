@@ -1,4 +1,9 @@
 import type { DockerSelection } from '../docker/docker-plan.dto';
+import {
+  shareFolderOperationDetails,
+  type ShareFolderRequestInput,
+} from './share-folder.operation';
+import { assertNoOpenShareOperation } from './share-operation-lock';
 import { REMOTE_HEALTH_PORT, type RemoteHealthPort } from '../ports/remote-health.port';
 import { randomUUID } from 'node:crypto';
 import { Inject, Injectable } from '@nestjs/common';
@@ -272,6 +277,7 @@ export class RemoteOperationsService {
   async updateHost(remoteId: string, installDocker?: boolean): Promise<RemoteOperation> {
     await this.storage.getRemote(remoteId);
     await this.assertNoOpenHostOperation(remoteId);
+    await assertNoOpenShareOperation(this.storage, remoteId);
     const health = await this.health.refresh(remoteId);
     const optedIn = (await this.lastInstallDockerChoice(remoteId)) === true;
     const npmRegistry = getEnvConfig().HOST_NPM_REGISTRY;
@@ -295,6 +301,7 @@ export class RemoteOperationsService {
   async updateLogins(remoteId: string, input: UpdateLoginsData): Promise<RemoteOperation> {
     const remote = await this.storage.getRemote(remoteId);
     await this.assertNoOpenHostOperation(remoteId);
+    await assertNoOpenShareOperation(this.storage, remoteId);
     const [previousOperation] = await this.storage.listRemoteOperations({
       remoteId,
       kinds: CLAIM_IDENTITY_KINDS,
@@ -381,6 +388,20 @@ export class RemoteOperationsService {
       remoteId,
       projectId,
       details: { source, forceSync: { source } },
+    });
+  }
+
+  /** Shares a user folder with the VM at the same path; this PC's files win the first copy. */
+  async shareFolder(remoteId: string, input: ShareFolderRequestInput): Promise<RemoteOperation> {
+    requireRemoteAddress(await this.storage.getRemote(remoteId));
+    await this.assertNoOpenHostOperation(remoteId);
+    const details = shareFolderOperationDetails(input);
+    await assertNoOpenShareOperation(this.storage, remoteId, details.shareId);
+    return this.runner.start({
+      kind: 'share_folder',
+      remoteId,
+      projectId: null,
+      details: { ...details },
     });
   }
 

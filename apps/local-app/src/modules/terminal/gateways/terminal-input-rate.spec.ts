@@ -144,6 +144,7 @@ function createGateway() {
     mockRealtimeBroadcast as never,
     sendScheduler as never,
     mockMetricsService,
+    {} as never,
     0,
   );
 

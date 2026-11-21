@@ -52,6 +52,8 @@ describe('ProjectTemplateUpgradeService', () => {
     mockSettingsService = {
       getProjectTemplateMetadata: jest.fn(),
       setProjectTemplateMetadata: jest.fn(),
+      getProjectPresets: jest.fn().mockReturnValue([]),
+      setProjectPresets: jest.fn().mockResolvedValue(undefined),
       getProjectActivePreset: jest.fn().mockReturnValue(null),
       setProjectActivePreset: jest.fn().mockResolvedValue(undefined),
       getRegistryConfig: jest.fn().mockReturnValue({ url: 'https://test.com' }),
@@ -59,6 +61,7 @@ describe('ProjectTemplateUpgradeService', () => {
 
     mockProjectsService = {
       exportProject: jest.fn(),
+      captureSnapshotEpicAssignments: jest.fn().mockResolvedValue(new Map()),
       importProject: jest.fn().mockResolvedValue(createMockImportResult()),
       setupPreview: jest.fn().mockResolvedValue({}),
     } as unknown as jest.Mocked<ProjectsService>;
@@ -931,6 +934,7 @@ describe('ProjectTemplateUpgradeService', () => {
         }),
         dryRun: false,
         promptTransferPolicy: 'snapshot',
+        snapshotEpicAssignments: new Map(),
       });
       expect(mockSettingsService.setProjectActivePreset).toHaveBeenCalledWith(
         'project-123',

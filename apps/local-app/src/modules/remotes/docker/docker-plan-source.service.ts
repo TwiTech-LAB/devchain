@@ -157,15 +157,14 @@ function buildsInProject(
     within(root, build.context)
   );
 }
-async function hasRootCompose(root: string): Promise<boolean> {
+async function hasRootCompose(root: string, strict = false): Promise<boolean> {
   for (const name of DEFAULT_COMPOSE_FILES) {
-    if (
-      await access(join(root, name)).then(
-        () => true,
-        () => false,
-      )
-    )
+    try {
+      await access(join(root, name));
       return true;
+    } catch (error) {
+      if (strict && (error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    }
   }
   return false;
 }
@@ -311,13 +310,14 @@ export class DockerPlanSourceService {
     options: {
       files?: readonly string[];
       allProfiles?: boolean;
+      strict?: boolean;
       signal?: AbortSignal;
       env?: NodeJS.ProcessEnv;
     } = {},
   ): Promise<ComposeConfig | null> {
     // Explicit files skip the default-file probe; without them, Compose needs a default file.
     if (!options.files?.length) {
-      if (!(await hasRootCompose(root))) return null;
+      if (!(await hasRootCompose(root, options.strict))) return null;
     }
     return new Promise<ComposeConfig>((resolveConfig, reject) => {
       execFile(
@@ -362,6 +362,7 @@ export class DockerPlanSourceService {
     }).catch((error: unknown) => {
       if (
         options.allProfiles &&
+        !options.strict &&
         !options.signal?.aborted &&
         error instanceof DockerEngineError &&
         error.code === 'unavailable'

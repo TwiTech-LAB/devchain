@@ -1,6 +1,7 @@
 import { RemoteApiKeyService } from '../auth/remote-api-key.service';
 import { RemoteProviderCliSettingsService } from './remote-provider-cli-settings.service';
 import { RemoteProviderUsageSettingsService } from './remote-provider-usage-settings.service';
+import { RemoteProviderSettingsService } from './remote-provider-settings.service';
 import { ProviderCliVersionsService } from '../../providers/services/provider-cli-versions.service';
 import { getAppVersion } from '../../../common/app-version';
 import { REALTIME_BROADCASTER } from '../../realtime/ports/realtime-broadcaster.port';
@@ -139,6 +140,10 @@ describe('home skill settings push', () => {
         },
         {
           provide: RemoteProviderUsageSettingsService,
+          useValue: { pushIfChanged: async () => undefined },
+        },
+        {
+          provide: RemoteProviderSettingsService,
           useValue: { pushIfChanged: async () => undefined },
         },
         {

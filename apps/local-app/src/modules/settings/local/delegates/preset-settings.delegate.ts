@@ -1,10 +1,15 @@
 import type { ProjectWriteGate } from '../../../storage/write-gate/project-write-gate';
 import { TransactionRunner } from '../../../storage/db/transaction-runner';
+import { presetNameKey } from '@devchain/shared';
 import type Database from 'better-sqlite3';
 import { randomUUID } from 'crypto';
 import { createLogger } from '../../../../common/logging/logger';
 import { ValidationError } from '../../../../common/errors/error-types';
-import { TemplatePresetDto, TemplatePresetSchema } from '../../dtos/settings.dto';
+import {
+  PresetInputSchema,
+  TemplatePresetDto,
+  TemplatePresetSchema,
+} from '../../dtos/settings.dto';
 
 const logger = createLogger('PresetSettingsDelegate');
 
@@ -20,10 +25,15 @@ export interface RenameProviderConfigPresetAgentContext {
 
 export interface RenameProviderConfigInProjectPresetsInput {
   profileId: string;
+  profileName?: string;
   oldName: string;
   newName: string;
   agents: readonly RenameProviderConfigPresetAgentContext[];
 }
+
+type PresetProfileSelection = NonNullable<
+  TemplatePresetDto['teamConfigs']
+>[number]['profileSelections'][number];
 
 export class PresetSettingsDelegate {
   private readonly sqlite: Database.Database;
@@ -38,7 +48,10 @@ export class PresetSettingsDelegate {
 
   getProjectPresets(projectId: string): TemplatePresetDto[] {
     const rawPresets = this.readProjectPresetsMap()[projectId] ?? [];
+    return this.validateStoredPresets(projectId, rawPresets);
+  }
 
+  private validateStoredPresets(projectId: string, rawPresets: unknown[]): TemplatePresetDto[] {
     const validatedPresets: TemplatePresetDto[] = [];
     for (const preset of rawPresets) {
       const result = TemplatePresetSchema.safeParse(preset);
@@ -56,12 +69,81 @@ export class PresetSettingsDelegate {
   }
 
   async setProjectPresets(projectId: string, presets: unknown[]): Promise<void> {
+    const validatedPresets = this.validatePresets(projectId, presets, TemplatePresetSchema);
+    await this.writeInTransaction(() => {
+      const existingPresets = this.readProjectPresetsMap();
+      this.writeProjectPresetsMap({ ...existingPresets, [projectId]: validatedPresets }, projectId);
+    });
+
+    logger.info({ projectId, presetCount: validatedPresets.length }, 'Project presets updated');
+  }
+
+  async mergeProjectTemplatePresets(
+    projectId: string,
+    presets: readonly unknown[],
+    agentNames: readonly string[],
+    teamNames?: readonly string[],
+  ): Promise<void> {
+    const incoming = this.validatePresets(projectId, presets, PresetInputSchema);
+    const incomingNames = new Set(incoming.map(({ name }) => this.normalizeName(name)));
+    const agents = new Set(agentNames.map((name) => this.normalizeName(name)));
+    const teams = teamNames && new Set(teamNames.map((name) => this.normalizeName(name)));
+
+    await this.writeInTransaction(() => {
+      const existingPresets = this.readProjectPresetsMap();
+      const stored = existingPresets[projectId];
+      const kept: TemplatePresetDto[] = [];
+      const userPresets = this.validateStoredPresets(
+        projectId,
+        (Array.isArray(stored) ? stored : []).filter((preset) => preset?.origin === 'user'),
+      );
+
+      for (const preset of userPresets) {
+        if (incomingNames.has(this.normalizeName(preset.name))) continue;
+
+        const agentConfigs = preset.agentConfigs.filter(({ agentName }) =>
+          agents.has(this.normalizeName(agentName)),
+        );
+        const teamConfigs = teams
+          ? preset.teamConfigs?.filter(({ teamName }) => teams.has(this.normalizeName(teamName)))
+          : preset.teamConfigs;
+
+        if (agentConfigs.length === 0 && !teamConfigs?.length) {
+          logger.info(
+            { projectId, presetName: preset.name },
+            'Removed user preset with no remaining entries',
+          );
+          continue;
+        }
+
+        kept.push({
+          ...preset,
+          agentConfigs,
+          ...(teamConfigs === undefined ? {} : { teamConfigs }),
+        });
+      }
+
+      const merged = [...incoming, ...kept];
+      if (merged.length > 0) {
+        this.writeProjectPresetsMap({ ...existingPresets, [projectId]: merged }, projectId);
+      } else {
+        delete existingPresets[projectId];
+        this.writeProjectPresetsMap(existingPresets, projectId);
+      }
+    });
+  }
+
+  private validatePresets(
+    projectId: string,
+    presets: readonly unknown[],
+    schema: typeof TemplatePresetSchema | typeof PresetInputSchema,
+  ): TemplatePresetDto[] {
     const validatedPresets: TemplatePresetDto[] = [];
     const errors: string[] = [];
 
     for (let i = 0; i < presets.length; i++) {
       const preset = presets[i];
-      const result = TemplatePresetSchema.safeParse(preset);
+      const result = schema.safeParse(preset);
 
       if (result.success) {
         validatedPresets.push(result.data);
@@ -80,18 +162,7 @@ export class PresetSettingsDelegate {
       });
     }
 
-    await this.writeInTransaction(() => {
-      const existingPresets = this.readProjectPresetsMap();
-      this.writeProjectPresetsMap(
-        {
-          ...existingPresets,
-          [projectId]: validatedPresets,
-        },
-        projectId,
-      );
-    });
-
-    logger.info({ projectId, presetCount: validatedPresets.length }, 'Project presets updated');
+    return validatedPresets;
   }
 
   async clearProjectPresets(projectId: string): Promise<void> {
@@ -141,7 +212,7 @@ export class PresetSettingsDelegate {
         .filter((name) => name.length > 0),
     );
 
-    if (targetAgentNames.size === 0) {
+    if (targetAgentNames.size === 0 && input.profileName === undefined) {
       logger.info(
         { projectId, profileId: targetProfileId, oldName, newName },
         'No matching agents for provider config preset rename',
@@ -150,63 +221,81 @@ export class PresetSettingsDelegate {
     }
 
     const normalizedOldName = this.normalizeName(oldName);
+    const normalizedProfileName =
+      input.profileName === undefined ? undefined : this.normalizeName(input.profileName);
 
-    await this.writeInTransaction(() => {
-      const existingPresets = this.getProjectPresets(projectId);
-      let changed = false;
+    const changed = await this.updateProjectPresetReferences(projectId, (preset) => {
+      const agentConfigs = preset.agentConfigs.map((agentConfig) =>
+        targetAgentNames.has(this.normalizeName(agentConfig.agentName)) &&
+        this.normalizeName(agentConfig.providerConfigName) === normalizedOldName
+          ? { ...agentConfig, providerConfigName: newName }
+          : agentConfig,
+      );
 
-      const updatedPresets = existingPresets.map((preset) => {
-        let presetChanged = false;
-        const updatedAgentConfigs = preset.agentConfigs.map((agentConfig) => {
-          const agentName = this.normalizeName(agentConfig.agentName);
-          const providerConfigName = this.normalizeName(agentConfig.providerConfigName);
-          const shouldRename =
-            targetAgentNames.has(agentName) && providerConfigName === normalizedOldName;
-
-          if (!shouldRename || agentConfig.providerConfigName === newName) {
-            return agentConfig;
-          }
-
-          presetChanged = true;
-          changed = true;
-          return {
-            ...agentConfig,
-            providerConfigName: newName,
-          };
-        });
-
-        if (!presetChanged) {
-          return preset;
+      const updatedPreset = this.mapTeamProfileSelections(preset, (selection) => {
+        if (this.normalizeName(selection.profileName) !== normalizedProfileName) {
+          return selection;
         }
-
-        return {
-          ...preset,
-          agentConfigs: updatedAgentConfigs,
-        };
+        const configNames = selection.configNames.map((name) =>
+          this.normalizeName(name) === normalizedOldName ? newName : name,
+        );
+        return { ...selection, configNames };
       });
 
-      if (!changed) {
-        logger.info(
-          { projectId, profileId: targetProfileId, oldName, newName },
-          'No project preset provider config references needed rename',
-        );
-        return;
-      }
-
-      const existingPresetsMap = this.readProjectPresetsMap();
-      this.writeProjectPresetsMap(
-        {
-          ...existingPresetsMap,
-          [projectId]: updatedPresets,
-        },
-        projectId,
-      );
-
-      logger.info(
-        { projectId, profileId: targetProfileId, oldName, newName },
-        'Project preset provider config references renamed',
-      );
+      return { ...updatedPreset, agentConfigs };
     });
+
+    logger.info(
+      { projectId, profileId: targetProfileId, oldName, newName },
+      changed
+        ? 'Project preset provider config references renamed'
+        : 'No project preset provider config references needed rename',
+    );
+  }
+
+  async renameTeamInProjectPresets(projectId: string, oldName: string, newName: string) {
+    const normalizedOldName = this.normalizeName(oldName);
+    const normalizedNewName = this.normalizeName(newName);
+    await this.updateProjectPresetReferences(projectId, (preset) => {
+      const entries = preset.teamConfigs;
+      if (!entries) return preset;
+
+      const sourceIndex = entries.findIndex(
+        (entry) => this.normalizeName(entry.teamName) === normalizedOldName,
+      );
+      if (sourceIndex === -1) return preset;
+
+      const teamConfigs = entries.flatMap((entry, index) => {
+        if (index === sourceIndex) {
+          return [{ ...entry, teamName: newName }];
+        }
+        const name = this.normalizeName(entry.teamName);
+        return name === normalizedOldName || name === normalizedNewName ? [] : [entry];
+      });
+      return { ...preset, teamConfigs };
+    });
+  }
+
+  async removeTeamFromProjectPresets(projectId: string, teamName: string) {
+    const normalizedTeamName = this.normalizeName(teamName);
+    await this.updateProjectPresetReferences(projectId, (preset) => {
+      if (!preset.teamConfigs) return preset;
+      const teamConfigs = preset.teamConfigs.filter(
+        (entry) => this.normalizeName(entry.teamName) !== normalizedTeamName,
+      );
+      return { ...preset, teamConfigs };
+    });
+  }
+
+  async renameProfileInProjectPresets(projectId: string, oldName: string, newName: string) {
+    const normalizedOldName = this.normalizeName(oldName);
+    await this.updateProjectPresetReferences(projectId, (preset) =>
+      this.mapTeamProfileSelections(preset, (selection) =>
+        this.normalizeName(selection.profileName) === normalizedOldName
+          ? { ...selection, profileName: newName }
+          : selection,
+      ),
+    );
   }
 
   async removeAgentFromProjectPresets(projectId: string, agentName: string): Promise<void> {
@@ -263,8 +352,8 @@ export class PresetSettingsDelegate {
     });
   }
 
-  async createProjectPreset(projectId: string, preset: unknown): Promise<void> {
-    const result = TemplatePresetSchema.safeParse(preset);
+  async createProjectPreset(projectId: string, preset: unknown): Promise<TemplatePresetDto> {
+    const result = PresetInputSchema.safeParse(preset);
     if (!result.success) {
       const errorIssues = result.error.issues
         .map((issue) => `[${issue.path.join('.')}] ${issue.message}`)
@@ -275,14 +364,20 @@ export class PresetSettingsDelegate {
       });
     }
 
-    const validatedPreset = result.data;
-    const trimmedName = validatedPreset.name.trim();
+    const trimmedName = result.data.name.trim();
 
     if (!trimmedName) {
       throw new ValidationError('Preset name cannot be empty or whitespace only', {
         projectId,
       });
     }
+
+    const validatedPreset: TemplatePresetDto = {
+      ...result.data,
+      name: trimmedName,
+      origin: 'user',
+    };
+    this.assertUniquePresetTeams(projectId, validatedPreset);
 
     await this.writeInTransaction(() => {
       const existingPresets = this.getProjectPresets(projectId);
@@ -304,13 +399,14 @@ export class PresetSettingsDelegate {
       this.writeProjectPresetsMap(
         {
           ...existingPresetsMap,
-          [projectId]: [...existingPresets, { ...validatedPreset, name: trimmedName }],
+          [projectId]: [...existingPresets, validatedPreset],
         },
         projectId,
       );
     });
 
     logger.info({ projectId, presetName: trimmedName }, 'Preset created');
+    return validatedPreset;
   }
 
   async updateProjectPreset(
@@ -366,6 +462,15 @@ export class PresetSettingsDelegate {
           }
           mergedPreset.agentConfigs = updateObj.agentConfigs;
         }
+        if ('teamConfigs' in updateObj) {
+          if (!Array.isArray(updateObj.teamConfigs)) {
+            throw new ValidationError('Invalid preset update: teamConfigs must be an array', {
+              projectId,
+              presetName,
+            });
+          }
+          mergedPreset.teamConfigs = updateObj.teamConfigs;
+        }
       }
 
       const result = TemplatePresetSchema.safeParse(mergedPreset);
@@ -382,10 +487,12 @@ export class PresetSettingsDelegate {
 
       const validatedPreset = result.data;
       const trimmedName = validatedPreset.name.trim();
+      const nameChanged = trimmedName.toLowerCase() !== normalizedName;
 
       validatedPreset.name = trimmedName;
+      this.assertUniquePresetTeams(projectId, validatedPreset);
 
-      if (trimmedName.toLowerCase() !== normalizedName) {
+      if (nameChanged) {
         const nameExists = existingPresets.some(
           (p, idx) => idx !== presetIndex && p.name.toLowerCase() === trimmedName.toLowerCase(),
         );
@@ -400,6 +507,7 @@ export class PresetSettingsDelegate {
             },
           );
         }
+        validatedPreset.origin = 'user';
       }
 
       const updatedPresets = [...existingPresets];
@@ -419,7 +527,7 @@ export class PresetSettingsDelegate {
         },
       };
 
-      if (trimmedName.toLowerCase() !== normalizedName) {
+      if (nameChanged) {
         const originalName = existingPreset.name;
         const currentActivePreset = existingActivePresets[projectId];
 
@@ -569,8 +677,54 @@ export class PresetSettingsDelegate {
     await this.txRunner.runImmediateQueuedOrJoin(fn);
   }
 
+  private async updateProjectPresetReferences(
+    projectId: string,
+    update: (preset: TemplatePresetDto) => TemplatePresetDto,
+  ): Promise<boolean> {
+    return this.txRunner.runImmediateQueuedOrJoin(() => {
+      const presetsMap = this.readProjectPresetsMap();
+      const existingPresets = this.validateStoredPresets(projectId, presetsMap[projectId] ?? []);
+      const updatedPresets = existingPresets.map(update);
+      // Compare content, so an update can return a new object when nothing changed.
+      if (JSON.stringify(updatedPresets) === JSON.stringify(existingPresets)) {
+        return false;
+      }
+
+      this.writeProjectPresetsMap({ ...presetsMap, [projectId]: updatedPresets }, projectId);
+      return true;
+    });
+  }
+
+  private mapTeamProfileSelections(
+    preset: TemplatePresetDto,
+    update: (selection: PresetProfileSelection) => PresetProfileSelection,
+  ): TemplatePresetDto {
+    if (!preset.teamConfigs) return preset;
+
+    const teamConfigs = preset.teamConfigs.map((entry) => ({
+      ...entry,
+      profileSelections: entry.profileSelections.map(update),
+    }));
+    return { ...preset, teamConfigs };
+  }
+
   private normalizeName(name: string): string {
-    return name.trim().toLowerCase();
+    return presetNameKey(name);
+  }
+
+  private assertUniquePresetTeams(projectId: string, preset: TemplatePresetDto): void {
+    const names = new Set<string>();
+    for (const { teamName } of preset.teamConfigs ?? []) {
+      const normalizedName = this.normalizeName(teamName);
+      if (names.has(normalizedName)) {
+        throw new ValidationError('Preset cannot contain multiple entries for the same team', {
+          projectId,
+          presetName: preset.name,
+          teamName,
+        });
+      }
+      names.add(normalizedName);
+    }
   }
 
   private writeProjectPresetsMap(

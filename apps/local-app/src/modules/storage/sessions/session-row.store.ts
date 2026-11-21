@@ -309,18 +309,34 @@ export class SessionRowStore {
       .run(tmuxSessionName, now, now, sessionId);
   }
 
+  bindRestoredProvider(sessionId: string, providerName: string): void {
+    this.sqlite
+      .prepare(
+        'UPDATE sessions SET provider_name_at_launch = ? WHERE id = ? AND provider_name_at_launch IS NULL',
+      )
+      .run(providerName.toLowerCase(), sessionId);
+  }
+
   rollbackRestore(
-    sessionId: string,
-    status: string,
-    endedAt: string | null,
-    tmuxSessionId: string | null,
+    prior: Pick<
+      SessionRow,
+      'id' | 'status' | 'ended_at' | 'tmux_session_id' | 'provider_name_at_launch'
+    >,
     now: string,
   ): void {
     this.sqlite
       .prepare(
-        `UPDATE sessions SET status = ?, ended_at = ?, tmux_session_id = ?, updated_at = ? WHERE id = ?`,
+        `UPDATE sessions SET status = ?, ended_at = ?, tmux_session_id = ?,
+             provider_name_at_launch = ?, updated_at = ? WHERE id = ?`,
       )
-      .run(status, endedAt, tmuxSessionId, now, sessionId);
+      .run(
+        prior.status,
+        prior.ended_at,
+        prior.tmux_session_id,
+        prior.provider_name_at_launch,
+        now,
+        prior.id,
+      );
   }
 
   retireConfirmedLoss(sessionId: string, now: string): void {

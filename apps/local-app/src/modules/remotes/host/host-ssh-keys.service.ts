@@ -7,6 +7,7 @@ import { randomUUID } from 'node:crypto';
 import { ValidationError } from '../../../common/errors/error-types';
 import { isKnownSshKeyType } from '../../../common/validation/ssh-public-key';
 import { HostHelperService } from './host-helper.service';
+import { AUTHORIZED_KEYS_FILE, SSH_DIRECTORY } from './host-home-files';
 
 export const HOST_SSH_HOME = Symbol('HOST_SSH_HOME');
 
@@ -32,7 +33,7 @@ export class HostSshKeysService {
   }
 
   private async merge(keys: string[]): Promise<{ added: number }> {
-    const directory = join(this.home, '.ssh');
+    const directory = join(this.home, SSH_DIRECTORY);
     await mkdir(directory, { mode: 0o700 }).catch((error: NodeJS.ErrnoException) => {
       if (error.code !== 'EEXIST') throw error;
     });
@@ -43,7 +44,7 @@ export class HostSshKeysService {
     );
     try {
       await folder.chmod(0o700);
-      const path = join(directory, 'authorized_keys');
+      const path = join(directory, AUTHORIZED_KEYS_FILE);
       await this.assertSafe(path, false);
       let existing = '';
       try {

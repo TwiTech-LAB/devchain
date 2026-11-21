@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from 'react';
+import { useState, type FormEvent, type ReactNode } from 'react';
 import { X } from 'lucide-react';
 import { Badge } from '@/ui/components/ui/badge';
 import { Button } from '@/ui/components/ui/button';
@@ -8,15 +8,23 @@ import { DEFAULT_FILE_SYNC_IGNORES } from '@/modules/file-sync/file-sync.dto';
 import { ignorePatternProblem } from '@/modules/file-sync/ignore-pattern-matcher';
 import type { IgnoreDraft } from './connect-ignores';
 
-/** The project's ignore patterns as removable chips. Edits stay local until saved. */
+const PROJECT_INTRO =
+  '.env files and other secrets sync unless you add a rule. Git history comes from the VM to this PC only.';
+
+/** Ignore patterns as removable chips. Edits stay local until saved. */
 export function IgnoreListEditor({
   list,
   disabled,
   onChange,
+  intro = PROJECT_INTRO,
+  restoreDefaults = true,
 }: {
   list: readonly string[];
   disabled: boolean;
   onChange: (draft: IgnoreDraft) => void;
+  intro?: ReactNode;
+  /** Offers the project defaults; leave off where those `(?d)` patterns must not apply. */
+  restoreDefaults?: boolean;
 }) {
   const [pattern, setPattern] = useState('');
   const [problem, setProblem] = useState<string | null>(null);
@@ -35,10 +43,7 @@ export function IgnoreListEditor({
     <section aria-label="Files that do not sync" className="space-y-3 text-sm">
       <div className="space-y-1">
         <h3 className="font-medium">Files that do not sync</h3>
-        <p className="text-muted-foreground">
-          .env files and other secrets sync unless you add a rule. Git history comes from the VM to
-          this PC only.
-        </p>
+        <p className="text-muted-foreground">{intro}</p>
       </div>
       {list.length === 0 ? (
         <p className="text-muted-foreground">Every file syncs.</p>
@@ -85,17 +90,19 @@ export function IgnoreListEditor({
         <Button type="submit" variant="outline" disabled={disabled || pattern.trim() === ''}>
           Add
         </Button>
-        <Button
-          type="button"
-          variant="ghost"
-          disabled={disabled}
-          onClick={() => {
-            setProblem(null);
-            onChange({ list: [...DEFAULT_FILE_SYNC_IGNORES], restored: true });
-          }}
-        >
-          Restore defaults
-        </Button>
+        {restoreDefaults && (
+          <Button
+            type="button"
+            variant="ghost"
+            disabled={disabled}
+            onClick={() => {
+              setProblem(null);
+              onChange({ list: [...DEFAULT_FILE_SYNC_IGNORES], restored: true });
+            }}
+          >
+            Restore defaults
+          </Button>
+        )}
       </form>
       {problem && (
         <p role="alert" className="text-destructive">

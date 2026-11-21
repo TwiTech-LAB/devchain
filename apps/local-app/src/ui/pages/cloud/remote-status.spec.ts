@@ -7,10 +7,14 @@ import {
   createStatusContext,
   projectRecovery,
   projectStatus,
+  shareBlockedReason,
+  shareOperationRemotes,
   stepProgress,
   vmStatus,
   type StatusInput,
 } from './remote-status';
+import { operationTitle } from './OperationDetail';
+import { vmMenuItems } from './VmList';
 
 const NOW = Date.parse('2026-09-28T12:00:00.000Z');
 
@@ -879,4 +883,88 @@ it('shows Force syncing as a project operation on the VM', () => {
   expect(vmStatus(remote(), ctx).chips).toContainEqual(
     expect.objectContaining({ operationId: running.id, label: 'Force syncing Alpha, 2/3' }),
   );
+});
+
+// The server refuses these actions while a share operation is open; the menu must not offer them.
+it.each([true, false])(
+  'hides VM lifecycle actions but keeps Connect while a share operation is open (version matches: %s)',
+  (versionMatches) => {
+    const target = remote({
+      kind: 'proxmox',
+      vmProviderConnectionId: 'c1',
+      vmIdentity: 'vm-identity',
+      vmSpec: {} as RemoteListItemDto['vmSpec'],
+      versionMatches,
+    });
+    const operations = [
+      operation({ kind: 'share_folder', state: 'failed' }),
+      operation({ kind: 'share_folder', state: 'done', remoteId: 'vm2' }),
+    ];
+    const busy = shareOperationRemotes(operations);
+    expect([...busy]).toEqual(['vm1']);
+    const status = vmStatus(target, context({ remotes: [target], operations }));
+    const keys = (shareOpen: boolean) =>
+      vmMenuItems(target, status, false, 1, shareOpen).map((item) => item.key);
+    const lifecycle = ['change-logins', 'install-docker', 'update', 'reset', 'remove', 'destroy'];
+    expect(keys(false)).toEqual(
+      expect.arrayContaining(versionMatches ? ['change-logins', 'reset'] : ['update', 'reset']),
+    );
+    expect(keys(true)).toEqual(keys(false).filter((key) => !lifecycle.includes(key)));
+    // A ready VM still offers Connect.
+    if (versionMatches) expect(keys(true)).toContain('connect-project');
+  },
+);
+
+// Share a folder is disabled with the reason the server would refuse it for. An open share
+// operation of another folder does not block it.
+it.each<[string, Partial<RemoteListItemDto>, Partial<StatusInput>, string | null]>([
+  ['a ready VM', {}, {}, null],
+  [
+    'an open share operation of another folder',
+    {},
+    { operations: [operation({ kind: 'share_folder', state: 'failed' })] },
+    null,
+  ],
+  [
+    'a running host operation',
+    {},
+    { operations: [operation({ kind: 'update_host' })] },
+    'A VM operation is running. Wait for it to end.',
+  ],
+  [
+    'a failed host operation',
+    {},
+    { operations: [operation({ kind: 'update_host', state: 'failed' })] },
+    'A VM operation failed. Retry or cancel it in Activity.',
+  ],
+  ['an offline VM', { online: false }, {}, 'The VM is offline.'],
+  ['an old VM', { versionMatches: false }, {}, 'Update the VM first.'],
+  [
+    'a different home folder',
+    { homePathMatches: false },
+    {},
+    'The VM home folder differs from this PC.',
+  ],
+])('Share a folder on %s: %p', (_case, overrides, input, reason) => {
+  expect(shareBlockedReason(vm(overrides, input))).toBe(reason);
+});
+
+it('names the shared folder in Activity and Needs attention', () => {
+  const share = operation({
+    kind: 'share_folder',
+    state: 'failed',
+    details: { path: '/home/alice/data' },
+    steps: [step('preflight', 'done'), step('copy', 'failed', 'disk full')],
+  });
+  const ctx = context({ operations: [share] });
+  const names = {
+    remotes: new Map([['vm1', 'lab-vm']]),
+    projects: new Map(),
+    homePath: '/home/alice',
+  };
+
+  expect(operationTitle(share, names)).toBe('Sharing ~/data with lab-vm');
+  expect(attentionItems(ctx, { homePath: '/home/alice' }).map((item) => item.text)).toEqual([
+    'Sharing ~/data with lab-vm failed at “Label of copy”: disk full.',
+  ]);
 });

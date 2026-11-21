@@ -1,9 +1,8 @@
 /**
  * Agents codec — owns the `agents` section. Apply = the legacy `createImportedAgents`:
  * resolve each agent's profile (via `agentProfileMap` + `profileIdMap`) and its provider config
- * (by profileId+providerConfigName with a same-profile fallback), carry `modelOverride` +
- * `effortOverride` verbatim, and THROW with byte-identical messages on a missing profile/config
- * (these surface to users).
+ * (by profileId+providerConfigName), carry `modelOverride` and `effortOverride` verbatim, and
+ * report missing profiles or options. Same-profile fallback applies only to ordinary imports.
  *
  * Config resolution reads `selectionEligibleConfigLookupMap` (NOT the full `configLookupMap`):
  * both the explicit lookup and the same-profile fallback consider only selection-eligible
@@ -118,7 +117,7 @@ class AgentsCodec implements TemplateSectionCodec<AgentsSection> {
         providerConfigId = eligibleConfigLookupMap.get(lookupKey);
       }
 
-      if (!providerConfigId) {
+      if (!providerConfigId && !rt.applyPreservedRoster) {
         const profilePrefix = `${newProfileId}:`;
         for (const [lookupKey, configId] of eligibleConfigLookupMap.entries()) {
           if (lookupKey.startsWith(profilePrefix)) {

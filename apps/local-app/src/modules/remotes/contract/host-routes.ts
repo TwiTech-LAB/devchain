@@ -26,6 +26,7 @@ import {
   ProjectReplicaChangesSchema,
   ProjectReplicaImportResultSchema,
   ProjectReplicaV1Schema,
+  ReplicaProviderSettingsRowSchema,
 } from '@devchain/shared';
 import { DockerRuntimeSchema } from '../../core/controllers/docker-runtime';
 import {
@@ -36,6 +37,9 @@ import {
   ReceiveOnlyChangesSchema,
   RemoteNeedSchema,
   RemoteNeedNamesSchema,
+  ShareBackupRequestSchema,
+  ShareFolderRequestSchema,
+  ShareIgnoresRequestSchema,
   SyncDeviceSchema,
   SyncFolderSchema,
   SyncFolderConfigurationSchema,
@@ -183,6 +187,22 @@ export const HostProviderUsageSettingsStatusSchema = z
   .object({ appliedRevision: z.string().nullable() })
   .strict();
 export type HostProviderUsageSettingsStatus = z.infer<typeof HostProviderUsageSettingsStatusSchema>;
+
+/** Home's provider settings. Carries env values: never log it or put it in an error. */
+export const HostProviderSettingsSchema = z
+  .object({
+    revision: z.string().regex(/^[a-f0-9]{64}$/),
+    providers: z.array(ReplicaProviderSettingsRowSchema),
+  })
+  .strict();
+export type HostProviderSettings = z.infer<typeof HostProviderSettingsSchema>;
+
+/** `appliedRevision` is null unless the VM still holds the values of its last push. */
+export const HostProviderSettingsStatusSchema = z
+  .object({ appliedRevision: z.string().nullable() })
+  .strict();
+export type HostProviderSettingsStatus = z.infer<typeof HostProviderSettingsStatusSchema>;
+
 const projectPath = ({ projectId }: ProjectParams) => `/api/host/projects/${enc(projectId)}`;
 const folderPath = ({ folderId }: FolderParams) => `/api/host/sync/folders/${enc(folderId)}`;
 const fenced = (path: string, { gitFence }: FencedParams): string =>
@@ -434,6 +454,27 @@ export const hostRoutes = {
     timeoutMs: CONTROL_TIMEOUT_MS,
     statuses: { 200: ForceCopyBackupSchema },
   },
+  syncShareFolder: {
+    method: 'POST',
+    path: fixed('/api/host/sync/shares'),
+    body: ShareFolderRequestSchema,
+    timeoutMs: CONTROL_TIMEOUT_MS,
+    statuses: { 200: SyncFolderSchema },
+  },
+  syncShareBackup: {
+    method: 'POST',
+    path: fixed('/api/host/sync/shares/backup'),
+    body: ShareBackupRequestSchema,
+    timeoutMs: CONTROL_TIMEOUT_MS,
+    statuses: { 200: ForceCopyBackupSchema },
+  },
+  syncShareIgnores: {
+    method: 'PUT',
+    path: (params: FolderParams) => `/api/host/sync/shares/${enc(params.folderId)}/ignores`,
+    body: ShareIgnoresRequestSchema,
+    timeoutMs: CONTROL_TIMEOUT_MS,
+    statuses: NO_CONTENT,
+  },
   syncFolderType: {
     method: 'PATCH',
     path: fencedFolderPath,
@@ -663,6 +704,19 @@ export const hostRoutes = {
     method: 'PUT',
     path: fixed('/api/host/provider-usage-settings'),
     body: HostProviderUsageSettingsSchema,
+    timeoutMs: SETTINGS_TIMEOUT_MS,
+    statuses: { 202: RevisionAckSchema },
+  },
+  getProviderSettingsStatus: {
+    method: 'GET',
+    path: fixed('/api/host/provider-settings/status'),
+    timeoutMs: SETTINGS_TIMEOUT_MS,
+    statuses: { 200: HostProviderSettingsStatusSchema },
+  },
+  putProviderSettings: {
+    method: 'PUT',
+    path: fixed('/api/host/provider-settings'),
+    body: HostProviderSettingsSchema,
     timeoutMs: SETTINGS_TIMEOUT_MS,
     statuses: { 202: RevisionAckSchema },
   },

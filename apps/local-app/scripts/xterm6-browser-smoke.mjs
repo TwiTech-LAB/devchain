@@ -3,10 +3,11 @@
  *
  * Jest mocks the browser `Terminal`, so it can prove the seam's routing logic but NOT the xterm 6
  * SmoothScrollableElement's real DOM/event coupling. This smoke loads the SAME production modules
- * (`terminal-input-intent-binding`, `ctrl-c-selection-binding`, `scroll-intent-binding`, and
- * `scroll-history-detector`) through the Vite dev server and drives them with TRUSTED Chromium
- * input (not `dispatchEvent`), asserting:
+ * through the Vite dev server and drives them with trusted Chromium input. Synthetic file lists
+ * check the mixed payloads that the browser clipboard API cannot create. The smoke asserts:
  *   - physical keys and clipboard/text insertion produce input intent before xterm onData;
+ *   - bare Ctrl+V pastes text or captures images and forwards SYN for an empty clipboard;
+ *   - xterm and form file pastes preserve order and consume text fallback;
  *   - programmatic blur/focus DEC reports reach onData without producing input intent;
  *   - selected Ctrl+C copies exact text through one xterm-served event and clears in a macrotask;
  *   - held-key repeat is suppressed, leaves a distinct clipboard sentinel unchanged, and keyup
@@ -51,6 +52,9 @@ try {
     const { createCtrlCSelectionBinding } = await import(
       '/src/ui/components/terminal/ctrl-c-selection-binding.ts'
     );
+    const { createTerminalClipboardPasteBinding, readClipboardImages } = await import(
+      '/src/ui/components/terminal/terminal-clipboard-paste.ts'
+    );
     const { createScrollHistoryDetector, SCROLL_GESTURE_STALE_MS } = await import(
       '/src/ui/components/terminal/scroll-history-detector.ts'
     );
@@ -60,7 +64,9 @@ try {
     const host = document.createElement('div');
     host.style.width = '800px';
     host.style.height = '420px';
-    document.body.replaceChildren(host);
+    const textarea = document.createElement('textarea');
+    textarea.id = 'form-input';
+    document.body.replaceChildren(host, textarea);
 
     const terminal = new Terminal({
       cols: 80,
@@ -86,6 +92,7 @@ try {
     const keydownTrace = [];
     const copyTrace = [];
     const clipboardFailures = [];
+    const filePastes = [];
     terminal.onData((data) => {
       mouseInput += data;
       inputTrace.push({ marker: 'input', data });
@@ -111,16 +118,6 @@ try {
         selectionPresent: terminal.hasSelection(),
       });
     });
-    const ctrlCSelection = createCtrlCSelectionBinding({
-      terminal,
-      enabled: true,
-      onClipboardBlocked: (error) => clipboardFailures.push(String(error)),
-    });
-    const inputIntent = createTerminalInputIntentBinding({
-      terminal,
-      container: host,
-      onInputIntent: () => inputTrace.push({ marker: 'focus' }),
-    });
     for (const type of ['paste', 'compositionstart', 'beforeinput']) {
       host.addEventListener(
         type,
@@ -137,6 +134,51 @@ try {
         { capture: true },
       );
     }
+    const claimFocus = () => inputTrace.push({ marker: 'focus' });
+    const recordFiles = (target, paste) => {
+      filePastes.push(
+        readClipboardImages(paste).then(async ({ images, ...failures }) => ({
+          target,
+          count: paste.browserFileCount,
+          ...failures,
+          images: await Promise.all(
+            images.map(async ({ file, mimeType }) => ({
+              name: file.name,
+              mimeType,
+              bytes: [...new Uint8Array(await file.arrayBuffer())],
+            })),
+          ),
+        })),
+      );
+    };
+    const ttyPaste = createTerminalClipboardPasteBinding({
+      target: host,
+      onFiles: (paste) => {
+        claimFocus();
+        recordFiles('tty', paste);
+      },
+      onCtrlV: (data) => {
+        claimFocus();
+        terminal.input(data);
+      },
+    });
+    const formPaste = createTerminalClipboardPasteBinding({
+      target: textarea,
+      onFiles: (paste) => recordFiles('form', paste),
+    });
+    textarea.addEventListener('keydown', formPaste.handleKeyEvent, true);
+    textarea.addEventListener('keyup', formPaste.handleKeyEvent, true);
+    const ctrlCSelection = createCtrlCSelectionBinding({
+      terminal,
+      enabled: true,
+      beforeKeyEvent: ttyPaste.handleKeyEvent,
+      onClipboardBlocked: (error) => clipboardFailures.push(String(error)),
+    });
+    const inputIntent = createTerminalInputIntentBinding({
+      terminal,
+      container: host,
+      onInputIntent: claimFocus,
+    });
 
     // Short cooldown isolates the seam's DOM routing (the cooldown/cycle policy is unit-proven);
     // the gesture-stale window stays at the production default so the intent-expiry phase is real.
@@ -216,7 +258,26 @@ try {
       clipboardFailures: () => clipboardFailures.slice(),
       hasSelection: () => terminal.hasSelection(),
       focusTerminal: () => terminal.focus(),
+      filePastes: () => Promise.all(filePastes),
+      pasteFiles: (files, text) => {
+        const clipboardData = new DataTransfer();
+        for (const { name, bytes } of files) {
+          clipboardData.items.add(new File([new Uint8Array(bytes)], name));
+        }
+        clipboardData.setData('text/plain', text);
+        const target = document.activeElement;
+        const pasted = target.dispatchEvent(
+          new ClipboardEvent('paste', {
+            bubbles: true,
+            cancelable: true,
+            clipboardData,
+          }),
+        );
+        clipboardData.items.clear();
+        return pasted;
+      },
       enableDecFocusReporting: () => write('\x1b[?1004h'),
+      setBracketedPaste: (enabled) => write(enabled ? '\x1b[?2004h' : '\x1b[?2004l'),
       cycleProgrammaticFocus: () => {
         terminal.blur();
         terminal.focus();
@@ -230,6 +291,10 @@ try {
       }),
       teardown: () => {
         clearInterval(poll);
+        ttyPaste.dispose();
+        formPaste.dispose();
+        textarea.removeEventListener('keydown', formPaste.handleKeyEvent, true);
+        textarea.removeEventListener('keyup', formPaste.handleKeyEvent, true);
         ctrlCSelection.dispose();
         inputIntent.dispose();
         controller.dispose();
@@ -321,6 +386,87 @@ try {
       `Clipboard shortcut did not produce a trusted paste: ${JSON.stringify(clipboardPaste.dom)}`,
     );
   }
+
+  const getInput = async () =>
+    (await smoke(() => window.__xterm6Smoke.inputTrace()))
+      .filter(({ marker }) => marker === 'input')
+      .map(({ data }) => data);
+  if (process.platform !== 'darwin') {
+    await smoke(() => window.__xterm6Smoke.setBracketedPaste(true));
+    for (const [text, expected] of [
+      ['first\n  second', '\x1b[200~first\r  second\x1b[201~'],
+      ['', '\x16'],
+    ]) {
+      await smoke(() => window.__xterm6Smoke.resetInputTrace());
+      await page.evaluate((value) => navigator.clipboard.writeText(value), text);
+      await page.keyboard.press('Control+V');
+      await page.waitForTimeout(200);
+      const trace = await smoke(() => window.__xterm6Smoke.inputTrace());
+      assertFocusBeforeInput('Ctrl+V', trace, expected);
+      if (trace.filter(({ marker }) => marker === 'input').length !== 1) {
+        throw new Error(`Ctrl+V produced extra input: ${JSON.stringify(trace)}`);
+      }
+    }
+    await smoke(() => window.__xterm6Smoke.setBracketedPaste(false));
+  }
+
+  // Use a native clipboard write for a real File and dispatch a multi-file DataTransfer to
+  // exercise browser payloads Chromium cannot write to the clipboard as separate entries.
+  await smoke(() => window.__xterm6Smoke.resetInputTrace());
+  await page.evaluate(async () => {
+    const canvas = document.createElement('canvas');
+    canvas.width = canvas.height = 1;
+    const png = await new Promise((resolve) => canvas.toBlob(resolve));
+    await navigator.clipboard.write([new ClipboardItem({ 'image/png': png })]);
+  });
+  const pasteShortcut = process.platform === 'darwin' ? 'Meta+V' : 'Control+V';
+  await page.keyboard.press(pasteShortcut);
+  await page.waitForTimeout(200);
+  const nativePaste = await smoke(() => window.__xterm6Smoke.filePastes());
+  const nativePasteEvents = await smoke(() => window.__xterm6Smoke.domInputTrace());
+  if (
+    nativePaste.length !== 1 ||
+    nativePaste[0].count !== 1 ||
+    nativePaste[0].images[0]?.mimeType !== 'image/png' ||
+    !nativePasteEvents.some(({ type, trusted }) => type === 'paste' && trusted) ||
+    (await getInput()).length !== 0
+  ) {
+    throw new Error(
+      `Ordinary paste did not capture exactly one native image: ${JSON.stringify(nativePaste)}`,
+    );
+  }
+
+  const png = { name: 'first.png', bytes: [137, 80, 78, 71, 13, 10, 26, 10, 1] };
+  const jpeg = { name: 'second.jpg', bytes: [255, 216, 255, 224, 2] };
+  const invalid = { name: 'third.txt', bytes: [1, 2, 3] };
+  const files = [png, invalid, jpeg];
+  const pasteFiles = () =>
+    smoke((entries) => window.__xterm6Smoke.pasteFiles(entries, 'text fallback'), files);
+  if (await pasteFiles()) throw new Error('Terminal Files-plus-text paste was not consumed');
+  const formInput = page.locator('#form-input');
+  await formInput.focus();
+  if (await pasteFiles()) throw new Error('Form Files-plus-text paste was not consumed');
+  const clipboardFiles = await smoke(() => window.__xterm6Smoke.filePastes());
+  for (const [index, target] of ['tty', 'form'].entries()) {
+    const paste = clipboardFiles[index + 1];
+    const captured = paste?.images.map(({ name, bytes }) => ({ name, bytes }));
+    if (
+      paste?.target !== target ||
+      paste.count !== 3 ||
+      paste.unsupportedFileCount !== 1 ||
+      JSON.stringify(captured) !== JSON.stringify([png, jpeg])
+    ) {
+      throw new Error(`Wrong file count, bytes, or order for ${target}: ${JSON.stringify(paste)}`);
+    }
+  }
+  if ((await getInput()).length !== 0 || (await formInput.inputValue()) !== '') {
+    throw new Error('Files-plus-text paste leaked fallback text');
+  }
+  await page.evaluate((value) => navigator.clipboard.writeText(value), pastedText);
+  await page.keyboard.press(pasteShortcut);
+  if ((await formInput.inputValue()) !== pastedText)
+    throw new Error('Form did not paste text natively');
+  await smoke(() => window.__xterm6Smoke.focusTerminal());
 
   // --- Input phase 3: Chromium trusted text insertion exposes beforeinput coupling ---
   const insertedText = 'trusted-insert';
@@ -574,6 +720,11 @@ try {
     customScrollbarPresent: setup.customScrollbarPresent,
     physicalKey,
     clipboardPaste,
+    clipboardFilePastes: clipboardFiles.map(({ target, count, images }) => ({
+      target,
+      count,
+      images: images.length,
+    })),
     textInsertion,
     decFocus,
     ctrlCSelection,

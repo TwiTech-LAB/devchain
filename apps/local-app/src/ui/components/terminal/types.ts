@@ -1,13 +1,18 @@
 /**
  * Terminal component types and interfaces
  */
+import type { TerminalClipboardImagePaste } from './terminal-clipboard-paste';
 
 export interface ChatTerminalProps {
   sessionId: string;
+  projectId?: string | null;
+  visible?: boolean;
   className?: string;
   chrome?: 'default' | 'none';
   ariaLabel?: string;
   onSessionEnded?: (payload: SessionStatePayload) => void;
+  /** Called during the paste gesture so the consumer can capture the current draft and caret. */
+  onClipboardImagePaste?: (paste: TerminalClipboardImagePaste) => void;
   /**
    * `home` for instance-level sessions (the provider-auth login terminal);
    * defaults to the active project's socket. Fixed per call site.

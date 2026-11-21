@@ -9,7 +9,8 @@ import type { EventsService } from '../../../events/services/events.service';
 import type { SettingsService } from '../../../settings/services/settings.service';
 import { HumanPromptStateService } from '../human-prompt-state.service';
 import { FOLLOW_NOTE } from '../../../../common/follow-note';
-import { ShellForegroundError } from './delivery';
+import { draftChipCount, ShellForegroundError } from './delivery';
+import { providerTraits } from '../../../providers/adapters/provider-traits';
 
 jest.mock('../../../../common/delivery-nonce', () => ({
   generateDeliveryNonce: () => 'abc1234',
@@ -42,6 +43,31 @@ function makeService(followNoteEnabled = true) {
 function deliveryCalls(fake: FakeProcessExecutor) {
   return fake.calls.filter((call) => call.argv[1] !== 'display-message' && call.argv[0] !== 'ps');
 }
+
+describe('Copilot composer image chips', () => {
+  const filename = '0de184ce-1bbb-464b-a662-1e142596a131.png';
+  const prompt = '❯ PROBE 062452953 Acknowledge these images. ';
+  const rule = '─'.repeat(70);
+  const chip = providerTraits('copilot').imagePasteChip!;
+  const count = (...rows: string[]) =>
+    draftChipCount([rule, ...rows, rule].join('\n'), filename, chip);
+
+  it.each(['[📷', '[image:'])(
+    'recognizes %s across row breaks around the separator and filename',
+    (label) => {
+      expect(count(prompt + label, `  ${filename}]`)).toBe(1);
+
+      const chars = Array.from(`${label} ${filename}]`);
+      for (let split = 1; split < chars.length; split++) {
+        expect(
+          count(prompt + chars.slice(0, split).join(''), '  ' + chars.slice(split).join('')),
+        ).toBe(1);
+      }
+      expect(count(`${prompt}${label}${filename}]`)).toBe(0);
+      expect(count(prompt + label, `  ${filename}.bak]`)).toBe(0);
+    },
+  );
+});
 
 async function advanceDelivery<T>(pending: Promise<T>): Promise<T> {
   // Attach rejection handling before timers run, including paths asserted with rejects.

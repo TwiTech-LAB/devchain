@@ -1,4 +1,5 @@
 import { HOME_BACKEND, type BackendId } from '@/ui/lib/api-transport';
+import type { ExportData } from '@devchain/shared';
 import type {
   CreateFromTemplateInput,
   CreateFromTemplateResponse,
@@ -45,6 +46,7 @@ export interface InMemoryProjectsPageApiOverrides {
   loadSetupPreview?: Override<[SetupPreviewRequest], SetupPreviewResponse>;
   loadUpgradePreview?: Override<[string, string], SetupPreviewResponse>;
   runImportDryRun?: Override<[string, Record<string, unknown>], ImportDryRunResponse>;
+  loadProjectExport?: Override<[string], ExportData>;
   commitImport?: Override<[string, Record<string, unknown>], ImportProjectResponse>;
   commitUpgrade?: Override<[string, Record<string, unknown>], UpgradeProjectResponse>;
   listRemoteOwners?: Override<[], ProjectRemoteOwner[]>;
@@ -63,6 +65,8 @@ export interface InMemoryProjectsPageApiSeed {
   upgradePreview?: SetupPreviewResponse;
   createResult?: CreateFromTemplateResponse;
   importDryRunResult?: ImportDryRunResponse;
+  /** The current project export; without it `loadProjectExport` fails. */
+  projectExport?: ExportData;
   importResult?: ImportProjectResponse;
   upgradeResult?: UpgradeProjectResponse;
   remoteOwners?: ProjectRemoteOwner[];
@@ -87,6 +91,7 @@ export class InMemoryProjectsPageApi implements ProjectsPageApi {
     loadSetupPreview: [] as Array<readonly [SetupPreviewRequest]>,
     loadUpgradePreview: [] as Array<readonly [string, string]>,
     runImportDryRun: [] as Array<readonly [string, Record<string, unknown>]>,
+    loadProjectExport: [] as Array<readonly [string]>,
     commitImport: [] as Array<readonly [string, Record<string, unknown>]>,
     commitUpgrade: [] as Array<readonly [string, Record<string, unknown>]>,
     listRemoteOwners: [] as Array<readonly []>,
@@ -97,6 +102,7 @@ export class InMemoryProjectsPageApi implements ProjectsPageApi {
   readonly upgradeBackends = {
     loadUpgradePreview: [] as string[],
     runImportDryRun: [] as string[],
+    loadProjectExport: [] as string[],
     commitUpgrade: [] as string[],
   };
 
@@ -112,6 +118,7 @@ export class InMemoryProjectsPageApi implements ProjectsPageApi {
   private readonly upgradePreview?: SetupPreviewResponse;
   private readonly createResult?: CreateFromTemplateResponse;
   private readonly importDryRunResult?: ImportDryRunResponse;
+  private readonly projectExport?: ExportData;
   private readonly importResult?: ImportProjectResponse;
   private readonly upgradeResult?: UpgradeProjectResponse;
   private readonly remoteOwners: ProjectRemoteOwner[];
@@ -148,6 +155,7 @@ export class InMemoryProjectsPageApi implements ProjectsPageApi {
     this.upgradePreview = seed.upgradePreview;
     this.createResult = seed.createResult;
     this.importDryRunResult = seed.importDryRunResult;
+    this.projectExport = seed.projectExport;
     this.importResult = seed.importResult;
     this.upgradeResult = seed.upgradeResult;
     this.remoteOwners = seed.remoteOwners ?? [];
@@ -379,6 +387,20 @@ export class InMemoryProjectsPageApi implements ProjectsPageApi {
       [projectId, targetVersion],
       this.upgradePreview,
       'upgrade preview',
+    );
+  }
+
+  async loadProjectExport(
+    projectId: string,
+    backend: BackendId = HOME_BACKEND,
+  ): Promise<ExportData> {
+    this.calls.loadProjectExport.push([projectId]);
+    this.upgradeBackends.loadProjectExport.push(backend);
+    return this.resolveRequired(
+      this.overrides.loadProjectExport,
+      [projectId],
+      this.projectExport,
+      'project export',
     );
   }
 

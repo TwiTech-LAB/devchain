@@ -34,7 +34,7 @@ import { AgentFormDialog } from '@/ui/components/agent/AgentFormDialog';
 import type { AgentFormSubmitData } from '@/ui/components/agent/AgentFormDialog';
 import { AgentCard } from '@/ui/components/agent/AgentCard';
 import type { FetchFn } from '@/ui/lib/api-transport';
-import { useFetchFactory, useHomeFetch } from '@/ui/hooks/useFetchFactory';
+import { useFetchFactory } from '@/ui/hooks/useFetchFactory';
 
 // ============================================
 // Fetch functions
@@ -103,7 +103,6 @@ async function updateAgentRequest(
 
 export function AgentsPage() {
   const fetchFn = useFetchFactory();
-  const homeFetch = useHomeFetch();
   const queryClient = useQueryClient();
   const { selectedProjectId, selectedProject: activeProject } = useSelectedProject();
 
@@ -122,7 +121,7 @@ export function AgentsPage() {
   });
 
   const { data: presetsData } = useQuery({
-    ...projectPresetQueries.list(homeFetch, selectedProjectId),
+    ...projectPresetQueries.list(fetchFn, selectedProjectId),
     enabled: !!selectedProjectId,
   });
   const existingPresetNames = (presetsData?.presets ?? []).map((p) => p.name);

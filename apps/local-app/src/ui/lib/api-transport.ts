@@ -6,10 +6,10 @@
  *
  * Resolution order (`resolveBackend`):
  *   1. an explicit `backend` option;
- *   2. home-always routes (project catalogue and creation, remotes, cloud, …);
- *   3. a project id named in the call (path, `projectId` query or JSON body),
- *      looked up in the binding map;
- *   4. the active project's backend (entity-id-only and backend-global routes).
+ *   2. a project id in a recognized route path, looked up in the binding map;
+ *   3. home-always routes (project catalogue and creation, remotes, cloud, …);
+ *   4. a `projectId` in the query or JSON body, looked up in the binding map;
+ *   5. the active project's backend (entity-id-only and backend-global routes).
  *
  * There is no global resolution context. `BackendProvider` builds one bound
  * fetch per context (`createApiFetch`) and hands it down; a component keeps the
@@ -95,8 +95,11 @@ const HOME_ALWAYS_EPIC_TIME_READ = /^\/api\/epics\/[^/]+\/time(?:\/|$)/;
 // External task links live only at home; a remote rejects every integration route.
 const HOME_ALWAYS_EPIC_EXTERNAL_SOURCES = /^\/api\/epics\/[^/]+\/external-sources$/;
 
-// Routes outside the home-always set that carry the target project id in the path.
-const PROJECT_ID_IN_PATH = [/^\/api\/settings\/autoclean\/([^/]+)/];
+// Project-owned routes whose path takes precedence over home-always prefixes.
+const PROJECT_ID_IN_PATH = [
+  /^\/api\/settings\/autoclean\/([^/]+)/,
+  /^\/api\/projects\/([^/]+)\/presets(?:\/|$)/,
+];
 
 export function extractPathname(input: RequestInfo | URL): string | null {
   if (typeof input === 'string') {
@@ -183,17 +186,17 @@ function projectIdFromBody(body: RequestInit['body']): string | null {
   return null;
 }
 
-function namedProjectId(
-  pathname: string,
-  input: RequestInfo | URL,
-  init: RequestInit | undefined,
-): string | null {
+function projectIdFromPath(pathname: string): string | null {
   for (const pattern of PROJECT_ID_IN_PATH) {
     const match = pathname.match(pattern);
     if (match?.[1]) {
       return safeDecode(match[1]);
     }
   }
+  return null;
+}
+
+function namedProjectId(input: RequestInfo | URL, init: RequestInit | undefined): string | null {
   const fromQuery = extractSearchParams(input)?.get('projectId');
   if (fromQuery) {
     return fromQuery;
@@ -228,8 +231,8 @@ function resolveSelector(selector: BackendSelector, context: BackendResolutionCo
 
 /**
  * Pure: picks the backend for one request. Non-API and already-proxied paths go home.
- * Throws `RoutingUnknownError` when steps 3–4 (or a `project:` selector) are reached
- * while the context's authority is `unknown`.
+ * Throws `RoutingUnknownError` when routing needs the binding map (steps 2, 4
+ * and 5, or a `project:` selector) and the context's authority is `unknown`.
  */
 export function resolveBackend(
   input: RequestInfo | URL,
@@ -245,11 +248,16 @@ export function resolveBackend(
   if (!pathname || !isApiPath(pathname)) {
     return HOME_BACKEND;
   }
+
+  const pathProjectId = projectIdFromPath(pathname);
+  if (pathProjectId) {
+    return backendForProject(pathProjectId, context);
+  }
   if (isHomeAlwaysRoute(pathname, requestMethod(input, init))) {
     return HOME_BACKEND;
   }
 
-  const projectId = namedProjectId(pathname, input, init);
+  const projectId = namedProjectId(input, init);
   if (projectId) {
     return backendForProject(projectId, context);
   }

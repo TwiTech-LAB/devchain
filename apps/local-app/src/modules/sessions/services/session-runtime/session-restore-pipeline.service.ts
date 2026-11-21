@@ -41,7 +41,7 @@ interface RestoreSourceRow {
   epic_id: string | null;
   agent_id: string;
   tmux_session_id: string | null;
-  status: string;
+  status: SessionDetailDto['status'];
   started_at: string;
   ended_at: string | null;
   transcript_path: string | null;
@@ -176,23 +176,11 @@ export class SessionRestorePipeline {
           tmuxSessionName,
         });
 
-        const prior = {
-          status: locked.status,
-          ended_at: locked.ended_at,
-          tmux_session_id: locked.tmux_session_id,
-        };
-
         // Phase 6: flipToRunning (BEFORE createTmuxSession)
         const now = new Date().toISOString();
         this.sessionRows.restoreRunning(locked.id, tmuxSessionName, now);
         cleanup.push('flipToRunning', async () => {
-          this.sessionRows.rollbackRestore(
-            locked.id,
-            prior.status,
-            prior.ended_at,
-            prior.tmux_session_id,
-            new Date().toISOString(),
-          );
+          this.sessionRows.rollbackRestore(locked, new Date().toISOString());
         });
         const providerRuntime =
           await this.providerRuntimePreparation.materialize(providerRuntimePlan);
@@ -244,6 +232,9 @@ export class SessionRestorePipeline {
         // Issue the restore command — streaming is bound, output is captured
         await this.terminalIO.typeCommand({ name: tmuxSessionName }, providerRuntime.typedArgs);
         await providerRuntime.afterCommand();
+        if (locked.provider_name_at_launch === null) {
+          this.sessionRows.bindRestoredProvider(locked.id, provider.name);
+        }
 
         // Phase 9: emit session.restored (NOT session.started)
         await this.eventsService.publish('session.restored', {

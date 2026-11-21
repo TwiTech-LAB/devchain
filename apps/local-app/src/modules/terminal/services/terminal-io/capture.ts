@@ -1,33 +1,54 @@
+import { createHash } from 'node:crypto';
 import type { ProcessExecutor } from '../process-executor/process-executor.port';
-import type { SessionTarget, CaptureResult, CursorPosition } from './types';
+import {
+  tmuxPaneTarget,
+  type SessionTarget,
+  type PinnedPane,
+  type CaptureResult,
+  type CursorPosition,
+} from './types';
 
 const MAX_OUTPUT_BYTES = 5 * 1024 * 1024;
 const MAX_STRICT_OUTPUT_BYTES = 256 * 1024;
 
+export interface CaptureHistoryOptions {
+  signal?: AbortSignal;
+  /**
+   * Join rows that tmux soft-wrapped into one line (`capture-pane -J`). Use it when the
+   * capture is replayed into xterm: xterm wraps the line again and marks the rows as wrapped,
+   * so a copied selection stays one line. Without it, each wrapped row is a hard line.
+   */
+  joinWrappedLines?: boolean;
+}
+
 export async function captureHistory(
   executor: ProcessExecutor,
-  target: SessionTarget,
+  target: SessionTarget | PinnedPane,
   lines: number,
   includeEscapes = true,
+  options: CaptureHistoryOptions = {},
 ): Promise<CaptureResult> {
   const start = `-${Math.max(0, Math.floor(lines))}`;
-  const baseArgv = ['tmux', 'capture-pane', '-p', '-S', start, '-t', `=${target.name}:`];
+  const baseArgv = ['tmux', 'capture-pane', '-p', '-S', start, '-t', tmuxPaneTarget(target)];
+  if (options.joinWrappedLines) baseArgv.push('-J');
   const preferredArgv = includeEscapes ? [...baseArgv, '-e'] : baseArgv;
 
   const result = await executor.run({
     argv: preferredArgv,
     mode: 'pipe',
+    signal: options.signal,
     outputLimits: { maxBytes: MAX_OUTPUT_BYTES },
   });
 
   if (result.success) {
-    return { ok: true, output: result.stdout ?? '' };
+    return { ok: !options.signal?.aborted, output: result.stdout ?? '' };
   }
 
   if (includeEscapes && /unknown option|invalid option/i.test(result.stderr)) {
     const fallback = await executor.run({
       argv: baseArgv,
       mode: 'pipe',
+      signal: options.signal,
       outputLimits: { maxBytes: MAX_OUTPUT_BYTES },
     });
 
@@ -78,6 +99,40 @@ export async function getCursorPosition(
   }
 
   return null;
+}
+
+export async function composerSnapshot(
+  executor: ProcessExecutor,
+  paneId: string,
+  signal: AbortSignal,
+): Promise<string | null> {
+  const result = await executor.run({
+    argv: [
+      'tmux',
+      'display-message',
+      '-p',
+      '-t',
+      paneId,
+      '#{pane_id} #{pane_pid} #{cursor_x} #{cursor_y}',
+      ';',
+      'capture-pane',
+      '-p',
+      '-t',
+      paneId,
+    ],
+    mode: 'pipe',
+    outputLimits: { maxBytes: MAX_STRICT_OUTPUT_BYTES },
+    signal,
+  });
+  if (
+    signal.aborted ||
+    !result.success ||
+    result.timedOut ||
+    result.truncated ||
+    !result.stdout.startsWith(paneId + ' ')
+  )
+    return null;
+  return createHash('sha256').update(result.stdout).digest('hex');
 }
 
 export async function getSessionCwd(

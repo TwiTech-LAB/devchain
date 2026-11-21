@@ -21,9 +21,12 @@ import {
   VAULT_REQUEST_FRAME_TYPES,
   approveVaultRequest,
   denyVaultRequest,
+  fetchVaultRequestCandidates,
   fetchVaultRequests,
   fulfillVaultRequest,
+  vaultRequestCandidatesQueryKey,
   vaultRequestsQueryKey,
+  type VaultRequestCandidate,
   type VaultRequestView,
   type VaultUseDecision,
 } from '@/ui/lib/vault-requests';
@@ -233,7 +236,7 @@ function UseRequestForm({ request, onAnswered, onLater }: AnswerFormProps) {
             onClick={() => approve.mutate('family')}
             disabled={busy}
           >
-            Never ask for this role
+            Always approve for this role
           </Button>
         )}
         {request.kind === 'file' ? null : (
@@ -260,28 +263,107 @@ function submitLabelFor(isCreate: boolean, permanent: boolean): string {
   return permanent ? 'Store and give' : 'Give for this session';
 }
 
+type CreateAnswer = 'value' | 'entry';
+
+function ExistingEntryPicker({
+  candidates,
+  selectedId,
+  agentName,
+  onSelect,
+  disabled,
+}: {
+  candidates: VaultRequestCandidate[];
+  selectedId: string | null;
+  agentName: string;
+  onSelect: (id: string) => void;
+  disabled: boolean;
+}) {
+  return (
+    <fieldset className="space-y-2">
+      <legend className="text-sm font-medium">Existing entry</legend>
+      <div className="max-h-60 space-y-1 overflow-y-auto rounded-md border p-1">
+        {candidates.map((candidate) => (
+          <label
+            key={candidate.id}
+            className="flex cursor-pointer items-start gap-2 rounded px-2 py-1.5 text-sm hover:bg-muted"
+          >
+            <input
+              type="radio"
+              name="vault-request-entry"
+              className="mt-1"
+              checked={candidate.id === selectedId}
+              disabled={disabled}
+              onChange={() => onSelect(candidate.id)}
+            />
+            <span className="min-w-0 space-y-0.5">
+              <span className="block">
+                <span className="font-mono">{candidate.name}</span>
+                <span className="text-muted-foreground">
+                  {` · ${candidate.kind} · ${candidate.ownerProjectName ?? 'Shared'}`}
+                </span>
+                {candidate.alreadyAvailable ? (
+                  <span className="text-muted-foreground">{` · already available to ${agentName}`}</span>
+                ) : null}
+              </span>
+              {candidate.description ? (
+                <span className="block text-muted-foreground">{candidate.description}</span>
+              ) : null}
+            </span>
+          </label>
+        ))}
+      </div>
+    </fieldset>
+  );
+}
+
 function RequestForm({ request, onAnswered, onLater }: AnswerFormProps) {
   const { toast } = useToast();
   const queryClient = useHomeQueryClient();
   const [value, setValue] = useState('');
   const [permanent, setPermanent] = useState(true);
   const [reason, setReason] = useState('');
+  const [answer, setAnswer] = useState<CreateAnswer>('value');
+  const [selectedId, setSelectedId] = useState<string | null>(null);
   const isCreate = request.type === 'create';
+
+  const { data: candidates = [] } = useQuery(
+    {
+      queryKey: vaultRequestCandidatesQueryKey(request.requestId),
+      queryFn: () => fetchVaultRequestCandidates(request.requestId),
+      enabled: isCreate,
+    },
+    queryClient,
+  );
+  // The user's selection wins while the reloaded list still holds it; otherwise the
+  // entry with the requested name is the default.
+  const selected =
+    candidates.find((candidate) => candidate.id === selectedId) ??
+    candidates.find((candidate) => candidate.name === request.name) ??
+    null;
+  const useEntry = isCreate && answer === 'entry' && candidates.length > 0;
+  const grantedName = useEntry ? (selected?.name ?? request.name) : request.name;
   // A permanent answer is a grant to the requester's family; without one, to all agents.
-  const allAgentsScope = request.familySlug === null && (permanent || !isCreate);
+  const allAgentsScope = request.familySlug === null && (permanent || !isCreate || useEntry);
+  // The project that owns the selected entry now, when the answer makes the entry shared.
+  const sharedFrom =
+    useEntry && selected?.ownerProjectId && selected.ownerProjectId !== request.projectId
+      ? selected.ownerProjectName
+      : null;
 
   const fulfill = useMutation(
     {
       // The mutationFn closure holds the secret; drop it from the MutationCache
       // as soon as the mutation settles instead of the default 5-minute gcTime.
       gcTime: 0,
-      mutationFn: () =>
-        fulfillVaultRequest(
-          request.requestId,
-          isCreate ? { value, permanent } : { permanent: true },
-        ),
-      onSuccess: () => {
-        toast({ title: `${request.agentName} can now use ${request.name}.` });
+      mutationFn: () => {
+        if (!isCreate) return fulfillVaultRequest(request.requestId, { permanent: true });
+        if (useEntry && selected) {
+          return fulfillVaultRequest(request.requestId, { entryId: selected.id, permanent: true });
+        }
+        return fulfillVaultRequest(request.requestId, { value, permanent });
+      },
+      onSuccess: (result) => {
+        toast({ title: `${request.agentName} can now use ${result.entryName ?? request.name}.` });
         onAnswered();
       },
       onError: () => onAnswered(),
@@ -290,10 +372,11 @@ function RequestForm({ request, onAnswered, onLater }: AnswerFormProps) {
   );
   const deny = useDenyRequest(request, onAnswered);
   const busy = fulfill.isPending || deny.isPending;
+  const canSubmit = !isCreate || (useEntry ? selected !== null : value !== '');
 
   const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    if (isCreate && value === '') return;
+    if (!canSubmit) return;
     fulfill.mutate();
   };
 
@@ -311,7 +394,41 @@ function RequestForm({ request, onAnswered, onLater }: AnswerFormProps) {
 
       <AgentReason description={request.description} />
 
-      {isCreate ? (
+      {isCreate && candidates.length > 0 ? (
+        <fieldset className="space-y-2">
+          <legend className="text-sm font-medium">Answer with</legend>
+          <label className="flex items-center gap-2 text-sm">
+            <input
+              type="radio"
+              name="vault-request-answer"
+              checked={!useEntry}
+              disabled={busy}
+              onChange={() => setAnswer('value')}
+            />
+            Enter a new value
+          </label>
+          <label className="flex items-center gap-2 text-sm">
+            <input
+              type="radio"
+              name="vault-request-answer"
+              checked={useEntry}
+              disabled={busy}
+              onChange={() => setAnswer('entry')}
+            />
+            Use an existing entry
+          </label>
+        </fieldset>
+      ) : null}
+
+      {useEntry ? (
+        <ExistingEntryPicker
+          candidates={candidates}
+          selectedId={selected?.id ?? null}
+          agentName={request.agentName}
+          onSelect={setSelectedId}
+          disabled={busy}
+        />
+      ) : isCreate ? (
         <>
           <ValueField
             id="vault-request-value"
@@ -352,11 +469,21 @@ function RequestForm({ request, onAnswered, onLater }: AnswerFormProps) {
         </div>
       )}
 
+      {sharedFrom ? (
+        <Alert variant="warn" className="py-2">
+          <AlertDescription>
+            {`This entry belongs to ${sharedFrom}. If you select it, it becomes a shared entry. Every project can then see and grant it.`}
+          </AlertDescription>
+        </Alert>
+      ) : null}
+
       {allAgentsScope ? (
         <Alert variant="warn" className="py-2">
           <AlertDescription>
-            {`${request.agentName}'s profile has no role, so this gives ${request.name} to all agents of ${request.projectName}.`}
-            {isCreate ? ' Choose "This session only" to give it to this agent only.' : null}
+            {`${request.agentName}'s profile has no role, so this gives ${grantedName} to all agents of ${request.projectName}.`}
+            {isCreate && !useEntry
+              ? ' Choose "This session only" to give it to this agent only.'
+              : null}
           </AlertDescription>
         </Alert>
       ) : null}
@@ -366,8 +493,8 @@ function RequestForm({ request, onAnswered, onLater }: AnswerFormProps) {
       <FormError error={fulfill.error ?? deny.error} />
       <DialogFooter className="gap-2">
         <LaterDenyButtons busy={busy} onLater={onLater} onDeny={() => deny.mutate(reason)} />
-        <Button type="submit" disabled={busy || (isCreate && value === '')}>
-          {submitLabelFor(isCreate, permanent)}
+        <Button type="submit" disabled={busy || !canSubmit}>
+          {submitLabelFor(isCreate && !useEntry, permanent)}
         </Button>
       </DialogFooter>
     </form>

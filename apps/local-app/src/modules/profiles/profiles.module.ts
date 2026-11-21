@@ -4,10 +4,11 @@ import { ProviderConfigsController } from './controllers/provider-configs.contro
 import { StorageModule } from '../storage/storage.module';
 import { SettingsModule } from '../settings/settings.module';
 import { ProviderConfigsService } from './services/provider-configs.service';
+import { ProfilesService } from './services/profiles.service';
 
 @Module({
   imports: [StorageModule, SettingsModule],
   controllers: [ProfilesController, ProviderConfigsController],
-  providers: [ProviderConfigsService],
+  providers: [ProfilesService, ProviderConfigsService],
 })
 export class ProfilesModule {}

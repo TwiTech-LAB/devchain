@@ -355,38 +355,30 @@ export class VaultEntryStorageDelegate extends BaseStorageDelegate implements Va
   ): Promise<VaultEntryGrant[]> {
     return this.txRunner.runImmediateQueuedOrJoin(() => {
       this.requireGrantableSync(this.requireEntrySync(entryId), projectId);
-      this.requireProjectSync(projectId);
-      const now = new Date().toISOString();
-      if (familySlug === null) {
-        // "All agents" covers every family row, so it replaces them.
-        this.replaceProjectGrantsSync(entryId, projectId, { mode: 'all' }, now);
-        return this.listGrantsSync(entryId);
-      }
-      const coveredByAll = this.rawClient
-        .prepare(
-          `SELECT 1 FROM vault_entry_grants
-           WHERE entry_id = ? AND project_id = ? AND family_slug IS NULL`,
-        )
-        .get(entryId, projectId);
-      const [slug] = this.requireProjectFamiliesSync(projectId, [familySlug], {
-        held: `SELECT family_slug AS slug FROM vault_entry_grants
-               WHERE entry_id = @entryId AND project_id = @projectId AND family_slug IS NOT NULL`,
-        params: { entryId },
-        code: 'VAULT_GRANT_UNKNOWN_FAMILY',
-      });
-      if (!coveredByAll) {
-        this.rawClient
-          .prepare(
-            `INSERT INTO vault_entry_grants (id, entry_id, project_id, family_slug, created_at)
-             SELECT ?, ?, ?, ?, ? WHERE NOT EXISTS (
-               SELECT 1 FROM vault_entry_grants
-               WHERE entry_id = ? AND project_id = ? AND family_slug = ?
-             )`,
-          )
-          .run(randomUUID(), entryId, projectId, slug, now, entryId, projectId, slug);
-      }
-      logger.info({ entryId, projectId, mode: 'add-family' }, 'Added vault entry grant');
+      this.addGrantSync(entryId, projectId, familySlug);
       return this.listGrantsSync(entryId);
+    });
+  }
+
+  async grantVaultEntryToRequester(
+    entryId: string,
+    projectId: string,
+    familySlug: string | null,
+  ): Promise<VaultEntry> {
+    return this.txRunner.runImmediateQueuedOrJoin(() => {
+      const current = this.requireEntrySync(entryId);
+      const shares = current.project_id !== null && current.project_id !== projectId;
+      if (shares) {
+        // Same owner change as `updateVaultEntry`: the id, value, revision and grants stay.
+        this.translateNameConflict(current.name, null, () =>
+          this.rawClient
+            .prepare('UPDATE vault_entries SET project_id = NULL, updated_at = ? WHERE id = ?')
+            .run(new Date().toISOString(), entryId),
+        );
+      }
+      this.addGrantSync(entryId, projectId, familySlug);
+      logger.info({ entryId, projectId, ownerChanged: shares }, 'Granted vault entry to requester');
+      return mapEntry(this.requireEntrySync(entryId));
     });
   }
 
@@ -653,6 +645,44 @@ export class VaultEntryStorageDelegate extends BaseStorageDelegate implements Va
         code: 'VAULT_GRANT_OTHER_PROJECT',
       });
     }
+  }
+
+  /**
+   * Adds one grant and keeps the entry's other grants in the project; the caller checks
+   * the owner. Writes nothing when an "all agents" row already covers the grant.
+   */
+  private addGrantSync(entryId: string, projectId: string, familySlug: string | null): void {
+    this.requireProjectSync(projectId);
+    const coveredByAll = this.rawClient
+      .prepare(
+        `SELECT 1 FROM vault_entry_grants
+         WHERE entry_id = ? AND project_id = ? AND family_slug IS NULL`,
+      )
+      .get(entryId, projectId);
+    const now = new Date().toISOString();
+    if (familySlug === null) {
+      // "All agents" covers every family row, so it replaces them.
+      if (!coveredByAll) this.replaceProjectGrantsSync(entryId, projectId, { mode: 'all' }, now);
+      return;
+    }
+    const [slug] = this.requireProjectFamiliesSync(projectId, [familySlug], {
+      held: `SELECT family_slug AS slug FROM vault_entry_grants
+             WHERE entry_id = @entryId AND project_id = @projectId AND family_slug IS NOT NULL`,
+      params: { entryId },
+      code: 'VAULT_GRANT_UNKNOWN_FAMILY',
+    });
+    if (!coveredByAll) {
+      this.rawClient
+        .prepare(
+          `INSERT INTO vault_entry_grants (id, entry_id, project_id, family_slug, created_at)
+           SELECT ?, ?, ?, ?, ? WHERE NOT EXISTS (
+             SELECT 1 FROM vault_entry_grants
+             WHERE entry_id = ? AND project_id = ? AND family_slug = ?
+           )`,
+        )
+        .run(randomUUID(), entryId, projectId, slug, now, entryId, projectId, slug);
+    }
+    logger.info({ entryId, projectId, mode: 'add-family' }, 'Added vault entry grant');
   }
 
   /** Replaces the grants of one entry in one project; the caller checks the owner. */

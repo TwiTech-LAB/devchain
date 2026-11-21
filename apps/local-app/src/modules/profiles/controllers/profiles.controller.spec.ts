@@ -7,6 +7,8 @@ import { Agent, AgentProfile, ProfileProviderConfig } from '../../storage/models
 import { AgentProfileWithPrompts } from '../dto';
 import { ProjectWriteGate } from '../../storage/write-gate/project-write-gate';
 import { createProjectWriteGateStub } from '../../storage/write-gate/testing/project-write-gate.stub';
+import { ProfilesService } from '../services/profiles.service';
+import { SettingsService } from '../../settings/services/settings.service';
 jest.mock('../../../common/logging/logger', () => ({
   createLogger: () => ({ info: jest.fn(), error: jest.fn(), warn: jest.fn(), debug: jest.fn() }),
 }));
@@ -98,6 +100,8 @@ describe('ProfilesController', () => {
     const module: TestingModule = await Test.createTestingModule({
       controllers: [ProfilesController],
       providers: [
+        ProfilesService,
+        { provide: SettingsService, useValue: {} },
         { provide: ProjectWriteGate, useValue: createProjectWriteGateStub() },
         {
           provide: STORAGE_SERVICE,

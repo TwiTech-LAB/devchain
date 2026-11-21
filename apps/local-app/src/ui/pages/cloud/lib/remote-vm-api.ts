@@ -6,6 +6,7 @@ import type {
   ProviderAuthGenerationView,
   StartProviderAuthGenerationInput,
   ProjectFileSyncFailures,
+  ManagedExclusionRow,
   FileSyncAutoFix,
   ProjectIgnores,
   SaveProjectIgnoresResult,
@@ -46,6 +47,11 @@ import type {
   UpdateLoginsRequestBody,
   VmProviderConnectionView,
   RemoteNoticeDto,
+  FolderList,
+  CreateSharedFolderRequest,
+  SharedFolderDto,
+  SharedFolderEntry,
+  StopSharingResult,
 } from './remote-vm-contracts';
 import type {
   SharedVmGuardContext,
@@ -134,6 +140,11 @@ export interface RemoteVmApi {
   ): Promise<ProjectFileSyncFailures>;
   readFileSyncAutoFix(projectId: string, signal: AbortSignal): Promise<FileSyncAutoFix>;
   setFileSyncAutoFix(projectId: string, enabled: boolean): Promise<FileSyncAutoFix>;
+  readManagedExclusions(
+    projectId: string,
+    remoteId: string | undefined,
+    signal: AbortSignal,
+  ): Promise<{ exclusions: ManagedExclusionRow[] }>;
   readProjectIgnores(projectId: string, signal: AbortSignal): Promise<ProjectIgnores>;
   saveProjectIgnores(
     projectId: string,
@@ -174,4 +185,17 @@ export interface RemoteVmApi {
     signal: AbortSignal,
   ): Promise<DockerSyncState | null>;
   readConnectChoices(projectId: string, signal: AbortSignal): Promise<ConnectChoicesDto>;
+  listSharedFolders(remoteId: string, signal: AbortSignal): Promise<SharedFolderDto[]>;
+  shareFolder(remoteId: string, input: CreateSharedFolderRequest): Promise<RemoteOperationDto>;
+  stopSharingFolder(remoteId: string, shareId: string): Promise<StopSharingResult>;
+  saveSharedFolderIgnores(
+    remoteId: string,
+    shareId: string,
+    ignores: string[],
+  ): Promise<SharedFolderEntry>;
+  /** Subfolders of a folder under this PC's home; always this PC, never the selected backend. */
+  listFolders(
+    input: { path?: string; showHidden: boolean },
+    signal: AbortSignal,
+  ): Promise<FolderList>;
 }

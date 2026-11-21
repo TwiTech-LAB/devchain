@@ -18,6 +18,12 @@ export interface TemplateFormData {
   workspaceId: string;
 }
 
+/** Last segment of a folder path with `/` or `\` separators, ignoring trailing separators. */
+export function projectNameFromPath(path: string): string {
+  const segments = path.split(/[\\/]+/).filter(Boolean);
+  return segments.at(-1) ?? '';
+}
+
 export interface TemplatePathValidation {
   isAbsolute: boolean;
   exists: boolean;
@@ -39,7 +45,10 @@ interface UseTemplateFormArgs {
 interface UseTemplateFormResult {
   templateSourceTab: 'template' | 'file';
   setTemplateSourceTab: React.Dispatch<React.SetStateAction<'template' | 'file'>>;
+  /** Form values; `name` comes from the folder until the user edits the Name field. */
   templateFormData: TemplateFormData;
+  /** True while `templateFormData.name` comes from the folder. */
+  isNameAutomatic: boolean;
   setTemplateFormData: React.Dispatch<React.SetStateAction<TemplateFormData>>;
   templatePathValidation: TemplatePathValidation;
   templateFilePathValidation: TemplateFilePathValidation;
@@ -47,6 +56,7 @@ interface UseTemplateFormResult {
   sortedVersions: string[];
   resetTemplateForm: () => void;
   handleOpenTemplateDialog: () => void;
+  handleNameChange: (name: string) => void;
   handleTemplatePathChange: (path: string) => Promise<void>;
   handleTemplateFilePathChange: (path: string) => Promise<void>;
   submitTemplate: (submit: (payload: CreateFromTemplateInput) => void) => void;
@@ -60,7 +70,7 @@ export function useTemplateForm({
   toast,
 }: UseTemplateFormArgs): UseTemplateFormResult {
   const [templateSourceTab, setTemplateSourceTab] = useState<'template' | 'file'>('template');
-  const [templateFormData, setTemplateFormData] = useState<TemplateFormData>({
+  const [formState, setTemplateFormData] = useState<TemplateFormData>({
     name: '',
     description: '',
     rootPath: '',
@@ -82,6 +92,12 @@ export function useTemplateForm({
       isFile: false,
     });
   const latestTemplatePathRef = useRef('');
+  const [isNameEdited, setIsNameEdited] = useState(false);
+  const templateFormData = useMemo(
+    () =>
+      isNameEdited ? formState : { ...formState, name: projectNameFromPath(formState.rootPath) },
+    [formState, isNameEdited],
+  );
 
   const resetTemplateForm = () => {
     setTemplateFormData({
@@ -101,7 +117,13 @@ export function useTemplateForm({
       isFile: false,
     });
     setTemplateSourceTab('template');
+    setIsNameEdited(false);
     latestTemplatePathRef.current = '';
+  };
+
+  const handleNameChange = (name: string) => {
+    setIsNameEdited(true);
+    setTemplateFormData((prev) => ({ ...prev, name }));
   };
 
   const handleOpenTemplateDialog = () => {
@@ -268,6 +290,7 @@ export function useTemplateForm({
     templateSourceTab,
     setTemplateSourceTab,
     templateFormData,
+    isNameAutomatic: !isNameEdited,
     setTemplateFormData,
     templatePathValidation,
     templateFilePathValidation,
@@ -275,6 +298,7 @@ export function useTemplateForm({
     sortedVersions,
     resetTemplateForm,
     handleOpenTemplateDialog,
+    handleNameChange,
     handleTemplatePathChange,
     handleTemplateFilePathChange,
     submitTemplate,

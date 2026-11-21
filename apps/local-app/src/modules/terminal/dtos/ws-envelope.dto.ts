@@ -123,6 +123,83 @@ export const TerminalPromptPasteAckSchema = z.discriminatedUnion('ok', [
 
 export type TerminalPromptPasteAck = z.infer<typeof TerminalPromptPasteAckSchema>;
 
+export const IMAGE_PASTE_TIMEOUT_MS = 5000;
+export const formSendTimeoutMs = (segments: number) => 15_000 + 4000 * segments;
+
+export const ImageGestureSchema = z
+  .object({
+    sessionId: z.string().uuid(),
+    projectId: z.string().uuid(),
+    gestureId: z.string().uuid(),
+  })
+  .strict();
+export type ImageGesture = z.infer<typeof ImageGestureSchema>;
+
+export const ImagePasteInputSchema = ImageGestureSchema.extend({
+  kind: z.literal('image-paste'),
+  index: z.number().int().nonnegative(),
+  attachmentId: z.string().max(41),
+}).strict();
+export type ImagePasteInput = z.infer<typeof ImagePasteInputSchema>;
+
+export const ImagePasteAckSchema = z
+  .object({
+    gestureId: z.string(),
+    index: z.number().int(),
+    status: z.enum([
+      'ready',
+      'delivered',
+      'recognized',
+      'unconfirmed',
+      'uncertain',
+      'stale',
+      'failed',
+      'busy',
+    ]),
+  })
+  .strict();
+export type ImagePasteAck = z.infer<typeof ImagePasteAckSchema>;
+
+export const FormSendInputSchema = z
+  .object({
+    kind: z.literal('form-send'),
+    sessionId: z.string().uuid(),
+    projectId: z.string().uuid(),
+    sendId: z.string().uuid(),
+    resume: z.boolean(),
+    segments: z
+      .array(
+        z.discriminatedUnion('kind', [
+          z
+            .object({
+              kind: z.literal('text'),
+              text: z
+                .string()
+                .min(1)
+                .regex(/^[^\x00-\x08\x0b\x0c\x0e-\x1f\x7f]*$/),
+            })
+            .strict(),
+          z.object({ kind: z.literal('image'), attachmentId: z.string().min(1).max(41) }).strict(),
+        ]),
+      )
+      .min(1)
+      .max(129)
+      .refine((items) => items.some((item) => item.kind === 'image')),
+  })
+  .strict();
+export type FormSendInput = z.infer<typeof FormSendInputSchema>;
+export type FormSegment = FormSendInput['segments'][number];
+
+export const FormSendAckSchema = z
+  .object({
+    sendId: z.string(),
+    status: z.enum(['submitted', 'retryable', 'rejected', 'inspect']),
+    confirmedSegments: z.number().int().nonnegative(),
+    acknowledgedImages: z.number().int().nonnegative(),
+  })
+  .strict();
+export type FormSendAck = z.infer<typeof FormSendAckSchema>;
+
 /**
  * Full history request payload (scroll-up history request).
  *

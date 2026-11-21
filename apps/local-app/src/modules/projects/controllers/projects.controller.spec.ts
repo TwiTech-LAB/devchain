@@ -1162,7 +1162,7 @@ describe('ProjectsController', () => {
       ];
       settingsService.getProjectPresets.mockReturnValue(presets);
 
-      const applyResult = { applied: 1, warnings: [] };
+      const applyResult = { applied: 1, warnings: [], teamsApplied: 0 };
       projectsService.applyPreset.mockResolvedValue(applyResult);
 
       const updatedAgents = [
@@ -1191,6 +1191,7 @@ describe('ProjectsController', () => {
 
       expect(result).toEqual({
         applied: 1,
+        teamsApplied: 0,
         warnings: [],
         agents: updatedAgents,
       });
@@ -1211,7 +1212,11 @@ describe('ProjectsController', () => {
       ];
       settingsService.getProjectPresets.mockReturnValue(presets);
 
-      const applyResult = { applied: 0, warnings: ['Agent "MissingAgent" not found in project'] };
+      const applyResult = {
+        applied: 0,
+        warnings: ['Agent "MissingAgent" not found in project'],
+        teamsApplied: 0,
+      };
       projectsService.applyPreset.mockResolvedValue(applyResult);
 
       storage.listAgents.mockResolvedValue({ items: [], total: 0, limit: 1000, offset: 0 });
@@ -1239,15 +1244,6 @@ describe('ProjectsController', () => {
         { agentName: 'Reviewer', providerConfigName: 'agy-config' },
       ],
     };
-
-    it('creates preset with valid data', async () => {
-      storage.getProject.mockResolvedValue(makeProject({ id: 'p1' }));
-
-      const result = await controller.createPreset('p1', validPreset);
-
-      expect(result).toEqual(validPreset);
-      expect(createProjectPresetMock).toHaveBeenCalledWith('p1', validPreset);
-    });
 
     it('throws ConflictException when name already exists', async () => {
       storage.getProject.mockResolvedValue(makeProject({ id: 'p1' }));

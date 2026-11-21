@@ -348,6 +348,7 @@ export const REMOTE_OPERATION_KIND_IDS = [
   'detach',
   'disconnect_all',
   'force_sync',
+  'share_folder',
   'git_owner',
   'create_vm',
   'destroy_vm',

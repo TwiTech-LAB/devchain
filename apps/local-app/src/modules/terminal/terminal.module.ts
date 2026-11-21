@@ -20,9 +20,14 @@ import { HumanPromptStateService } from './services/human-prompt-state.service';
 import { StandaloneTerminalService } from './services/standalone-terminal.service';
 import { ProcessExecutorModule } from './services/process-executor/process-executor.module';
 import { HooksModule } from '../hooks/hooks.module';
+import { TerminalImageInputService } from './services/terminal-image-input.service';
+import { RuntimeDirectoryModule } from '../runtime-directory/runtime-directory.module';
+import { StorageModule } from '../storage/storage.module';
 
 @Module({
   imports: [
+    RuntimeDirectoryModule,
+    StorageModule,
     SessionRowsModule,
     TerminalDeliveryModule,
     ProcessExecutorModule,
@@ -34,6 +39,7 @@ import { HooksModule } from '../hooks/hooks.module';
     HooksModule,
   ],
   providers: [
+    TerminalImageInputService,
     TerminalStreamService,
     PtyService,
     TerminalGateway,

@@ -13,6 +13,11 @@ export const FileSyncAutoFixActionSchema = z.discriminatedUnion('kind', [
     kind: z.literal('chown'),
     paths: z.array(z.string()).max(200),
   }),
+  z.object({
+    at: action.at,
+    kind: z.literal('docker-exclusion-removed'),
+    patterns: IgnorePatternsSchema,
+  }),
 ]);
 export type FileSyncAutoFixAction = z.infer<typeof FileSyncAutoFixActionSchema>;
 export const FileSyncAutoFixSchema = z.object({

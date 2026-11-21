@@ -38,6 +38,7 @@ import { DB_CONNECTION } from '../storage/db/db.provider';
 import { DEFAULT_PROJECT_WORKSPACE_ID } from '../storage/db/schema';
 import { STORAGE_SERVICE } from '../storage/interfaces/storage.interface';
 import { LocalStorageService } from '../storage/local/local-storage.service';
+import type { VaultEntryProjectAccess } from '../storage/models/domain.models';
 import { SessionRowStore } from '../storage/sessions/session-row.store';
 import { VaultAccessService } from '../vault/vault-access.service';
 import { VaultDiscoveryService } from '../vault/vault-discovery.service';
@@ -53,7 +54,10 @@ import { VAULT_SESSION_OVERLAY } from '../vault/vault-session-overlay';
 import { VaultSessionValueStore } from '../vault/vault-session-values';
 import { VaultValueReader } from '../vault/vault-value-reader';
 import { VaultVmCacheService } from '../vault/vault-vm-cache.service';
-import { VaultRequestFulfillService } from './vault-request-fulfill.service';
+import {
+  VaultRequestFulfillService,
+  type VaultRequestCandidate,
+} from './vault-request-fulfill.service';
 import { VaultRequestNotifierSubscriber } from './vault-request-notifier.subscriber';
 import { VaultRequestService } from './vault-request.service';
 import { VaultRequestStore } from './vault-request.store';
@@ -65,6 +69,9 @@ const PERMANENT_CANARY = 'canary-permanent-6b1e';
 const SESSION_CANARY = 'canary-session-only-93fd';
 const PHONE_CANARY = 'canary-phone-5c0a';
 const VM_CANARY = 'canary-vm-answer-2d7e';
+const EXISTING_CANARY = 'canary-existing-entry-41af';
+/** A phone limited to the workspace of projects A and B; project C is outside it. */
+const DEVICE_SCOPE = { allowedWorkspaceIds: new Set([DEFAULT_PROJECT_WORKSPACE_ID]) };
 
 describe('Vault request answers', () => {
   let app: NestFastifyApplication;
@@ -78,6 +85,7 @@ describe('Vault request answers', () => {
   let sharedId: string;
   let claimed = false;
   const published: Array<{ name: EventName; payload: unknown }> = [];
+  const candidateBodies: string[] = [];
   const deliver = jest.fn().mockResolvedValue({ status: 'delivered', results: [] });
   const pushConfirmed = jest.fn<Promise<void>, [string]>();
   const resolveVaultRequest = jest.fn<Promise<void>, [string, string, unknown]>();
@@ -90,6 +98,10 @@ describe('Vault request answers', () => {
     const insert = (sql: string) => sqlite.prepare(sql).run();
     insert(`INSERT INTO projects (id, name, root_path, created_at, updated_at)
             VALUES ('A', 'Project A', '/tmp/A', 'T', 'T')`);
+    insert(`INSERT INTO project_workspaces (id, name, is_default, position, created_at, updated_at)
+            VALUES ('ws-other', 'Other', 0, 1, 'T', 'T')`);
+    insert(`INSERT INTO projects (id, name, root_path, workspace_id, created_at, updated_at)
+            VALUES ('C', 'Project C', '/tmp/C', 'ws-other', 'T', 'T')`);
     insert(`INSERT INTO agent_profiles (id, project_id, name, family_slug, created_at, updated_at)
             VALUES ('p-coder', 'A', 'Coder', 'coder', 'T', 'T'),
                    ('p-reviewer', 'A', 'Reviewer', 'reviewer', 'T', 'T'),
@@ -242,6 +254,18 @@ describe('Vault request answers', () => {
     await settle();
     return deliver.mock.calls.map((call) => (call[1] as { body: string }).body);
   };
+  /** A shared entry whose only grant is in project C, outside `DEVICE_SCOPE`. */
+  async function sharedOnlyInC(name: string): Promise<string> {
+    const { id } = await app.get(VaultEntriesService).createEntry({
+      projects: [],
+      name,
+      kind: 'secret',
+      description: `${name} entry`,
+      value: EXISTING_CANARY,
+    });
+    await storage.addVaultEntryGrant(id, 'C', null);
+    return id;
+  }
   async function pendingId(name: string, sessionId = CODER, agentId = 'a-coder') {
     const result = await ask(name, sessionId, agentId);
     if (!('requestId' in result)) throw new Error(`${name} is already available`);
@@ -354,6 +378,7 @@ describe('Vault request answers', () => {
         status: 'fulfilled',
         permanent: false,
         entryId: null,
+        entryName: null,
       });
       expect((await resolveValues(CODER, ['SESSION_TOKEN'])).json().env).toEqual({
         SESSION_TOKEN: SESSION_CANARY,
@@ -905,6 +930,48 @@ describe('Vault request answers', () => {
       expect(resolvedStatus(requestId)).toEqual(['fulfilled']);
     });
 
+    it('keeps an existing-entry answer pending when the push fails, and the same answer then ends it on the VM', async () => {
+      const { id: entryId } = await app.get(VaultEntriesService).createEntry({
+        projects: [],
+        name: 'VM_EXISTING',
+        kind: 'secret',
+        description: 'VM_EXISTING entry',
+        value: VM_CANARY,
+      });
+      const requestId = await mirror('VM_WANTED');
+      pushConfirmed.mockRejectedValueOnce(new VaultUnavailableError('locked'));
+      const fulfill = () => post(`${requestId}/fulfill`, { entryId, permanent: true });
+
+      const failed = await fulfill();
+
+      expect([failed.statusCode, failed.json().code]).toEqual([503, 'vault_unavailable']);
+      expect(store.get(requestId)).not.toBeNull();
+      const granted = await storage.listVaultEntryGrants(entryId);
+      expect(granted).toEqual([{ projectId: 'A', familySlug: 'coder', familyMatched: true }]);
+
+      const retried = await fulfill();
+
+      expect([retried.statusCode, retried.json()]).toEqual([
+        200,
+        { requestId, status: 'fulfilled', permanent: true, entryId, entryName: 'VM_EXISTING' },
+      ]);
+      expect(await storage.listVaultEntryGrants(entryId)).toEqual(granted);
+      expect(pushConfirmed).toHaveBeenCalledTimes(2);
+      expect(resolveVaultRequest.mock.calls).toEqual([
+        ['vm-1', requestId, { status: 'fulfilled', entryId }],
+      ]);
+      expect(eventsFor('vault.request.resolved', requestId)).toEqual([
+        expect.objectContaining({
+          payload: expect.objectContaining({
+            status: 'fulfilled',
+            grantedName: 'VM_EXISTING',
+            grantedKind: 'secret',
+          }),
+        }),
+      ]);
+      expect(await noticeBody()).toEqual([]);
+    });
+
     it('runs the work of one answer only when the web fulfills and the phone denies at once', async () => {
       const requestId = await mirror('VM_RACED');
 
@@ -955,6 +1022,24 @@ describe('Vault request answers', () => {
 
       expect((await post(`${requestId}/deny`)).statusCode).toBe(204);
       expect(resolvedStatus(requestId)).toEqual(['denied']);
+    });
+
+    it('refuses a grant answer by name for an entry outside the device scope and keeps the request', async () => {
+      const entryId = await sharedOnlyInC('VM_C_ONLY');
+      const requestId = await mirror('VM_C_ONLY', 'grant');
+
+      await expect(
+        app.get(VaultRequestFulfillService).fulfill(requestId, { permanent: true }, DEVICE_SCOPE),
+      ).rejects.toMatchObject({ statusCode: 409, details: { code: 'VAULT_REQUEST_NOT_PENDING' } });
+
+      expect(await storage.listVaultEntryGrants(entryId)).toEqual([
+        { projectId: 'C', familySlug: null, familyMatched: true },
+      ]);
+      expect([pushConfirmed, resolveVaultRequest].map((mock) => mock.mock.calls.length)).toEqual([
+        0, 0,
+      ]);
+      expect(store.get(requestId)).not.toBeNull();
+      await post(`${requestId}/deny`);
     });
 
     it('gives the phone the VM refusal codes of a session-only answer and keeps the request', async () => {
@@ -1083,19 +1168,379 @@ describe('Vault request answers', () => {
     });
   });
 
+  describe('answers with an existing entry', () => {
+    const ids: Record<string, string> = {};
+    const otherNameNotice = (requested: string, granted: string) =>
+      `Secret ${requested} is available under the name ${granted} — use devchain vault exec --only ${granted} -- <cmd>. If a tool reads $${requested}, set it inside the command: devchain vault exec --only ${granted} -- sh -c '${requested}="$${granted}" <cmd>'.`;
+    const grantRows = (entryId: string) =>
+      sqlite
+        .prepare('SELECT * FROM vault_entry_grants WHERE entry_id = ? ORDER BY id')
+        .all(entryId);
+    const candidates = async (requestId: string) => {
+      const response = await app.inject({
+        method: 'GET',
+        url: `/api/vault/requests/${requestId}/candidates`,
+      });
+      candidateBodies.push(response.body);
+      return response;
+    };
+
+    beforeAll(async () => {
+      sqlite
+        .prepare(
+          `INSERT INTO projects (id, name, root_path, created_at, updated_at)
+           VALUES ('B', 'Project B', '/tmp/B', 'T', 'T')`,
+        )
+        .run();
+      const inB = [{ projectId: 'B', mode: 'all' as const }];
+      const toFamily = (familySlug: string) => ({
+        projectId: 'A',
+        mode: 'families' as const,
+        familySlugs: [familySlug],
+      });
+      const entries: Array<[string, string, VaultEntryProjectAccess[]]> = [
+        ['other', 'B_DEPLOY', inB],
+        ['given', 'GIVEN_KEY', [toFamily('coder'), ...inB]],
+        ['dupOwn', 'DUP_KEY', [toFamily('coder')]],
+        ['dupShared', 'DUP_KEY', []],
+        ['takenShared', 'TAKEN_KEY', []],
+        ['takenOther', 'TAKEN_KEY', inB],
+        ['sessionNamed', 'SESSION_NAMED', inB],
+        ['reviewerKey', 'REVIEWER_KEY', [toFamily('reviewer')]],
+        ['team', 'TEAM_TOKEN', [toFamily('reviewer'), ...inB]],
+        ['bOnly', 'B_ONLY', inB],
+        ['bRefused', 'B_REFUSED', inB],
+        ['scopeB', 'SCOPE_B', inB],
+        ['scopeC', 'SCOPE_C', [{ projectId: 'C', mode: 'all' }]],
+        ['scopeSharedB', 'SCOPE_SHARED_B', [...inB, { projectId: 'C', mode: 'all' }]],
+        ['scopeUngranted', 'SCOPE_UNGRANTED', []],
+        ['scopeHeldB', 'SCOPE_HELD', inB],
+      ];
+      for (const [key, name, projects] of entries) {
+        ids[key] = (
+          await app.get(VaultEntriesService).createEntry({
+            projects,
+            name,
+            kind: 'secret',
+            description: `${name} entry`,
+            value: EXISTING_CANARY,
+          })
+        ).id;
+      }
+      ids.scopeSharedC = await sharedOnlyInC('SCOPE_SHARED_C');
+      ids.scopeHeldShared = await sharedOnlyInC('SCOPE_HELD');
+      app.get(VaultSessionValueStore).set(CODER, {
+        name: 'SESSION_NAMED',
+        kind: 'secret',
+        description: 'Session value',
+        value: Buffer.from('session-named-value'),
+      });
+    });
+    afterEach(async () => {
+      for (const request of app.get(VaultRequestStore).listPending()) {
+        await post(`${request.requestId}/deny`);
+      }
+    });
+    afterAll(() => {
+      app.get(VaultSessionValueStore).onSessionStopped({ sessionId: CODER } as never);
+    });
+
+    it('lists the entries that can answer a create request, the exact name first', async () => {
+      const listed = (await candidates(await pendingId('B_DEPLOY'))).json() as Array<{
+        id: string;
+        name: string;
+      }>;
+      const entryOf = (key: string) => listed.find((c) => c.id === ids[key]) ?? 'left out';
+
+      expect(listed[0]).toEqual({
+        id: ids.other,
+        name: 'B_DEPLOY',
+        kind: 'secret',
+        description: 'B_DEPLOY entry',
+        ownerProjectId: 'B',
+        ownerProjectName: 'Project B',
+        alreadyAvailable: false,
+      });
+      const rest = listed.slice(1).map((c) => c.name);
+      expect(rest).toEqual([...rest].sort());
+      expect({
+        'already granted to the requester': entryOf('given'),
+        'own entry that supplies the name': entryOf('dupOwn'),
+        'name supplied by a different granted entry': entryOf('dupShared'),
+        'name held by a session-only value of the session': entryOf('sessionNamed'),
+        'other project, name used by a shared entry': entryOf('takenOther'),
+        'shared entry of that name': entryOf('takenShared'),
+      }).toEqual({
+        'already granted to the requester': expect.objectContaining({
+          ownerProjectId: null,
+          ownerProjectName: null,
+          alreadyAvailable: true,
+        }),
+        'own entry that supplies the name': expect.objectContaining({
+          ownerProjectId: 'A',
+          ownerProjectName: 'Project A',
+          alreadyAvailable: true,
+        }),
+        'name supplied by a different granted entry': 'left out',
+        'name held by a session-only value of the session': 'left out',
+        'other project, name used by a shared entry': 'left out',
+        'shared entry of that name': expect.objectContaining({ alreadyAvailable: false }),
+      });
+      const grantRequest = await pendingId('REVIEWER_KEY');
+      expect(app.get(VaultRequestStore).get(grantRequest)).toMatchObject({ type: 'grant' });
+      expect((await candidates(grantRequest)).json()).toEqual([]);
+      const gone = await candidates('00000000-0000-4000-8000-0000000000ff');
+      expect([gone.statusCode, gone.json().details]).toEqual([
+        409,
+        { code: 'VAULT_REQUEST_NOT_PENDING' },
+      ]);
+    });
+
+    it.each([
+      [
+        'a shared entry under another name',
+        'TEAM_TOKEN_NEEDED',
+        'team',
+        'TEAM_TOKEN',
+        [
+          { projectId: 'A', familySlug: 'coder', familyMatched: true },
+          { projectId: 'A', familySlug: 'reviewer', familyMatched: true },
+          { projectId: 'B', familySlug: null, familyMatched: true },
+        ],
+        otherNameNotice('TEAM_TOKEN_NEEDED', 'TEAM_TOKEN'),
+      ],
+      [
+        'an entry of another project with the requested name, which becomes shared',
+        'B_ONLY',
+        'bOnly',
+        'B_ONLY',
+        [
+          { projectId: 'A', familySlug: 'coder', familyMatched: true },
+          { projectId: 'B', familySlug: null, familyMatched: true },
+        ],
+        'Secret B_ONLY is available — use devchain vault exec --only B_ONLY -- <cmd>',
+      ],
+    ])(
+      'grants %s to the requesting family',
+      async (_case, requested, key, name, grants, notice) => {
+        const requestId = await pendingId(requested);
+
+        const response = await post(`${requestId}/fulfill`, { entryId: ids[key], permanent: true });
+
+        expect([response.statusCode, response.json()]).toEqual([
+          200,
+          { requestId, status: 'fulfilled', permanent: true, entryId: ids[key], entryName: name },
+        ]);
+        expect(await storage.getVaultEntry(ids[key])).toMatchObject({
+          projectId: null,
+          revision: 1,
+        });
+        expect(await storage.listVaultEntryGrants(ids[key])).toEqual(grants);
+        expect(app.get(VaultRequestStore).get(requestId)).toBeNull();
+        expect(await noticeBody()).toEqual([notice]);
+        expect((await resolveValues(CODER, [name])).json().env).toEqual({
+          [name]: EXISTING_CANARY,
+        });
+      },
+    );
+
+    it('ends the request with no write when the requester already has the entry', async () => {
+      const requestId = await pendingId('WANTS_GIVEN');
+      const before = grantRows(ids.given);
+
+      // A write would meet the locked-write rule; an entry the requester has needs none.
+      await lockedWithRemoteBinding(async () => {
+        const response = await post(`${requestId}/fulfill`, {
+          entryId: ids.given,
+          permanent: true,
+        });
+        expect([response.statusCode, response.json().entryName]).toEqual([200, 'GIVEN_KEY']);
+      });
+
+      expect(grantRows(ids.given)).toEqual(before);
+      expect(await noticeBody()).toEqual([otherNameNotice('WANTS_GIVEN', 'GIVEN_KEY')]);
+    });
+
+    it.each([
+      [
+        'a value',
+        'REFUSED_TOKEN',
+        'bRefused',
+        { value: 'x', permanent: true },
+        400,
+        'VAULT_REQUEST_VALUE_NOT_ALLOWED',
+      ],
+      [
+        'a session-only answer',
+        'REFUSED_TOKEN',
+        'bRefused',
+        { permanent: false },
+        400,
+        'VAULT_REQUEST_GRANT_PERMANENT_ONLY',
+      ],
+      [
+        'a grant request',
+        'REVIEWER_KEY',
+        'bRefused',
+        { permanent: true },
+        400,
+        'VAULT_REQUEST_ANSWER_TYPE_MISMATCH',
+      ],
+      [
+        'an entry whose name another granted entry gives',
+        'REFUSED_TOKEN',
+        'dupShared',
+        { permanent: true },
+        409,
+        'VAULT_REQUEST_ENTRY_NOT_SELECTABLE',
+      ],
+      [
+        'a locked Vault while a VM holds a project',
+        'REFUSED_TOKEN',
+        'bRefused',
+        { permanent: true },
+        409,
+        'VAULT_LOCKED_REMOTE_ACCESS',
+      ],
+    ] as const)(
+      'refuses an existing entry with %s and keeps the request pending',
+      async (_case, requested, key, body, status, code) => {
+        const requestId = await pendingId(requested);
+        let response!: Awaited<ReturnType<typeof post>>;
+        const answer = async () => {
+          response = await post(`${requestId}/fulfill`, { entryId: ids[key], ...body });
+        };
+
+        await (code === 'VAULT_LOCKED_REMOTE_ACCESS' ? lockedWithRemoteBinding(answer) : answer());
+
+        expect([response.statusCode, response.json().details]).toEqual([status, { code }]);
+        expect(app.get(VaultRequestStore).get(requestId)).not.toBeNull();
+        expect(await storage.getVaultEntry(ids.bRefused)).toMatchObject({ projectId: 'B' });
+        expect(await storage.listVaultEntryGrants(ids.bRefused)).toEqual([
+          { projectId: 'B', familySlug: null, familyMatched: true },
+        ]);
+      },
+    );
+
+    it('lists only the entries inside a device scope', async () => {
+      const service = app.get(VaultRequestFulfillService);
+      const requestId = await pendingId('SCOPE_WANTED');
+      const outcome = (listed: VaultRequestCandidate[], key: string) => {
+        const candidate = listed.find((c) => c.id === ids[key]);
+        if (!candidate) return 'left out';
+        return candidate.alreadyAvailable ? 'already available' : 'listed';
+      };
+      const cases = [
+        ['entry of a project in the allowed workspace', 'scopeB', 'listed', 'listed'],
+        ['entry of a project in the other workspace', 'scopeC', 'listed', 'left out'],
+        ['shared, granted in the allowed workspace', 'scopeSharedB', 'listed', 'listed'],
+        ['shared, granted only in the other workspace', 'scopeSharedC', 'listed', 'left out'],
+        ['shared, no grant rows', 'scopeUngranted', 'listed', 'left out'],
+        ['shared, the requester resolves it', 'given', 'already available', 'already available'],
+        [
+          'allowed project, name held by a shared entry of the other workspace',
+          'scopeHeldB',
+          'left out',
+          'left out',
+        ],
+      ] as const;
+
+      const [unscoped, scoped] = await Promise.all([
+        service.listCandidates(requestId),
+        service.listCandidates(requestId, DEVICE_SCOPE),
+      ]);
+
+      const table = (listed: VaultRequestCandidate[]) =>
+        Object.fromEntries(cases.map(([label, key]) => [label, outcome(listed, key)]));
+      expect({ unscoped: table(unscoped), scoped: table(scoped) }).toEqual({
+        unscoped: Object.fromEntries(cases.map(([label, , expected]) => [label, expected])),
+        scoped: Object.fromEntries(cases.map(([label, , , expected]) => [label, expected])),
+      });
+      expect(JSON.stringify(scoped)).not.toMatch(/Project C|SCOPE_C|SCOPE_SHARED_C|"C"/);
+    });
+
+    it('hides and refuses a grant request for an entry used only in another workspace', async () => {
+      const service = app.get(VaultRequestFulfillService);
+      const store = app.get(VaultRequestStore);
+      const entryId = await sharedOnlyInC('C_ONLY_KEY');
+      const requestId = await pendingId('C_ONLY_KEY');
+      expect(store.get(requestId)).toMatchObject({ type: 'grant', entryId });
+      const listed = async (scope?: typeof DEVICE_SCOPE) =>
+        (await service.listPending(scope)).map((request) => request.requestId);
+
+      expect(await listed(DEVICE_SCOPE)).not.toContain(requestId);
+      const refused = await service
+        .fulfill(requestId, { permanent: true }, DEVICE_SCOPE)
+        .catch((error: { statusCode: number; message: string; details: unknown }) => error);
+      expect(refused).toMatchObject({
+        statusCode: 409,
+        message: 'This Vault request is no longer pending.',
+        details: { code: 'VAULT_REQUEST_NOT_PENDING' },
+      });
+      expect(await storage.listVaultEntryGrants(entryId)).toEqual([
+        { projectId: 'C', familySlug: null, familyMatched: true },
+      ]);
+      expect(store.get(requestId)).not.toBeNull();
+
+      expect(await listed()).toContain(requestId);
+      expect(await service.fulfill(requestId, { permanent: true })).toMatchObject({ entryId });
+    });
+
+    it('lists, grants and shows requests on a phone only inside its workspaces', async () => {
+      const phone = app.get(MobileVaultRpcService);
+      const requestId = await pendingId('PHONE_SCOPE_WANTED');
+      const grantEntryId = await sharedOnlyInC('PHONE_C_ONLY_KEY');
+      const grantRequestId = await pendingId('PHONE_C_ONLY_KEY');
+      const scopeCGrants = grantRows(ids.scopeC);
+
+      const [web, full, scoped, shown] = await Promise.all([
+        candidates(requestId).then((response) => response.json() as VaultRequestCandidate[]),
+        phone.listRequestCandidates({ requestId }, { allowedWorkspaceIds: null }),
+        phone.listRequestCandidates({ requestId }, DEVICE_SCOPE),
+        phone.listRequests({}, undefined, DEVICE_SCOPE),
+      ]);
+      const refused = await phone
+        .fulfillRequest({ requestId, entryId: ids.scopeC, permanent: true }, DEVICE_SCOPE)
+        .catch((error: { statusCode: number; details: unknown }) => error);
+
+      expect(full).toEqual(web);
+      expect(scoped.map((c) => c.id)).toEqual(
+        expect.arrayContaining([ids.scopeB, ids.scopeSharedB]),
+      );
+      expect(scoped.map((c) => c.id)).not.toContain(ids.scopeC);
+      expect(refused).toMatchObject({
+        statusCode: 409,
+        details: { code: 'VAULT_REQUEST_ENTRY_NOT_SELECTABLE' },
+      });
+      expect(grantRows(ids.scopeC)).toEqual(scopeCGrants);
+      expect(app.get(VaultRequestStore).get(requestId)).not.toBeNull();
+      expect(app.get(VaultRequestStore).get(grantRequestId)).toMatchObject({
+        type: 'grant',
+        entryId: grantEntryId,
+      });
+      expect(shown.map((request) => request.requestId)).toEqual(
+        expect.arrayContaining([requestId]),
+      );
+      expect(shown.map((request) => request.requestId)).not.toContain(grantRequestId);
+    });
+  });
+
   it('never puts a value in the DB, a log line or an event', () => {
-    expectNoCanaries({ logs: mockLogLines, events: published }, [
+    expectNoCanaries({ logs: mockLogLines, events: published, candidates: candidateBodies }, [
       SESSION_CANARY,
       PERMANENT_CANARY,
       PHONE_CANARY,
       VM_CANARY,
+      EXISTING_CANARY,
     ]);
+    expect(candidateBodies.length).toBeGreaterThan(0);
     // Permanent values are sealed in the DB; none may appear in plain text.
     expectNoCanaries({ db: dumpDatabase(sqlite) }, [
       SESSION_CANARY,
       PERMANENT_CANARY,
       PHONE_CANARY,
       VM_CANARY,
+      EXISTING_CANARY,
     ]);
     expect(published.map((event) => event.name)).toContain('vault.request.resolved');
   });

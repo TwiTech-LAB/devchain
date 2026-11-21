@@ -13,6 +13,8 @@ import {
 } from '../../file-sync/sync-path-inspection.dto';
 import { FileSyncFailuresService } from './file-sync-failures.service';
 import { FileSyncSuggestionsService } from './file-sync-suggestions.service';
+import { ManagedExclusionsCheckService } from './managed-exclusions-check.service';
+import { ManagedExclusionsRemovalStore } from './managed-exclusions-removal.store';
 import {
   codeIgnores,
   IgnorePatternsSchema,
@@ -78,6 +80,7 @@ interface ProjectState {
   failed?: FileSyncFailedCounts;
   autoFixAttempt?: { at: number; home: number; vm: number };
   ownershipScan?: { attemptedAt: number; inspectedSequence?: number };
+  dockerExclusionsChecked?: boolean;
   /** Sides whose code folder a restart paused and has not yet resumed. */
   resume?: Set<'home' | 'vm'>;
   /** The HEAD reflog signature read by the previous tick. */
@@ -106,6 +109,8 @@ export class RemoteFileSyncService {
     private readonly failures: FileSyncFailuresService,
     private readonly gitOwner: GitOwnerStore,
     private readonly suggestions: FileSyncSuggestionsService,
+    private readonly dockerChecks: ManagedExclusionsCheckService,
+    private readonly dockerRemovals: ManagedExclusionsRemovalStore,
   ) {}
 
   getIgnores(projectId: string): { ignores: string[]; revision: number } {
@@ -240,6 +245,14 @@ export class RemoteFileSyncService {
     expectedRevision?: number,
   ): Promise<SaveProjectIgnoresResult> {
     const ignores = this.files.setIgnores(projectId, list, expectedRevision);
+    return this.applyIgnores(projectId, active, ignores);
+  }
+
+  private async applyIgnores(
+    projectId: string,
+    active: () => boolean,
+    ignores = this.files.getIgnores(projectId),
+  ): Promise<SaveProjectIgnoresResult> {
     const revision = this.files.getIgnoresRevision(projectId);
     const notApplied = (reason: string): SaveProjectIgnoresResult => ({
       ignores,
@@ -436,7 +449,12 @@ export class RemoteFileSyncService {
       await this.host.syncFolderType(remoteId, id, { ignores }, this.gitOwner.fence(projectId));
   }
 
-  async tick(projectId: string, remoteId: string, active: () => boolean): Promise<void> {
+  async tick(
+    projectId: string,
+    remoteId: string,
+    active: () => boolean,
+    signal?: AbortSignal,
+  ): Promise<void> {
     const health = this.health.getState(remoteId);
     if (!active() || !health.online || health.apiKeyRejected || !health.versionMatches) return;
     if (await this.hasOpenHold(projectId)) return;
@@ -454,6 +472,16 @@ export class RemoteFileSyncService {
         await this.move(projectId, state, active);
         // Migration's revert and ordinary upkeep must never run in the same tick.
         return;
+      }
+      if (!state.dockerExclusionsChecked) {
+        const stateIsActive = () => active() && this.projects.get(projectId) === state;
+        const proceed = await this.removePassedDockerExclusions(
+          projectId,
+          state,
+          stateIsActive,
+          signal,
+        );
+        if (!proceed || !stateIsActive()) return;
       }
       const now = Date.now();
       if (
@@ -733,6 +761,45 @@ export class RemoteFileSyncService {
     } catch (error) {
       logger.warn({ error, projectId }, 'Automatic file sync exclusions will retry');
     }
+  }
+
+  private async removePassedDockerExclusions(
+    projectId: string,
+    state: ProjectState,
+    active: () => boolean,
+    signal?: AbortSignal,
+  ): Promise<boolean> {
+    const { remoteId } = state;
+    const rows = await this.dockerChecks.evaluate(projectId, remoteId, signal);
+    state.dockerExclusionsChecked = true;
+    if (!active()) return false;
+    const passed = rows.filter((row) => row.status === 'will-remove').map((row) => row.pattern);
+    if (!passed.length) return true;
+
+    let removed: boolean;
+    try {
+      const [root, vm] = await Promise.all([
+        this.files.folderPath(projectId),
+        state.hasGit ? this.host.gitCoordinatorStatus(remoteId, projectId) : undefined,
+      ]);
+      const [binding, held] = await Promise.all([
+        this.bindings.get(projectId),
+        this.hasOpenHold(projectId, vm),
+      ]);
+      // Disconnect invalidates the live target before it drains this tick and changes the binding.
+      if (!active() || held || binding?.state !== 'remote' || binding.remoteId !== remoteId)
+        return false;
+      removed = this.dockerRemovals.remove(projectId, remoteId, root, passed);
+    } catch (error) {
+      // Nothing committed: the next tick must repeat the safety checks before removal.
+      state.dockerExclusionsChecked = false;
+      throw error;
+    }
+    if (!removed) return true;
+    state.step = 'ignores';
+    if (!(await this.applyIgnores(projectId, active)).applied) return false;
+    state.step = 'done';
+    return true;
   }
 
   private async scanVmOwnership(

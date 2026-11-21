@@ -10,4 +10,7 @@ export interface ProviderTraits {
   readonly activity: 'hook-and-transcript' | 'transcript' | 'stop-hook' | 'output';
   readonly transcriptTurns: boolean;
   readonly draftClearKeys: readonly string[];
+  /** Providers that merge adjacent pastes need their current editor to render a filename chip first. */
+  readonly imagePasteChip?: { readonly prompt: string; readonly prefixes: readonly string[] };
+  readonly fileUrlForEscapedImagePath?: boolean;
 }

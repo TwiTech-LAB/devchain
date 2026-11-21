@@ -16,6 +16,7 @@ const xtermKeyCallbacks: Array<() => void> = [];
 const xtermDataCallbacks: Array<(data: string) => void> = [];
 const heldXtermWriteCallbacks: Array<() => void> = [];
 let holdXtermWriteCallbacks = false;
+const BRACKETED_PASTE_ON = '\x1b[?2004h';
 
 jest.mock('@xterm/xterm', () => {
   return {
@@ -35,13 +36,16 @@ jest.mock('@xterm/xterm', () => {
           terminal.element = el;
         }),
         write: jest.fn((data: string, cb?: () => void) => {
-          if (container) container.textContent = (container.textContent || '') + data;
+          // Like xterm, the mock applies a mode sequence and prints nothing for it.
+          if (data === BRACKETED_PASTE_ON) terminal.modes.bracketedPasteMode = true;
+          else if (container) container.textContent = (container.textContent || '') + data;
           if (cb) {
             if (holdXtermWriteCallbacks) heldXtermWriteCallbacks.push(cb);
             else cb();
           }
         }),
         reset: jest.fn(() => {
+          terminal.modes.bracketedPasteMode = false;
           if (container) container.textContent = '';
         }),
         clear: jest.fn(() => {
@@ -71,13 +75,14 @@ jest.mock('@xterm/xterm', () => {
           xtermDataCallbacks.push(cb);
           return { dispose: jest.fn() };
         }),
+        input: jest.fn((data: string) => xtermDataCallbacks.at(-1)?.(data)),
         onSelectionChange: jest.fn().mockReturnValue({ dispose: jest.fn() }),
         hasSelection: jest.fn().mockReturnValue(false),
         getSelection: jest.fn().mockReturnValue(''),
         clearSelection: jest.fn(),
         parser: { registerOscHandler: jest.fn() },
         options: { scrollback: 10000 },
-        modes: { mouseTrackingMode: 'none' },
+        modes: { mouseTrackingMode: 'none', bracketedPasteMode: false },
         buffer: { active: bufferActive },
       };
       return terminal;
@@ -98,12 +103,16 @@ jest.mock('socket.io-client', () => ({
 jest.mock('@/ui/lib/debug', () => ({
   termLog: jest.fn(),
 }));
+jest.mock('@/ui/hooks/use-toast', () => ({ toast: jest.fn() }));
 
 import { ChatTerminal, TerminalPromptInsertError, type ChatTerminalHandle } from './ChatTerminal';
 import { _resetThemeCacheForTesting, useTerminalThemeSync } from './hooks/useTerminalThemeSync';
 import { DEFAULT_TERMINAL_SCROLLBACK } from '@/common/constants/terminal';
 import { HISTORY_REQUEST_COOLDOWN_MS } from './scroll-history-detector';
 import { releaseAppSocket, setAppSocket } from '@/ui/lib/socket';
+import { toast } from '@/ui/hooks/use-toast';
+import { BackendContext } from '@/ui/lib/backend-context';
+import { buildApiUrl, createApiFetch, HOME_BACKEND } from '@/ui/lib/api-transport';
 
 type SocketHandlerMap = Record<string, Set<(...args: unknown[]) => void>>;
 
@@ -203,11 +212,14 @@ describe('ChatTerminal', () => {
   const renderTerminal = async (
     useFakeTimers = false,
     terminalHandleRef?: React.RefObject<ChatTerminalHandle>,
+    projectId?: string,
   ) => {
     const socket = createMockSocket();
     currentAppSocket = socket as unknown as Socket;
 
-    const utils = render(<ChatTerminal ref={terminalHandleRef} sessionId="chat-session" />);
+    const utils = render(
+      <ChatTerminal ref={terminalHandleRef} sessionId="chat-session" projectId={projectId} />,
+    );
 
     // jsdom reports offsetParent === null for every element (no layout engine), which the
     // visibility-aware scroll guard would read as "hidden" and suppress all history requests.
@@ -341,6 +353,7 @@ describe('ChatTerminal', () => {
     ) => boolean;
     const event = {
       type: 'keydown',
+      key: 'c',
       keyCode: 67,
       ctrlKey: true,
       altKey: false,
@@ -354,6 +367,79 @@ describe('ChatTerminal', () => {
     expect(Terminal).toHaveBeenCalledTimes(1);
     view.rerender(<ChatTerminal sessionId="settings-session" />);
     expect(Terminal).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(['project', 'home'] as const)(
+    'routes form clipboard files only for the agent terminal on the %s socket',
+    async (socketTarget) => {
+      const socket = createMockSocket();
+      currentAppSocket = socket as unknown as Socket;
+      const onClipboardImagePaste = jest.fn();
+      const view = render(
+        <ChatTerminal
+          sessionId="form-clipboard"
+          socket={socketTarget}
+          onClipboardImagePaste={onClipboardImagePaste}
+        />,
+      );
+      const textarea = await view.findByRole('textbox');
+      const file = new File([], 'screenshot');
+      const header = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]);
+      jest.spyOn(file, 'slice').mockReturnValue(
+        Object.assign(new Blob(), {
+          arrayBuffer: async () => header.buffer,
+        }),
+      );
+
+      const clipboardData = { files: [file], getData: () => 'text fallback' };
+      const allowed = fireEvent.paste(textarea, { clipboardData });
+      if (socketTarget === 'project') {
+        expect(allowed).toBe(false);
+        expect(onClipboardImagePaste).toHaveBeenCalledTimes(1);
+        const [paste] = onClipboardImagePaste.mock.calls[0];
+        expect(paste).toMatchObject({ inputMode: 'form', browserFileCount: 1 });
+        await expect(paste.readResult).resolves.toMatchObject({
+          images: [{ file, mimeType: 'image/png' }],
+        });
+
+        const terminal = (Terminal as unknown as jest.Mock).mock.results[0]?.value;
+        const keyHandler = terminal.attachCustomKeyEventHandler.mock.calls[0][0];
+        const ctrlV = new KeyboardEvent('keydown', { key: 'v', ctrlKey: true, cancelable: true });
+        expect(keyHandler(ctrlV)).toBe(false);
+        expect(ctrlV.defaultPrevented).toBe(false);
+        expect(fireEvent.paste(terminal.element, { clipboardData })).toBe(false);
+        expect(onClipboardImagePaste).toHaveBeenCalledTimes(2);
+      } else {
+        expect(allowed).toBe(true);
+        expect(onClipboardImagePaste).not.toHaveBeenCalled();
+      }
+      expect(socket.emit).not.toHaveBeenCalledWith('terminal:input', expect.anything());
+    },
+  );
+
+  it('reports the browser count for unsupported and unreadable clipboard files', async () => {
+    const { utils } = await renderTerminal();
+    const textarea = utils.getByRole('textbox');
+    const file = new File(['not an image'], 'paste.txt');
+    jest
+      .spyOn(file, 'slice')
+      .mockReturnValue(
+        Object.assign(new Blob(), { arrayBuffer: async () => new Uint8Array([1, 2, 3]).buffer }),
+      );
+    const items = [
+      { kind: 'file', getAsFile: () => file },
+      { kind: 'file', getAsFile: () => null },
+    ];
+
+    expect(fireEvent.paste(textarea, { clipboardData: { files: [file], items } })).toBe(false);
+    await waitFor(() =>
+      expect(toast).toHaveBeenCalledWith({
+        title: 'Clipboard files could not all be attached',
+        description:
+          'The browser supplied 2 files. Unsupported format (1). Use PNG or JPEG. Could not read 1 file.',
+        variant: 'destructive',
+      }),
+    );
   });
 
   it('returns the fallback main-socket refcount to baseline across mount cycles', () => {
@@ -427,11 +513,24 @@ describe('ChatTerminal', () => {
       });
     });
 
-    // The seed also drops bracketed-paste mode, so the client turns it back on in its own
-    // xterm after the seed content; pastes then reach the provider as bracketed pastes.
+    // The seed resets the xterm, which turns bracketed paste off. The reset turns it on again,
+    // so pastes reach the provider as bracketed pastes.
     await waitFor(() => {
-      expect(history.textContent).toBe('ABC\x1b[?2004h');
+      expect(history.textContent).toBe('ABC');
     });
+    expect(jest.mocked(Terminal).mock.results.at(-1)?.value.modes.bracketedPasteMode).toBe(true);
+  });
+
+  // The component owns the imperative clear entry point.
+  it.each([true, false])('preserves bracketed paste mode %s when cleared', async (mode) => {
+    const handle = createRef<ChatTerminalHandle>();
+    await renderTerminal(false, handle);
+    const terminal = jest.mocked(Terminal).mock.results.at(-1)?.value;
+    terminal.modes.bracketedPasteMode = mode;
+
+    act(() => handle.current?.clear());
+
+    expect(terminal.modes.bracketedPasteMode).toBe(mode);
   });
 
   it('aborts incomplete seed after timeout and flushes bounded staged output', async () => {
@@ -897,6 +996,598 @@ describe('ChatTerminal', () => {
       ['terminal:focus', { sessionId: 'chat-session' }],
       ['terminal:input', { sessionId: 'chat-session', data: 'a', ttyMode: true }],
     ]);
+  });
+
+  it('claims TTY authority and sends one control byte for Ctrl+V with an empty clipboard', async () => {
+    resolveInputMode('tty');
+    const { socket, viewport } = await renderTerminal();
+    await resubscribeWithoutAuthorityUpdate(socket);
+
+    const terminal = (Terminal as unknown as jest.Mock).mock.results[0]?.value;
+    const keyHandler = terminal.attachCustomKeyEventHandler.mock.calls[0][0];
+    socket.emit.mockClear();
+    expect(keyHandler(new KeyboardEvent('keydown', { key: 'v', ctrlKey: true }))).toBe(false);
+    expect(socket.emit).not.toHaveBeenCalled();
+    expect(fireEvent.paste(viewport, { clipboardData: { files: [], getData: () => '' } })).toBe(
+      false,
+    );
+    expect(socket.emit.mock.calls).toEqual([
+      ['terminal:focus', { sessionId: 'chat-session' }],
+      ['terminal:input', { sessionId: 'chat-session', data: '\x16', ttyMode: true }],
+    ]);
+  });
+
+  it('discards a pending Ctrl+V when the TTY loses focus without reclaiming authority', async () => {
+    resolveInputMode('tty');
+    const { socket, viewport } = await renderTerminal();
+    await resubscribeWithoutAuthorityUpdate(socket);
+
+    const terminal = (Terminal as unknown as jest.Mock).mock.results[0]?.value;
+    const keyHandler = terminal.attachCustomKeyEventHandler.mock.calls[0][0];
+    socket.emit.mockClear();
+    expect(keyHandler(new KeyboardEvent('keydown', { key: 'v', ctrlKey: true }))).toBe(false);
+    fireEvent.focusOut(viewport, { relatedTarget: document.body });
+    const file = new File([], 'image.png');
+    expect(fireEvent.paste(viewport, { clipboardData: { files: [file] } })).toBe(false);
+    keyHandler(new KeyboardEvent('keyup', { key: 'v' }));
+    expect(socket.emit).not.toHaveBeenCalled();
+  });
+
+  async function imageTerminal(
+    mode: 'form' | 'tty' = 'tty',
+    ref?: React.RefObject<ChatTerminalHandle>,
+  ) {
+    resolveInputMode(mode);
+    const projectId = '00000000-0000-4000-8000-000000000001';
+    const terminal = await renderTerminal(false, ref, projectId);
+    await resubscribeWithoutAuthorityUpdate(terminal.socket);
+    const file = new File(['fixture'], 'picture.png');
+    jest.spyOn(file, 'slice').mockReturnValue(
+      Object.assign(new Blob(), {
+        arrayBuffer: async () => new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]).buffer,
+      }),
+    );
+    terminal.socket.emit.mockClear();
+    terminal.socket.emit.mockImplementation((event, data, ack) => {
+      if (event === 'terminal:image-begin')
+        ack(null, { gestureId: data.gestureId, index: -1, status: 'ready' });
+    });
+    return { ...terminal, file, projectId };
+  }
+
+  it('reports partial progress and retries only the same image without taking focus again', async () => {
+    const { socket, viewport, file, projectId } = await imageTerminal();
+    const upload = global.fetch as jest.Mock;
+    upload
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ attachmentId: 'first.png' }) })
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 413,
+        json: async () => ({ message: 'Image exceeds the file limit' }),
+      });
+    let attempts = 0;
+    socket.emit.mockImplementation((event, data, ack) => {
+      if (event === 'terminal:image-begin')
+        ack(null, { gestureId: data.gestureId, index: -1, status: 'ready' });
+      if (event === 'terminal:input' && data.kind === 'image-paste') {
+        if (++attempts === 1) ack(new Error('lost acknowledgement'));
+        else ack(null, { gestureId: data.gestureId, index: 0, status: 'delivered' });
+      }
+    });
+    fireEvent.paste(viewport, { clipboardData: { files: [file, file] } });
+    await waitFor(() =>
+      expect(toast).toHaveBeenCalledWith(
+        expect.objectContaining({
+          description: expect.stringContaining('Browser supplied 2. Terminal acknowledged 1.'),
+        }),
+      ),
+    );
+    expect(upload).toHaveBeenCalledWith(
+      expect.stringContaining(`/api/sessions/chat-session/attachments?projectId=${projectId}`),
+      expect.objectContaining({ body: file }),
+    );
+    const deliveries = socket.emit.mock.calls.filter(([event]) => event === 'terminal:input');
+    expect(deliveries).toHaveLength(2);
+    expect(deliveries[0][1]).toEqual(deliveries[1][1]);
+    expect(socket.emit.mock.calls.filter(([event]) => event === 'terminal:focus')).toHaveLength(1);
+  });
+
+  it('retries only the remaining file after a transient second upload failure', async () => {
+    const { socket, viewport, file } = await imageTerminal();
+    const second = new File(['other fixture'], 'second.png');
+    jest.spyOn(second, 'slice').mockImplementation(file.slice.bind(file));
+    const upload = global.fetch as jest.Mock;
+    upload.mockClear();
+    upload
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ attachmentId: 'one.png' }) })
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 503,
+        json: async () => ({ message: 'Host busy' }),
+      })
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ attachmentId: 'two.png' }) });
+    socket.emit.mockImplementation((event, data, ack) => {
+      if (event === 'terminal:image-begin')
+        ack(null, { gestureId: data.gestureId, index: -1, status: 'ready' });
+      if (data.kind === 'image-paste')
+        ack(null, { gestureId: data.gestureId, index: data.index, status: 'delivered' });
+    });
+    fireEvent.paste(viewport, { clipboardData: { files: [file, second] } });
+    await waitFor(() =>
+      expect(toast).toHaveBeenCalledWith(
+        expect.objectContaining({ description: 'Browser supplied 2. Terminal acknowledged 2.' }),
+      ),
+    );
+    expect(toast).toHaveBeenCalledWith(
+      expect.objectContaining({
+        description: expect.stringContaining('Terminal acknowledged 1. Retrying file 2.'),
+      }),
+    );
+    expect(upload.mock.calls.map(([, init]) => init.body)).toEqual([file, second, second]);
+    expect(
+      socket.emit.mock.calls.filter(([e]) => e === 'terminal:input').map(([, p]) => p.attachmentId),
+    ).toEqual(['one.png', 'two.png']);
+    expect(socket.emit.mock.calls.filter(([e]) => e === 'terminal:focus')).toHaveLength(1);
+  });
+
+  it.each([
+    [
+      'disconnect',
+      'timeout',
+      1,
+      'File 2 may already be attached. Inspect the original draft before pasting again.',
+    ],
+    [
+      'authority loss',
+      'timeout',
+      1,
+      'File 2 may already be attached. Inspect the original draft before pasting again.',
+    ],
+    [
+      'authority loss',
+      'unconfirmed',
+      2,
+      'Copilot did not show an attachment chip for file 2. Inspect the original draft before pasting again.',
+    ],
+    ['disconnect', 'recognized', 2, 'The paste was cancelled.'],
+  ])(
+    'preserves the second image outcome after %s with a late %s acknowledgement',
+    async (loss, status, count, detail) => {
+      const { socket, viewport, file } = await imageTerminal();
+      const upload = global.fetch as jest.Mock;
+      upload.mockClear();
+      for (const attachmentId of ['first.png', 'second.png']) {
+        upload.mockResolvedValueOnce({ ok: true, json: async () => ({ attachmentId }) });
+      }
+      let acknowledgeSecond: (() => void) | undefined;
+      socket.emit.mockImplementation((event, data, ack) => {
+        if (event === 'terminal:image-begin')
+          ack(null, { gestureId: data.gestureId, index: -1, status: 'ready' });
+        if (data.kind !== 'image-paste') return;
+        if (data.index === 0) {
+          ack(null, { gestureId: data.gestureId, index: 0, status: 'delivered' });
+        } else {
+          acknowledgeSecond = () =>
+            status === 'timeout'
+              ? ack(new Error('lost acknowledgement'))
+              : ack(null, { gestureId: data.gestureId, index: 1, status });
+        }
+      });
+      fireEvent.paste(viewport, { clipboardData: { files: [file, file, file] } });
+      await waitFor(() => expect(acknowledgeSecond).toBeDefined());
+      act(() => {
+        if (loss === 'disconnect') {
+          socket.connected = false;
+          socket.trigger('disconnect', 'transport close');
+        } else {
+          socket.trigger('message', {
+            topic: 'terminal/chat-session',
+            type: 'focus_changed',
+            payload: { clientId: 'another-writer' },
+          });
+        }
+        acknowledgeSecond!();
+      });
+      await waitFor(() =>
+        expect(toast).toHaveBeenCalledWith(
+          expect.objectContaining({
+            title: 'Image paste incomplete',
+            description: `Browser supplied 3. Terminal acknowledged ${count}. ${detail}`,
+          }),
+        ),
+      );
+      expect(upload).toHaveBeenCalledTimes(2);
+      expect(
+        socket.emit.mock.calls
+          .filter(([e]) => e === 'terminal:input')
+          .map(([, p]) => p.attachmentId),
+      ).toEqual(['first.png', 'second.png']);
+      expect(socket.emit.mock.calls.filter(([e]) => e === 'terminal:focus')).toHaveLength(1);
+    },
+  );
+
+  it.each(['unmount', 'project switch', 'another mounted terminal', 'authority loss'])(
+    'cancels a late upload on %s',
+    async (change) => {
+      const { socket, viewport, utils, file } = await imageTerminal();
+      let finish!: () => void;
+      let uploadSignal: AbortSignal | undefined;
+      (global.fetch as jest.Mock).mockImplementationOnce(
+        (_url, init) =>
+          new Promise((resolve) => {
+            uploadSignal = init.signal;
+            finish = () => resolve({ ok: true, json: async () => ({ attachmentId: 'late.png' }) });
+          }),
+      );
+      fireEvent.paste(viewport, { clipboardData: { files: [file] } });
+      await waitFor(() => expect(uploadSignal).toBeDefined());
+      if (change === 'unmount') utils.unmount();
+      if (change === 'project switch')
+        utils.rerender(<ChatTerminal sessionId="chat-session" projectId="other-project" />);
+      if (change === 'another mounted terminal') {
+        const other = render(
+          <ChatTerminal sessionId="second-session" ariaLabel="Second terminal" />,
+        );
+        fireEvent.focusIn(other.getByRole('region', { name: 'Second terminal' }));
+      }
+      if (change === 'authority loss')
+        act(() =>
+          socket.trigger('message', {
+            topic: 'terminal/chat-session',
+            type: 'focus_changed',
+            payload: { clientId: 'another-writer' },
+          }),
+        );
+      expect(uploadSignal!.aborted).toBe(true);
+      finish();
+      await waitFor(() =>
+        expect(toast).toHaveBeenCalledWith(
+          expect.objectContaining({
+            description: 'Browser supplied 1. Terminal acknowledged 0. The paste was cancelled.',
+          }),
+        ),
+      );
+      expect(socket.emit.mock.calls.filter(([event]) => event === 'terminal:input')).toHaveLength(
+        0,
+      );
+      expect(socket.emit).toHaveBeenCalledWith(
+        'terminal:image-end',
+        expect.objectContaining({ sessionId: 'chat-session' }),
+      );
+    },
+  );
+
+  // The component exercises the real fetch factory when the provider publishes new bindings.
+  it('keeps the unsent form when another project moves to a remote backend', async () => {
+    currentAppSocket = createMockSocket() as unknown as Socket;
+    const terminal = (bindings: Map<string, string>) => (
+      <BackendContext.Provider
+        value={{
+          activeBackend: HOME_BACKEND,
+          activeRemote: null,
+          bindings,
+          ready: true,
+          bindingsError: null,
+          retry: jest.fn(),
+          apiFetch: createApiFetch(() => ({ bindings, activeProjectId: 'a', authority: 'known' })),
+          buildApiUrl,
+        }}
+      >
+        <ChatTerminal projectId="a" sessionId="chat-session" />
+      </BackendContext.Provider>
+    );
+    const utils = render(terminal(new Map()));
+    const area = await utils.findByPlaceholderText('Type command...');
+    fireEvent.change(area, { target: { value: 'my edited but unsent prompt' } });
+    utils.rerender(terminal(new Map([['b', 'remote-b']])));
+    expect(area).toHaveValue('my edited but unsent prompt');
+  });
+
+  it('keeps attachments at the caret during edits, picker insertion, removal and partial Send retry', async () => {
+    const handle = createRef<ChatTerminalHandle>();
+    const { utils, socket, file } = await imageTerminal('form', handle);
+    const area = utils.getByPlaceholderText('Type command...') as HTMLTextAreaElement;
+    const upload = global.fetch as jest.Mock;
+    for (const attachmentId of ['first.png', 'second.png'])
+      upload.mockResolvedValueOnce({ ok: true, json: async () => ({ attachmentId }) });
+    fireEvent.change(area, { target: { value: 'left replace right' } });
+    area.setSelectionRange(5, 12);
+    fireEvent.paste(area, { clipboardData: { files: [file, file] } });
+    expect(area).toHaveValue('left [Image 1][Image 2] right');
+    expect(area.selectionStart).toBe(23);
+    area.setSelectionRange(14, 14);
+    await act(async () => {
+      await handle.current!.insertPromptText(' middle ');
+    });
+    expect(area).toHaveValue('left [Image 1] middle [Image 2] right');
+    await waitFor(() => expect(utils.getByRole('button', { name: 'Send' })).toBeEnabled());
+    fireEvent.click(utils.getByRole('button', { name: 'Remove image 2' }));
+    expect(area).toHaveValue('left [Image 1] middle  right');
+    expect(area.selectionStart).toBe(22);
+    const send = utils.getByRole('button', { name: 'Send' });
+    await waitFor(() => expect(send).toBeEnabled());
+    expect(socket.emit.mock.calls.filter(([e]) => e === 'terminal:input')).toEqual([]);
+    socket.emit.mockImplementation((event, payload, ack) => {
+      if (event === 'terminal:input')
+        ack(null, {
+          sendId: payload.sendId,
+          status: payload.resume ? 'submitted' : 'retryable',
+          confirmedSegments: payload.resume ? 3 : 2,
+          acknowledgedImages: 1,
+        });
+    });
+    fireEvent.click(send);
+    const retry = await utils.findByRole('button', { name: 'Retry send' });
+    expect(area).toHaveValue('left [Image 1] middle  right');
+    expect(area).toHaveAttribute('readonly');
+    const focusClaims = socket.emit.mock.calls.filter(
+      ([event]) => event === 'terminal:focus',
+    ).length;
+    fireEvent.click(retry);
+    await waitFor(() => expect(area).toHaveValue(''));
+    const calls = socket.emit.mock.calls.filter(([e]) => e === 'terminal:input').map(([, p]) => p);
+    expect(calls).toHaveLength(2);
+    expect(calls[0].segments).toEqual([
+      { kind: 'text', text: 'left ' },
+      { kind: 'image', attachmentId: 'first.png' },
+      { kind: 'text', text: ' middle  right' },
+    ]);
+    expect(calls[1]).toEqual({ ...calls[0], resume: true });
+    expect(socket.emit.mock.calls.filter(([event]) => event === 'terminal:focus')).toHaveLength(
+      focusClaims,
+    );
+  });
+
+  it.each(['submitted', 'lost', 'unconfirmed'] as const)(
+    'handles an image-only Send with %s acknowledgement',
+    async (outcome) => {
+      const { utils, socket, file, viewport } = await imageTerminal('form');
+      const area = utils.getByPlaceholderText('Type command...');
+      (global.fetch as jest.Mock).mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ attachmentId: 'first.png' }),
+      });
+      fireEvent.paste(viewport, { clipboardData: { files: [file] } });
+      const send = utils.getByRole('button', { name: 'Send' });
+      await waitFor(() => expect(send).toBeEnabled());
+      expect(socket.emit.mock.calls.filter(([e]) => e === 'terminal:input')).toEqual([]);
+      socket.emit.mockImplementation((event, p, ack) => {
+        if (event !== 'terminal:input') return;
+        if (outcome === 'lost') ack(new Error('lost'));
+        else
+          ack(null, {
+            sendId: p.sendId,
+            status: outcome === 'submitted' ? 'submitted' : 'inspect',
+            confirmedSegments: 1,
+            acknowledgedImages: 1,
+          });
+      });
+      fireEvent.click(send);
+      if (outcome === 'submitted') await waitFor(() => expect(area).toHaveValue(''));
+      else {
+        const alert = await utils.findByRole('alert');
+        expect(alert).toHaveTextContent('Inspect the terminal');
+        expect(alert).toHaveTextContent(
+          `Terminal acknowledged ${outcome === 'lost' ? 0 : 1} image`,
+        );
+        expect(area).toHaveValue('[Image 1]');
+        expect(send).toBeDisabled();
+        fireEvent.keyDown(area, { key: 'Enter' });
+        fireEvent.click(utils.getByRole('button', { name: 'Inspect terminal' }));
+        fireEvent.click(utils.getByRole('button', { name: 'Discard form draft' }));
+        expect(area).toHaveValue('');
+      }
+      const deliveries = socket.emit.mock.calls.filter(([e]) => e === 'terminal:input');
+      expect(deliveries).toHaveLength(1);
+      expect(deliveries[0][1].segments).toEqual([{ kind: 'image', attachmentId: 'first.png' }]);
+    },
+  );
+
+  function replaceTextareaSelection(
+    area: HTMLTextAreaElement,
+    start: number,
+    end: number,
+    inserted: string,
+  ) {
+    area.focus();
+    area.setSelectionRange(start, end);
+    fireEvent(
+      area,
+      new InputEvent('beforeinput', {
+        bubbles: true,
+        cancelable: true,
+        inputType: 'insertFromPaste',
+        data: null,
+      }),
+    );
+    const value = area.value.slice(0, start) + inserted + area.value.slice(end);
+    const caret = start + inserted.length;
+    fireEvent.input(area, {
+      target: { value, selectionStart: caret, selectionEnd: caret },
+      inputType: 'insertFromPaste',
+      data: null,
+    });
+  }
+
+  it.each(['[notes]', '[Image 12]', '[Image 1]', '[Image'])(
+    'replaces a selected image marker with exact literal text %s',
+    async (replacement) => {
+      const { utils, socket, file } = await imageTerminal('form');
+      const area = utils.getByPlaceholderText('Type command...') as HTMLTextAreaElement;
+      (global.fetch as jest.Mock).mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ attachmentId: 'one.png' }),
+      });
+      fireEvent.paste(area, { clipboardData: { files: [file] } });
+      await waitFor(() => expect(utils.getByRole('button', { name: 'Send' })).toBeEnabled());
+      replaceTextareaSelection(area, 0, area.value.length, replacement);
+      expect(area).toHaveValue(replacement);
+      expect([area.selectionStart, area.selectionEnd]).toEqual([
+        replacement.length,
+        replacement.length,
+      ]);
+      expect(utils.queryByRole('list', { name: 'Draft attachments' })).toBeNull();
+      expect(socket.emit.mock.calls.filter(([e]) => e === 'terminal:input')).toEqual([]);
+    },
+  );
+
+  it('preserves adjacent edits, surrounding text and the unselected attachment ID', async () => {
+    const { utils, socket, file } = await imageTerminal('form');
+    const area = utils.getByPlaceholderText('Type command...') as HTMLTextAreaElement;
+    for (const attachmentId of ['one.png', 'two.png'])
+      (global.fetch as jest.Mock).mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ attachmentId }),
+      });
+    fireEvent.change(area, { target: { value: 'left right' } });
+    area.setSelectionRange(5, 5);
+    fireEvent.paste(area, { clipboardData: { files: [file, file] } });
+    const send = utils.getByRole('button', { name: 'Send' });
+    await waitFor(() => expect(send).toBeEnabled());
+    replaceTextareaSelection(area, 13, 13, ']');
+    expect(area).toHaveValue('left [Image 1]][Image 2]right');
+    expect([area.selectionStart, area.selectionEnd]).toEqual([15, 15]);
+    replaceTextareaSelection(area, 14, 15, '+');
+    expect(area).toHaveValue('left [Image 1]+[Image 2]right');
+    expect(utils.getByRole('button', { name: 'Remove image 1' })).toBeEnabled();
+    expect(utils.getByRole('button', { name: 'Remove image 2' })).toBeEnabled();
+    // Replacing part of the first atomic marker removes it, preserving exactly what was pasted.
+    replaceTextareaSelection(area, 6, 13, 'Image notes');
+    expect(area).toHaveValue('left Image notes+[Image 2]right');
+    expect([area.selectionStart, area.selectionEnd]).toEqual([16, 16]);
+    expect(utils.queryByRole('button', { name: 'Remove image 1' })).toBeNull();
+    expect(utils.getByRole('button', { name: 'Remove image 2' })).toBeEnabled();
+    socket.emit.mockImplementation((event, payload, ack) => {
+      if (event === 'terminal:input')
+        ack(null, {
+          sendId: payload.sendId,
+          status: 'submitted',
+          confirmedSegments: 3,
+          acknowledgedImages: 1,
+        });
+    });
+    fireEvent.click(send);
+    await waitFor(() => expect(area).toHaveValue(''));
+    const calls = socket.emit.mock.calls.filter(([e]) => e === 'terminal:input');
+    expect(calls).toHaveLength(1);
+    expect(calls[0][1].segments).toEqual([
+      { kind: 'text', text: 'left Image notes+' },
+      { kind: 'image', attachmentId: 'two.png' },
+      { kind: 'text', text: 'right' },
+    ]);
+  });
+
+  it('treats a tracked marker as one editable item and preserves identical literal text', async () => {
+    const { utils, socket, file } = await imageTerminal('form');
+    const area = utils.getByPlaceholderText('Type command...') as HTMLTextAreaElement;
+    (global.fetch as jest.Mock).mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ attachmentId: 'one.png' }),
+    });
+    fireEvent.change(area, { target: { value: 'literal [Image 1] and ' } });
+    area.setSelectionRange(area.value.length, area.value.length);
+    fireEvent.paste(area, { clipboardData: { files: [file] } });
+    await waitFor(() => expect(utils.getByRole('button', { name: 'Send' })).toBeEnabled());
+    expect(area).toHaveValue('literal [Image 1] and [Image 1]');
+    const shortened = area.value.slice(0, -1);
+    fireEvent.change(area, {
+      target: {
+        value: shortened,
+        selectionStart: shortened.length,
+        selectionEnd: shortened.length,
+      },
+    });
+    expect(area).toHaveValue('literal [Image 1] and ');
+    expect(utils.queryByRole('list', { name: 'Draft attachments' })).toBeNull();
+    expect(socket.emit.mock.calls.filter(([e]) => e === 'terminal:input')).toEqual([]);
+  });
+
+  // The form owns both the native textarea selection and the asynchronous upload receipt.
+  it('restores only the selected content when a pending file paste is rejected', async () => {
+    const { utils, socket, file } = await imageTerminal('form');
+    const area = utils.getByPlaceholderText('Type command...') as HTMLTextAreaElement;
+    const send = utils.getByRole('button', { name: 'Send' });
+    let finishUpload!: () => void;
+    (global.fetch as jest.Mock).mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finishUpload = () =>
+            resolve({ ok: true, json: async () => ({ attachmentId: 'one.png' }) });
+        }),
+    );
+    fireEvent.change(area, { target: { value: 'keep these words ' } });
+    fireEvent.paste(area, { clipboardData: { files: [file] } });
+    await waitFor(() => expect(finishUpload).toBeDefined());
+    const unsupported = new File(['text'], 'note.txt');
+    jest
+      .spyOn(unsupported, 'slice')
+      .mockReturnValue(
+        Object.assign(new Blob(), { arrayBuffer: async () => new Uint8Array([1]).buffer }),
+      );
+    area.setSelectionRange(0, 4, 'backward');
+    fireEvent.paste(area, { clipboardData: { files: [unsupported] } });
+    expect(area).toHaveValue('[Image 2] these words [Image 1]');
+    finishUpload();
+    await waitFor(() => expect(send).toBeEnabled());
+    expect(area).toHaveValue('keep these words [Image 1]');
+    expect([area.selectionStart, area.selectionEnd]).toEqual([0, 4]);
+    expect(area.selectionDirection).toBe('backward');
+
+    (global.fetch as jest.Mock).mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ attachmentId: 'two.png' }),
+    });
+    area.setSelectionRange(area.value.length, area.value.length);
+    fireEvent.paste(area, { clipboardData: { files: [file] } });
+    area.setSelectionRange(0, area.value.length);
+    fireEvent.paste(area, { clipboardData: { files: [unsupported] } });
+    replaceTextareaSelection(area, 0, 0, 'please ');
+    replaceTextareaSelection(area, area.value.length, area.value.length, 'obsolete');
+    area.setSelectionRange(area.value.indexOf('obsolete'), area.value.length);
+    fireEvent.paste(area, { clipboardData: { files: [unsupported] } });
+    replaceTextareaSelection(area, area.value.lastIndexOf('[Image 5]'), area.value.length, '!');
+    await waitFor(() => expect(send).toBeEnabled());
+    expect(area).toHaveValue('please keep these words [Image 1][Image 3]!');
+    expect(area.selectionStart).toBe(area.value.length);
+
+    socket.emit.mockImplementation((event, payload, ack) => {
+      if (event === 'terminal:input')
+        ack(null, {
+          sendId: payload.sendId,
+          status: 'submitted',
+          confirmedSegments: 4,
+          acknowledgedImages: 2,
+        });
+    });
+    fireEvent.click(send);
+    await waitFor(() => expect(area).toHaveValue(''));
+    expect(
+      socket.emit.mock.calls.find(([event]) => event === 'terminal:input')?.[1].segments,
+    ).toEqual([
+      { kind: 'text', text: 'please keep these words ' },
+      { kind: 'image', attachmentId: 'one.png' },
+      { kind: 'image', attachmentId: 'two.png' },
+      { kind: 'text', text: '!' },
+    ]);
+  });
+
+  it('retains a failed upload and replaces it only on explicit upload retry', async () => {
+    const { utils, socket, file } = await imageTerminal('form');
+    const area = utils.getByPlaceholderText('Type command...');
+    (global.fetch as jest.Mock)
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 503,
+        json: async () => ({ message: 'host busy' }),
+      })
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ attachmentId: 'first.png' }) });
+    fireEvent.paste(area, { clipboardData: { files: [file] } });
+    const retry = await utils.findByRole('button', { name: 'Retry upload' });
+    expect(area).toHaveValue('[Image 1]');
+    expect(utils.getByRole('button', { name: 'Send' })).toBeDisabled();
+    fireEvent.click(retry);
+    await waitFor(() => expect(utils.getByRole('button', { name: 'Send' })).toBeEnabled());
+    expect(socket.emit.mock.calls.filter(([e]) => e === 'terminal:input')).toEqual([]);
   });
 
   it('inserts multiline form prompt text at the selection without a socket write', async () => {

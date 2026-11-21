@@ -120,6 +120,8 @@ describe('TeamsService', () => {
   };
   let settingsService: {
     removeAgentFromProjectPresets: jest.Mock;
+    renameTeamInProjectPresets: jest.Mock;
+    removeTeamFromProjectPresets: jest.Mock;
   };
   let sessionLifecycle: jest.Mocked<Pick<SessionLifecycleFacade, 'restart' | 'terminate'>>;
   let activeSessionLookup: jest.Mocked<Pick<ActiveSessionLookup, 'getActiveSession'>>;
@@ -211,6 +213,8 @@ describe('TeamsService', () => {
 
     settingsService = {
       removeAgentFromProjectPresets: jest.fn().mockResolvedValue(undefined),
+      renameTeamInProjectPresets: jest.fn().mockResolvedValue(undefined),
+      removeTeamFromProjectPresets: jest.fn().mockResolvedValue(undefined),
     };
 
     const module: TestingModule = await Test.createTestingModule({

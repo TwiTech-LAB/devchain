@@ -89,6 +89,7 @@ describe('Host Vault request wire contract', () => {
   it.each<[string, unknown]>([
     ['a stored or granted answer', { status: 'fulfilled' }],
     ['a session-only answer', { status: 'fulfilled', sessionValue: { value: 'v' } }],
+    ['an existing-entry answer', { status: 'fulfilled', entryId: 'e1' }],
     [
       'a session-only value at the size limit',
       { status: 'fulfilled', sessionValue: { value: 'a'.repeat(HOST_VAULT_VALUE_MAX_BYTES) } },
@@ -119,8 +120,15 @@ describe('Host Vault request wire contract', () => {
     ],
     ['an approval without a decision', { status: 'approved' }],
     ['an unknown decision', { status: 'approved', decision: 'forever' }],
-    ['a value on an approval', { status: 'approved', decision: 'once', sessionValue: { value: 'v' } }],
+    [
+      'a value on an approval',
+      { status: 'approved', decision: 'once', sessionValue: { value: 'v' } },
+    ],
     ['an unknown status', { status: 'expired' }],
+    [
+      'an existing entry with a session value',
+      { status: 'fulfilled', entryId: 'e1', sessionValue: { value: 'v' } },
+    ],
     ['an unknown key', { status: 'fulfilled', extra: true }],
     ['an unknown session value key', { status: 'fulfilled', sessionValue: { value: 'v', x: 1 } }],
   ])('rejects %s', (_name, body) => {

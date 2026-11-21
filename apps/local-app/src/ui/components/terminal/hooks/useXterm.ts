@@ -6,6 +6,7 @@ import { termLog } from '@/ui/lib/debug';
 import { toast } from '@/ui/hooks/use-toast';
 import {
   decodeOsc52ClipboardPayload,
+  enableBracketedPaste,
   isTerminalContainerVisible,
   isTerminalInternalSequence,
 } from '../xterm-utils';
@@ -23,6 +24,10 @@ import type { ThemeValue } from '@/ui/components/ThemeSelect';
 import type { TerminalHistorySync } from '../terminal-history-sync';
 import { createTerminalInputIntentBinding } from '../terminal-input-intent-binding';
 import { createCtrlCSelectionBinding } from '../ctrl-c-selection-binding';
+import {
+  createTerminalClipboardPasteBinding,
+  type ClipboardFilePaste,
+} from '../terminal-clipboard-paste';
 
 /**
  * Buffered frame for sequence-based history deduplication
@@ -39,6 +44,10 @@ interface BufferedFrame {
  * position we just set.
  */
 const RESHOW_RESTORE_SETTLE_MS = 300;
+
+// Socket.IO closes the connection for a message over 1,000,000 bytes (the engine.io default
+// `maxHttpBufferSize`). The budget stays below that limit.
+const TERMINAL_INPUT_WIRE_BUDGET_BYTES = 900_000;
 
 /**
  * Custom hook for xterm.js terminal initialization and lifecycle management.
@@ -91,6 +100,7 @@ export function useXterm(
   onScrollIntentController?: (controller: ScrollIntentController | null) => void,
   isAuthorityRef?: React.MutableRefObject<boolean>,
   suppressCtrlCWithSelectionRef?: React.MutableRefObject<boolean>,
+  onClipboardFiles?: (paste: ClipboardFilePaste) => void,
 ) {
   useEffect(() => {
     // C1: Clamp scrollbackLines to valid range before using
@@ -137,6 +147,8 @@ export function useXterm(
     terminal.loadAddon(fitAddon);
 
     terminal.open(terminalRef.current);
+    // A new xterm starts with the mode off, and an empty first seed does not reset it.
+    enableBracketedPaste(terminal);
 
     // OSC 52 clipboard relay. Inner apps (e.g. Claude TUI) emit ESC]52;c;<base64>BEL.
     // tmux 3.x default (`set-clipboard external` + `terminal-features xterm*:clipboard`)
@@ -198,8 +210,34 @@ export function useXterm(
       }, 150);
     });
 
+    const container = terminalRef.current;
+    const claimAuthorityForInputIntent = () => {
+      if (inputMode !== 'tty' || !activeSocket.connected) return;
+      if (isSubscribedRef?.current !== true || isAuthorityRef?.current !== false) return;
+      activeSocket.emit('terminal:focus', { sessionId });
+    };
+    const clipboardPaste =
+      onClipboardFiles &&
+      createTerminalClipboardPasteBinding({
+        target: container,
+        onFiles: (paste) => {
+          if (inputMode === 'tty' && activeSocket.connected && isSubscribedRef?.current) {
+            activeSocket.emit('terminal:focus', { sessionId });
+          }
+          onClipboardFiles(paste);
+        },
+        onCtrlV:
+          inputMode === 'tty'
+            ? (data) => {
+                claimAuthorityForInputIntent();
+                terminal.input(data);
+              }
+            : undefined,
+      });
+
     const ctrlCSelectionBinding = createCtrlCSelectionBinding({
       terminal,
+      beforeKeyEvent: clipboardPaste?.handleKeyEvent,
       enabled:
         suppressCtrlCWithSelectionRef?.current ?? DEFAULT_TERMINAL_SUPPRESS_CTRL_C_WITH_SELECTION,
       onClipboardBlocked: (error) => {
@@ -227,7 +265,6 @@ export function useXterm(
     // defer a `full_history` response until the drag has fully ended. Bound on the stable
     // container (not the recreated `.xterm-viewport`) and disposed on terminal recreation, session
     // change, and unmount.
-    const container = terminalRef.current;
     const scrollIntent = createScrollIntentBinding({
       container,
       stampIntent: (nowMs) => detector.stampScrollIntent(nowMs),
@@ -241,12 +278,6 @@ export function useXterm(
     // Add direct TTY input handler for TTY mode
     if (inputMode === 'tty') {
       termLog('terminal_tty_mode_enabled', { sessionId });
-
-      const claimAuthorityForInputIntent = () => {
-        if (!activeSocket.connected) return;
-        if (isSubscribedRef?.current !== true || isAuthorityRef?.current !== false) return;
-        activeSocket.emit('terminal:focus', { sessionId });
-      };
 
       inputIntentBinding = createTerminalInputIntentBinding({
         terminal,
@@ -266,7 +297,25 @@ export function useXterm(
         }
 
         if (activeSocket.connected) {
-          activeSocket.emit('terminal:input', { sessionId, data, ttyMode: true });
+          const payload = { sessionId, data, ttyMode: true };
+          // JSON uses at most six bytes per UTF-16 unit, plus the event and payload fields.
+          if (6 * data.length + 200 > TERMINAL_INPUT_WIRE_BUDGET_BYTES) {
+            const encodedBytes = new TextEncoder().encode(
+              JSON.stringify(['terminal:input', payload]),
+            ).byteLength;
+            if (encodedBytes > TERMINAL_INPUT_WIRE_BUDGET_BYTES) {
+              const sizeKb = Math.ceil(encodedBytes / 100) / 10;
+              const limitKb = TERMINAL_INPUT_WIRE_BUDGET_BYTES / 1000;
+              toast({
+                title: 'Paste is too large for the terminal',
+                description: `Encoded paste size is ${sizeKb} KB. The limit is ${limitKb} KB. Nothing was pasted.`,
+                variant: 'destructive',
+              });
+              return;
+            }
+          }
+
+          activeSocket.emit('terminal:input', payload);
         }
       });
     }
@@ -478,6 +527,7 @@ export function useXterm(
       clearTimeout(timeoutId);
       if (selectionCopyTimer) clearTimeout(selectionCopyTimer);
       selectionDisposable.dispose();
+      clipboardPaste?.dispose();
       ctrlCSelectionBinding.dispose();
       scrollDisposable?.dispose();
       inputIntentBinding?.dispose();
@@ -508,6 +558,7 @@ export function useXterm(
     onScrollIntentController,
     isAuthorityRef,
     suppressCtrlCWithSelectionRef,
+    onClipboardFiles,
   ]);
 
   // Live theme update — runs independently of the initialization effect so

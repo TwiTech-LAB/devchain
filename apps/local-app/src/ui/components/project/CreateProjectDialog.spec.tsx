@@ -1,4 +1,5 @@
 import { render, screen } from '@testing-library/react';
+import type { SetupPreviewResponse } from '@/ui/pages/projects/lib/project-contracts';
 import { CreateProjectDialog } from './CreateProjectDialog';
 
 const defaultProps = {
@@ -35,7 +36,103 @@ const defaultProps = {
   isSubmitting: false,
 };
 
+function preview(installedProviders: string[]): SetupPreviewResponse {
+  return {
+    payload: {
+      version: 1,
+      prompts: [],
+      profiles: [
+        {
+          id: 'profile-1',
+          name: 'Coder Profile',
+          provider: { name: 'claude' },
+          providerConfigs: [
+            { name: 'opus', providerName: 'claude' },
+            { name: 'gpt', providerName: 'codex' },
+          ],
+        },
+      ],
+      agents: [
+        {
+          name: 'Coder',
+          profileId: 'profile-1',
+          isProjectOwner: false,
+          providerConfigName: 'opus',
+        },
+        {
+          name: 'Reviewer',
+          profileId: 'profile-1',
+          isProjectOwner: false,
+          providerConfigName: 'gpt',
+        },
+      ],
+      statuses: [],
+      watchers: [],
+      subscribers: [],
+      teams: [
+        {
+          name: 'Core',
+          memberAgentNames: ['Coder'],
+          allowTeamLeadCreateAgents: true,
+          profileNames: ['Coder Profile'],
+        },
+      ],
+      providerModels: [],
+      providerEfforts: [],
+      presets: [],
+      scheduledEpics: [],
+    },
+    providerSummary: [],
+    familyAlternatives: [],
+    presetProviderCoverage: [],
+    localAvailability: {
+      installedProviders: installedProviders.map((name) => ({ id: name, name })),
+    },
+  };
+}
+
 describe('CreateProjectDialog', () => {
+  it('shows template cards with descriptions and details only on the selected card', () => {
+    const templates = [
+      {
+        slug: 'starter',
+        name: 'Starter',
+        source: 'bundled' as const,
+        description: 'Plan and build',
+      },
+      { slug: 'other', name: 'Other', source: 'registry' as const, description: null },
+    ];
+    const { rerender } = render(
+      <CreateProjectDialog
+        {...defaultProps}
+        templates={templates}
+        selectedTemplatePreview={preview(['Codex'])}
+      />,
+    );
+
+    const [selected, other] = screen.getAllByRole('radio');
+    expect(selected).toBeChecked();
+    expect(selected).toHaveTextContent('Plan and build');
+    expect(selected).toHaveTextContent('2 agents · 1 teams · 0 ready-made setups');
+    expect(selected).toHaveTextContent('Works with the providers you have: codex');
+    expect(other).not.toBeChecked();
+    expect(other).toHaveTextContent(/^OtherDownloaded$/);
+
+    rerender(
+      <CreateProjectDialog
+        {...defaultProps}
+        templates={templates}
+        selectedTemplatePreview={preview([])}
+      />,
+    );
+    expect(selected).toHaveTextContent(
+      'Cannot run with the providers you have: Coder, Reviewer. This template supports: claude, codex.',
+    );
+
+    rerender(<CreateProjectDialog {...defaultProps} templates={templates} />);
+    expect(selected).not.toHaveTextContent('agents');
+  });
+
   it('renders version choice only for registry templates with available versions', () => {
     const { rerender } = render(
       <CreateProjectDialog {...defaultProps} selectedTemplateSource="bundled" />,

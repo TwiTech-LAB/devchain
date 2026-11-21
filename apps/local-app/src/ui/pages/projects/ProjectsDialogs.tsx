@@ -354,6 +354,7 @@ export function ProjectsDialogs({ model }: ProjectsDialogsProps) {
         onTemplateSourceTabChange={model.create.source.changeSourceTab}
         templateFormData={model.create.source.values}
         onNameChange={model.create.source.changeName}
+        isNameAutomatic={model.create.source.isNameAutomatic}
         onDescriptionChange={model.create.source.changeDescription}
         onVersionChange={model.create.source.changeVersion}
         workspaces={model.create.source.workspaces}
@@ -361,6 +362,7 @@ export function ProjectsDialogs({ model }: ProjectsDialogsProps) {
         onWorkspaceChange={model.create.source.changeWorkspace}
         templates={model.create.source.templates}
         selectedTemplateSource={model.create.source.selectedTemplateSource}
+        selectedTemplatePreview={model.create.source.selectedTemplatePreview}
         sortedVersions={model.create.source.sortedVersions}
         onTemplateChange={model.create.source.selectTemplate}
         onTemplatePathChange={model.create.source.changeRootPath}

@@ -35,6 +35,7 @@ import {
   type ProfilesResponse,
 } from '../dto';
 import { ValidationError } from '../../../common/errors/error-types';
+import { ProfilesService } from '../services/profiles.service';
 
 const logger = createLogger('ProfilesController');
 
@@ -74,6 +75,7 @@ export class ProfilesController {
     @Inject(STORAGE_SERVICE)
     private readonly storage: AgentProfileStorage & AgentStorage & ProfileProviderConfigStorage,
     private readonly gate: ProjectWriteGate,
+    private readonly profiles: ProfilesService,
   ) {}
 
   @Get()
@@ -123,26 +125,7 @@ export class ProfilesController {
   @Put(':id')
   async updateProfile(@Param('id') id: string, @Body() body: unknown): Promise<AgentProfile> {
     logger.info({ id }, 'PUT /api/profiles/:id');
-    const parsed = UpdateProfileSchema.parse(body) as UpdateAgentProfile & {
-      projectId?: string | null;
-    };
-
-    // Disallow moving profiles across projects
-    if (parsed.projectId !== undefined) {
-      const existing = await this.storage.getAgentProfile(id);
-      if (parsed.projectId !== existing.projectId) {
-        throw new BadRequestException({
-          message: 'Cannot change projectId of a profile',
-          field: 'projectId',
-        });
-      }
-      // Prevent passing projectId to storage update to avoid accidental writes
-      // eslint-disable-next-line @typescript-eslint/no-unused-vars
-      const { projectId, ...updateData } = parsed;
-      return this.storage.updateAgentProfile(id, updateData);
-    }
-
-    return this.storage.updateAgentProfile(id, parsed);
+    return this.profiles.updateProfile(id, UpdateProfileSchema.parse(body) as UpdateAgentProfile);
   }
 
   @Put(':id/prompts')

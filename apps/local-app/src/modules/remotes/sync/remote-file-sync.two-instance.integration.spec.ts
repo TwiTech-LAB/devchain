@@ -1,3 +1,5 @@
+import { ManagedExclusionsRemovalStore } from './managed-exclusions-removal.store';
+import { ManagedExclusionsCheckService } from './managed-exclusions-check.service';
 import { execFileSync } from 'child_process';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
 import { join } from 'path';
@@ -121,6 +123,8 @@ real('connected file layout migration', () => {
       pair.home.app.get(FileSyncFailuresService),
       pair.home.app.get(GitOwnerStore),
       pair.home.app.get(FileSyncSuggestionsService),
+      pair.home.app.get(ManagedExclusionsCheckService),
+      pair.home.app.get(ManagedExclusionsRemovalStore),
     );
   });
 

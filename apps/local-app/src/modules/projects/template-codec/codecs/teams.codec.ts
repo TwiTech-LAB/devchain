@@ -9,6 +9,7 @@
  *  3. create each team, resolving member/lead/profile/config references against current
  *     storage. ImportContext supplies the remap and provider-filter inputs used before
  *     creation; current storage remains the source of truth for name and config resolution.
+ * A preserved roster arrives with its permissions resolved and skips the first two steps.
  *
  * Mode-conditional fatality (matrix row 13): replace = FATAL with scoped cleanup (teams
  * created this run are deleted before re-throwing, so no partial-orphan teams survive);
@@ -155,7 +156,10 @@ export async function buildExportTeams(
       teamLeadAgentName,
       memberAgentNames,
       ...(team.maxMembers !== 5 ? { maxMembers: team.maxMembers } : {}),
-      ...(team.maxConcurrentTasks !== 5 ? { maxConcurrentTasks: team.maxConcurrentTasks } : {}),
+      // Import uses the member limit when the concurrency limit is omitted.
+      ...(team.maxConcurrentTasks !== 5 || team.maxMembers !== 5
+        ? { maxConcurrentTasks: team.maxConcurrentTasks }
+        : {}),
       ...(team.allowTeamLeadCreateAgents ? { allowTeamLeadCreateAgents: true } : {}),
       profileNames,
       ...(profileSelections.length > 0 ? { profileSelections } : {}),
@@ -318,7 +322,7 @@ class TeamsCodec implements TemplateSectionCodec<TeamsSection> {
     const selectedProfilesByFamily = ctx.get('selectedProfilesByFamily');
     const teamOverrides = rt.teamOverrides;
 
-    if (teamOverrides) {
+    if (!rt.applyPreservedRoster && teamOverrides) {
       for (const override of teamOverrides) {
         if (
           !teams.some(
@@ -333,25 +337,23 @@ class TeamsCodec implements TemplateSectionCodec<TeamsSection> {
       }
     }
 
-    const teamsToImport = applyTeamOverrides(
-      teams as RemappableTeam[],
-      teamOverrides as TeamOverrideEntry[] | undefined,
-      selectedProfilesByFamily.profileNameRemapMap,
-      selectedProfilesByFamily.profilesToCreate,
-    );
     const profileIdMap = ctx.get('profileIdMap');
-    const configLookupMap = ctx.get('configLookupMap');
-    const teamsWithAvailableConfigs = pruneUnavailableTeamProfileSelections(
-      teamsToImport,
-      selectedProfilesByFamily.profilesToCreate,
-      profileIdMap,
-      configLookupMap,
-    );
+    const teamsToImport = rt.applyPreservedRoster
+      ? teams
+      : pruneUnavailableTeamProfileSelections(
+          applyTeamOverrides(
+            teams,
+            teamOverrides as TeamOverrideEntry[] | undefined,
+            selectedProfilesByFamily.profileNameRemapMap,
+            selectedProfilesByFamily.profilesToCreate,
+          ),
+          selectedProfilesByFamily.profilesToCreate,
+          profileIdMap,
+          ctx.get('configLookupMap'),
+        );
 
-    // Build name→id maps from the project's CURRENT agents and profiles (verbatim from the
-    // legacy createImportedTeams). The agentsPersisted precondition guarantees the agents
-    // codec has run; reading live storage (rather than the ImportContext maps) preserves
-    // the exact legacy resolution surface, including agents present in storage this run.
+    // Ordinary imports can reference profiles already in storage. The preserved roster
+    // uses the selected profiles created by this import.
     const { storage } = rt;
     const { items: agents } = await storage.listAgents(projectId, { limit: 10000 });
     const agentNameToId = new Map<string, string>();
@@ -359,16 +361,24 @@ class TeamsCodec implements TemplateSectionCodec<TeamsSection> {
       agentNameToId.set(agent.name.trim().toLowerCase(), agent.id);
     }
 
-    const { items: profiles } = await storage.listAgentProfiles({ projectId });
     const profileNameToId = new Map<string, string>();
-    for (const profile of profiles) {
-      profileNameToId.set(profile.name.trim().toLowerCase(), profile.id);
+    if (rt.applyPreservedRoster) {
+      for (const profile of selectedProfilesByFamily.profilesToCreate) {
+        const name = profile.name.trim().toLowerCase();
+        const id = profileIdMap[profile.id ?? `name:${name}`];
+        if (id) profileNameToId.set(name, id);
+      }
+    } else {
+      const { items: profiles } = await storage.listAgentProfiles({ projectId });
+      for (const profile of profiles) {
+        profileNameToId.set(profile.name.trim().toLowerCase(), profile.id);
+      }
     }
 
     const createdTeamIds: string[] = [];
 
     try {
-      for (const exportedTeam of teamsWithAvailableConfigs) {
+      for (const exportedTeam of teamsToImport) {
         const created = await this.createTeam(
           projectId,
           exportedTeam,

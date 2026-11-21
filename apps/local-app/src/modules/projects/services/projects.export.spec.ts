@@ -100,8 +100,7 @@ describe('ProjectsService', () => {
     setProjectTemplateMetadata: jest.Mock;
     getProjectTemplateMetadata: jest.Mock;
     getProjectPresets: jest.Mock;
-    setProjectPresets: jest.Mock;
-    clearProjectPresets: jest.Mock;
+    mergeProjectTemplatePresets: jest.Mock;
   };
   let watchersService: {
     deleteWatcher: jest.Mock;
@@ -191,8 +190,7 @@ describe('ProjectsService', () => {
       setProjectTemplateMetadata: jest.fn().mockResolvedValue(undefined),
       getProjectTemplateMetadata: jest.fn().mockReturnValue(null),
       getProjectPresets: jest.fn().mockReturnValue([]),
-      setProjectPresets: jest.fn().mockResolvedValue(undefined),
-      clearProjectPresets: jest.fn().mockResolvedValue(undefined),
+      mergeProjectTemplatePresets: jest.fn().mockResolvedValue(undefined),
     };
 
     watchersService = {
@@ -1377,8 +1375,13 @@ describe('ProjectsService', () => {
 
       await service.importProject({ projectId, payload: importPayload, dryRun: false });
 
-      expect(settings.setProjectPresets).toHaveBeenCalledWith(projectId, presets);
-      const setPresetCalls = (settings.setProjectPresets as jest.Mock).mock.calls;
+      expect(settings.mergeProjectTemplatePresets).toHaveBeenCalledWith(
+        projectId,
+        presets,
+        expect.any(Array),
+        [],
+      );
+      const setPresetCalls = settings.mergeProjectTemplatePresets.mock.calls;
       const importedPresets = setPresetCalls[setPresetCalls.length - 1]?.[1] as
         | Array<{
             name: string;
@@ -1639,7 +1642,7 @@ describe('ProjectsService', () => {
         name: 'claude',
         autoCompactThreshold: 85,
       });
-      expect(result.providerSettings![0].env).toBeUndefined();
+      expect(result.providerSettings![0]).not.toHaveProperty('env');
     });
 
     it('should not include scope project IDs anywhere in exported JSON', async () => {

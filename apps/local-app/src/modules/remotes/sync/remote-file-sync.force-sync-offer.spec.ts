@@ -1,3 +1,5 @@
+import { ManagedExclusionsRemovalStore } from './managed-exclusions-removal.store';
+import { ManagedExclusionsCheckService } from './managed-exclusions-check.service';
 import type { FolderSyncStatus } from '../../file-sync/file-sync.dto';
 import { Test } from '@nestjs/testing';
 import { FileSyncService } from '../../file-sync/file-sync.service';
@@ -70,6 +72,8 @@ async function setup() {
   const module = await Test.createTestingModule({
     providers: [
       RemoteFileSyncService,
+      { provide: ManagedExclusionsCheckService, useValue: { evaluate: async () => [] } },
+      { provide: ManagedExclusionsRemovalStore, useValue: {} },
       { provide: GitOwnerStore, useValue: { get: () => 'vm' } },
       { provide: FileSyncAutoFixStore, useValue: {} },
       { provide: FileSyncFailuresService, useValue: {} },

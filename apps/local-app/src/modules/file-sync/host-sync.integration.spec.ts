@@ -29,6 +29,7 @@ import { fixtureTls, installFixtureTlsFront } from '../../common/test/tls-fixtur
 import { FILE_SYNC_PATHS, createProductionFileSyncPaths } from './file-sync-paths';
 import { DEFAULT_FILE_SYNC_IGNORES } from './file-sync-ignores.store';
 import { FileSyncService } from './file-sync.service';
+import { shareFolderId, shareId } from './share-paths';
 import { FileSyncModule } from './file-sync.module';
 import { SyncthingManager, type SyncthingConnection } from './syncthing-manager.service';
 import { SyncthingRestClient } from './syncthing-rest.client';
@@ -61,6 +62,7 @@ describe('host sync routes', () => {
   let remoteNeedFiles: Array<{ name: string; deleted: boolean; type: string }> = [];
   let fileErrors: Array<{ path: string; error: string }> = [];
   const projects: Record<string, { id: string; rootPath: string }> = {};
+  let configuredShares: Array<{ id: string; path: string }> = [];
   const git = {
     mirroredHead: jest.fn().mockResolvedValue('head1'),
     getConfigValue: jest.fn().mockResolvedValue(null),
@@ -186,7 +188,8 @@ describe('host sync routes', () => {
           return json({ files: [{ name: 'edited.txt' }] });
         if (req.method === 'GET' && url.startsWith('/rest/db/ignores'))
           return json({ ignore: ['!/data/keep', '/data'], expanded: [] });
-        if (url === '/rest/config/folders') return json([{ id: 'code:p1' }]);
+        if (url === '/rest/config/folders')
+          return json([{ id: 'code:p1', path: projects.p1.rootPath }, ...configuredShares]);
         if (url.startsWith('/rest/config/folders/'))
           return json({ type: 'receiveonly', paused: false, devices: [{ deviceID: HOME_ID }] });
         if (url.startsWith('/rest/system/connections')) {
@@ -233,6 +236,7 @@ describe('host sync routes', () => {
       .useValue({
         listRemoteProjectBindings: async () => [],
         listFrozenProjects: async () => [],
+        listProjects: async () => ({ items: [projects.p1], total: 1, limit: 500, offset: 0 }),
         getProject: async (id: string) => {
           if (!projects[id]) throw new NotFoundError('Project', id);
           return projects[id];
@@ -245,7 +249,10 @@ describe('host sync routes', () => {
       .overrideProvider(SyncthingManager)
       .useValue({
         getConnection: () => connection,
-        getState: () => ({ error: 'Syncthing was not found on PATH or in ~/.devchain/bin.' }),
+        getState: () => ({
+          privileged: true,
+          error: 'Syncthing was not found on PATH or in ~/.devchain/bin.',
+        }),
       })
       .compile();
     app = moduleRef.createNestApplication<NestFastifyApplication>(new FastifyAdapter());
@@ -278,6 +285,7 @@ describe('host sync routes', () => {
 
   beforeEach(() => {
     recorded = [];
+    configuredShares = [];
     remoteNeedFiles = [];
     fileErrors = [];
     git.refreshIndexFromHead.mockReset();
@@ -350,6 +358,134 @@ describe('host sync routes', () => {
       expect(existsSync(path)).toBe(true);
     },
   );
+
+  it('shares a user folder at the path it receives: refuses refused paths, creates a missing one and backs up only a receive-only first copy', async () => {
+    const folder = mkdtempSync(join(homedir(), '.devchain-share-test-'));
+    try {
+      const share = (path: string, extra: Record<string, unknown> = {}) =>
+        app.inject({
+          method: 'POST',
+          url: '/api/host/sync/shares',
+          payload: {
+            path,
+            type: 'sendreceive',
+            peerDeviceId: HOME_ID,
+            ignores: ['/cache'],
+            ...extra,
+          },
+        });
+      configuredShares = [
+        { id: shareFolderId(join(folder, 'other')), path: join(folder, 'other') },
+      ];
+      // The real ~/.ssh can be a link on the machine that runs the test; the link rule then
+      // refuses it first. share-paths.spec.ts covers each rule and its reason in a temporary home.
+      for (const [path, reason] of [
+        [join(homedir(), '.ssh'), /a file DevChain manages|is a link/],
+        [join(folder, 'other', 'inside'), /another shared folder/],
+      ] as Array<[string, RegExp]>) {
+        const refused = await share(path);
+        expect(refused.statusCode).toBe(403);
+        expect(refused.json().message).toMatch(reason);
+        expect(existsSync(join(folder, 'other'))).toBe(false);
+      }
+      expect(
+        (await share(join(folder, 'notes'), { type: 'sendonly', backup: { operationId: 'op-1' } }))
+          .statusCode,
+      ).toBe(400);
+      expect(recorded.filter((r) => r.method !== 'GET')).toEqual([]);
+
+      const target = join(folder, 'notes', 'deep');
+      const id = shareFolderId(target);
+      await expect(
+        app
+          .get(FileSyncService)
+          .ensureShareFolder(
+            { path: target, type: 'sendonly', peerDeviceId: HOME_ID, ignores: [] },
+            { createMissing: false },
+          ),
+      ).rejects.toMatchObject({
+        code: 'SHARED_FOLDER_MISSING',
+        message: expect.stringContaining('the folder does not exist'),
+      });
+      expect(existsSync(target)).toBe(false);
+      recorded = [];
+      expect(
+        await client.syncShareFolder('r1', {
+          path: target,
+          type: 'receiveonly',
+          peerDeviceId: HOME_ID,
+          ignores: ['/cache'],
+        }),
+      ).toEqual({ id, path: target, type: 'receiveonly', paused: false });
+      expect(existsSync(target)).toBe(true);
+      expect(calls()).toEqual([
+        'GET /rest/config/folders',
+        `PUT /rest/config/folders/${encodeURIComponent(id)}`,
+        `POST /rest/db/ignores?folder=${encodeURIComponent(id)}`,
+        `PATCH /rest/config/folders/${encodeURIComponent(id)}`,
+      ]);
+      expect(recorded[1].body).toMatchObject({
+        id,
+        path: target,
+        devices: [{ deviceID: HOME_ID }],
+        paused: true,
+        copyOwnershipFromParent: true,
+        fsWatcherEnabled: true,
+        fsWatcherDelayS: 1,
+        rescanIntervalS: 300,
+        maxConflicts: 10,
+        versioning: { type: '' },
+      });
+      expect(recorded[2].body).toEqual({ ignore: ['/cache'] });
+
+      const backupPath = join(
+        root,
+        'home',
+        '.devchain',
+        'sync-backups',
+        'shares',
+        shareId(target),
+        'op-1',
+      );
+      expect(
+        await client.syncShareBackup('r1', {
+          shareId: shareId(target),
+          backup: { operationId: 'op-1' },
+        }),
+      ).toEqual({ path: backupPath });
+      recorded = [];
+      mkdirSync(join(target, '.git', 'info'), { recursive: true });
+      expect(
+        await client.syncShareFolder('r1', {
+          path: target,
+          type: 'receiveonly',
+          peerDeviceId: HOME_ID,
+          ignores: [],
+          paused: true,
+          backup: { operationId: 'op-1' },
+        }),
+      ).toMatchObject({ id, backupPath, paused: true });
+      expect(recorded[1].body).toMatchObject({
+        maxConflicts: -1,
+        versioning: { type: 'trashcan', fsPath: backupPath, params: { cleanoutDays: '0' } },
+      });
+      expect(readFileSync(join(target, '.git', 'info', 'exclude'), 'utf8')).toContain('/.stfolder');
+
+      recorded = [];
+      await client.syncShareIgnores('r1', id, ['/build']);
+      await client.syncScan('r1', id);
+      await expect(client.syncShareIgnores('r1', 'code:p1', [])).rejects.toMatchObject({
+        status: 400,
+      });
+      expect(recorded.map((r) => [r.method, r.url, r.body])).toEqual([
+        ['POST', `/rest/db/ignores?folder=${encodeURIComponent(id)}`, { ignore: ['/build'] }],
+        ['PATCH', `/rest/config/folders/${encodeURIComponent(id)}`, { fsWatcherDelayS: 1 }],
+        ['POST', `/rest/db/scan?folder=${encodeURIComponent(id)}`, undefined],
+      ]);
+    } finally {
+      rmSync(folder, { recursive: true, force: true });
+    }
+  });
 
   it('refuses force-copy path traversal and source-side versioning before any REST mutation', async () => {
     const pathOnly = { projectId: 'p1', kind: 'code', forceCopy: { operationId: '../escape' } };

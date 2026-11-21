@@ -1,9 +1,14 @@
 import { renderHook } from '@testing-library/react';
 import type { Dispatch, SetStateAction } from 'react';
+import { buildProviderSummary } from '@/modules/projects/helpers/profile-mapping.helpers';
+import { teamsDevSetupPreview } from '../../../../../test/helpers/teams-dev-setup-preview';
+import { agentKey, buildAgentOverrides } from './agentPlan';
+import { installedProviderNames } from './providerSelection';
 import {
   buildConfigEmission,
   initialWizardConfigState,
   useWizardConfigHandlers,
+  wizardConfigStateFor,
   type WizardConfigState,
 } from './useWizardConfig';
 import type { SetupPreviewResponse } from '@/ui/pages/projects/lib/project-contracts';
@@ -26,16 +31,36 @@ function makePreview(over: Partial<SetupPreviewResponse> = {}): SetupPreviewResp
         { name: 'Captain', profileId: 'profile-1', providerConfigName: 'claude-cfg' },
         { name: 'Solo', profileId: 'profile-1', providerConfigName: 'claude-cfg' },
       ],
-      teams: [],
+      teams: [
+        {
+          name: 'Squad',
+          teamLeadAgentName: 'Captain',
+          memberAgentNames: ['Solo'],
+          allowTeamLeadCreateAgents: true,
+          profileNames: ['Coder'],
+        },
+      ],
       // Storage/export order is oldest-first: AllClaude was created before MixedCodex.
       presets: [
         {
           name: 'AllClaude',
           agentConfigs: [{ agentName: 'Captain', providerConfigName: 'claude-cfg' }],
+          teamConfigs: [
+            {
+              teamName: 'Squad',
+              profileSelections: [{ profileName: 'Coder', configNames: ['claude-cfg'] }],
+            },
+          ],
         },
         {
           name: 'MixedCodex',
           agentConfigs: [{ agentName: 'Solo', providerConfigName: 'codex-cfg' }],
+          teamConfigs: [
+            {
+              teamName: 'Squad',
+              profileSelections: [{ profileName: 'Coder', configNames: ['codex-cfg'] }],
+            },
+          ],
         },
       ],
     } as unknown as SetupPreviewResponse['payload'],
@@ -70,197 +95,155 @@ function makePreview(over: Partial<SetupPreviewResponse> = {}): SetupPreviewResp
   } as SetupPreviewResponse;
 }
 
+// Pure state derivation: a unit test over the real functions is the cheapest layer that sees it.
 describe('initialWizardConfigState', () => {
-  it('preselects the default-setup providers and auto-applies the newest fitting preset', () => {
+  it('selects the installed listed providers and applies the newest fitting preset', () => {
     const state = initialWizardConfigState(makePreview());
 
-    // Both agents' template defaults resolve to claude-cfg → only claude is required;
-    // codex (referenced by a config but not by the default setup) starts deselected.
-    expect(state.selectedProviderNames).toEqual(['claude']);
-    expect(state.agentPresetName).toBe('AllClaude');
-    expect(state.agentPresetModified).toBe(false);
-    expect(state.presetAuto).toBe(true);
-  });
-
-  it('includes providers required via an agent template-named config', () => {
-    const preview = makePreview();
-    (preview.payload.agents![1] as { providerConfigName?: string }).providerConfigName =
-      'codex-cfg';
-
-    const state = initialWizardConfigState(preview);
-
     expect(state.selectedProviderNames).toEqual(['claude', 'codex']);
-    // With both providers preselected, the newest preset fits and applies.
     expect(state.agentPresetName).toBe('MixedCodex');
+    expect(state.agentPresetModified).toBe(false);
+    expect(state.teamStates.get('Squad')?.selections).toEqual([
+      { profileKey: 'Coder', mode: 'subset', configKeys: ['codex-cfg'] },
+    ]);
   });
 
-  it('leaves required-but-unavailable providers deselected', () => {
-    const preview = makePreview({
-      providerSummary: [
-        { name: 'claude', available: true, families: [], agentCount: 2 },
-        { name: 'codex', available: false, families: [], agentCount: 0 },
-      ] as unknown as SetupPreviewResponse['providerSummary'],
-    });
-    (preview.payload.agents![1] as { providerConfigName?: string }).providerConfigName =
-      'codex-cfg';
+  it.each([
+    ['both referenced providers', ['claude', 'codex'], ['claude', 'codex']],
+    // The server summary has no codex entry: the profile has no familySlug.
+    ['the config provider of a profile without a family', ['codex'], ['codex']],
+    ['an installed provider the template does not reference', ['Claude', 'copilot'], ['claude']],
+  ])('selects the installed listed providers: %s', (_case, installed, expected) => {
+    const preview = makePreview();
+    const installedNames = new Set(installed.map((n) => n.toLowerCase()));
+    preview.providerSummary = buildProviderSummary(
+      preview.payload.profiles as Parameters<typeof buildProviderSummary>[0],
+      preview.payload.agents ?? [],
+      installedNames,
+    );
+    preview.localAvailability = {
+      installedProviders: installed.map((name) => ({ id: `p-${name}`, name })),
+    };
 
-    const state = initialWizardConfigState(preview);
-
-    expect(state.selectedProviderNames).toEqual(['claude']);
+    expect(initialWizardConfigState(preview).selectedProviderNames).toEqual(expected);
   });
 });
 
-/** Run setSelectedProviderNames against a seeded state and return the state it produces. */
-function changeSelection(
-  preview: SetupPreviewResponse,
-  seeded: WizardConfigState,
-  next: string[],
-): WizardConfigState {
-  let produced: WizardConfigState | null = seeded;
-  const setState: Dispatch<SetStateAction<WizardConfigState | null>> = (action) => {
-    produced = typeof action === 'function' ? action(produced) : action;
-  };
-  const { result } = renderHook(() => useWizardConfigHandlers(preview, setState));
-  result.current.setSelectedProviderNames(next);
-  return produced!;
+type TeamsDevPayload = SetupPreviewResponse['payload'];
+
+/** The newest setup of the bundled template: storage order is oldest first. */
+function newestSetup(payload: TeamsDevPayload) {
+  const presets = payload.presets ?? [];
+  return presets[presets.length - 1];
 }
 
-describe('setSelectedProviderNames preset revalidation', () => {
-  it('re-derives the default preset when narrowing kills the auto-applied preset', () => {
-    const preview = makePreview();
-    // Select both providers: the newest preset (MixedCodex) auto-applies, pinning codex-cfg on Solo.
-    const seeded = changeSelection(preview, initialWizardConfigState(preview), ['claude', 'codex']);
-    expect(seeded.agentPresetName).toBe('MixedCodex');
-    expect(seeded.presetAuto).toBe(true);
-    expect(seeded.agentRows['solo']).toMatchObject({ configName: 'codex-cfg', pinned: true });
+function buildersTeam(payload: TeamsDevPayload) {
+  return (payload.teams ?? []).find((team) => team.name === 'Builders')!;
+}
 
-    const next = changeSelection(preview, seeded, ['claude']);
+// The bundled template exercises fallback across agents, families and teams together; only the
+// real payload shows that a single-provider install yields a runnable setup. The template content
+// changes often, so option names and setup names are read from the payload, not written here.
+describe('teams-dev setup with installed providers', () => {
+  it.each(['copilot', 'opencode', 'agy'])(
+    'falls every agent and the Builders team back to the %s config',
+    (provider) => {
+      const preview = teamsDevSetupPreview([provider]);
+      const state = initialWizardConfigState(preview);
+      const emission = buildConfigEmission(preview, state);
+      const epicManager = preview.payload.agents!.find(({ name }) => name === 'Epic Manager')!;
+      const templateCoder = buildersTeam(preview.payload).profileSelections!.find(
+        ({ profileName }) => profileName === 'Coder',
+      )!;
 
-    // As if the wizard had been opened with only claude: fallback preset applied, stale pin gone.
-    expect(next.selectedProviderNames).toEqual(['claude']);
-    expect(next.agentPresetName).toBe('AllClaude');
-    expect(next.agentPresetModified).toBe(false);
-    expect(next.presetAuto).toBe(true);
-    expect(next.agentRows['captain']).toMatchObject({ configName: 'claude-cfg', pinned: true });
-    // Solo's stale codex-cfg preset pin is replaced by its template default (explicitly named
-    // in the template, hence pinned by initialAgentRows).
-    expect(next.agentRows['solo']).toMatchObject({ configName: 'claude-cfg', pinned: true });
+      expect(
+        buildAgentOverrides(
+          state.agentRows,
+          preview.payload.agents ?? [],
+          preview.payload.profiles ?? [],
+          state.selectedProviderNames,
+          installedProviderNames(preview),
+        ).unresolvedAgents,
+      ).toEqual([]);
+      expect(state.agentPresetName).toBeNull();
+      for (const row of Object.values(state.agentRows)) {
+        expect(row).toMatchObject({
+          configName: provider,
+          pinned: true,
+          modelOverride: null,
+          effortOverride: null,
+        });
+      }
+      expect(state.agentRows['epic manager'].fallbackFromConfigName).toBe(
+        epicManager.providerConfigName,
+      );
 
-    // Payload contract: the re-derived preset emits as presetName, not as agentOverrides.
-    const emission = buildConfigEmission(preview, next);
-    expect(emission.presetName).toBe('AllClaude');
-    expect(emission.agentOverrides).toBeUndefined();
-  });
+      const builders = state.teamStates.get('Builders')!;
+      const coder = { profileKey: 'Coder', mode: 'subset', configKeys: [provider] };
+      expect(builders.selections).toEqual([coder]);
+      expect(builders.templateSelections).toEqual([coder]);
+      expect(builders.fallbacks).toEqual([
+        {
+          profileName: 'Coder',
+          fromConfigNames: templateCoder.configNames,
+          configName: provider,
+        },
+      ]);
 
-  it('re-widening in auto mode applies the newest now-selectable preset', () => {
-    const preview = makePreview();
-    const seeded = initialWizardConfigState(preview);
+      expect(emission.selectedProviderNames).toEqual([provider]);
+      expect(emission.presetName).toBeUndefined();
+      expect(emission.agentOverrides).toContainEqual({
+        agentName: 'Epic Manager',
+        providerConfigName: provider,
+        modelOverride: null,
+      });
+      expect(emission.agentOverrides).toHaveLength(4);
+      expect(emission.familyProviderMappings).toEqual({
+        architect: provider,
+        'code reviewer': provider,
+        'epic manager': provider,
+        'sub-architect': provider,
+      });
+      expect(emission.teamOverrides).toEqual([
+        {
+          teamName: 'Builders',
+          allowTeamLeadCreateAgents: true,
+          profileNames: ['Coder'],
+          profileSelections: [{ profileName: 'Coder', configNames: [provider] }],
+        },
+      ]);
+    },
+  );
 
-    // Narrow: only the older claude-only preset fits.
-    const narrowed = changeSelection(preview, seeded, ['claude']);
-    expect(narrowed.agentPresetName).toBe('AllClaude');
+  it('applies the bundled setup with only its providers selected even when Copilot is installed', () => {
+    const preview = teamsDevSetupPreview(['claude', 'codex', 'copilot']);
+    const state = initialWizardConfigState(preview);
+    // The newest setup runs on Claude and Codex, so it is the suggested setup. Its team entry
+    // replaces the team's own allowed options; a setup with no entry leaves the team's options.
+    const suggested = newestSetup(preview.payload);
+    const allowed =
+      suggested.teamConfigs?.find(({ teamName }) => teamName === 'Builders')?.profileSelections ??
+      buildersTeam(preview.payload).profileSelections;
 
-    // Widen back: the newest preset (MixedCodex) becomes selectable again and takes over.
-    const widened = changeSelection(preview, narrowed, ['claude', 'codex']);
-    expect(widened.agentPresetName).toBe('MixedCodex');
-    expect(widened.presetAuto).toBe(true);
-    expect(widened.agentRows['solo']).toMatchObject({ configName: 'codex-cfg', pinned: true });
-  });
-
-  it('re-widening after an auto drop to no-preset re-applies the default', () => {
-    const preview = makePreview();
-    // Start from the fully-selected auto state (MixedCodex applied with a codex-cfg pin).
-    const seeded = changeSelection(preview, initialWizardConfigState(preview), ['claude', 'codex']);
-
-    // Nothing fits an empty selection: plain template rows, no preset, still auto.
-    const emptied = changeSelection(preview, seeded, []);
-    expect(emptied.agentPresetName).toBeNull();
-    expect(emptied.agentPresetModified).toBe(false);
-    expect(emptied.presetAuto).toBe(true);
-    // Rows return to template defaults: Solo's stale codex-cfg preset pin is gone.
-    expect(emptied.agentRows['solo']).toMatchObject({ configName: 'claude-cfg', pinned: true });
-
-    const restored = changeSelection(preview, emptied, ['claude', 'codex']);
-    expect(restored.agentPresetName).toBe('MixedCodex');
-  });
-
-  it('keeps a user-picked preset while it still fits the selection', () => {
-    const preview = makePreview();
-    // The user explicitly picked the OLDER preset from the picker (manual mode).
-    const seeded: WizardConfigState = {
-      ...initialWizardConfigState(preview),
-      agentPresetName: 'AllClaude',
-      agentPresetModified: false,
-      presetAuto: false,
-    };
-
-    const next = changeSelection(preview, seeded, ['claude']);
-
-    // AllClaude is still selectable under claude-only — never switched away.
-    expect(next.selectedProviderNames).toEqual(['claude']);
-    expect(next.agentPresetName).toBe('AllClaude');
-    expect(next.presetAuto).toBe(false);
-    expect(next.agentRows).toEqual(seeded.agentRows);
-  });
-
-  it('falls back to auto-derivation when an unedited user pick becomes unselectable', () => {
-    const preview = makePreview();
-    // The user explicitly picked the newest preset (manual, unedited), then drops codex.
-    const seeded: WizardConfigState = {
-      ...changeSelection(preview, initialWizardConfigState(preview), ['claude', 'codex']),
-      presetAuto: false,
-    };
-    expect(seeded.agentPresetName).toBe('MixedCodex');
-
-    const next = changeSelection(preview, seeded, ['claude']);
-
-    // The pick is impossible now — the default takes over again and auto mode resumes.
-    expect(next.agentPresetName).toBe('AllClaude');
-    expect(next.presetAuto).toBe(true);
-    expect(next.agentRows['solo']).toMatchObject({ configName: 'claude-cfg', pinned: true });
-  });
-
-  it('keeps hand-edited rows and honestly clears the preset when it becomes unselectable', () => {
-    const preview = makePreview();
-    // Row edits on an applied preset set presetModified AND flip auto off.
-    const seeded: WizardConfigState = {
-      ...changeSelection(preview, initialWizardConfigState(preview), ['claude', 'codex']),
-      agentPresetModified: true,
-      presetAuto: false,
-    };
-    const editedRows = seeded.agentRows;
-
-    const next = changeSelection(preview, seeded, ['claude']);
-
-    expect(next.agentPresetName).toBeNull();
-    expect(next.agentPresetModified).toBe(false);
-    expect(next.agentRows).toEqual(editedRows);
-  });
-
-  it('never touches rows in Custom mode (preset null), where edits are not tracked as modified', () => {
-    const preview = makePreview();
-    const base = initialWizardConfigState(preview);
-    // Clearing to Custom and editing rows both leave auto mode.
-    const seeded: WizardConfigState = {
-      ...base,
-      agentPresetName: null,
-      agentPresetModified: false,
-      presetAuto: false,
-      agentRows: {
-        ...base.agentRows,
-        solo: { ...base.agentRows['solo'], configName: 'codex-cfg', pinned: true },
-      },
-    };
-
-    const next = changeSelection(preview, seeded, ['claude']);
-
-    expect(next.selectedProviderNames).toEqual(['claude']);
-    expect(next.agentPresetName).toBeNull();
-    expect(next.agentRows).toEqual(seeded.agentRows);
+    expect(state.agentPresetName).toBe(suggested.name);
+    expect(Object.values(state.agentRows).some((r) => r.fallbackFromConfigName)).toBe(false);
+    expect(state.teamStates.get('Builders')!.fallbacks).toBeUndefined();
+    expect(buildConfigEmission(preview, state)).toEqual({
+      selectedProviderNames: ['claude', 'codex'],
+      presetName: suggested.name,
+      teamOverrides: [
+        {
+          teamName: 'Builders',
+          allowTeamLeadCreateAgents: true,
+          profileNames: ['Coder'],
+          profileSelections: allowed,
+        },
+      ],
+    });
   });
 });
 
-describe('useWizardConfigHandlers presetAuto transitions', () => {
+describe('useWizardConfigHandlers', () => {
   function runHandler(
     preview: SetupPreviewResponse,
     seeded: WizardConfigState,
@@ -275,37 +258,197 @@ describe('useWizardConfigHandlers presetAuto transitions', () => {
     return produced!;
   }
 
-  it('picking a preset from the picker leaves auto mode', () => {
+  it('keeps the applied setup when the new provider selection also fits a newer setup', () => {
+    const preview = makePreview();
+    const seeded = wizardConfigStateFor(preview, ['claude']);
+
+    const next = runHandler(preview, seeded, (h) =>
+      h.onSelectedProvidersChange(['claude', 'codex']),
+    );
+
+    expect(next.selectedProviderNames).toEqual(['claude', 'codex']);
+    expect(next.agentPresetName).toBe('AllClaude');
+  });
+
+  it('rebuilds edited agent and team rows with the suggested setup when the applied setup no longer fits', () => {
+    const preview = makePreview();
+    const next = runHandler(preview, initialWizardConfigState(preview), (h) => {
+      h.onAgentRowChange('Captain', { modelOverride: 'manual-model', effortOverride: 'high' });
+      h.onTeamStateChange('Squad', { selections: [{ profileKey: 'Coder', mode: 'remove' }] });
+      h.onSelectedProvidersChange(['claude']);
+    });
+
+    expect(next.selectedProviderNames).toEqual(['claude']);
+    expect(next.agentPresetName).toBe('AllClaude');
+    expect(next.agentPresetModified).toBe(false);
+    expect(next.agentRows.captain).toMatchObject({
+      configName: 'claude-cfg',
+      modelOverride: null,
+      effortOverride: null,
+    });
+    expect(next.agentRows.solo.configName).toBe('claude-cfg');
+    const selection = { profileKey: 'Coder', mode: 'subset', configKeys: ['claude-cfg'] };
+    expect(next.teamStates.get('Squad')).toEqual({
+      selections: [selection],
+      templateSelections: [selection],
+    });
+  });
+
+  it('ignores attempts to clear the provider selection', () => {
+    const preview = makePreview();
+    const seeded = initialWizardConfigState(preview);
+
+    expect(runHandler(preview, seeded, (h) => h.onSelectedProvidersChange([]))).toBe(seeded);
+  });
+
+  // The hook is the shared create/import entry point that rebuilds the team rows on a preset switch.
+  it('applying a preset replaces edited team rows and clears the agent modified flag', () => {
+    const preview = makePreview();
+    const seeded: WizardConfigState = {
+      ...initialWizardConfigState(preview),
+      agentPresetModified: true,
+    };
+
+    const next = runHandler(preview, seeded, (h) => {
+      h.onTeamStateChange('Squad', { selections: [{ profileKey: 'Coder', mode: 'remove' }] });
+      h.onApplyPreset(' allclaude ');
+    });
+
+    expect(next.agentPresetName).toBe('AllClaude');
+    expect(next.agentPresetModified).toBe(false);
+    expect(next.agentRows['captain']).toMatchObject({ configName: 'claude-cfg', pinned: true });
+    const selection = { profileKey: 'Coder', mode: 'subset', configKeys: ['claude-cfg'] };
+    expect(next.teamStates.get('Squad')).toEqual({
+      selections: [selection],
+      templateSelections: [selection],
+    });
+  });
+
+  it.each([
+    ['another provider clears', 'codex-cfg', null, null],
+    ['the same provider keeps', 'claude-alt', 'opus', 'high'],
+  ])(
+    'changing the config to %s the model and effort overrides',
+    (_case, configName, model, effort) => {
+      const preview = makePreview();
+      preview.payload.profiles![0].providerConfigs!.push({
+        name: 'claude-alt',
+        providerName: 'claude',
+      } as NonNullable<
+        NonNullable<SetupPreviewResponse['payload']['profiles']>[number]['providerConfigs']
+      >[number]);
+      const base = initialWizardConfigState(preview);
+      const seeded: WizardConfigState = {
+        ...base,
+        agentRows: {
+          ...base.agentRows,
+          captain: {
+            ...base.agentRows['captain'],
+            modelOverride: 'opus',
+            effortOverride: 'high',
+            fallbackFromConfigName: 'gone-cfg',
+          },
+        },
+      };
+
+      const next = runHandler(preview, seeded, (h) =>
+        h.onAgentRowChange('Captain', { configName, pinned: true }),
+      );
+
+      expect(next.agentRows['captain']).toEqual({
+        agentName: 'Captain',
+        profileId: 'profile-1',
+        configName,
+        pinned: true,
+        modelOverride: model,
+        effortOverride: effort,
+      });
+    },
+  );
+
+  it('editing an agent row marks the applied preset modified', () => {
     const preview = makePreview();
     const next = runHandler(preview, initialWizardConfigState(preview), (h) =>
-      h.onApplyPreset('AllClaude'),
-    );
-    expect(next.agentPresetName).toBe('AllClaude');
-    expect(next.presetAuto).toBe(false);
-  });
-
-  it('clearing to Custom leaves auto mode', () => {
-    const preview = makePreview();
-    const next = runHandler(preview, initialWizardConfigState(preview), (h) => h.onClearPreset());
-    expect(next.agentPresetName).toBeNull();
-    expect(next.presetAuto).toBe(false);
-  });
-
-  it('editing an agent row leaves auto mode', () => {
-    const preview = makePreview();
-    // Seed the auto-applied preset state (selection made, MixedCodex applied), then edit a row.
-    const seeded = changeSelection(preview, initialWizardConfigState(preview), ['claude', 'codex']);
-    const next = runHandler(preview, seeded, (h) =>
       h.onAgentRowChange('Captain', { configName: 'codex-cfg', pinned: true }),
     );
-    expect(next.presetAuto).toBe(false);
+    expect(next.agentPresetName).toBe('MixedCodex');
     expect(next.agentPresetModified).toBe(true);
+  });
+
+  /** The Codex option of the fixture profile. */
+  const codexOption = (preview: SetupPreviewResponse) =>
+    preview.payload.profiles![0].providerConfigs!.find(
+      ({ providerName }) => providerName === 'codex',
+    )!;
+
+  /** The row change that the agent popover sends for a user's choice. */
+  const popoverChoice = (configName: string) => ({
+    configName,
+    pinned: true,
+    userSelectedOption: true,
+  });
+
+  // The shared config hook and emission builder expose both sides of the request contract.
+  it('emits a marked template option whose provider is outside the selection', () => {
+    const preview = makePreview();
+    const [agent] = preview.payload.agents!;
+    const option = codexOption(preview);
+    agent.providerConfigName = option.name;
+    const state = runHandler(preview, wizardConfigStateFor(preview, ['claude']), (h) =>
+      h.onAgentRowChange(agent.name, popoverChoice(option.name)),
+    );
+
+    const emission = buildConfigEmission(preview, state);
+    expect(emission.selectedProviderNames).toEqual(['claude']);
+    expect(emission.agentOverrides).toEqual([
+      { agentName: agent.name, providerConfigName: option.name },
+    ]);
+    expect(emission.presetName).toBeUndefined();
+  });
+
+  // The shared hook exposes the rebuilt row and its matching emission without rendering a dialog.
+  it('clears a manual edit to an agent omitted by the newly applied setup', () => {
+    const preview = makePreview();
+    const [partialSetup] = preview.payload.presets!;
+    const agent = preview.payload.agents!.find(
+      ({ name }) => !partialSetup.agentConfigs.some(({ agentName }) => agentName === name),
+    )!;
+    const option = codexOption(preview);
+    const seeded = wizardConfigStateFor(preview, ['claude'], { useSuggestedPreset: false });
+    const edited = runHandler(preview, seeded, (h) =>
+      h.onAgentRowChange(agent.name, popoverChoice(option.name)),
+    );
+    const key = agentKey(agent.name);
+    expect(edited.agentRows[key].configName).toBe(option.name);
+
+    const next = runHandler(preview, edited, (h) => h.onApplyPreset(partialSetup.name));
+
+    expect(next.agentRows[key]).toEqual(seeded.agentRows[key]);
+    const emission = buildConfigEmission(preview, next);
+    expect(emission.presetName).toBe(partialSetup.name);
+    expect(emission.agentOverrides).toBeUndefined();
+  });
+
+  // The hook is the entry point that receives the requested setup name.
+  it('uses template defaults when the requested setup is outside the provider selection', () => {
+    const preview = makePreview();
+    const unavailableSetup = preview.presetProviderCoverage.find(({ referencedProviders }) =>
+      referencedProviders.includes('codex'),
+    )!;
+    const selected = ['claude'];
+    const seeded = wizardConfigStateFor(preview, selected);
+
+    const next = runHandler(preview, seeded, (h) => h.onApplyPreset(unavailableSetup.presetName));
+
+    expect(next).toEqual(wizardConfigStateFor(preview, selected, { useSuggestedPreset: false }));
   });
 });
 
 describe('buildConfigEmission team overrides', () => {
-  it('filters team subset config names to the Step-1 selection', () => {
-    const preview = makePreview();
+  it('filters team subset config names to the selected providers', () => {
+    const preview = makePreview({
+      localAvailability: { installedProviders: [{ id: 'p-claude', name: 'claude' }] },
+    });
     (preview.payload as { teams?: unknown }).teams = [
       {
         name: 'Squad',
@@ -313,13 +456,12 @@ describe('buildConfigEmission team overrides', () => {
         memberAgentNames: ['Solo'],
         allowTeamLeadCreateAgents: true,
         profileNames: ['Coder'],
-        // Template pins the team to BOTH configs; only claude survives Step 1 below.
+        // Template pins the team to BOTH configs; only claude is installed.
         profileSelections: [{ profileName: 'Coder', configNames: ['codex-cfg', 'claude-cfg'] }],
       },
     ];
 
-    const seeded = changeSelection(preview, initialWizardConfigState(preview), ['claude']);
-    const emission = buildConfigEmission(preview, seeded);
+    const emission = buildConfigEmission(preview, initialWizardConfigState(preview, false));
 
     expect(emission.teamOverrides).toEqual([
       {

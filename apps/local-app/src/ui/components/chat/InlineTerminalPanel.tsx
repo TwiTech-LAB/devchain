@@ -6,6 +6,7 @@ import type { InlineTerminalTab } from './InlineTerminalHeader';
 
 interface InlineTerminalPanelProps {
   sessionId: string | null;
+  projectId?: string | null;
   agentName?: string | null;
   isWindowOpen: boolean;
   emptyState?: React.ReactNode;
@@ -20,6 +21,7 @@ interface InlineTerminalPanelProps {
 
 export function InlineTerminalPanel({
   sessionId,
+  projectId,
   agentName,
   isWindowOpen,
   emptyState,
@@ -101,6 +103,8 @@ export function InlineTerminalPanel({
           ref={setTerminalHandle}
           key={sessionId}
           sessionId={sessionId}
+          projectId={projectId}
+          visible={activeTab === 'terminal'}
           chrome="none"
           className="flex-1"
           ariaLabel={agentName ? `Inline terminal for ${agentName}` : 'Inline terminal'}

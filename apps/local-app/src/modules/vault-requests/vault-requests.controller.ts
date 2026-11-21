@@ -8,6 +8,7 @@ import { VAULT_FILE_MAX_BYTES } from '../vault/vault-entry-rules';
 import {
   VaultRequestFulfillService,
   type VaultRequestApproveResult,
+  type VaultRequestCandidate,
   type VaultRequestFulfillResult,
   type VaultRequestView,
 } from './vault-request-fulfill.service';
@@ -15,7 +16,11 @@ import {
 const logger = createLogger('VaultRequestsController');
 
 const FulfillSchema = z
-  .object({ value: z.string().max(VAULT_FILE_MAX_BYTES).optional(), permanent: z.boolean() })
+  .object({
+    value: z.string().max(VAULT_FILE_MAX_BYTES).optional(),
+    permanent: z.boolean(),
+    entryId: z.string().min(1).max(255).optional(),
+  })
   .strict();
 const ApproveSchema = z.object({ decision: HostVaultUseDecisionSchema }).strict();
 const DenySchema = z.object({ reason: z.string().trim().max(200).optional() }).strict();
@@ -40,6 +45,11 @@ export class VaultRequestsController {
   @Get()
   list(): Promise<VaultRequestView[]> {
     return this.requests.listPending();
+  }
+
+  @Get(':id/candidates')
+  candidates(@Param('id') id: string): Promise<VaultRequestCandidate[]> {
+    return this.requests.listCandidates(id);
   }
 
   @Post(':id/fulfill')

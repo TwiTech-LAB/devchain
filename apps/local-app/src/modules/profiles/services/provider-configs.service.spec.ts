@@ -110,6 +110,7 @@ describe('ProviderConfigsService', () => {
     expect(storage.listAgents).toHaveBeenCalledWith('project-1', { limit: 10000, offset: 0 });
     expect(settings.renameProviderConfigInProjectPresets).toHaveBeenCalledWith('project-1', {
       profileId: 'profile-1',
+      profileName: projectProfile.name,
       oldName: 'Old Config',
       newName: 'New Config',
       agents: [

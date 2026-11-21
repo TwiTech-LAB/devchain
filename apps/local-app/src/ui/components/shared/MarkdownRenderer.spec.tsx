@@ -1,5 +1,5 @@
 import React from 'react';
-import { render } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import DOMPurify from 'dompurify';
 import { MarkdownRenderer, renderMarkdown } from './MarkdownRenderer';
 
@@ -61,5 +61,41 @@ describe('MarkdownRenderer — contrast contract (T1)', () => {
       '# Heading\n\nParagraph **bold** with `code` and a [link](https://example.com)\n\n- item\n\n1. a\n2. b\n\n> quote',
     );
     expect(html).not.toMatch(/<(?:p|ul|ol|blockquote)[^>]*text-muted-foreground/);
+  });
+});
+
+describe('MarkdownRenderer — copyable code blocks', () => {
+  const script = [
+    '#!/usr/bin/env bash',
+    'if [ "$a" -lt 3 ] && echo "<ok>"; then',
+    '    printf \'%s\\n\' "indented & long line that a terminal would wrap"',
+    '',
+    'fi',
+  ].join('\n');
+  const content = ['Run this:', '', '```bash', script, '```'].join('\n');
+
+  beforeEach(() => {
+    // The real sanitizer must keep the Copy button.
+    const actual = jest.requireActual('dompurify');
+    const purify = actual.default ?? actual;
+    (DOMPurify.sanitize as jest.Mock).mockImplementation((html: string, config: object) =>
+      purify.sanitize(html, config),
+    );
+  });
+
+  it('copies the exact code text, and shows no button unless asked', async () => {
+    const writeText = jest.fn().mockResolvedValue(undefined);
+    Object.assign(navigator, { clipboard: { writeText } });
+
+    const { container, rerender } = render(<MarkdownRenderer content={content} copyableCode />);
+    const button = screen.getByRole('button', { name: 'Copy code' });
+    fireEvent.click(button);
+
+    await waitFor(() => expect(button).toHaveTextContent('Copied'));
+    expect(writeText).toHaveBeenCalledWith(script);
+
+    rerender(<MarkdownRenderer content={content} />);
+    expect(screen.queryByRole('button', { name: 'Copy code' })).not.toBeInTheDocument();
+    expect(container.querySelector('code')?.textContent).toBe(script);
   });
 });

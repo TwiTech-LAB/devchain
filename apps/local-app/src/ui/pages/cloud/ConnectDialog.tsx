@@ -28,6 +28,7 @@ import {
 import { FileListChangedError } from './lib/remote-vm-errors';
 import { ConnectOwnerProblems } from './ConnectOwnerProblems';
 import { IgnoreListEditor } from './IgnoreListEditor';
+import { ManagedExclusionsSection } from './ManagedExclusionsSection';
 import { ProjectList, type ProjectListData } from './ProjectList';
 import { connectBlockedReason, type VmStatus } from './remote-status';
 import { StartError } from './StartError';
@@ -384,6 +385,13 @@ export function ConnectDialog({
                     revision: draft?.revision ?? ignores.revision,
                   });
                 }}
+              />
+            )}
+            {step === 'files' && (
+              <ManagedExclusionsSection
+                projectId={projectId}
+                remoteId={remoteId}
+                placement="connect"
               />
             )}
             <ConnectDockerSection

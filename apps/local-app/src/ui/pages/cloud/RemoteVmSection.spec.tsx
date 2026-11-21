@@ -2248,6 +2248,7 @@ describe('RemoteVmSection Fix file sync', () => {
       name: 'File sync settings · Project One',
     });
     expect(await within(settings).findByLabelText('Add a pattern')).toBeEnabled();
+    expect(fx.calls.readManagedExclusions).toEqual([['p1', 'r1', expect.any(AbortSignal)]]);
     expect(
       screen.queryByRole('dialog', { name: 'Fix file sync · Project One' }),
     ).not.toBeInTheDocument();

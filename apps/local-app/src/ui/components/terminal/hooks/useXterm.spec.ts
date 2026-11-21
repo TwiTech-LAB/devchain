@@ -2,6 +2,7 @@ import { renderHook, waitFor } from '@testing-library/react';
 import { act, useRef } from 'react';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
+import { toast } from '@/ui/hooks/use-toast';
 import { useXterm } from './useXterm';
 
 import {
@@ -15,22 +16,17 @@ import type { Socket } from 'socket.io-client';
 
 // Mock @xterm/xterm (same pattern as ChatTerminal.spec.tsx)
 jest.mock('@xterm/xterm', () => {
-  let container: HTMLElement | null = null;
   return {
     Terminal: jest.fn().mockImplementation(() => {
       const terminal = {
         loadAddon: jest.fn(),
         open: jest.fn((el: HTMLElement) => {
-          container = el;
           terminal.element = el;
         }),
-        write: jest.fn((data: string, cb?: () => void) => {
-          if (container) container.textContent = (container.textContent || '') + data;
+        write: jest.fn((_data: string, cb?: () => void) => {
           if (cb) cb();
         }),
-        reset: jest.fn(() => {
-          if (container) container.textContent = '';
-        }),
+        reset: jest.fn(),
         dispose: jest.fn(),
         element: null as HTMLElement | null,
         attachCustomKeyEventHandler: jest.fn(),
@@ -104,6 +100,22 @@ describe('useXterm', () => {
     );
     expect(result.current.xtermRef.current?.loadAddon).toHaveBeenCalled();
     expect(result.current.xtermRef.current?.open).toHaveBeenCalledWith(mockContainerElement);
+  });
+
+  // The hook owns the order of calls at the xterm boundary.
+  it('enables bracketed paste after opening a new terminal', () => {
+    const { result } = renderHook(() => {
+      const xtermRef = useRef<Terminal | null>(null);
+      const fitAddonRef = useRef<FitAddon | null>(null);
+      useXterm({ current: mockContainerElement }, 'test-session', xtermRef, fitAddonRef);
+      return xtermRef;
+    });
+
+    const terminal = result.current.current as jest.Mocked<Terminal>;
+    expect(terminal.write).toHaveBeenCalledWith('\x1b[?2004h');
+    expect(terminal.open.mock.invocationCallOrder[0]).toBeLessThan(
+      terminal.write.mock.invocationCallOrder[0],
+    );
   });
 
   it('should call onReady callback after fitting terminal', (done) => {
@@ -324,7 +336,7 @@ describe('useXterm', () => {
     );
   });
 
-  describe('TTY input authority recovery', () => {
+  describe('TTY input', () => {
     function renderTtyHook(options?: {
       connected?: boolean;
       subscribed?: boolean;
@@ -381,6 +393,44 @@ describe('useXterm', () => {
         ['terminal:focus', { sessionId: 'test-session' }],
         ['terminal:input', { sessionId: 'test-session', data: 'a', ttyMode: true }],
       ]);
+      expect(toast).not.toHaveBeenCalled();
+    });
+
+    // The hook is the first layer that can verify both socket emission and toast feedback.
+    it.each([
+      { label: 'ASCII letters', character: 'a', length: 500_000 },
+      { label: 'Cyrillic letters', character: 'я', length: 400_000 },
+    ])('sends a paste within the encoded limit: $label', ({ character, length }) => {
+      const { onData, socket } = renderTtyHook();
+      const data = character.repeat(length);
+
+      act(() => onData(data));
+
+      expect(socket.emit.mock.calls).toEqual([
+        ['terminal:input', { sessionId: 'test-session', data, ttyMode: true }],
+      ]);
+      expect(toast).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      { label: 'backslashes', character: '\\', length: 500_000 },
+      { label: 'Cyrillic letters', character: 'я', length: 500_000 },
+    ])('refuses a paste over the encoded limit and keeps the terminal: $label', (input) => {
+      const { onData, socket, result, rerender } = renderTtyHook();
+      const terminal = result.current.xtermRef.current;
+
+      act(() => onData(input.character.repeat(input.length)));
+
+      expect(socket.emit.mock.calls).toHaveLength(0);
+      expect(toast).toHaveBeenCalledTimes(1);
+      expect(toast).toHaveBeenCalledWith({
+        title: 'Paste is too large for the terminal',
+        description: 'Encoded paste size is 1000.1 KB. The limit is 900 KB. Nothing was pasted.',
+        variant: 'destructive',
+      });
+      rerender();
+      expect(result.current.xtermRef.current).toBe(terminal);
+      expect(Terminal).toHaveBeenCalledTimes(1);
     });
 
     it('routes capture-phase DOM text intent through the same focus guard', () => {

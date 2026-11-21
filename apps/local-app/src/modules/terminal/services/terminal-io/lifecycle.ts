@@ -1,4 +1,5 @@
 import { processIdsEnv } from '../../../../common/process-ids-env';
+import { TimeoutError } from '../../../../common/errors/error-types';
 import type { ExecutorResult, ProcessExecutor } from '../process-executor/process-executor.port';
 import type { SessionTarget, CreateSessionOptions, ExpectedSessionDestroyResult } from './types';
 
@@ -160,12 +161,17 @@ export async function listSessions(executor: ProcessExecutor): Promise<SessionTa
 export async function sessionExists(
   executor: ProcessExecutor,
   target: SessionTarget,
+  signal?: AbortSignal,
 ): Promise<boolean> {
   const result = await executor.run({
     argv: ['tmux', 'has-session', '-t', `=${target.name}`],
     mode: 'pipe',
+    signal,
   });
 
+  // Callers can retire a session on false. An interrupted probe has no answer.
+  signal?.throwIfAborted();
+  if (result.timedOut) throw new TimeoutError('tmux session liveness check timed out');
   return result.success;
 }
 

@@ -10,6 +10,7 @@ import type {
   SshCredentials,
 } from './lib/remote-vm-contracts';
 import type { ForceSyncOperationDetails } from '@/modules/remotes/operations/force-sync.operation';
+import type { ShareFolderOperationDetails } from '@/modules/remotes/operations/share-folder.operation';
 import type { DockerTransferDetails } from '@/modules/remotes/docker/docker-plan.dto';
 import type { DockerCopyBackResult } from '@/modules/remotes/docker/docker-copy-back.dto';
 import type { TranscriptTransferDetails } from '@/modules/remotes/transcripts/transcript-transfer.dto';
@@ -21,6 +22,7 @@ import {
 import {
   errorFirstLine,
   kindWords,
+  shareOperationText,
   projectRecovery,
   stepProgress,
   type RecoveryAction,
@@ -44,6 +46,8 @@ type Step = RemoteOperationDto['steps'][number];
 export interface ActivityNames {
   remotes: ReadonlyMap<string, string>;
   projects: ReadonlyMap<string, string>;
+  /** This PC's home folder; shared folder paths under it show as `~/…`. */
+  homePath?: string | null;
 }
 
 /** What the page does for the buttons of an operation's detail. */
@@ -66,11 +70,17 @@ const FILE_SYNC_WAIT_STEPS = new Set(['file_sync_initial', 'file_sync_final', 'f
 /** Steps whose `details.docker` bytes advance: the transfer and the bind restores. */
 const DOCKER_TRANSFER_STEPS = new Set(['docker_push', 'docker_create_host', 'docker_copy_home']);
 
-/** "<Kind> · <target>", the target being the project or else the VM. */
+/**
+ * "<Kind> · <target>", the target being the project or else the VM. A folder
+ * share names its folder instead: "Sharing ~/data with vm-01".
+ */
 export function operationTitle(operation: RemoteOperationDto, names: ActivityNames): string {
+  const vm = names.remotes.get(operation.remoteId) ?? operation.remoteId;
+  const share = shareOperationText(operation, vm, names.homePath);
+  if (share) return share;
   const target = operation.projectId
     ? (names.projects.get(operation.projectId) ?? operation.projectId)
-    : (names.remotes.get(operation.remoteId) ?? operation.remoteId);
+    : vm;
   return `${kindWords(operation).title} · ${target}`;
 }
 
@@ -411,6 +421,8 @@ function OperationNotes({
       ? (details.forceSync as Partial<ForceSyncOperationDetails['forceSync']> | undefined)
       : undefined;
   const forceSource = forceSync?.source ?? details.source;
+  const share =
+    kind === 'share_folder' ? (details as Partial<ShareFolderOperationDetails>) : undefined;
   const vmEdits = RemoteNeedSchema.safeParse(details.vmEdits);
   const conflicts = ConflictReportSchema.safeParse(details.fileSyncConflicts);
 
@@ -448,6 +460,28 @@ function OperationNotes({
               <p>{forceSync.replaced.count} files replaced or deleted.</p>
               <ul className="list-disc pl-5">
                 {forceSync.replaced.sample.map((path) => (
+                  <li key={path}>{path}</li>
+                ))}
+              </ul>
+            </>
+          )}
+        </Note>
+      )}
+      {share?.path && (
+        <Note label="Shared folder" title="Shared folder">
+          <p>
+            Folder: <code className="break-all">{share.path}</code>
+          </p>
+          {share.shareFolder?.backupPath && (
+            <p>
+              Backup on the VM: <code className="break-all">{share.shareFolder.backupPath}</code>
+            </p>
+          )}
+          {share.shareFolder?.replaced && (
+            <>
+              <p>{share.shareFolder.replaced.count} files replaced or deleted on the VM.</p>
+              <ul className="list-disc pl-5">
+                {share.shareFolder.replaced.sample.map((path) => (
                   <li key={path}>{path}</li>
                 ))}
               </ul>
@@ -688,6 +722,7 @@ function runningCancelAllowed(operation: RemoteOperationDto): boolean {
   // owns the project, the project must be disconnected, not cancelled.
   if (operation.kind === 'attach')
     return !operation.steps.some((step) => step.id === 'bind_remote' && step.state !== 'pending');
+  if (operation.kind === 'share_folder') return !shareCopied(operation);
   return (
     operation.kind === 'destroy_vm' &&
     !operation.steps.some(
@@ -696,11 +731,27 @@ function runningCancelAllowed(operation: RemoteOperationDto): boolean {
   );
 }
 
-function forceCopyStarted(operation: RemoteOperationDto): boolean {
+/** Mirrors the server's `stepStarted` for the DTO, whose `startedAt` may be absent. */
+function stepStarted(operation: RemoteOperationDto, stepId: string): boolean {
   return operation.steps.some(
     (step) =>
-      step.id === 'force_copy' &&
+      step.id === stepId &&
       (step.startedAt != null || (step.state !== 'pending' && step.state !== 'skipped')),
+  );
+}
+
+function forceCopyStarted(operation: RemoteOperationDto): boolean {
+  return stepStarted(operation, 'force_copy');
+}
+
+/**
+ * Mirrors ShareFolderOperation.assertCancellable: a running share stops accepting Cancel at the
+ * end of the copy (applied in runningCancelAllowed); a failed share always accepts it.
+ */
+function shareCopied(operation: RemoteOperationDto): boolean {
+  return (
+    operation.steps.some((step) => step.id === 'copy' && step.state === 'done') ||
+    stepStarted(operation, 'sync')
   );
 }
 

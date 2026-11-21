@@ -9,6 +9,7 @@ import {
   IsUUID,
   Matches,
 } from 'class-validator';
+import type { PreserveTeamSetup } from '../../../common/project-preservation.contract';
 import type { TemplatePresetAgentConfigDto } from '../../settings/dtos/settings.dto';
 
 type UpgradeTeamOverride = {
@@ -77,6 +78,15 @@ export class UpgradeTemplateDto {
   @IsOptional()
   @IsObject()
   statusMappings?: Record<string, string>;
+
+  @ApiPropertyOptional({
+    type: Object,
+    description:
+      'Preserve current teams with optional additions, agent options and team permissions',
+  })
+  @IsOptional()
+  @IsObject()
+  preserveTeamSetup?: PreserveTeamSetup;
 }
 
 export class RestoreTemplateBackupDto {

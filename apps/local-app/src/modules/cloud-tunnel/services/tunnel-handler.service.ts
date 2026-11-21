@@ -202,11 +202,14 @@ export class TunnelHandlerService {
       // caller-supplied sender identity is ignored.
       'e2ee.bindNotificationRoutingIdentity': (p, cryptoCtx) =>
         Promise.resolve(this.bindNotificationRoutingIdentity(p, cryptoCtx)),
-      // Agent Vault requests. Fulfill and deny are sealed-only in the contract, so a value
-      // never reaches this map from the plaintext lane.
+      // Agent Vault requests. Candidates, fulfill and deny are sealed-only in the contract, so
+      // entry names and values never reach this map from the plaintext lane.
       'vault.listRequests': (p, cryptoCtx, authorization) =>
         this.requireVault().listRequests(p, cryptoCtx, authorization),
-      'vault.fulfillRequest': (p) => this.requireVault().fulfillRequest(p),
+      'vault.listRequestCandidates': (p, _cryptoCtx, authorization) =>
+        this.requireVault().listRequestCandidates(p, authorization),
+      'vault.fulfillRequest': (p, _cryptoCtx, authorization) =>
+        this.requireVault().fulfillRequest(p, authorization),
       'vault.denyRequest': (p) => this.requireVault().denyRequest(p),
       'vault.approveUse': (p) => this.requireVault().approveUse(p),
     } satisfies MobileRpcHandlerMap;

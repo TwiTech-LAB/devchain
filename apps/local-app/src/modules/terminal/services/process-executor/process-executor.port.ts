@@ -7,6 +7,8 @@ export interface ProcessExecutorOptions {
   readonly cwd?: string;
   readonly env?: Readonly<Record<string, string>>;
   readonly timeout?: number;
+  /** Prevents a pending spawn or kills the running command. A dispatched write may have taken effect. */
+  readonly signal?: AbortSignal;
   readonly input?: string;
   readonly outputLimits?: {
     readonly maxBytes?: number;

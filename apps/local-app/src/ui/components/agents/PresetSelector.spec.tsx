@@ -1,5 +1,9 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { buildApiUrl, createApiFetch, HOME_BACKEND } from '@/ui/lib/api-transport';
+import { BackendContext } from '@/ui/lib/backend-context';
+import { projectPresetQueryKeys, type projectPresetQueries } from '@/ui/lib/project-presets';
+import { teamsQueryKeys } from '@/ui/lib/teams';
 import { PresetSelector } from './PresetSelector';
 
 const mockUseQuery = jest.fn();
@@ -159,6 +163,7 @@ describe('PresetSelector', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
+    global.fetch = mockFetch;
     mockUseQuery.mockImplementation((options: { queryKey: unknown[] }) => {
       if (options.queryKey[0] === 'project-presets') {
         return { data: { presets: mockPresets, activePreset: null }, isLoading: false };
@@ -171,6 +176,69 @@ describe('PresetSelector', () => {
     mockFetch.mockResolvedValue({
       ok: true,
       json: () => Promise.resolve({ presets: mockPresets }),
+    });
+  });
+
+  describe('remote preset requests', () => {
+    const remoteId = 'remote-1';
+    const presetUrl = `/r/${remoteId}/api/projects/${defaultProps.projectId}/presets`;
+
+    // A component render exercises the fetch hook and real transport together.
+    function renderRemoteSelector() {
+      const bindings = new Map([[defaultProps.projectId, remoteId]]);
+      return renderWithQueryClient(
+        <BackendContext.Provider
+          value={{
+            activeBackend: HOME_BACKEND,
+            activeRemote: null,
+            bindings,
+            ready: true,
+            bindingsError: null,
+            retry: jest.fn(),
+            apiFetch: createApiFetch(() => ({
+              bindings,
+              activeProjectId: 'another-project',
+              authority: 'known',
+            })),
+            buildApiUrl,
+          }}
+        >
+          <PresetSelector {...defaultProps} />
+        </BackendContext.Provider>,
+      );
+    }
+
+    it('reads presets through the project owner proxy', async () => {
+      renderRemoteSelector();
+
+      // The useQuery mock hands control of query execution to the test.
+      const query = (mockUseQuery.mock.calls as [ReturnType<typeof projectPresetQueries.list>][])
+        .map(([options]) => options)
+        .find(({ queryKey }) => queryKey[0] === projectPresetQueryKeys.all[0]);
+      if (!query) throw new Error('Missing preset list query');
+      await createTestQueryClient().fetchQuery(query);
+
+      expect(mockFetch).toHaveBeenCalledWith(presetUrl, {});
+    });
+
+    it('applies a preset through the project owner proxy', async () => {
+      mockFetch.mockResolvedValue({
+        ok: true,
+        json: async () => ({ applied: 1, warnings: [], agents: [] }),
+      });
+      renderRemoteSelector();
+
+      fireEvent.click(screen.getByRole('button', { name: /default/i }));
+      fireEvent.click(screen.getByRole('button', { name: 'Apply' }));
+
+      await waitFor(() => expect(defaultProps.onAgentsRefresh).toHaveBeenCalled());
+      expect(mockFetch).toHaveBeenCalledWith(
+        `${presetUrl}/apply`,
+        expect.objectContaining({
+          method: 'POST',
+          body: JSON.stringify({ presetName: 'default' }),
+        }),
+      );
     });
   });
 
@@ -261,6 +329,15 @@ describe('PresetSelector', () => {
         '/api/projects/project-123/presets/apply',
         expect.anything(),
       );
+
+      fireEvent.click(screen.getByRole('button', { name: 'Apply' }));
+      fireEvent.click(await screen.findByRole('button', { name: 'Continue' }));
+      await waitFor(() => {
+        expect(mockInvalidateQueries).toHaveBeenCalledWith({
+          queryKey: teamsQueryKeys.teams('project-123'),
+        });
+        expect(mockInvalidateQueries).toHaveBeenCalledWith({ queryKey: teamsQueryKeys.details });
+      });
 
       confirmSpy.mockRestore();
     });

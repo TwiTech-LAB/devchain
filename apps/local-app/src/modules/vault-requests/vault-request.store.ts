@@ -31,6 +31,25 @@ export type VaultRequestOutcome = VaultRequestResolvedEventPayload['status'];
 
 export type NewVaultRequest = Omit<VaultRequest, 'requestId' | 'createdAt' | 'expiresAt'>;
 
+/** The existing entry that fulfilled a `create` request under another name. */
+export type VaultRequestGrantedEntry = {
+  grantedName: string;
+  grantedKind: NonNullable<VaultRequestResolvedEventPayload['grantedKind']>;
+};
+
+/**
+ * What a fulfilled request reports about the entry that answered it: nothing when the
+ * agent uses the requested name. Home and a VM both end a request through this rule,
+ * so their notices agree.
+ */
+export function grantedUnderOtherName(
+  request: Pick<VaultRequest, 'name'>,
+  entry: { name: string; kind: VaultRequestGrantedEntry['grantedKind'] } | null,
+): VaultRequestGrantedEntry | undefined {
+  if (!entry || entry.name === request.name) return undefined;
+  return { grantedName: entry.name, grantedKind: entry.kind };
+}
+
 /**
  * Pending Vault requests, in memory only: a restart loses them and the agent asks
  * again. At most one pending request per (session, name). Each request ends exactly
@@ -157,24 +176,29 @@ export class VaultRequestStore implements OnModuleDestroy {
    * Ends a pending request as fulfilled or denied and returns it. `work` (the fulfill
    * itself) runs while the request is claimed; when it throws, the request stays
    * pending and the error goes to the caller. `reason` goes to the agent with a denial.
+   * The entry that `work` returns goes to the agent with a fulfillment.
    */
   async resolve(
     requestId: string,
     outcome: 'fulfilled' | 'denied',
-    options: { work?: (request: VaultRequest) => Promise<void>; reason?: string | null } = {},
+    options: {
+      work?: (request: VaultRequest) => Promise<VaultRequestGrantedEntry | void>;
+      reason?: string | null;
+    } = {},
   ): Promise<VaultRequest> {
     const request = this.pending.get(requestId);
     if (!request || this.claimed.has(requestId)) throw vaultRequestNotPending();
     this.claimed.add(requestId);
+    let granted: VaultRequestGrantedEntry | null;
     try {
-      await options.work?.(request);
+      granted = (await options.work?.(request)) ?? null;
     } catch (error) {
       this.release(requestId);
       throw error;
     }
     this.claimed.delete(requestId);
     this.expireOnRelease.delete(requestId);
-    await this.end(request, outcome, options.reason ?? null);
+    await this.end(request, outcome, options.reason ?? null, granted);
     return request;
   }
 
@@ -190,13 +214,14 @@ export class VaultRequestStore implements OnModuleDestroy {
       this.expireOnRelease.add(requestId);
       return;
     }
-    await this.end(request, 'expired', null);
+    await this.end(request, 'expired', null, null);
   }
 
   private async end(
     request: VaultRequest,
     outcome: VaultRequestOutcome,
     reason: string | null,
+    granted: VaultRequestGrantedEntry | null,
   ): Promise<void> {
     const { requestId } = request;
     this.pending.delete(requestId);
@@ -212,6 +237,8 @@ export class VaultRequestStore implements OnModuleDestroy {
       name: request.name,
       status: outcome,
       reason,
+      grantedName: granted?.grantedName ?? null,
+      grantedKind: granted?.grantedKind ?? null,
     });
   }
 

@@ -13,7 +13,8 @@ import { Button } from '@/ui/components/ui/button';
 import { useToast } from '@/ui/hooks/use-toast';
 import { Loader2, AlertTriangle } from 'lucide-react';
 import type { Preset } from '@/ui/lib/preset-validation';
-import { HOME_BACKEND, apiFetch } from '@/ui/lib/api-transport';
+import type { FetchFn } from '@/ui/lib/api-transport';
+import { useFetchFactory } from '@/ui/hooks/useFetchFactory';
 
 interface DeletePresetDialogProps {
   open: boolean;
@@ -22,16 +23,16 @@ interface DeletePresetDialogProps {
   presetToDelete: Preset | null;
 }
 
-async function deletePreset(projectId: string, presetName: string): Promise<void> {
-  const res = await apiFetch(
-    `/api/projects/${projectId}/presets`,
-    {
-      method: 'DELETE',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ presetName }),
-    },
-    { backend: HOME_BACKEND },
-  );
+async function deletePreset(
+  fetchFn: FetchFn,
+  projectId: string,
+  presetName: string,
+): Promise<void> {
+  const res = await fetchFn(`/api/projects/${projectId}/presets`, {
+    method: 'DELETE',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ presetName }),
+  });
   if (!res.ok) {
     const error = await res.json().catch(() => ({ message: 'Failed to delete preset' }));
     throw new Error(error.message || 'Failed to delete preset');
@@ -44,6 +45,7 @@ export function DeletePresetDialog({
   projectId,
   presetToDelete,
 }: DeletePresetDialogProps) {
+  const fetchFn = useFetchFactory();
   const { toast } = useToast();
   const queryClient = useQueryClient();
   const [isDeleting, setIsDeleting] = useState(false);
@@ -53,7 +55,7 @@ export function DeletePresetDialog({
 
     setIsDeleting(true);
     try {
-      await deletePreset(projectId, presetToDelete.name);
+      await deletePreset(fetchFn, projectId, presetToDelete.name);
 
       toast({
         title: 'Preset Deleted',

@@ -1,7 +1,8 @@
 import { RemoteWorktreeGuard } from './remote-worktree-guard';
+import { SharedFoldersLifecycle } from '../shared-folders/shared-folders.lifecycle';
 import { TranscriptHandoff } from './transcript-handoff';
 import { DockerHandoff, dockerSelection } from '../docker/docker-handoff';
-import { Inject, Injectable } from '@nestjs/common';
+import { Inject, Injectable, Optional } from '@nestjs/common';
 import { hostname } from 'node:os';
 import { homeIdentity } from '../home-identity';
 import { GitOwnerStore } from '../git-owner.store';
@@ -23,10 +24,10 @@ import {
 } from '../time/project-time-settler.service';
 import { ProcessExecutor } from '../../terminal/services/process-executor/process-executor.port';
 import { FileSyncHandoff } from './file-sync-handoff';
+import { assertHostReady } from './host-readiness';
 import { buildClaudeUserInstructionsFile } from './claude-user-instructions';
 import { buildGlobalGitConfigClaimFile } from './git-global-config';
 import { RemoteHostClient } from './remote-host.client';
-import { HOST_API_KEY_REJECTED, HOST_API_KEY_REJECTED_MESSAGE } from '../host-api-key';
 import { RemoteOperationStepRefusedError } from './remote-operation.errors';
 import {
   requireProjectId,
@@ -101,6 +102,7 @@ export class AttachOperation implements RemoteOperationDefinition {
     private readonly gitOwner: GitOwnerStore,
     private readonly worktrees: RemoteWorktreeGuard,
     private readonly vaultPush: RemoteVaultPushService,
+    @Optional() private readonly sharedFolders?: SharedFoldersLifecycle,
   ) {
     const noDocker = (details: Record<string, unknown>) => !dockerSelection(details);
     this.steps = [
@@ -289,37 +291,8 @@ export class AttachOperation implements RemoteOperationDefinition {
     const projectId = requireProjectId(operation);
     await this.worktrees.assertLocalEmpty(projectId);
     const { remoteId } = operation;
-    const health = this.health.getState(remoteId);
-    if (!health.online) {
-      throw new RemoteOperationStepRefusedError('REMOTE_OFFLINE', 'The remote is offline.', {
-        remoteId,
-      });
-    }
-    if (health.apiKeyRejected) {
-      throw new RemoteOperationStepRefusedError(
-        HOST_API_KEY_REJECTED,
-        HOST_API_KEY_REJECTED_MESSAGE,
-        { remoteId },
-      );
-    }
-    if (!health.versionMatches) {
-      throw new RemoteOperationStepRefusedError(
-        'REMOTE_VERSION_MISMATCH',
-        `The remote runs version ${health.version ?? 'unknown'}, which differs from this instance.`,
-        { remoteId, version: health.version },
-      );
-    }
-    // Only a reported home is compared: a build without the field is older, and
-    // the version gate above refuses it.
-    const home = homeIdentity().homePath;
-    if (typeof health.homePath === 'string' && health.homePath !== home) {
-      throw new RemoteOperationStepRefusedError(
-        'REMOTE_HOME_MISMATCH',
-        `The remote's home folder is ${health.homePath}, but this PC's is ${home}. ` +
-          'The VM identity must match this PC; claim the VM again with this PC user.',
-        { remoteId, homePath: health.homePath },
-      );
-    }
+    assertHostReady(remoteId, this.health.getState(remoteId));
+    await this.sharedFolders?.assertProjectOutsideShares(projectId);
     // Only Connect needs home's Syncthing; its error carries the install guidance.
     await this.fileSync.ensureAvailable();
 

@@ -19,6 +19,7 @@ import { RemoteBindingsService } from '../services/remote-bindings.service';
 import { FileSyncFailuresService } from './file-sync-failures.service';
 import { FileSyncPatternPreviewService } from './file-sync-pattern-preview.service';
 import { FileSyncSuggestionsService } from './file-sync-suggestions.service';
+import { ManagedExclusionsCheckService } from './managed-exclusions-check.service';
 import { ProjectFileSyncController } from './project-file-sync.controller';
 import { RemoteFileSyncService } from './remote-file-sync.service';
 import { RemoteLiveSyncService } from './remote-live-sync.service';
@@ -83,6 +84,7 @@ describe('connected project pattern preview route', () => {
         { provide: RemoteLiveSyncService, useValue: {} },
         { provide: RemoteFileSyncService, useValue: {} },
         { provide: FileSyncSuggestionsService, useValue: {} },
+        { provide: ManagedExclusionsCheckService, useValue: {} },
         { provide: FileSyncFailuresService, useValue: {} },
       ],
     }).compile();

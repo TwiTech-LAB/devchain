@@ -55,6 +55,13 @@ import {
   type TerminalSendAdmissionResult,
 } from '../services/terminal-send-scheduler.service';
 import { HumanPromptInputService } from '../services/human-prompt-input.service';
+import { TerminalImageInputService } from '../services/terminal-image-input.service';
+import type {
+  ImagePasteInput,
+  ImagePasteAck,
+  FormSendInput,
+  FormSendAck,
+} from '../dtos/ws-envelope.dto';
 
 const logger = createLogger('TerminalGateway');
 
@@ -95,7 +102,9 @@ export const PROMPT_PASTE_MAX_REQUESTS_PER_SESSION = 64;
 
 type TerminalInputPayload =
   | { sessionId: string; data: string; ttyMode?: boolean; kind?: never }
-  | TerminalPromptPasteInput;
+  | TerminalPromptPasteInput
+  | ImagePasteInput
+  | FormSendInput;
 
 interface InputQueue {
   tail?: Promise<void>;
@@ -202,6 +211,7 @@ export class TerminalGateway implements OnGatewayConnection, OnGatewayDisconnect
     private readonly realtimeBroadcast: RealtimeBroadcastService,
     private readonly sendScheduler: TerminalSendSchedulerService,
     private readonly metricsService: MetricsService,
+    private readonly imageInput: TerminalImageInputService,
     @Optional()
     @Inject(TERMINAL_SEED_SETTLE_MS)
     private readonly seedSettleMs: number = 50,
@@ -975,23 +985,62 @@ export class TerminalGateway implements OnGatewayConnection, OnGatewayDisconnect
     }
   }
 
+  @SubscribeMessage('terminal:image-begin')
+  async handleImageBegin(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() payload: unknown,
+  ): Promise<ImagePasteAck> {
+    return this.imageInput.begin(client.id, payload, (sessionId, admit) =>
+      this.enqueueInput(sessionId, admit),
+    );
+  }
+
+  @SubscribeMessage('terminal:image-end')
+  handleImageEnd(@ConnectedSocket() client: Socket, @MessageBody() payload: unknown): void {
+    this.imageInput.end(client.id, payload);
+  }
+
   @SubscribeMessage('terminal:input')
   async handleInput(
     @ConnectedSocket() client: Socket,
     @MessageBody()
     payload: TerminalInputPayload,
-  ): Promise<void | TerminalPromptPasteAck> {
+  ): Promise<void | TerminalPromptPasteAck | ImagePasteAck | FormSendAck> {
     const { sessionId } = payload;
-    const queue = this.inputQueues.get(sessionId) ?? { retired: false };
-    this.inputQueues.set(sessionId, queue);
-    const run = () => {
-      if (queue.retired) {
+    const formSend =
+      payload.kind === 'form-send'
+        ? this.imageInput.prepareFormSend(client.id, payload)
+        : undefined;
+    return this.enqueueInput(sessionId, async (retired) => {
+      if (retired) {
+        if (payload.kind === 'form-send')
+          return {
+            sendId: payload.sendId,
+            status: payload.resume ? 'inspect' : 'rejected',
+            confirmedSegments: 0,
+            acknowledgedImages: 0,
+          } satisfies FormSendAck;
+        if (payload.kind === 'image-paste')
+          return {
+            gestureId: payload.gestureId,
+            index: payload.index,
+            status: 'stale',
+          } satisfies ImagePasteAck;
         return payload.kind === 'prompt-paste'
           ? this.promptPasteFailure(payload.requestId, 'UNKNOWN_SESSION')
           : undefined;
       }
-      return this.processInput(client, payload);
-    };
+      return payload.kind === 'form-send' ? formSend!() : this.processInput(client, payload);
+    });
+  }
+
+  private enqueueInput<T>(
+    sessionId: string,
+    operation: (retired: boolean) => T | Promise<T>,
+  ): Promise<T> {
+    const queue = this.inputQueues.get(sessionId) ?? { retired: false };
+    this.inputQueues.set(sessionId, queue);
+    const run = async () => operation(queue.retired);
     // Serialize before liveness and prompt activation, not just at the pane write.
     const result = queue.tail ? queue.tail.then(run) : Promise.resolve(run());
     const tail = result.then(
@@ -1009,8 +1058,9 @@ export class TerminalGateway implements OnGatewayConnection, OnGatewayDisconnect
 
   private async processInput(
     client: Socket,
-    payload: TerminalInputPayload,
-  ): Promise<void | TerminalPromptPasteAck> {
+    payload: Exclude<TerminalInputPayload, FormSendInput>,
+  ): Promise<void | TerminalPromptPasteAck | ImagePasteAck> {
+    if (payload.kind === 'image-paste') return this.imageInput.paste(client.id, payload);
     if (payload.kind === 'prompt-paste') {
       return this.handlePromptPasteInput(client, payload);
     }
@@ -1069,7 +1119,7 @@ export class TerminalGateway implements OnGatewayConnection, OnGatewayDisconnect
               expectedGeneration,
               providerName,
             },
-        () => this.terminalIO.sendControl(target, ['-l', '--', data]),
+        () => this.terminalIO.sendLiteralText(target, data),
       );
     } else {
       try {
@@ -1292,7 +1342,9 @@ export class TerminalGateway implements OnGatewayConnection, OnGatewayDisconnect
     // client, so we drop the response rather than emit under the wrong (or new) epoch.
     const beforeEpoch = this.streamService.sampleCursor(sessionId).sequenceEpoch;
 
-    const captureResult = await this.terminalIO.captureHistory(target, maxLines, true);
+    const captureResult = await this.terminalIO.captureHistory(target, maxLines, true, {
+      joinWrappedLines: true,
+    });
     // Sample the sequence AFTER the tmux capture completes (and before the cursor
     // lookup): frames stamped while capture-pane ran are already inside the snapshot,
     // so they must fall at or below capturedSequence or the client replays them on

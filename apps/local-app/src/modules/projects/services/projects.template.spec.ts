@@ -83,8 +83,7 @@ describe('ProjectsService', () => {
     setProjectTemplateMetadata: jest.Mock;
     getProjectTemplateMetadata: jest.Mock;
     getProjectPresets: jest.Mock;
-    setProjectPresets: jest.Mock;
-    clearProjectPresets: jest.Mock;
+    mergeProjectTemplatePresets: jest.Mock;
   };
   let watchersService: {
     deleteWatcher: jest.Mock;
@@ -168,8 +167,7 @@ describe('ProjectsService', () => {
       setProjectTemplateMetadata: jest.fn().mockResolvedValue(undefined),
       getProjectTemplateMetadata: jest.fn().mockReturnValue(null),
       getProjectPresets: jest.fn().mockReturnValue([]),
-      setProjectPresets: jest.fn().mockResolvedValue(undefined),
-      clearProjectPresets: jest.fn().mockResolvedValue(undefined),
+      mergeProjectTemplatePresets: jest.fn().mockResolvedValue(undefined),
     };
 
     watchersService = {

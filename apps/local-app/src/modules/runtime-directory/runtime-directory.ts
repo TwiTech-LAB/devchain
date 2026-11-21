@@ -30,6 +30,8 @@ export interface RuntimeDirectoryHost {
 }
 
 export const RUNTIME_DIRECTORY_HOST = Symbol('RUNTIME_DIRECTORY_HOST');
+/** `<db dir>/runtime-context/sessions/` is reserved for Claude runtime context. */
+export const SESSION_FILES_DIRECTORY = 'session-files';
 
 const TMPFS_MAGIC = 0x01021994;
 const LINGER_DIRECTORY = '/var/lib/systemd/linger';
@@ -89,15 +91,18 @@ export async function resolveSystemdRuntimeDirectory(
  * sweeping their `launch/` and `session-files/` only removes leftovers from before per-instance
  * roots, because no current instance writes there.
  */
-export function runtimeDirectoryCandidates(host: RuntimeDirectoryHost): string[] {
+export function runtimeDirectoryCandidates(
+  host: RuntimeDirectoryHost,
+  includeLegacy = true,
+): string[] {
   const roots = instanceRoots(host, host.env());
   const candidates = [
     roots.systemd,
-    roots.systemdRoot,
+    includeLegacy ? roots.systemdRoot : null,
     roots.xdg,
     roots.macTmp,
     roots.fallback,
-    roots.legacy,
+    includeLegacy ? roots.legacy : null,
   ];
   return [...new Set(candidates.filter((root): root is string => root !== null))];
 }

@@ -662,6 +662,17 @@ export interface VaultEntryStorage {
     projectId: string,
     familySlug: string | null,
   ): Promise<VaultEntryGrant[]>;
+  /**
+   * Gives an existing entry to a requester in one transaction. An entry of another
+   * project becomes shared first: the id, value, revision and grants stay, and 409
+   * `VAULT_ENTRY_NAME_TAKEN` refuses a name that a shared entry has. Then the grant is
+   * added as `addVaultEntryGrant` adds it. A step whose result exists writes nothing.
+   */
+  grantVaultEntryToRequester(
+    entryId: string,
+    projectId: string,
+    familySlug: string | null,
+  ): Promise<VaultEntry>;
   /** Family approvals, narrowed by entry and/or project. */
   listVaultUseFamilyApprovals(filter?: {
     entryId?: string;
@@ -846,6 +857,24 @@ export interface TagStorage {
   deleteTag(id: string): Promise<void>;
 }
 
+/** One provider's home-owned settings, keyed by name. Carries env values in clear text: never log it. */
+export type ReplicaProviderSettingsRow = ProjectReplicaAttachTables['provider_settings'][number];
+
+export interface HomeProviderSettingsApplyResult {
+  /** Fingerprint of the provider settings state, computed in the same transaction as the writes. */
+  fingerprint: string;
+  skippedProviderNames: string[];
+}
+
+/** A provider's home-owned settings as stored: `env` is the raw JSON text, which may not parse. */
+export interface ProviderSettingsSource {
+  id: string;
+  name: string;
+  env: string | null;
+  autoCompactThreshold: number | null;
+  claudeLaunchSettingsJson: string | null;
+}
+
 export interface ProviderStorage {
   createProvider(data: CreateProvider): Promise<Provider>;
   createProviderModel(data: CreateProviderModel): Promise<ProviderModel>;
@@ -877,6 +906,14 @@ export interface ProviderStorage {
     envScopes: EnvScopesMap | undefined,
     currentEnvKeys: string[],
   ): Promise<Provider>;
+  /** Home owns provider env, scopes and the two scalars; an unknown provider name is skipped. */
+  applyHomeProviderSettings(
+    rows: ReplicaProviderSettingsRow[],
+  ): Promise<HomeProviderSettingsApplyResult>;
+  /** Every provider, sorted by name; unlike `listProviders`, a bad env does not fail the read. */
+  listProviderSettingsSources(): ProviderSettingsSource[];
+  /** The value `applyHomeProviderSettings` returns, read without a write. */
+  readProviderSettingsFingerprint(): string;
   getProviderMcpMetadata(id: string): Promise<ProviderMcpMetadata>;
   updateProviderMcpMetadata(id: string, metadata: UpdateProviderMcpMetadata): Promise<Provider>;
 }

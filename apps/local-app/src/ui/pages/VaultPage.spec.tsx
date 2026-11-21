@@ -268,7 +268,7 @@ describe('VaultPage', () => {
     updateMock.mockRejectedValue(lockedRefusal());
 
     const panel = await openPanel();
-    expect(within(panel).queryByText('Roles that are not asked')).not.toBeInTheDocument();
+    expect(within(panel).queryByText('Roles that are always approved')).not.toBeInTheDocument();
     await user.click(within(panel).getByRole('switch', { name: 'Require approval on use' }));
     await user.click(within(panel).getByRole('button', { name: 'Save changes' }));
 

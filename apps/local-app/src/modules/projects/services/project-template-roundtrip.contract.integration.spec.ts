@@ -38,10 +38,15 @@ import { SettingsService } from '../../settings/services/settings.service';
 import { TeamsStore } from '../../teams/storage/teams.store';
 
 import { importProjectWithHelper } from '../helpers/project-import';
+import { captureSnapshotEpicAssignments } from '../helpers/snapshot-epic-assignments';
 import { exportProjectWithHelper } from '../helpers/project-export';
 import { createFromTemplateWithHelper } from '../helpers/template-loader';
 import { computeFamilyAlternativesFromStorage } from '../helpers/profile-mapping.helpers';
-import { applyAgentConfigs, applyPresetWithHelper } from '../helpers/project-presets.helpers';
+import {
+  applyAgentConfigs,
+  applyPresetWithHelper,
+  type ApplyPresetNameMaps,
+} from '../helpers/project-presets.helpers';
 import {
   applyProjectSettingsWithHelper,
   createSubscribersFromPayloadWithHelper,
@@ -86,9 +91,16 @@ function createHarness(): Harness {
 /** Thin, real, storage-backed adapter matching the teamsService deps shape. */
 function teamsAdapter(teamsStore: TeamsStore) {
   return {
-    listTeams: (projectId: string, options?: { limit?: number }) =>
-      teamsStore.listTeams(projectId, options),
+    listTeams: async (projectId: string, options?: { limit?: number }) => {
+      const result = await teamsStore.listTeams(projectId, options);
+      return {
+        ...result,
+        items: result.items.map((team) => ({ ...team, teamLeadAgentName: null })),
+      };
+    },
     getTeam: (id: string) => teamsStore.getTeam(id),
+    updateTeam: (id: string, data: Parameters<TeamsStore['updateTeam']>[1]) =>
+      teamsStore.updateTeam(id, data),
     createTeam: (data: Parameters<TeamsStore['createTeam']>[0]) => teamsStore.createTeam(data),
     deleteTeamsByProject: (projectId: string) => teamsStore.deleteTeamsByProject(projectId),
     deleteTeamsByIds: (ids: string[]) => teamsStore.deleteTeamsByIds(ids),
@@ -107,6 +119,7 @@ function exportDeps(h: Harness) {
 
 /** Build the deps object the import helper expects, wired to real services. */
 function importDeps(h: Harness) {
+  const teamsService = teamsAdapter(h.teamsStore);
   return {
     storage: h.storage,
     snapshotPromptWriter: h.snapshotPromptWriter,
@@ -139,14 +152,20 @@ function importDeps(h: Harness) {
     getImportErrorMessage,
     applyAgentConfigs: (projectId: string, agentConfigs: never, nameMaps?: never) =>
       applyAgentConfigs(projectId, agentConfigs, { storage: h.storage }, nameMaps),
-    applyPreset: (projectId: string, presetName: string, nameMaps?: never) =>
+    applyPreset: (
+      projectId: string,
+      presetName: string,
+      nameMaps: ApplyPresetNameMaps,
+      skipTeamNames: ReadonlySet<string>,
+    ) =>
       applyPresetWithHelper(
         projectId,
         presetName,
-        { storage: h.storage, settings: h.settings },
+        { storage: h.storage, settings: h.settings, teamsService },
         nameMaps,
+        skipTeamNames,
       ),
-    teamsService: teamsAdapter(h.teamsStore) as never,
+    teamsService,
     scheduledEpicsRefresh: { refreshScheduleWindow: () => {} },
     computeNextRunAt: getNextRunAt,
   };
@@ -154,6 +173,7 @@ function importDeps(h: Harness) {
 
 /** Build the deps object the create-from-template helper expects, wired to real services. */
 function createDeps(h: Harness, template: Record<string, unknown>) {
+  const teamsService = teamsAdapter(h.teamsStore);
   return {
     storage: h.storage,
     settings: h.settings,
@@ -186,16 +206,22 @@ function createDeps(h: Harness, template: Record<string, unknown>) {
       } as never),
     createSubscribersFromPayload: (projectId: string, subscribers: never) =>
       createSubscribersFromPayloadWithHelper(projectId, subscribers, h.storage),
-    applyPreset: (projectId: string, presetName: string, nameMaps?: never) =>
+    applyPreset: (
+      projectId: string,
+      presetName: string,
+      nameMaps: ApplyPresetNameMaps,
+      skipTeamNames: ReadonlySet<string>,
+    ) =>
       applyPresetWithHelper(
         projectId,
         presetName,
-        { storage: h.storage, settings: h.settings },
+        { storage: h.storage, settings: h.settings, teamsService },
         nameMaps,
+        skipTeamNames,
       ),
     applyAgentConfigs: (projectId: string, agentConfigs: never, nameMaps?: never) =>
       applyAgentConfigs(projectId, agentConfigs, { storage: h.storage }, nameMaps),
-    teamsService: teamsAdapter(h.teamsStore) as never,
+    teamsService: teamsService as never,
     scheduledEpicsRefresh: { refreshScheduleWindow: () => {} },
     computeNextRunAt: getNextRunAt,
   };
@@ -213,6 +239,13 @@ const TARGET_CODEX_PROFILE_ID = '55555555-5555-4555-8555-555555555555';
 const TARGET_WORKER_AGENT_ID = '66666666-6666-4666-8666-666666666666';
 
 /** A fully-populated, schema-valid export payload touching every section. */
+const presetTeamConfigs = [
+  {
+    teamName: 'Core Team',
+    profileSelections: [{ profileName: 'Builder', configNames: ['builder-cfg'] }],
+  },
+];
+
 function allSectionsTemplate(): Record<string, unknown> {
   return {
     _manifest: { slug: 'roundtrip-all', name: 'Round Trip All Sections', version: '1.2.3' },
@@ -332,6 +365,7 @@ function allSectionsTemplate(): Record<string, unknown> {
       {
         name: 'Fast',
         description: 'fast preset',
+        teamConfigs: presetTeamConfigs,
         agentConfigs: [
           {
             agentName: 'Builder Agent',
@@ -357,6 +391,15 @@ function allSectionsTemplate(): Record<string, unknown> {
         missedRunPolicy: 'skip',
       },
     ],
+  };
+}
+
+function templateWithTeamClearingPreset() {
+  const template = allSectionsTemplate();
+  const [preset] = template.presets as AnyRec[];
+  return {
+    ...template,
+    presets: [{ ...preset, teamConfigs: [{ teamName: 'Core Team', profileSelections: [] }] }],
   };
 }
 
@@ -752,24 +795,47 @@ function configuredUpgradeControls(legacyStatusId: string) {
   };
 }
 
+function captureSnapshotAssignments(h: Harness): ProjectsService['captureSnapshotEpicAssignments'] {
+  return (projectId, agents) => captureSnapshotEpicAssignments(projectId, agents, h.storage);
+}
+
 function createRealStorageUpgradeService(
   h: Harness,
   targetTemplate: Record<string, unknown>,
   options: {
     sessions?: { getActiveSessionsForProject: (projectId: string) => unknown[] };
     failAfterFirstMutation?: boolean;
+    beforeForwardEpicRemap?: () => Promise<void>;
   } = {},
 ) {
   const sessions = options.sessions ?? { getActiveSessionsForProject: () => [] };
   let importCalls = 0;
   let lastUpgradeImportResult: unknown;
   const projectsFacade = {
+    captureSnapshotEpicAssignments: captureSnapshotAssignments(h),
     exportProject: (id: string, exportOptions?: Parameters<typeof exportProjectWithHelper>[1]) =>
       exportProjectWithHelper(id, exportOptions, exportDeps(h)),
     setupPreview: jest.fn().mockResolvedValue({}),
     importProject: async (input: Parameters<typeof importProjectWithHelper>[0]) => {
       importCalls++;
-      const result = await importProjectWithHelper(input, { ...importDeps(h), sessions } as never);
+      const deps = importDeps(h);
+      const beforeRemap = options.beforeForwardEpicRemap;
+      const teams = teamsAdapter(h.teamsStore);
+      const teamsService =
+        importCalls === 1 && beforeRemap
+          ? {
+              ...teams,
+              createTeam: async (data: Parameters<TeamsStore['createTeam']>[0]) => {
+                await beforeRemap();
+                return teams.createTeam(data);
+              },
+            }
+          : teams;
+      const result = await importProjectWithHelper(input, {
+        ...deps,
+        sessions,
+        teamsService,
+      } as never);
       if (importCalls === 1) {
         lastUpgradeImportResult = result;
         if (options.failAfterFirstMutation && 'success' in result && result.success) {
@@ -794,6 +860,167 @@ function createRealStorageUpgradeService(
     projectsFacade,
     getLastUpgradeImportResult: () => lastUpgradeImportResult,
   };
+}
+
+const PRESERVATION_CONTROLS = {
+  selectedProviderNames: ['claude', 'codex'],
+  familyProviderMappings: { 'specialist-family': 'claude' },
+  preserveTeamSetup: {
+    agentOptions: [{ agentName: 'Local Specialist', configName: 'fable', providerName: 'claude' }],
+  },
+};
+
+const PRESERVATION_ADDITIONS = {
+  addMembers: [{ teamName: 'Planning', agentName: 'Template Planner' }],
+  addTeams: ['Dispatch'],
+};
+
+function planningTemplates() {
+  const manifest = { slug: 'planning', name: 'Planning' };
+  const planner = {
+    id: BUILDER_PROFILE_ID,
+    name: 'Planner',
+    provider: { name: 'claude' },
+    providerConfigs: [{ name: 'standard', providerName: 'claude' }],
+  };
+  const claudeSpecialist = {
+    id: TARGET_CLAUDE_PROFILE_ID,
+    name: 'Specialist',
+    familySlug: 'specialist-family',
+    provider: { name: 'claude' },
+  };
+  const codexSpecialist = {
+    id: TARGET_CODEX_PROFILE_ID,
+    name: 'Specialist (Codex)',
+    familySlug: 'specialist-family',
+    provider: { name: 'codex' },
+    providerConfigs: [{ name: 'codex-specialist', providerName: 'codex' }],
+  };
+  const planning = {
+    name: 'Planning',
+    allowTeamLeadCreateAgents: true,
+    maxMembers: 8,
+    maxConcurrentTasks: 5,
+    profileNames: ['Planner'],
+    profileSelections: [{ profileName: 'Planner', configNames: ['standard'] }],
+  };
+  const plannerAgent = (name: string) => ({
+    name,
+    profileId: planner.id,
+    providerConfigName: 'standard',
+  });
+  const statuses = [{ label: 'Ready', color: '#111111', position: 0 }];
+  return {
+    source: {
+      _manifest: { ...manifest, version: '1.0.0' },
+      statuses,
+      profiles: [
+        planner,
+        {
+          ...claudeSpecialist,
+          providerConfigs: [
+            { name: 'fable5', providerName: 'claude', model: 'original-default', effort: 'low' },
+          ],
+        },
+      ],
+      agents: [
+        { ...plannerAgent('Lead'), description: 'Current planning lead', isProjectOwner: true },
+        plannerAgent('Reviewer'),
+        {
+          name: 'Local Specialist',
+          profileId: claudeSpecialist.id,
+          providerConfigName: 'fable5',
+          modelOverride: 'local-model',
+          effortOverride: 'high',
+        },
+      ],
+      teams: [
+        {
+          ...planning,
+          teamLeadAgentName: 'Lead',
+          memberAgentNames: ['Lead', 'Reviewer', 'Local Specialist'],
+        },
+      ],
+    },
+    target: {
+      _manifest: { ...manifest, version: '2.0.0' },
+      statuses,
+      profiles: [
+        planner,
+        codexSpecialist,
+        {
+          ...claudeSpecialist,
+          providerConfigs: [
+            { name: 'fable', providerName: 'claude', model: 'target-default', effort: 'medium' },
+          ],
+        },
+      ],
+      agents: [
+        plannerAgent('Reviewer'),
+        plannerAgent('Template Planner'),
+        plannerAgent('Dispatcher'),
+        plannerAgent('Standalone'),
+      ],
+      teams: [
+        {
+          ...planning,
+          allowTeamLeadCreateAgents: false,
+          maxMembers: 3,
+          maxConcurrentTasks: 2,
+          teamLeadAgentName: 'Template Planner',
+          memberAgentNames: ['Template Planner', 'Reviewer'],
+        },
+        { name: 'Dispatch', teamLeadAgentName: 'Dispatcher', memberAgentNames: ['Dispatcher'] },
+      ],
+    },
+  };
+}
+
+async function seedPlanningProject(h: Harness) {
+  const { source, target } = planningTemplates();
+  await seedConfiguredUpgradeProviders(h);
+  const projectId = await freshProject(h, 'Preserved Planning');
+  expect(
+    await importProjectWithHelper({ projectId, payload: source }, importDeps(h) as never),
+  ).toMatchObject({ success: true });
+  const worker = await h.storage.getAgentByName(projectId, 'Local Specialist');
+  const [status] = (await h.storage.listStatuses(projectId)).items;
+  const epic = await h.storage.createEpicForProject(projectId, {
+    title: 'Local planning work',
+    statusId: status.id,
+    agentId: worker.id,
+  });
+  const timestamp = '2026-01-01T00:00:00.000Z';
+  h.sqlite
+    .prepare(
+      `INSERT INTO sessions (id, agent_id, epic_id, status, started_at, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    )
+    .run('specialist-session', worker.id, epic.id, 'stopped', timestamp, timestamp, timestamp);
+  return { projectId, target, worker, epic };
+}
+
+function specialistSession(h: Harness) {
+  return h.sqlite.prepare('SELECT * FROM sessions WHERE id = ?').get('specialist-session');
+}
+
+async function applyPreservation(
+  h: Harness,
+  operation: 'import' | 'upgrade',
+  projectId: string,
+  target: Record<string, unknown>,
+  controls: Pick<
+    Parameters<typeof importProjectWithHelper>[0],
+    'preserveTeamSetup' | 'selectedProviderNames' | 'familyProviderMappings'
+  >,
+) {
+  return operation === 'import'
+    ? importProjectWithHelper({ projectId, payload: target, ...controls }, importDeps(h) as never)
+    : createRealStorageUpgradeService(h, target).service.upgradeProject({
+        projectId,
+        targetVersion: '2.0.0',
+        ...controls,
+      });
 }
 
 // ---------------------------------------------------------------------------
@@ -828,6 +1055,7 @@ describe('template round-trip contract safety net (real storage)', () => {
         importDeps(h) as never,
       );
       expect(importA).toMatchObject({ success: true, mode: 'replace', replaced: true });
+      await h.settings.updateProjectPreset(projectA, 'Fast', { name: 'User Fast' });
 
       const exportA = (await exportProjectWithHelper(projectA, undefined, exportDeps(h))) as AnyRec;
       expect(exportA.vaultAccess).toEqual({ mode: 'families', familySlugs: ['claude-family'] });
@@ -842,6 +1070,16 @@ describe('template round-trip contract safety net (real storage)', () => {
 
       const exportB = (await exportProjectWithHelper(projectB, undefined, exportDeps(h))) as AnyRec;
 
+      const [exportedPreset] = exportA.presets as AnyRec[];
+      expect({
+        exportedTeamConfigs: exportedPreset.teamConfigs,
+        hasExportedOrigin: Object.hasOwn(exportedPreset, 'origin'),
+        importedTeamConfigs: h.settings.getProjectPresets(projectB)[0]?.teamConfigs,
+      }).toEqual({
+        exportedTeamConfigs: presetTeamConfigs,
+        hasExportedOrigin: false,
+        importedTeamConfigs: presetTeamConfigs,
+      });
       expect(normalizeExport(exportB)).toEqual(normalizeExport(exportA));
 
       const createResult = (await createFromTemplateWithHelper(
@@ -965,6 +1203,8 @@ describe('template round-trip contract safety net (real storage)', () => {
       const team = (exportA.teams as AnyRec[])[0];
       expect(team).toMatchObject({
         name: 'Core Team',
+        maxMembers: 4,
+        maxConcurrentTasks: 3,
         profileSelections: [{ profileName: 'Builder', configNames: ['builder-cfg'] }],
       });
 
@@ -1046,6 +1286,7 @@ describe('template round-trip contract safety net (real storage)', () => {
         statuses: [],
       };
       const projectsFacade = {
+        captureSnapshotEpicAssignments: captureSnapshotAssignments(h),
         exportProject: (id: string, options?: Parameters<typeof exportProjectWithHelper>[1]) =>
           exportProjectWithHelper(id, options, exportDeps(h)),
         importProject: (input: Parameters<typeof importProjectWithHelper>[0]) =>
@@ -1144,6 +1385,168 @@ describe('template round-trip contract safety net (real storage)', () => {
   });
 
   describe('configured template upgrade and recovery', () => {
+    it.each([
+      {
+        phase: 'before epic remapping',
+        early: true,
+        error: 'Import failed: Injected failure before epic remapping',
+      },
+      {
+        phase: 'after target mutation',
+        early: false,
+        error: 'Injected failure after target mutation',
+      },
+    ])(
+      'restores the Planning roster and epic assignment after a failed Keep upgrade $phase',
+      async ({ early, error }) => {
+        const { projectId, target, worker, epic } = await seedPlanningProject(h);
+        let failedBeforeRemap = false;
+        const { service, getLastUpgradeImportResult } = createRealStorageUpgradeService(h, target, {
+          failAfterFirstMutation: !early,
+          beforeForwardEpicRemap: early
+            ? async () => {
+                const forwardWorker = await h.storage.getAgentByName(projectId, worker.name);
+                expect(forwardWorker.id).not.toBe(worker.id);
+                expect(await h.storage.getEpic(epic.id)).toMatchObject({ agentId: null });
+                failedBeforeRemap = true;
+                throw new Error('Injected failure before epic remapping');
+              }
+            : undefined,
+        });
+        await h.settings.setProjectActivePreset(projectId, 'Original planning preset');
+        const before = (await exportProjectWithHelper(
+          projectId,
+          undefined,
+          exportDeps(h),
+        )) as AnyRec;
+
+        const result = await service.upgradeProject({
+          projectId,
+          targetVersion: '2.0.0',
+          ...PRESERVATION_CONTROLS,
+          preserveTeamSetup: {
+            ...PRESERVATION_CONTROLS.preserveTeamSetup,
+            ...PRESERVATION_ADDITIONS,
+            teamPermissions: [
+              { teamName: 'Planning', allowTeamLeadCreateAgents: false, profiles: [] },
+            ],
+          },
+        });
+
+        expect(failedBeforeRemap).toBe(early);
+        if (!early)
+          expect(getLastUpgradeImportResult()).toMatchObject({
+            success: true,
+            preservationPlan: {
+              teams: expect.arrayContaining([
+                expect.objectContaining({
+                  name: 'Planning',
+                  allowTeamLeadCreateAgents: false,
+                  permissions: [],
+                  memberAgentNames: expect.arrayContaining(['Template Planner']),
+                }),
+                expect.objectContaining({ name: 'Dispatch' }),
+              ]),
+              agents: expect.arrayContaining([
+                expect.objectContaining({
+                  name: worker.name,
+                  option: { configName: 'fable', providerName: 'claude' },
+                  model: { value: 'target-default', source: 'template-option' },
+                  effort: { value: 'medium', source: 'template-option' },
+                }),
+              ]),
+            },
+          });
+        expect(result).toEqual({
+          success: false,
+          error,
+          restored: true,
+        });
+        expect(service.getProjectBackups(projectId)).toEqual([]);
+        const { items: teams } = await h.teamsStore.listTeams(projectId);
+        expect(teams).toEqual([
+          expect.objectContaining({
+            name: 'Planning',
+            maxMembers: 8,
+            maxConcurrentTasks: 5,
+            allowTeamLeadCreateAgents: true,
+          }),
+        ]);
+        const restoredWorker = await h.storage.getAgentByName(projectId, worker.name);
+        expect(restoredWorker).toMatchObject({
+          modelOverride: 'local-model',
+          effortOverride: 'high',
+        });
+        expect(
+          await h.storage.getProfileProviderConfig(restoredWorker.providerConfigId),
+        ).toMatchObject({
+          name: 'fable5',
+          model: 'original-default',
+          effort: 'low',
+        });
+        expect(specialistSession(h)).toMatchObject({
+          agent_id: restoredWorker.id,
+          epic_id: epic.id,
+        });
+        expect(restoredWorker.id).not.toBe(worker.id);
+        expect(await h.storage.getEpic(epic.id)).toMatchObject({ agentId: restoredWorker.id });
+        expect(h.settings.getProjectActivePreset(projectId)).toBe('Original planning preset');
+        expect(h.settings.getProjectTemplateMetadata(projectId)).toMatchObject({
+          installedVersion: '1.0.0',
+        });
+        const after = (await exportProjectWithHelper(
+          projectId,
+          undefined,
+          exportDeps(h),
+        )) as AnyRec;
+        expect(normalizeExport(after)).toEqual(normalizeExport(before));
+      },
+    );
+
+    it('reattaches an epic to its retained worker after deleting the old agent and mapping its status', async () => {
+      // SQLite clears the assignment on agent deletion, and status mapping changes the
+      // epic version that the subsequent assignment write must use.
+      const { projectId, legacyStatusId, epicId } = await seedConfiguredUpgradeSource(
+        h,
+        'Preserved Epic Assignment',
+        null,
+      );
+      const worker = await h.storage.getAgentByName(projectId, 'Worker');
+      await h.teamsStore.createTeam({
+        projectId,
+        name: 'Planning',
+        teamLeadAgentId: worker.id,
+        memberAgentIds: [worker.id],
+      });
+      const result = await importProjectWithHelper(
+        {
+          projectId,
+          preserveTeamSetup: {},
+          statusMappings: { [legacyStatusId]: 'Done' },
+          payload: {
+            ...configuredUpgradeSourceTemplate(),
+            agents: [],
+            statuses: [{ label: 'Done', color: '#333333', position: 0 }],
+          },
+        },
+        importDeps(h) as never,
+      );
+
+      expect(result).toMatchObject({
+        success: true,
+        counts: { epics: { agentRemapped: 1, agentCleared: 0 } },
+      });
+      const newWorker = await h.storage.getAgentByName(projectId, 'Worker');
+      expect(newWorker.id).not.toBe(worker.id);
+      const done = (await h.storage.listStatuses(projectId)).items.find(
+        ({ label }) => label === 'Done',
+      );
+      expect(await h.storage.getEpic(epicId)).toMatchObject({
+        agentId: newWorker.id,
+        statusId: done!.id,
+      });
+    });
+
     it('applies explicit provider, preset, team, and status selections while preserving established data', async () => {
       const { projectId, legacyStatusId, epicId } = await seedConfiguredUpgradeSource(
         h,
@@ -1269,6 +1672,15 @@ describe('template round-trip contract safety net (real storage)', () => {
           `Configured Recovery ${activePreset ?? 'Null'}`,
           activePreset,
         );
+        const savedPresets = [
+          ...h.settings.getProjectPresets(projectId),
+          {
+            name: 'Target Preset',
+            origin: 'user' as const,
+            agentConfigs: [{ agentName: 'Worker', providerConfigName: 'claude-current' }],
+          },
+        ];
+        await h.settings.setProjectPresets(projectId, savedPresets);
         const targetTemplate = configuredUpgradeTargetTemplate();
         targetTemplate.statuses = [
           { label: 'Ready', color: '#aaaaaa', position: 0 },
@@ -1326,6 +1738,7 @@ describe('template round-trip contract safety net (real storage)', () => {
           }),
         ]);
         expect(h.settings.getProjectActivePreset(projectId)).toBe(activePreset);
+        expect(h.settings.getProjectPresets(projectId)).toEqual(savedPresets);
         expect(await h.storage.listVaultFamilyAccess({ projectId })).toEqual([
           expect.objectContaining({ familySlug: 'worker-family' }),
         ]);
@@ -1475,6 +1888,7 @@ describe('template round-trip contract safety net (real storage)', () => {
       }
 
       const projectsFacade = {
+        captureSnapshotEpicAssignments: captureSnapshotAssignments(h),
         exportProject: (id: string, options?: Parameters<typeof exportProjectWithHelper>[1]) =>
           exportProjectWithHelper(id, options, exportDeps(h)),
         importProject: (input: Parameters<typeof importProjectWithHelper>[0]) =>
@@ -1533,6 +1947,7 @@ describe('template round-trip contract safety net (real storage)', () => {
       await importProjectWithHelper({ projectId, payload: ownerTemplate }, importDeps(h) as never);
 
       const projectsFacade = {
+        captureSnapshotEpicAssignments: captureSnapshotAssignments(h),
         exportProject: (id: string, options?: Parameters<typeof exportProjectWithHelper>[1]) =>
           exportProjectWithHelper(id, options, exportDeps(h)),
         importProject: (input: Parameters<typeof importProjectWithHelper>[0]) =>
@@ -1704,12 +2119,17 @@ describe('template round-trip contract safety net (real storage)', () => {
   });
 
   describe('replace import preset application', () => {
-    it('applies the freshly stored preset and marks it active only through the full-match helper', async () => {
+    it('applies the freshly stored preset when the team override sets only a limit', async () => {
       await seedClaudeProvider(h);
       const projectId = await freshProject(h, 'Preset Replace');
 
       const result = await importProjectWithHelper(
-        { projectId, payload: allSectionsTemplate(), presetName: 'Fast' },
+        {
+          projectId,
+          payload: templateWithTeamClearingPreset(),
+          presetName: 'Fast',
+          teamOverrides: [{ teamName: 'Core Team', maxMembers: 6 }],
+        },
         importDeps(h) as never,
       );
 
@@ -1720,7 +2140,635 @@ describe('template round-trip contract safety net (real storage)', () => {
         modelOverride: 'opus',
         effortOverride: 'high',
       });
+      const [team] = (await h.teamsStore.listTeams(projectId)).items;
+      expect(await h.teamsStore.getTeam(team.id)).toMatchObject({
+        maxMembers: 6,
+        profileConfigSelections: [],
+      });
     });
+
+    it('keeps team selections and clears the active preset during a Keep import', async () => {
+      await seedClaudeProvider(h);
+      const projectId = await freshProject(h, 'Keep Preset Replace');
+      const payload = templateWithTeamClearingPreset();
+      const deps = importDeps(h);
+
+      expect(await importProjectWithHelper({ projectId, payload }, deps as never)).toMatchObject({
+        success: true,
+      });
+      await h.settings.setProjectActivePreset(projectId, 'Fast');
+
+      expect(
+        await importProjectWithHelper({ projectId, payload, preserveTeamSetup: {} }, deps as never),
+      ).toMatchObject({
+        success: true,
+        preservationPlan: expect.any(Object),
+      });
+      const [team] = (await h.teamsStore.listTeams(projectId)).items;
+      const [profile] = (await h.storage.listAgentProfiles({ projectId })).items;
+      const [config] = await h.storage.listProfileProviderConfigsByProfile(profile.id);
+      expect((await h.teamsStore.getTeam(team.id))?.profileConfigSelections).toEqual([
+        { profileId: profile.id, configIds: [config.id] },
+      ]);
+      expect(h.settings.getProjectActivePreset(projectId)).toBeNull();
+    });
+  });
+
+  // The create and import contracts are observable after a failed preset team write.
+  it.each(['create', 'import'] as const)(
+    '%s completes when a preset team write fails',
+    async (operation) => {
+      await seedClaudeProvider(h);
+      const payload = templateWithTeamClearingPreset();
+      const update = jest
+        .spyOn(h.teamsStore, 'updateTeam')
+        .mockRejectedValueOnce(new Error('Preset team write failed'));
+      let projectId: string;
+
+      if (operation === 'create') {
+        const result = await createFromTemplateWithHelper(
+          {
+            name: 'Preset Create Failure',
+            rootPath: '/tmp/preset-create-failure',
+            slug: 'roundtrip-all',
+            presetName: 'Fast',
+          },
+          createDeps(h, payload) as never,
+        );
+        expect(result).toMatchObject({ success: true, project: { id: expect.any(String) } });
+        projectId = String(((result as AnyRec).project as AnyRec).id);
+      } else {
+        projectId = await freshProject(h, 'Preset Import Failure');
+        expect(
+          await importProjectWithHelper(
+            { projectId, payload, presetName: 'Fast' },
+            importDeps(h) as never,
+          ),
+        ).toMatchObject({ success: true });
+      }
+
+      expect(update).toHaveBeenCalledTimes(1);
+      expect(h.settings.getProjectActivePreset(projectId)).toBeNull();
+    },
+  );
+
+  it('skips unavailable profile variants of an excluded optional team during a Keep upgrade', async () => {
+    const { projectId, target, worker, epic } = await seedPlanningProject(h);
+    const optionalId = '99999999-0000-4000-8000-000000000001';
+    const payload = {
+      ...target,
+      profiles: [
+        ...target.profiles,
+        {
+          id: optionalId,
+          name: 'Optional OpenCode',
+          familySlug: 'optional',
+          provider: { name: 'opencode' },
+        },
+        {
+          id: '99999999-0000-4000-8000-000000000002',
+          name: 'Optional Gemini',
+          familySlug: 'optional',
+          provider: { name: 'gemini' },
+        },
+      ],
+      agents: [...target.agents, { name: 'Optional Worker', profileId: optionalId }],
+      teams: [...target.teams, { name: 'Optional Team', memberAgentNames: ['Optional Worker'] }],
+    };
+    const preview = await importProjectWithHelper(
+      { projectId, payload, dryRun: true, ...PRESERVATION_CONTROLS },
+      importDeps(h) as never,
+    );
+    expect(preview).toMatchObject({
+      readiness: { ready: true, issues: [] },
+      counts: { toImport: { profiles: 2, teams: 1 } },
+      preservationPlan: {
+        additions: {
+          teams: expect.arrayContaining([
+            expect.objectContaining({ name: 'Optional Team', selected: false }),
+          ]),
+        },
+      },
+    });
+    expect(specialistSession(h)).toMatchObject({ agent_id: worker.id });
+
+    const { service, getLastUpgradeImportResult } = createRealStorageUpgradeService(h, payload);
+    expect(
+      await service.upgradeProject({ projectId, targetVersion: '2.0.0', ...PRESERVATION_CONTROLS }),
+    ).toMatchObject({
+      success: true,
+      newVersion: '2.0.0',
+      preservationPlan: preview.preservationPlan,
+    });
+    expect(getLastUpgradeImportResult()).toMatchObject({
+      counts: { imported: { profiles: 2, teams: 1 } },
+    });
+    expect(
+      (await h.storage.listAgentProfiles({ projectId })).items.map(({ name }) => name).sort(),
+    ).toEqual(['Planner', 'Specialist']);
+
+    const teamList = (await h.teamsStore.listTeams(projectId)).items;
+    expect(teamList).toHaveLength(1);
+    expect(teamList[0]).toMatchObject({ name: 'Planning', memberCount: 3 });
+    const roster = (await h.teamsStore.getTeam(teamList[0].id))!;
+    const memberNames = await Promise.all(
+      roster.members.map(async ({ agentId }) => (await h.storage.getAgent(agentId)).name),
+    );
+    expect(memberNames.sort()).toEqual(['Lead', 'Local Specialist', 'Reviewer']);
+    const retained = await h.storage.getAgentByName(projectId, worker.name);
+    expect(retained.id).not.toBe(worker.id);
+    expect(specialistSession(h)).toMatchObject({ agent_id: retained.id, epic_id: epic.id });
+    expect(await h.storage.getEpic(epic.id)).toMatchObject({ agentId: retained.id });
+  });
+
+  // Real storage verifies that the chosen family variant binds the retained agent on import.
+  it('selects an available family provider when Keep has no explicit mapping', async () => {
+    const { projectId, target, worker } = await seedPlanningProject(h);
+    const controls = {
+      selectedProviderNames: ['claude'],
+      preserveTeamSetup: PRESERVATION_CONTROLS.preserveTeamSetup,
+    };
+    const input = { projectId, payload: target, ...controls };
+    const preview = await importProjectWithHelper(
+      { ...input, dryRun: true },
+      importDeps(h) as never,
+    );
+    expect(preview).toMatchObject({
+      readiness: { ready: true, issues: [] },
+      preservationPlan: {
+        familyAlternatives: expect.arrayContaining([
+          expect.objectContaining({
+            familySlug: 'specialist-family',
+            defaultProvider: 'codex',
+            defaultProviderAvailable: false,
+            availableProviders: ['claude'],
+          }),
+        ]),
+      },
+    });
+
+    expect(await importProjectWithHelper(input, importDeps(h) as never)).toMatchObject({
+      success: true,
+      preservationPlan: preview.preservationPlan,
+    });
+    const retained = await h.storage.getAgentByName(projectId, worker.name);
+    const option = await h.storage.getProfileProviderConfig(retained.providerConfigId);
+    expect(await h.storage.getProvider(option.providerId)).toMatchObject({ name: 'claude' });
+  });
+
+  // The seeded roster makes family availability come from the same dependencies as a Keep precheck.
+  it.each([
+    {
+      label: 'a mapping points to a deselected provider',
+      specialistProvider: 'claude',
+      familyProviderMappings: { 'specialist-family': 'codex' },
+      canImport: true,
+    },
+    {
+      label: 'a family has no selected provider',
+      specialistProvider: 'codex',
+      familyProviderMappings: undefined,
+      canImport: false,
+    },
+  ])(
+    'blocks Keep precheck when $label',
+    async ({ specialistProvider, familyProviderMappings, canImport }) => {
+      const { projectId, target } = await seedPlanningProject(h);
+      const specialist = target.profiles.find(({ id }) => id === TARGET_CLAUDE_PROFILE_ID)!;
+      specialist.provider = { name: specialistProvider };
+      specialist.providerConfigs[0].providerName = specialistProvider;
+      const preview = await importProjectWithHelper(
+        {
+          projectId,
+          payload: target,
+          dryRun: true,
+          preserveTeamSetup: PRESERVATION_CONTROLS.preserveTeamSetup,
+          selectedProviderNames: ['claude'],
+          familyProviderMappings,
+        },
+        importDeps(h) as never,
+      );
+      expect(preview).toMatchObject({
+        readiness: {
+          ready: false,
+          issues: expect.arrayContaining([
+            expect.objectContaining({ code: 'provider_mapping_required' }),
+          ]),
+        },
+        providerMappingRequired: { canImport },
+      });
+    },
+  );
+
+  describe.each(['import', 'upgrade'] as const)('keep current setup through %s', (operation) => {
+    it.each([
+      { label: 'skips both additions', addTeam: false, addMember: false },
+      { label: 'adds only the proposed member', addTeam: false, addMember: true },
+      { label: 'adds only the proposed team', addTeam: true, addMember: false },
+      { label: 'adds both the proposed member and team', addTeam: true, addMember: true },
+    ])('$label while retaining Planning', async ({ addTeam, addMember }) => {
+      const { projectId, target, worker, epic } = await seedPlanningProject(h);
+      const controls = {
+        ...PRESERVATION_CONTROLS,
+        preserveTeamSetup: {
+          ...PRESERVATION_CONTROLS.preserveTeamSetup,
+          addTeams: addTeam ? PRESERVATION_ADDITIONS.addTeams : [],
+          addMembers: addMember ? PRESERVATION_ADDITIONS.addMembers : [],
+        },
+      };
+
+      const preview = await importProjectWithHelper(
+        { projectId, payload: target, dryRun: true, ...controls },
+        importDeps(h) as never,
+      );
+      const memberAgentNames = ['Lead', 'Reviewer', 'Local Specialist'];
+      if (addMember) memberAgentNames.push('Template Planner');
+      expect(preview).toMatchObject({
+        readiness: { ready: true, issues: [] },
+        preservationPlan: {
+          teams: [
+            expect.objectContaining({
+              name: 'Planning',
+              memberAgentNames: expect.arrayContaining(memberAgentNames),
+            }),
+            ...(addTeam ? [expect.objectContaining({ name: 'Dispatch' })] : []),
+          ],
+          agents: expect.arrayContaining([
+            expect.objectContaining({
+              name: worker.name,
+              status: 'changed',
+              currentOption: { configName: 'fable5', providerName: 'claude' },
+              option: { configName: 'fable', providerName: 'claude' },
+            }),
+          ]),
+        },
+      });
+
+      expect(await applyPreservation(h, operation, projectId, target, controls)).toMatchObject({
+        success: true,
+        preservationPlan: preview.preservationPlan,
+      });
+      const { items: agents } = await h.storage.listAgents(projectId);
+      expect(agents.map(({ name }) => name).sort()).toEqual(
+        [...memberAgentNames, 'Standalone', ...(addTeam ? ['Dispatcher'] : [])].sort(),
+      );
+      expect(await h.storage.getAgentByName(projectId, 'Lead')).toMatchObject({
+        description: 'Current planning lead',
+        isProjectOwner: true,
+      });
+      const retainedWorker = await h.storage.getAgentByName(projectId, worker.name);
+      expect(retainedWorker.id).not.toBe(worker.id);
+      expect(retainedWorker).toMatchObject({ modelOverride: null, effortOverride: null });
+      expect(specialistSession(h)).toMatchObject({ agent_id: retainedWorker.id, epic_id: epic.id });
+      expect(await h.storage.getEpic(epic.id)).toMatchObject({ agentId: retainedWorker.id });
+
+      const exported = (await exportProjectWithHelper(
+        projectId,
+        undefined,
+        exportDeps(h),
+      )) as AnyRec;
+      expect(exported.teams).toEqual([
+        expect.objectContaining({
+          name: 'Planning',
+          teamLeadAgentName: 'Lead',
+          memberAgentNames: expect.arrayContaining(memberAgentNames),
+          maxMembers: 8,
+          maxConcurrentTasks: 5,
+          allowTeamLeadCreateAgents: true,
+          profileSelections: [{ profileName: 'Planner', configNames: ['standard'] }],
+        }),
+        ...(addTeam
+          ? [
+              expect.objectContaining({
+                name: 'Dispatch',
+                teamLeadAgentName: 'Dispatcher',
+                memberAgentNames: ['Dispatcher'],
+              }),
+            ]
+          : []),
+      ]);
+      const [planning, dispatch] = exported.teams as AnyRec[];
+      expect(planning.memberAgentNames).toHaveLength(memberAgentNames.length);
+      if (dispatch) {
+        expect(dispatch).not.toHaveProperty('maxMembers');
+        expect(dispatch).not.toHaveProperty('maxConcurrentTasks');
+      }
+      expect(exported.profiles).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            id: retainedWorker.profileId,
+            name: 'Specialist',
+            providerConfigs: [
+              expect.objectContaining({
+                name: 'fable',
+                providerName: 'claude',
+                model: 'target-default',
+                effort: 'medium',
+              }),
+            ],
+          }),
+        ]),
+      );
+      expect(
+        await h.storage.getProfileProviderConfig(retainedWorker.providerConfigId),
+      ).toMatchObject({ name: 'fable' });
+    });
+
+    // The stored binding proves both commit entry points apply the precheck plan.
+    it.each([
+      { label: 'a renamed option', configName: 'fable', providerName: 'claude' },
+      {
+        label: 'the same option with a different provider',
+        configName: 'fable5',
+        providerName: 'codex',
+      },
+    ])('applies the planned replacement for $label', async ({ configName, providerName }) => {
+      const { projectId, target, worker } = await seedPlanningProject(h);
+      const controls = { ...PRESERVATION_CONTROLS, preserveTeamSetup: {} };
+      const profile = target.profiles.find(({ id }) => id === TARGET_CLAUDE_PROFILE_ID)!;
+      profile.providerConfigs[0] = {
+        ...profile.providerConfigs[0],
+        name: configName,
+        providerName,
+      };
+      target.agents.push({
+        name: worker.name,
+        profileId: profile.id,
+        providerConfigName: configName,
+      });
+      const preview = await importProjectWithHelper(
+        { projectId, payload: target, dryRun: true, ...controls },
+        importDeps(h) as never,
+      );
+      expect(preview).toMatchObject({
+        readiness: { ready: true, issues: [] },
+        preservationPlan: {
+          agents: expect.arrayContaining([
+            expect.objectContaining({
+              name: worker.name,
+              status: 'changed',
+              reason: 'option_changed',
+              currentOption: { configName: 'fable5', providerName: 'claude' },
+              option: { configName, providerName },
+            }),
+          ]),
+        },
+      });
+
+      expect(await applyPreservation(h, operation, projectId, target, controls)).toMatchObject({
+        success: true,
+        preservationPlan: preview.preservationPlan,
+      });
+      const resolved = await h.storage.getAgentByName(projectId, worker.name);
+      const option = await h.storage.getProfileProviderConfig(resolved.providerConfigId);
+      expect(option.name).toBe(configName);
+      expect(await h.storage.getProvider(option.providerId)).toMatchObject({ name: providerName });
+      expect(resolved).toMatchObject({ modelOverride: null, effortOverride: null });
+    });
+
+    it('reports an unresolved excluded dependency without mutating the original project', async () => {
+      const { projectId, target, worker, epic } = await seedPlanningProject(h);
+      const payload = {
+        ...target,
+        scheduledEpics: [
+          {
+            name: 'Dispatch schedule',
+            enabled: true,
+            cronExpression: '0 9 * * *',
+            timezone: 'UTC',
+            titleTemplate: 'Dispatch',
+            templateAgentName: 'Dispatcher',
+          },
+        ],
+      };
+      const issue = {
+        code: 'preserve_agent_reference',
+        details: {
+          agentName: 'Dispatcher',
+          section: 'scheduledEpics',
+          name: 'Dispatch schedule',
+        },
+      };
+      const before = (await exportProjectWithHelper(projectId, undefined, exportDeps(h))) as AnyRec;
+      const sessionBefore = specialistSession(h);
+      const preview = await importProjectWithHelper(
+        { projectId, payload, dryRun: true, ...PRESERVATION_CONTROLS },
+        importDeps(h) as never,
+      );
+      const readiness = {
+        ready: false,
+        issues: expect.arrayContaining([expect.objectContaining(issue)]),
+      };
+      expect(preview).toMatchObject({ readiness });
+
+      expect(
+        await applyPreservation(h, operation, projectId, payload, PRESERVATION_CONTROLS),
+      ).toMatchObject({
+        success: false,
+        mutationStarted: false,
+        readiness,
+      });
+      expect(await exportProjectWithHelper(projectId, undefined, exportDeps(h))).toEqual({
+        ...before,
+        exportedAt: expect.any(String),
+        _manifest: { ...(before._manifest as AnyRec), publishedAt: expect.any(String) },
+      });
+      expect(await h.storage.getAgentByName(projectId, worker.name)).toEqual(worker);
+      expect(await h.storage.getEpic(epic.id)).toEqual(epic);
+      expect(specialistSession(h)).toEqual(sessionBefore);
+    });
+
+    type FieldPair = readonly [model?: string | null, effort?: string | null];
+
+    it.each<{
+      label: string;
+      current?: FieldPair;
+      currentDefault?: FieldPair;
+      incoming?: FieldPair;
+      incomingDefault?: FieldPair;
+      incomingOption?: string;
+      selectedOption?: string;
+      differentIncomingProfile?: boolean;
+      overrides: FieldPair;
+      effective: FieldPair;
+    }>([
+      {
+        label: 'stores the template model and inherits the option effort',
+        current: ['old-model', 'high'],
+        incoming: ['agent-model'],
+        incomingDefault: ['option-model', 'medium'],
+        overrides: ['agent-model', null],
+        effective: ['agent-model', 'medium'],
+      },
+      {
+        label: 'inherits the option model and stores the template effort',
+        current: ['old-model', 'high'],
+        incoming: [null, 'low'],
+        incomingDefault: ['option-model', 'medium'],
+        overrides: [null, 'low'],
+        effective: ['option-model', 'low'],
+      },
+      {
+        label: 'stores both template overrides even when they equal the option defaults',
+        incoming: ['option-model', 'medium'],
+        incomingDefault: ['option-model', 'medium'],
+        overrides: ['option-model', 'medium'],
+        effective: ['option-model', 'medium'],
+      },
+      {
+        label: 'keeps both current overrides when incoming values are blank',
+        current: ['old-model', 'high'],
+        currentDefault: ['old-default', 'low'],
+        incoming: ['', ' '],
+        incomingDefault: [' ', ''],
+        overrides: ['old-model', 'high'],
+        effective: ['old-model', 'high'],
+      },
+      {
+        label: 'stores the inherited current values when incoming values are missing or null',
+        current: [' ', null],
+        currentDefault: ['old-default', 'high'],
+        incoming: [null],
+        incomingDefault: [null],
+        overrides: ['old-default', 'high'],
+        effective: ['old-default', 'high'],
+      },
+      {
+        label: 'uses the newly selected option default and leaves its empty field unset',
+        current: ['old-model', 'high'],
+        incoming: ['inapplicable-model', 'low'],
+        incomingDefault: ['new-default', null],
+        selectedOption: 'replacement',
+        overrides: [null, null],
+        effective: ['new-default', null],
+      },
+      {
+        label: 'uses a template agent override bound to the newly selected option',
+        current: ['old-model', 'high'],
+        incoming: ['new-agent-model', null],
+        incomingDefault: ['new-default', 'medium'],
+        incomingOption: 'replacement',
+        selectedOption: 'replacement',
+        overrides: ['new-agent-model', null],
+        effective: ['new-agent-model', 'medium'],
+      },
+      {
+        label: 'ignores same-name agent overrides from a different profile',
+        differentIncomingProfile: true,
+        incoming: ['other-model', 'high'],
+        incomingDefault: ['option-model', 'medium'],
+        overrides: [null, null],
+        effective: ['option-model', 'medium'],
+      },
+      {
+        label: 'leaves both fields unset when both sides are empty',
+        current: [null, ''],
+        currentDefault: ['', null],
+        incomingDefault: [' '],
+        overrides: [null, null],
+        effective: [null, null],
+      },
+    ])(
+      '$label',
+      async ({
+        current = [],
+        currentDefault = [],
+        incoming = [],
+        incomingDefault = [],
+        incomingOption = 'chosen',
+        selectedOption = 'chosen',
+        differentIncomingProfile,
+        overrides,
+        effective,
+      }) => {
+        await seedClaudeProvider(h);
+        const projectId = await freshProject(h, `Keep Setup ${operation}`);
+        const config = (name: string, [model, effort]: FieldPair) => ({
+          name,
+          providerName: 'claude',
+          model,
+          effort,
+        });
+        const agent = (
+          providerConfigName: string,
+          [modelOverride, effortOverride]: FieldPair,
+          profileId = BUILDER_PROFILE_ID,
+        ) => ({ name: 'Worker', profileId, providerConfigName, modelOverride, effortOverride });
+        const profile = {
+          id: BUILDER_PROFILE_ID,
+          name: 'Builder',
+          provider: { name: 'claude' },
+        };
+        const manifest = { slug: 'configured-upgrade', name: 'Configured Upgrade' };
+        const chosen = config('chosen', selectedOption === 'chosen' ? incomingDefault : []);
+        const target = {
+          _manifest: { ...manifest, version: '2.0.0' },
+          profiles: [
+            {
+              ...profile,
+              providerConfigs:
+                selectedOption === 'chosen'
+                  ? [chosen]
+                  : [chosen, config(selectedOption, incomingDefault)],
+            },
+            ...(differentIncomingProfile
+              ? [{ ...profile, id: LEGACY_PROFILE_ID, name: 'Other', providerConfigs: [chosen] }]
+              : []),
+          ],
+          agents: [
+            agent(
+              incomingOption,
+              incoming,
+              differentIncomingProfile ? LEGACY_PROFILE_ID : undefined,
+            ),
+          ],
+          presets: [
+            { name: 'Keep', agentConfigs: [{ agentName: 'Worker', providerConfigName: 'chosen' }] },
+          ],
+        };
+        expect(
+          await importProjectWithHelper(
+            {
+              projectId,
+              payload: {
+                ...target,
+                _manifest: { ...manifest, version: '1.0.0' },
+                profiles: [{ ...profile, providerConfigs: [config('chosen', currentDefault)] }],
+                teams: [
+                  { name: 'Planning', memberAgentNames: ['Worker'], teamLeadAgentName: 'Worker' },
+                ],
+                agents: [agent('chosen', current)],
+              },
+            },
+            importDeps(h) as never,
+          ),
+        ).toMatchObject({ success: true });
+        await h.settings.setProjectActivePreset(projectId, 'Keep');
+
+        expect(
+          await applyPreservation(h, operation, projectId, target, {
+            preserveTeamSetup:
+              selectedOption === 'chosen'
+                ? {}
+                : {
+                    agentOptions: [
+                      { agentName: 'Worker', configName: selectedOption, providerName: 'claude' },
+                    ],
+                  },
+          }),
+        ).toMatchObject({ success: true });
+
+        const stored = await h.storage.getAgentByName(projectId, 'Worker');
+        expect([stored.modelOverride, stored.effortOverride]).toEqual(overrides);
+        const storedOption = await h.storage.getProfileProviderConfig(stored.providerConfigId);
+        expect(storedOption.name).toBe(selectedOption);
+        expect([
+          stored.modelOverride ?? storedOption.model,
+          stored.effortOverride ?? storedOption.effort,
+        ]).toEqual(effective);
+        expect(h.settings.getProjectActivePreset(projectId)).toBeNull();
+      },
+    );
   });
 
   describe('create-from-template against real storage (preset + teamOverrides + familyProviderMappings)', () => {
@@ -1745,7 +2793,7 @@ describe('template round-trip contract safety net (real storage)', () => {
             },
           ],
         },
-        createDeps(h, allSectionsTemplate()) as never,
+        createDeps(h, templateWithTeamClearingPreset()) as never,
       );
 
       expect(result).toMatchObject({
@@ -1755,6 +2803,9 @@ describe('template round-trip contract safety net (real storage)', () => {
       const created = result as AnyRec;
       const project = created.project as AnyRec;
       expect(project).toMatchObject({ name: 'Created Project' });
+      expect(h.settings.getProjectPresets(String(project.id))).toEqual(
+        templateWithTeamClearingPreset().presets,
+      );
       expect(created.imported).toMatchObject({
         prompts: expect.any(Number),
         profiles: expect.any(Number),
@@ -1767,6 +2818,13 @@ describe('template round-trip contract safety net (real storage)', () => {
       expect(agents.items.filter((agent) => agent.isProjectOwner)).toEqual([
         expect.objectContaining({ name: 'Builder Agent' }),
       ]);
+      const [team] = (await h.teamsStore.listTeams(String(project.id))).items;
+      expect(await h.teamsStore.getTeam(team.id)).toMatchObject({
+        maxMembers: 6,
+        profileConfigSelections: [
+          { profileId: agents.items[0].profileId, configIds: [agents.items[0].providerConfigId] },
+        ],
+      });
     });
 
     // ---- Task 8: create path now reaches parity with import (one pipeline, both flows). ----
@@ -2181,6 +3239,24 @@ describe('template round-trip contract safety net (real storage)', () => {
       const { agent, claudeCfg } = await coderConfigs(projectA);
       expect(agent!.providerConfigId).toBe(claudeCfg!.id);
       expect(agent!.modelOverride).toBe('claude-selected-model');
+    });
+
+    it('replace-import: binds an agent to a deselected installed provider through a wizard override', async () => {
+      await seedClaudeAndCodex(h);
+      const projectA = await freshProject(h, 'Replace Installed Provider Override');
+
+      await importProjectWithHelper(
+        {
+          projectId: projectA,
+          payload: deselectedFirstTemplate({ providerConfigName: 'claude-cfg' }),
+          selectedProviderNames: ['claude'],
+          agentOverrides: [{ agentName: 'Coder', providerConfigName: 'codex-cfg' }],
+        },
+        importDeps(h) as never,
+      );
+
+      const { agent, codexCfg } = await coderConfigs(projectA);
+      expect(agent!.providerConfigId).toBe(codexCfg!.id);
     });
   });
 });

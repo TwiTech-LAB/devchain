@@ -502,14 +502,16 @@ it('walks files without following symlinks and retains partial sizes on missing 
   expect(await measureDockerBind(join(root, 'missing'))).toEqual({ bytes: 0, unknown: true });
 });
 
-it('falls back to default configuration when Compose rejects all profiles, preserving file and environment options', async () => {
-  jest.mocked(source.compose).mockRestore();
-  const bin = join(root, 'bin');
-  await mkdir(bin);
-  const cli = join(bin, 'docker');
-  await writeFile(
-    cli,
-    `#!/bin/sh
+it.each([true, false])(
+  'handles a rejected all-profile Compose read with strict=%s',
+  async (strict) => {
+    jest.mocked(source.compose).mockRestore();
+    const bin = join(root, 'bin');
+    await mkdir(bin);
+    const cli = join(bin, 'docker');
+    await writeFile(
+      cli,
+      `#!/bin/sh
 printf '%s\\n' "$*" >> "$COMPOSE_TEST_LOG"
 for arg in "$@"; do
   if [ "$arg" = "--profile" ]; then exit 1; fi
@@ -517,24 +519,36 @@ done
 [ "$COMPOSE_TEST_VALUE" = "passed" ] || exit 2
 printf '%s' '{"name":"fallback","services":{}}'
 `,
-    { mode: 0o755 },
-  );
-  expect(
-    await source.compose(root, {
+      { mode: 0o755 },
+    );
+    const answer = source.compose(root, {
       files: [join(root, 'custom.yaml')],
       allProfiles: true,
+      strict,
       env: {
         ...process.env,
         PATH: bin,
         COMPOSE_TEST_VALUE: 'passed',
         COMPOSE_TEST_LOG: join(root, 'argv.log'),
       },
-    }),
-  ).toEqual({ name: 'fallback', services: {} });
-  expect((await readFile(join(root, 'argv.log'), 'utf8')).trim().split('\n')).toEqual([
-    `compose --project-directory ${root} -f ${join(root, 'custom.yaml')} --profile * config --format json`,
-    `compose --project-directory ${root} -f ${join(root, 'custom.yaml')} config --format json`,
-  ]);
+    });
+    if (strict)
+      await expect(answer).rejects.toThrow('Cannot read project Docker Compose configuration');
+    else await expect(answer).resolves.toEqual({ name: 'fallback', services: {} });
+    const invocation = `compose --project-directory ${root} -f ${join(root, 'custom.yaml')}`;
+    expect((await readFile(join(root, 'argv.log'), 'utf8')).trim().split('\n')).toEqual([
+      invocation + ' --profile * config --format json',
+      ...(strict ? [] : [invocation + ' config --format json']),
+    ]);
+  },
+);
+
+it('distinguishes a missing root Compose file from a failed file probe in strict mode', async () => {
+  jest.mocked(source.compose).mockRestore();
+  const options = { allProfiles: true, strict: true };
+  await expect(source.compose(root, options)).resolves.toBeNull();
+  await symlink('compose.yaml', join(root, 'compose.yaml'));
+  await expect(source.compose(root, options)).rejects.toMatchObject({ code: 'ELOOP' });
 });
 
 // The fake Unix engine proves discovery's HTTP contract without real Docker or the plan scan.

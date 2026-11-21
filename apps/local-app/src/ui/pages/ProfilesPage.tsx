@@ -418,6 +418,215 @@ function PromptOrderList({
   );
 }
 
+function ProviderConfigEditor({
+  profileId,
+  config,
+  configs,
+  providers,
+  trigger,
+  onClose,
+  onSaved,
+}: {
+  profileId: string;
+  config: ProfileProviderConfig | null;
+  configs: ProfileProviderConfig[];
+  providers: Provider[];
+  trigger: HTMLButtonElement;
+  onClose: () => void;
+  onSaved?: () => void;
+}) {
+  const fetchFn = useFetchFactory();
+  const queryClient = useQueryClient();
+  const { showSuccess } = useToastHelpers();
+  const envEditor = useRef<EnvEditorHandle>(null);
+  const [error, setError] = useState('');
+  const [draft, setDraft] = useState({
+    providerId: config?.providerId ?? '',
+    name: config?.name ?? '',
+    description: config?.description ?? '',
+    options: config?.options ?? '',
+    model: config?.model ?? null,
+    effort: config?.effort ?? null,
+    env: config?.env ?? {},
+  });
+  const save = useMutation({
+    mutationFn: (env: Record<string, string>) => {
+      const fields = {
+        name: draft.name.trim(),
+        description: draft.description.trim() || null,
+        options: draft.options.trim() || null,
+        model: draft.model,
+        effort: draft.effort,
+        env: Object.keys(env).length > 0 ? env : null,
+      };
+      return config
+        ? updateProviderConfig(fetchFn, config.id, fields)
+        : createProviderConfig(fetchFn, profileId, { ...fields, providerId: draft.providerId });
+    },
+    onSuccess: (saved) => {
+      void queryClient.invalidateQueries({ queryKey: providerConfigQueryKeys.profile(profileId) });
+      if (config && config.name.trim() !== saved.name.trim()) {
+        void queryClient.invalidateQueries({ queryKey: projectPresetQueryKeys.all });
+        void queryClient.invalidateQueries({
+          predicate: providerConfigQueryPredicates.aggregatesForProfile(profileId),
+        });
+      }
+      showSuccess({
+        title: 'Success',
+        description: config ? 'Provider configuration updated' : 'Provider configuration created',
+      });
+      onSaved?.();
+      onClose();
+    },
+    onError: (cause) => setError(getErrorMessage(cause, 'Failed to save configuration')),
+  });
+
+  function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    // React submit events from this portal also reach the profile form.
+    event.stopPropagation();
+    if (save.isPending || !draft.providerId || !draft.name.trim()) return;
+    if (configs.some((other) => other.id !== config?.id && other.name === draft.name.trim())) {
+      setError('A configuration with this name already exists');
+      return;
+    }
+    setError('');
+    const env = envEditor.current?.commitPending();
+    if (env != null) save.mutate(env);
+  }
+
+  return (
+    <Dialog
+      open
+      onOpenChange={(open) => {
+        if (!open && !save.isPending) onClose();
+      }}
+    >
+      <DialogContent
+        className="flex max-w-xl flex-col overflow-hidden"
+        showCloseButton={!save.isPending}
+        onKeyDown={(event) => {
+          if (event.key === 'Escape' && !event.nativeEvent.isComposing) {
+            event.stopPropagation();
+            if (!save.isPending) onClose();
+          }
+        }}
+        onCloseAutoFocus={(event) => {
+          event.preventDefault();
+          trigger.focus({ preventScroll: true });
+        }}
+      >
+        <DialogHeader className="shrink-0">
+          <DialogTitle>
+            {config ? `Edit configuration · ${config.name}` : 'Add provider configuration'}
+          </DialogTitle>
+          <DialogDescription>
+            Configuration changes save separately from other profile edits.
+          </DialogDescription>
+        </DialogHeader>
+        <form onSubmit={handleSubmit} className="flex min-h-0 flex-1 flex-col gap-4">
+          <div className="-mx-1 min-h-0 flex-1 overflow-y-auto px-1 pb-1">
+            <fieldset disabled={save.isPending} className="min-w-0 space-y-4">
+              {config ? (
+                <Badge variant="outline">
+                  {providers.find((p) => p.id === config.providerId)?.name ?? 'Unknown provider'}
+                </Badge>
+              ) : (
+                <div>
+                  <Label htmlFor="config-provider">Provider</Label>
+                  <select
+                    id="config-provider"
+                    required
+                    value={draft.providerId}
+                    onChange={(event) => {
+                      const providerId = event.target.value;
+                      setDraft({
+                        ...draft,
+                        providerId,
+                        name: providers.find((p) => p.id === providerId)?.name ?? '',
+                        model: null,
+                        effort: null,
+                      });
+                    }}
+                    className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm"
+                  >
+                    <option value="">Select provider</option>
+                    {providers.map((p) => (
+                      <option key={p.id} value={p.id}>
+                        {p.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
+              <div>
+                <Label htmlFor="config-name">Name</Label>
+                <Input
+                  id="config-name"
+                  required
+                  value={draft.name}
+                  onChange={(e) => setDraft({ ...draft, name: e.target.value })}
+                />
+              </div>
+              <div>
+                <Label htmlFor="config-description">Description</Label>
+                <Textarea
+                  id="config-description"
+                  value={draft.description}
+                  onChange={(e) => setDraft({ ...draft, description: e.target.value })}
+                  rows={2}
+                />
+              </div>
+              <div>
+                <Label htmlFor="config-options">Options</Label>
+                <Textarea
+                  id="config-options"
+                  value={draft.options}
+                  onChange={(e) => setDraft({ ...draft, options: e.target.value })}
+                  rows={2}
+                  placeholder="--model claude-3 --max-tokens 4000"
+                />
+              </div>
+              <ProviderConfigDefaultsFields
+                providerId={draft.providerId}
+                model={draft.model}
+                effort={draft.effort}
+                options={draft.options}
+                onModelChange={(model) => setDraft({ ...draft, model })}
+                onEffortChange={(effort) => setDraft({ ...draft, effort })}
+              />
+              <div>
+                <Label>Environment Variables</Label>
+                <EnvEditor
+                  ref={envEditor}
+                  env={draft.env}
+                  onChange={(env) => setDraft({ ...draft, env })}
+                />
+              </div>
+            </fieldset>
+          </div>
+          {error && (
+            <p role="alert" className="text-sm text-destructive">
+              {error}
+            </p>
+          )}
+          <DialogFooter className="shrink-0">
+            <Button type="button" variant="outline" disabled={save.isPending} onClick={onClose}>
+              Cancel
+            </Button>
+            <Button
+              type="submit"
+              disabled={save.isPending || !draft.providerId || !draft.name.trim()}
+            >
+              Save configuration
+            </Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 // Provider Configs Section for a Profile
 function ProviderConfigsSection({
   profileId,
@@ -432,27 +641,17 @@ function ProviderConfigsSection({
 }) {
   const fetchFn = useFetchFactory();
   const queryClient = useQueryClient();
-  const { toast, showSuccess, showError } = useToastHelpers();
+  const { showSuccess, showError } = useToastHelpers();
   const [expanded, setExpanded] = useState(true);
-  const [showAddForm, setShowAddForm] = useState(false);
-  const [editingConfigId, setEditingConfigId] = useState<string | null>(null);
+  const [editor, setEditor] = useState<{
+    config: ProfileProviderConfig | null;
+    trigger: HTMLButtonElement;
+  } | null>(null);
   const [localConfigIds, setLocalConfigIds] = useState<string[]>([]);
   const [draggedIndex, setDraggedIndex] = useState<number | null>(null);
   const [pendingDeleteConfig, setPendingDeleteConfig] = useState<ProfileProviderConfig | null>(
     null,
   );
-  const createEnvEditorRef = useRef<EnvEditorHandle>(null);
-  const editEnvEditorRef = useRef<EnvEditorHandle>(null);
-  const [formData, setFormData] = useState({
-    providerId: '',
-    name: '',
-    description: '',
-    options: '',
-    env: {} as Record<string, string>,
-    model: null as string | null,
-    effort: null as string | null,
-  });
-
   const { data: configs, isLoading } = useQuery({
     ...providerConfigQueries.profile(fetchFn, profileId),
     enabled: !!profileId,
@@ -464,70 +663,6 @@ function ProviderConfigsSection({
       setLocalConfigIds(configs.map((c) => c.id));
     }
   }, [configs]);
-
-  const createMutation = useMutation({
-    mutationFn: (data: {
-      providerId: string;
-      name?: string;
-      description?: string | null;
-      options?: string | null;
-      env?: Record<string, string> | null;
-      model?: string | null;
-      effort?: string | null;
-    }) => createProviderConfig(fetchFn, profileId, data),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: providerConfigQueryKeys.profile(profileId) });
-      setShowAddForm(false);
-      resetForm();
-      showSuccess({ title: 'Success', description: 'Provider configuration created' });
-      onConfigChange?.();
-    },
-    onError: (error) => {
-      showError({
-        title: 'Error',
-        description: getErrorMessage(error, 'Failed to create configuration'),
-      });
-    },
-  });
-
-  const updateMutation = useMutation({
-    mutationFn: ({
-      id,
-      data,
-    }: {
-      id: string;
-      oldName: string;
-      data: {
-        name?: string;
-        description?: string | null;
-        options?: string | null;
-        env?: Record<string, string> | null;
-        model?: string | null;
-        effort?: string | null;
-      };
-    }) => updateProviderConfig(fetchFn, id, data),
-    onSuccess: (updatedConfig, variables) => {
-      queryClient.invalidateQueries({ queryKey: providerConfigQueryKeys.profile(profileId) });
-      if (variables.oldName.trim() !== updatedConfig.name.trim()) {
-        queryClient.invalidateQueries({
-          queryKey: projectPresetQueryKeys.all,
-        });
-        queryClient.invalidateQueries({
-          predicate: providerConfigQueryPredicates.aggregatesForProfile(profileId),
-        });
-      }
-      setEditingConfigId(null);
-      resetForm();
-      showSuccess({ title: 'Success', description: 'Provider configuration updated' });
-      onConfigChange?.();
-    },
-    onError: (error) => {
-      showError({
-        title: 'Error',
-        description: getErrorMessage(error, 'Failed to update configuration'),
-      });
-    },
-  });
 
   const deleteMutation = useMutation({
     mutationFn: (id: string) => deleteProviderConfig(fetchFn, id),
@@ -576,79 +711,6 @@ function ProviderConfigsSection({
     },
   });
 
-  const resetForm = () => {
-    setFormData({
-      providerId: '',
-      name: '',
-      description: '',
-      options: '',
-      env: {},
-      model: null,
-      effort: null,
-    });
-  };
-
-  const handleCreate = () => {
-    if (!formData.providerId) {
-      toast({ title: 'Error', description: 'Please select a provider', variant: 'destructive' });
-      return;
-    }
-    // Check for name conflict
-    const trimmedName = formData.name.trim();
-    if (trimmedName && configs?.some((c) => c.name === trimmedName)) {
-      toast({
-        title: 'Error',
-        description: 'A configuration with this name already exists',
-        variant: 'destructive',
-      });
-      return;
-    }
-
-    const committedEnv = createEnvEditorRef.current?.commitPending();
-    if (committedEnv === null) return;
-    const env = committedEnv ?? formData.env;
-
-    createMutation.mutate({
-      providerId: formData.providerId,
-      name: trimmedName || undefined, // API will auto-generate if not provided
-      description: formData.description.trim() || null,
-      options: formData.options.trim() || null,
-      env: Object.keys(env).length > 0 ? env : null,
-      model: formData.model,
-      effort: formData.effort,
-    });
-  };
-
-  const handleUpdate = (config: ProfileProviderConfig) => {
-    // Check for name conflict (excluding the current config being edited)
-    const trimmedName = formData.name.trim();
-    if (trimmedName && configs?.some((c) => c.id !== config.id && c.name === trimmedName)) {
-      toast({
-        title: 'Error',
-        description: 'A configuration with this name already exists',
-        variant: 'destructive',
-      });
-      return;
-    }
-
-    const committedEnv = editEnvEditorRef.current?.commitPending();
-    if (committedEnv === null) return;
-    const env = committedEnv ?? formData.env;
-
-    updateMutation.mutate({
-      id: config.id,
-      oldName: config.name,
-      data: {
-        name: trimmedName || undefined,
-        description: formData.description.trim() || null,
-        options: formData.options.trim() || null,
-        env: Object.keys(env).length > 0 ? env : null,
-        model: formData.model,
-        effort: formData.effort,
-      },
-    });
-  };
-
   const handleDelete = (config: ProfileProviderConfig) => {
     setPendingDeleteConfig(config);
   };
@@ -659,26 +721,6 @@ function ProviderConfigsSection({
     }
   };
 
-  const handleEdit = (config: ProfileProviderConfig) => {
-    setEditingConfigId(config.id);
-    setFormData({
-      providerId: config.providerId,
-      name: config.name || '',
-      description: config.description || '',
-      options: config.options || '',
-      env: config.env || {},
-      model: config.model ?? null,
-      effort: config.effort ?? null,
-    });
-    setShowAddForm(false);
-  };
-
-  const handleCancelEdit = () => {
-    setEditingConfigId(null);
-    resetForm();
-  };
-
-  // Drag and drop handlers
   const handleDragStart = (index: number) => {
     setDraggedIndex(index);
   };
@@ -722,9 +764,6 @@ function ProviderConfigsSection({
     .map((id) => configs?.find((c) => c.id === id))
     .filter((c): c is ProfileProviderConfig => c !== undefined);
 
-  // All providers are available (multiple configs per provider allowed since Phase 5)
-  const availableProviders = providers;
-
   return (
     <div className="border rounded-lg">
       <button
@@ -744,7 +783,7 @@ function ProviderConfigsSection({
         <div className="p-3 pt-0 space-y-3">
           {isLoading && <p className="text-sm text-muted-foreground">Loading...</p>}
 
-          {orderedConfigs.length === 0 && !showAddForm && (
+          {orderedConfigs.length === 0 && (
             <p className="text-sm text-muted-foreground py-2">
               No provider configurations. Add one to enable agent launching.
             </p>
@@ -764,273 +803,100 @@ function ProviderConfigsSection({
                 reorderMutation.isPending && 'cursor-not-allowed opacity-70',
               )}
             >
-              {editingConfigId === config.id ? (
-                // Edit form
-                <>
+              <div className="flex items-center gap-2">
+                <GripVertical className="h-4 w-4 text-muted-foreground cursor-move" />
+                <div className="flex-1 flex items-center justify-between">
                   <div className="flex items-center gap-2">
-                    <Badge>{providersById.get(config.providerId)?.name || 'Unknown'}</Badge>
-                    <span className="text-sm text-muted-foreground">(editing)</span>
+                    <span className="font-medium">{config.name}</span>
+                    <Badge variant="outline" className="text-xs">
+                      {providersById.get(config.providerId)?.name || 'Unknown'}
+                    </Badge>
                   </div>
-                  <div>
-                    <Label className="text-xs">Name *</Label>
-                    <Input
-                      value={formData.name}
-                      onChange={(e) => setFormData({ ...formData, name: e.target.value })}
-                      placeholder="e.g., claude-glm, claude-default"
-                      className="text-sm h-9"
-                    />
-                  </div>
-                  <div>
-                    <Label className="text-xs">Description</Label>
-                    <Textarea
-                      value={formData.description}
-                      onChange={(e) => setFormData({ ...formData, description: e.target.value })}
-                      placeholder="What this configuration is used for"
-                      rows={2}
-                      className="text-sm"
-                    />
-                  </div>
-                  <div>
-                    <Label className="text-xs">Options</Label>
-                    <Textarea
-                      value={formData.options}
-                      onChange={(e) => setFormData({ ...formData, options: e.target.value })}
-                      placeholder="--model claude-3 --max-tokens 4000"
-                      rows={2}
-                      className="text-sm"
-                    />
-                  </div>
-                  <ProviderConfigDefaultsFields
-                    providerId={formData.providerId}
-                    model={formData.model}
-                    effort={formData.effort}
-                    options={formData.options}
-                    onModelChange={(v) => setFormData({ ...formData, model: v })}
-                    onEffortChange={(v) => setFormData({ ...formData, effort: v })}
-                  />
-                  <div>
-                    <Label className="text-xs">Environment Variables</Label>
-                    <EnvEditor
-                      ref={editEnvEditorRef}
-                      env={formData.env}
-                      onChange={(env) => setFormData({ ...formData, env })}
-                    />
-                  </div>
-                  <div className="flex gap-2">
+                  <div className="flex gap-1 relative">
+                    <span className="absolute right-full mr-1 inline-flex items-center opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity duration-200">
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => moveUp(index)}
+                        disabled={index === 0 || reorderMutation.isPending}
+                        aria-label="Move up"
+                      >
+                        <ArrowUp className="h-4 w-4" />
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => moveDown(index)}
+                        disabled={index === orderedConfigs.length - 1 || reorderMutation.isPending}
+                        aria-label="Move down"
+                      >
+                        <ArrowDown className="h-4 w-4" />
+                      </Button>
+                    </span>
                     <Button
                       type="button"
+                      variant="ghost"
                       size="sm"
-                      onClick={() => handleUpdate(config)}
-                      disabled={updateMutation.isPending || !formData.name.trim()}
+                      aria-label={`Edit configuration ${config.name}`}
+                      onClick={(event) => setEditor({ config, trigger: event.currentTarget })}
                     >
-                      Save
+                      Edit
                     </Button>
-                    <Button type="button" variant="outline" size="sm" onClick={handleCancelEdit}>
-                      Cancel
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => handleDelete(config)}
+                      disabled={deleteMutation.isPending}
+                      aria-label={`Delete configuration ${config.name}`}
+                    >
+                      <Trash2 className="h-4 w-4" />
                     </Button>
                   </div>
-                </>
-              ) : (
-                // View mode
-                <>
-                  <div className="flex items-center gap-2">
-                    <GripVertical className="h-4 w-4 text-muted-foreground cursor-move" />
-                    <div className="flex-1 flex items-center justify-between">
-                      <div className="flex items-center gap-2">
-                        <span className="font-medium">{config.name}</span>
-                        <Badge variant="outline" className="text-xs">
-                          {providersById.get(config.providerId)?.name || 'Unknown'}
-                        </Badge>
-                      </div>
-                      <div className="flex gap-1 relative">
-                        <span className="absolute right-full mr-1 inline-flex items-center opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity duration-200">
-                          <Button
-                            type="button"
-                            variant="ghost"
-                            size="sm"
-                            onClick={() => moveUp(index)}
-                            disabled={index === 0 || reorderMutation.isPending}
-                            aria-label="Move up"
-                          >
-                            <ArrowUp className="h-4 w-4" />
-                          </Button>
-                          <Button
-                            type="button"
-                            variant="ghost"
-                            size="sm"
-                            onClick={() => moveDown(index)}
-                            disabled={
-                              index === orderedConfigs.length - 1 || reorderMutation.isPending
-                            }
-                            aria-label="Move down"
-                          >
-                            <ArrowDown className="h-4 w-4" />
-                          </Button>
-                        </span>
-                        <Button
-                          type="button"
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => handleEdit(config)}
-                        >
-                          Edit
-                        </Button>
-                        <Button
-                          type="button"
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => handleDelete(config)}
-                          disabled={deleteMutation.isPending}
-                          aria-label={`Delete configuration ${config.name}`}
-                        >
-                          <Trash2 className="h-4 w-4" />
-                        </Button>
-                      </div>
-                    </div>
-                  </div>
-                  {config.description && (
-                    <div className="text-sm text-muted-foreground">{config.description}</div>
-                  )}
-                  {config.options && (
-                    <div className="text-sm">
-                      <span className="text-muted-foreground">Options:</span>{' '}
-                      <span className="font-mono">{config.options}</span>
-                    </div>
-                  )}
-                  {config.env && Object.keys(config.env).length > 0 && (
-                    <div className="text-sm">
-                      <span className="text-muted-foreground">Env:</span>{' '}
-                      <span className="font-mono">{Object.keys(config.env).join(', ')}</span>
-                    </div>
-                  )}
-                </>
+                </div>
+              </div>
+              {config.description && (
+                <div className="text-sm text-muted-foreground">{config.description}</div>
+              )}
+              {config.options && (
+                <div className="text-sm">
+                  <span className="text-muted-foreground">Options:</span>{' '}
+                  <span className="font-mono">{config.options}</span>
+                </div>
+              )}
+              {config.env && Object.keys(config.env).length > 0 && (
+                <div className="text-sm">
+                  <span className="text-muted-foreground">Env:</span>{' '}
+                  <span className="font-mono">{Object.keys(config.env).join(', ')}</span>
+                </div>
               )}
             </div>
           ))}
 
-          {/* Add New Config Form */}
-          {showAddForm && (
-            <div className="border rounded-md p-3 space-y-3 bg-muted/30">
-              <div>
-                <Label className="text-xs">Provider *</Label>
-                <select
-                  value={formData.providerId}
-                  onChange={(e) => {
-                    const newProviderId = e.target.value;
-                    const provider = providersById.get(newProviderId);
-                    // Auto-suggest name based on provider
-                    const suggestedName = provider?.name || '';
-                    // Clear structured selections — catalogs rebind to the new provider
-                    setFormData({
-                      ...formData,
-                      providerId: newProviderId,
-                      name: suggestedName,
-                      model: null,
-                      effort: null,
-                    });
-                  }}
-                  className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm"
-                >
-                  <option value="">-- Select provider --</option>
-                  {availableProviders.map((p) => (
-                    <option key={p.id} value={p.id}>
-                      {p.name}
-                    </option>
-                  ))}
-                </select>
-              </div>
-              <div>
-                <Label className="text-xs">Name</Label>
-                <Input
-                  value={formData.name}
-                  onChange={(e) => setFormData({ ...formData, name: e.target.value })}
-                  placeholder="e.g., claude-glm, claude-default (auto-generated if empty)"
-                  className="text-sm h-9"
-                />
-                <p className="text-xs text-muted-foreground mt-1">
-                  Unique name for this configuration. Leave empty to auto-generate.
-                </p>
-              </div>
-              <div>
-                <Label className="text-xs">Description</Label>
-                <Textarea
-                  value={formData.description}
-                  onChange={(e) => setFormData({ ...formData, description: e.target.value })}
-                  placeholder="What this configuration is used for"
-                  rows={2}
-                  className="text-sm"
-                />
-              </div>
-              <div>
-                <Label className="text-xs">Options</Label>
-                <Textarea
-                  value={formData.options}
-                  onChange={(e) => setFormData({ ...formData, options: e.target.value })}
-                  placeholder="--model claude-3 --max-tokens 4000"
-                  rows={2}
-                  className="text-sm"
-                />
-              </div>
-              <ProviderConfigDefaultsFields
-                providerId={formData.providerId}
-                model={formData.model}
-                effort={formData.effort}
-                options={formData.options}
-                onModelChange={(v) => setFormData({ ...formData, model: v })}
-                onEffortChange={(v) => setFormData({ ...formData, effort: v })}
-              />
-              <div>
-                <Label className="text-xs">Environment Variables</Label>
-                <EnvEditor
-                  ref={createEnvEditorRef}
-                  env={formData.env}
-                  onChange={(env) => setFormData({ ...formData, env })}
-                />
-              </div>
-              <div className="flex gap-2">
-                <Button
-                  type="button"
-                  size="sm"
-                  onClick={handleCreate}
-                  disabled={
-                    createMutation.isPending || !formData.providerId || !formData.name.trim()
-                  }
-                >
-                  Add Configuration
-                </Button>
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  onClick={() => {
-                    setShowAddForm(false);
-                    resetForm();
-                  }}
-                >
-                  Cancel
-                </Button>
-              </div>
-            </div>
-          )}
-
-          {/* Add Button */}
-          {!showAddForm && (
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              onClick={() => {
-                setShowAddForm(true);
-                setEditingConfigId(null);
-                resetForm();
-              }}
-              className="w-full"
-            >
-              <Plus className="h-4 w-4 mr-2" />
-              Add Provider Configuration
-            </Button>
-          )}
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={(event) => setEditor({ config: null, trigger: event.currentTarget })}
+            className="w-full"
+          >
+            <Plus className="h-4 w-4 mr-2" />
+            Add Provider Configuration
+          </Button>
         </div>
+      )}
+      {editor && (
+        <ProviderConfigEditor
+          profileId={profileId}
+          config={editor.config}
+          configs={configs ?? []}
+          providers={providers}
+          trigger={editor.trigger}
+          onClose={() => setEditor(null)}
+          onSaved={onConfigChange}
+        />
       )}
       <ConfirmDialog
         open={pendingDeleteConfig !== null}

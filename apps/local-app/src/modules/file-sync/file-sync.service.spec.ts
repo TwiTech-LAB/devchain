@@ -399,6 +399,34 @@ describe('FileSyncService.waitForComplete', () => {
     expect(onProgress.mock.calls.map(([p]) => p.completion)).toEqual([40, 100, 100]);
   });
 
+  it('with a stall timeout, waits past the budget while the need changes and fails once it stops', async () => {
+    jest.useFakeTimers();
+    try {
+      let needItems = 1_000;
+      let error: unknown = null;
+      const copy = service
+        .waitForComplete('share:0123456789abcdef', {
+          sender: async () => status({ peer: { ...PEER_DONE, completion: 50, needItems } }),
+          receiver: async () => status(),
+          timeoutMs: 10_000,
+          stallTimeout: true,
+          pollIntervalMs: 1_000,
+        })
+        .catch((e: unknown) => (error = e));
+      for (let second = 0; second < 30; second++) {
+        needItems -= 1;
+        await jest.advanceTimersByTimeAsync(1_000);
+      }
+      await jest.advanceTimersByTimeAsync(9_000);
+      expect(error).toBeNull();
+      await jest.advanceTimersByTimeAsync(2_000);
+      await copy;
+      expect(error).toBeInstanceOf(FileSyncTimeoutError);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
   it('keeps polling through failed status reads', async () => {
     let calls = 0;
     const result = await service.waitForComplete('code:p1', {

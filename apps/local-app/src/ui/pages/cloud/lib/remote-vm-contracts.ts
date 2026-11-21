@@ -23,6 +23,14 @@ export type { ProbeResultDto, RemoteReadinessDto } from '@/modules/remotes/dtos/
 export type { RemoteProjectBindingRow } from '@/ui/lib/backend-provider';
 export type { AvailableSshPublicKey } from '@/modules/remotes/host-install/ssh-key.service';
 export type { SyncDevice } from '@/modules/file-sync/file-sync.dto';
+export type {
+  CreateSharedFolderRequest,
+  SharedFolderDto,
+  SharedFolderEntry,
+  SharedFolderState,
+  StopSharingResult,
+} from '@/modules/remotes/shared-folders/shared-folders.dto';
+export type { FolderList, FolderListEntry } from '@/modules/fs/folder-list';
 
 export interface CreateRemoteInput {
   name: string;
@@ -237,6 +245,7 @@ export type ProviderAuthGenerationView = ProviderAuthGeneration;
 
 export type {
   ProjectFileSyncFailures,
+  ManagedExclusionRow,
   ProjectPatternPreview,
   SaveProjectIgnoresResult,
 } from '@/modules/remotes/sync/remote-file-sync.dto';

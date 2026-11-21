@@ -1,37 +1,18 @@
 import { Injectable } from '@nestjs/common';
+import { SerialQueue } from '../../../common/serial-queue';
 
-/**
- * Serializes session operations per agent to prevent race conditions.
- * Uses promise-chain pattern (same as TerminalSendCoordinatorService).
- *
- * Without this, concurrent epic.updated events (with agent assignment) for the same agent can
- * both pass the "no existing session" check and create duplicate sessions.
- */
+/** Serializes lifecycle operations per agent, including launch and termination. */
 @Injectable()
 export class SessionCoordinatorService {
-  private tailByAgent = new Map<string, Promise<void>>();
+  private readonly queues = new Map<string, SerialQueue>();
 
-  /**
-   * Execute an async operation with per-agent serialization.
-   * Operations for the same agent queue up and execute sequentially.
-   */
-  async withAgentLock<T>(agentId: string, fn: () => Promise<T>): Promise<T> {
-    const prev = this.tailByAgent.get(agentId) ?? Promise.resolve();
-
-    let result: T;
-    const next = prev.then(async () => {
-      result = await fn();
-    });
-
-    // Keep the chain; ignore errors to avoid breaking subsequent calls
-    this.tailByAgent.set(
-      agentId,
-      next.catch(() => {
-        /* no-op */
-      }),
-    );
-
-    await next;
-    return result!;
+  async withAgentLock<T>(agentId: string, fn: () => Promise<T>, signal?: AbortSignal): Promise<T> {
+    const queue = this.queues.get(agentId) ?? new SerialQueue();
+    this.queues.set(agentId, queue);
+    try {
+      return await queue.run(fn, signal);
+    } finally {
+      if (queue.idle && this.queues.get(agentId) === queue) this.queues.delete(agentId);
+    }
   }
 }

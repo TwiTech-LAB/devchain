@@ -3,11 +3,11 @@ import {
   useCallback,
   useEffect,
   useImperativeHandle,
+  useLayoutEffect,
   useReducer,
   useRef,
   useState,
 } from 'react';
-import { flushSync } from 'react-dom';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { fetchSettings } from '@/ui/lib/settings';
@@ -36,6 +36,7 @@ import {
 } from './hooks';
 import { connectionReducer } from './connectionReducer';
 import { createTerminalHistorySync } from './terminal-history-sync';
+import { resetTerminal } from './xterm-utils';
 import type { TerminalHistorySync } from './terminal-history-sync';
 import type { ScrollIntentController } from './scroll-intent-binding';
 import { resolveTerminalTheme } from './terminal-themes';
@@ -50,7 +51,17 @@ import type {
   TerminalPromptPasteInput,
 } from '@/modules/terminal/dtos/ws-envelope.dto';
 import { TerminalPromptPasteAckSchema } from '@/modules/terminal/dtos/ws-envelope.dto';
+import { createPasteRequestId, createTtyImagePaste } from './tty-image-paste';
+import { useFormImageDraft } from './useFormImageDraft';
+import type { FormEditSelection } from './form-image-draft';
+import { useOptionalBackend } from '@/ui/lib/backend-context';
 import { useFetchFactory } from '@/ui/hooks/useFetchFactory';
+import { toast } from '@/ui/hooks/use-toast';
+import {
+  createTerminalClipboardPasteBinding,
+  readClipboardImages,
+  type ClipboardFilePaste,
+} from './terminal-clipboard-paste';
 
 const RECOVERY_ABORT_ACK_TIMEOUT_MS = 5000;
 export const PROMPT_PASTE_ACK_TIMEOUT_MS = 5000;
@@ -79,32 +90,26 @@ export interface ChatTerminalHandle {
   insertPromptText: (text: string) => Promise<void>;
 }
 
-function createPromptPasteRequestId(): string {
-  if (typeof globalThis.crypto?.randomUUID === 'function') {
-    return globalThis.crypto.randomUUID();
-  }
-  const bytes = new Uint8Array(16);
-  globalThis.crypto.getRandomValues(bytes);
-  bytes[6] = (bytes[6] & 0x0f) | 0x40;
-  bytes[8] = (bytes[8] & 0x3f) | 0x80;
-  const hex = Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('');
-  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
-}
-
 export const ChatTerminal = forwardRef<ChatTerminalHandle, ChatTerminalProps>(function ChatTerminal(
   {
     sessionId,
+    projectId,
+    visible = true,
     className,
     chrome = 'default',
     ariaLabel = 'Agent terminal',
     onSessionEnded,
+    onClipboardImagePaste,
     socket: socketTarget = 'project',
   }: ChatTerminalProps,
   ref,
 ) {
   const fetchFn = useFetchFactory();
+  const backend = useOptionalBackend();
+  const projectBackend = backend?.bindings.get(projectId ?? '') ?? 'home';
+  const imageTargetReady = !backend || (backend.ready && backend.activeBackend === projectBackend);
+  const ttyImages = useRef<ReturnType<typeof createTtyImagePaste> | null>(null);
   const appTheme = useAppTheme();
-  const [input, setInput] = useState<string>('');
   const [inputMode, setInputMode] = useState<'form' | 'tty' | null>(null); // null = loading
   const [scrollbackLines, setScrollbackLines] = useState<number>(DEFAULT_TERMINAL_SCROLLBACK); // Default until loaded
   const suppressCtrlCWithSelectionRef = useRef(DEFAULT_TERMINAL_SUPPRESS_CTRL_C_WITH_SELECTION);
@@ -133,8 +138,91 @@ export const ChatTerminal = forwardRef<ChatTerminalHandle, ChatTerminalProps>(fu
   );
   const useSocket = socketTarget === 'home' ? useHomeSocket : useAppSocket;
   const socket = useSocket({}, []);
-  const livePromptInsertRef = useRef({ input, inputMode, sessionId, socket });
-  livePromptInsertRef.current = { input, inputMode, sessionId, socket };
+  const formProject =
+    inputMode === 'form' && imageTargetReady && socketTarget === 'project' ? projectId : null;
+  const form = useFormImageDraft(inputRef, sessionId, projectId, projectBackend, socket, fetchFn);
+  const liveForm = useRef(form);
+  liveForm.current = form;
+  const livePromptInsertRef = useRef({ inputMode, sessionId, socket });
+  livePromptInsertRef.current = { inputMode, sessionId, socket };
+  const onClipboardImagePasteRef = useRef(onClipboardImagePaste);
+  onClipboardImagePasteRef.current = onClipboardImagePaste;
+
+  const handleClipboardFiles = useCallback(
+    (paste: ClipboardFilePaste) => {
+      if (!inputMode) return;
+      const consume = onClipboardImagePasteRef.current;
+      const readResult = readClipboardImages(paste);
+      const event = { inputMode, browserFileCount: paste.browserFileCount, readResult };
+      if (!consume && inputMode === 'tty' && ttyImages.current) {
+        void ttyImages.current.start(event);
+        return;
+      }
+      if (!consume && inputMode === 'form' && formProject) {
+        liveForm.current.paste(paste, readResult);
+        return;
+      }
+      consume?.(event);
+
+      void readResult.then(({ images, unsupportedFileCount, unreadableFileCount }) => {
+        const details = [
+          `The browser supplied ${paste.browserFileCount} ${paste.browserFileCount === 1 ? 'file' : 'files'}.`,
+        ];
+        if (unsupportedFileCount)
+          details.push(`Unsupported format (${unsupportedFileCount}). Use PNG or JPEG.`);
+        if (unreadableFileCount)
+          details.push(
+            `Could not read ${unreadableFileCount} ${unreadableFileCount === 1 ? 'file' : 'files'}.`,
+          );
+        if (!consume && images.length > 0)
+          details.push('Image attachments are unavailable for this terminal.');
+        if (details.length === 1) return;
+
+        toast({
+          title: 'Clipboard files could not all be attached',
+          description: details.join(' '),
+          variant: 'destructive',
+        });
+      });
+    },
+    [inputMode, formProject],
+  );
+
+  useEffect(() => {
+    const textarea = inputRef.current;
+    if (!textarea || socketTarget !== 'project') return;
+    const binding = createTerminalClipboardPasteBinding({
+      target: textarea,
+      onFiles: handleClipboardFiles,
+    });
+    let selection: FormEditSelection | undefined;
+    const rememberSelection = () => {
+      const { value, selectionStart: start, selectionEnd: end } = textarea;
+      selection =
+        start !== end && liveForm.current.draft.images.length
+          ? { text: value, start, end }
+          : undefined;
+    };
+    // Native input also fires when a selection is replaced with its identical literal label.
+    const applySelection = () => {
+      const previous = selection;
+      selection = undefined;
+      if (previous) liveForm.current.changeText(textarea, previous);
+    };
+    textarea.addEventListener('paste', rememberSelection);
+    textarea.addEventListener('beforeinput', rememberSelection);
+    textarea.addEventListener('input', applySelection);
+    textarea.addEventListener('keydown', binding.handleKeyEvent, true);
+    textarea.addEventListener('keyup', binding.handleKeyEvent, true);
+    return () => {
+      textarea.removeEventListener('paste', rememberSelection);
+      textarea.removeEventListener('beforeinput', rememberSelection);
+      textarea.removeEventListener('input', applySelection);
+      textarea.removeEventListener('keydown', binding.handleKeyEvent, true);
+      textarea.removeEventListener('keyup', binding.handleKeyEvent, true);
+      binding.dispose();
+    };
+  }, [handleClipboardFiles, sessionId, socketTarget]);
 
   // Fetch terminal settings BEFORE mounting terminal
   useEffect(() => {
@@ -191,6 +279,68 @@ export const ChatTerminal = forwardRef<ChatTerminalHandle, ChatTerminalProps>(fu
   // Subscription management
   const { lastSequenceRef, isSubscribedRef, expectingSeedRef, attemptSubscription } =
     useTerminalSubscription(sessionId, xtermRef, dispatchConn, historySync, socket);
+
+  useLayoutEffect(() => {
+    if (
+      !visible ||
+      !projectId ||
+      !imageTargetReady ||
+      inputMode !== 'tty' ||
+      socketTarget !== 'project'
+    )
+      return;
+    const delivery = createTtyImagePaste(
+      sessionId,
+      projectId,
+      socket,
+      fetchFn,
+      () => isSubscribedRef.current,
+    );
+    ttyImages.current = delivery;
+    const cancel = () => delivery.cancel();
+    const onFocusIn = (event: FocusEvent) => {
+      // Two mounted terminals on the same socket can each still own their session's writer.
+      const terminal =
+        event.target instanceof Element && event.target.closest('[data-terminal-status]');
+      if (terminal && terminal !== containerRef.current) cancel();
+    };
+    const onMessage = ({ topic, type, payload }: WsEnvelope) => {
+      if (
+        topic === `terminal/${sessionId}` &&
+        type === 'focus_changed' &&
+        (payload as { clientId?: string } | null)?.clientId !== socket.id
+      )
+        cancel();
+      if (
+        topic === `session/${sessionId}` &&
+        type === 'state_change' &&
+        ['ended', 'crashed', 'timeout'].includes(
+          (payload as { status?: string } | null)?.status ?? '',
+        )
+      )
+        cancel();
+    };
+    document.addEventListener('focusin', onFocusIn, true);
+    socket.on('message', onMessage);
+    socket.on('disconnect', cancel);
+    return () => {
+      ttyImages.current = null;
+      cancel();
+      document.removeEventListener('focusin', onFocusIn, true);
+      socket.off('message', onMessage);
+      socket.off('disconnect', cancel);
+    };
+  }, [
+    sessionId,
+    projectId,
+    inputMode,
+    visible,
+    socketTarget,
+    imageTargetReady,
+    socket,
+    fetchFn,
+    isSubscribedRef,
+  ]);
 
   // Theme sync: emits terminal:theme after subscribe confirmation and on theme changes
   const { notifySubscribed } = useTerminalThemeSync(sessionId, appTheme, isSubscribedRef, socket);
@@ -285,6 +435,7 @@ export const ChatTerminal = forwardRef<ChatTerminalHandle, ChatTerminalProps>(fu
     setScrollIntentController,
     isAuthorityRef,
     suppressCtrlCWithSelectionRef,
+    socketTarget === 'project' ? handleClipboardFiles : undefined,
   );
 
   // Seed management
@@ -315,13 +466,6 @@ export const ChatTerminal = forwardRef<ChatTerminalHandle, ChatTerminalProps>(fu
       // has settled (frames hit the normal write path), ask the server to re-emit alt-screen
       // + mouse modes. Server-gated on the provider's alt-screen policy → no-op for non-TUI
       // providers. Confined to the seed-ready hook; the wheel-forward gate is untouched.
-      //
-      // The seed also drops bracketed-paste mode (?2004h), which the provider CLIs enable
-      // once at startup. Without it xterm sends a paste as plain typing, and Claude then
-      // keeps the paste's \r line breaks and holds the prompt to review them. Every
-      // supported provider CLI enables bracketed paste, so turn it on in this xterm only
-      // (nothing reaches the pane); a later ?2004l from the live stream still turns it off.
-      writePump.write('\x1b[?2004h');
       if (socket.connected) {
         socket.emit('terminal:restore_viewport_modes', { sessionId });
       }
@@ -473,15 +617,7 @@ export const ChatTerminal = forwardRef<ChatTerminalHandle, ChatTerminalProps>(fu
   const insertPromptText = useCallback(async (text: string): Promise<void> => {
     const live = livePromptInsertRef.current;
     if (live.inputMode === 'form') {
-      const textarea = inputRef.current;
-      const selectionStart = textarea?.selectionStart ?? live.input.length;
-      const selectionEnd = textarea?.selectionEnd ?? selectionStart;
-      const nextInput = live.input.slice(0, selectionStart) + text + live.input.slice(selectionEnd);
-      const nextCaret = selectionStart + text.length;
-
-      flushSync(() => setInput(nextInput));
-      textarea?.focus();
-      textarea?.setSelectionRange(nextCaret, nextCaret);
+      if (!liveForm.current.insertText(text)) throw new TerminalPromptInsertError('NOT_READY', '');
       return;
     }
 
@@ -489,7 +625,7 @@ export const ChatTerminal = forwardRef<ChatTerminalHandle, ChatTerminalProps>(fu
       throw new TerminalPromptInsertError('NOT_READY', '');
     }
 
-    const requestId = createPromptPasteRequestId();
+    const requestId = createPasteRequestId();
     const payload = {
       kind: 'prompt-paste',
       sessionId: live.sessionId,
@@ -540,8 +676,7 @@ export const ChatTerminal = forwardRef<ChatTerminalHandle, ChatTerminalProps>(fu
     ref,
     () => ({
       clear: () => {
-        xtermRef.current?.reset();
-        xtermRef.current?.clear();
+        if (xtermRef.current) resetTerminal(xtermRef.current, 'keep');
       },
       focus: () => {
         xtermRef.current?.focus?.();
@@ -556,12 +691,17 @@ export const ChatTerminal = forwardRef<ChatTerminalHandle, ChatTerminalProps>(fu
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
+    if (form.draft.images.length || form.attempt) {
+      if (formProject && visible) void form.send(isSubscribedRef.current, isAuthorityRef.current);
+      return;
+    }
+    const input = form.draft.text;
     if (!input.trim() || !socket.connected) return;
     if (isSubscribedRef.current && !isAuthorityRef.current) {
       socket.emit('terminal:focus', { sessionId });
     }
     socket.emit('terminal:input', { sessionId, data: input });
-    setInput('');
+    form.clear();
     inputRef.current?.focus();
   };
 
@@ -601,11 +741,67 @@ export const ChatTerminal = forwardRef<ChatTerminalHandle, ChatTerminalProps>(fu
       </div>
       {inputMode === 'form' && (
         <div className="border-t border-border bg-terminal/80 px-2 py-1.5">
+          {form.draft.images.length > 0 && (
+            <ul aria-label="Draft attachments" className="mb-1 flex flex-wrap gap-1">
+              {form.draft.images.map((image) => (
+                <li
+                  key={image.number}
+                  className="inline-flex items-center gap-1 rounded border border-border px-1.5 text-xs"
+                >
+                  <span>
+                    Image {image.number} · {image.file.name || 'Clipboard image'}
+                  </span>
+                  {(image.stage === 'checking' || image.stage === 'uploading') && (
+                    <span role="status">Preparing…</span>
+                  )}
+                  {image.stage === 'failed' && (
+                    <button type="button" onClick={() => form.retryUpload(image.number)}>
+                      Retry upload
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    disabled={Boolean(form.attempt)}
+                    aria-label={`Remove image ${image.number}`}
+                    onClick={() => {
+                      form.remove(image.number);
+                      inputRef.current?.focus();
+                    }}
+                  >
+                    ×
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+          {form.attempt && form.attempt.state !== 'sending' && (
+            <div role="alert" className="mb-1 flex flex-wrap items-center gap-2 text-xs">
+              <span>
+                Terminal acknowledged {form.attempt.acknowledgedImages}{' '}
+                {form.attempt.acknowledgedImages === 1 ? 'image' : 'images'}.{' '}
+                {form.attempt.state === 'inspect'
+                  ? 'Delivery may be incomplete or already submitted. Inspect the terminal before starting another draft.'
+                  : `Delivery stopped after ${form.attempt.confirmed} ${form.attempt.confirmed === 1 ? 'segment' : 'segments'}. Retry to continue.`}
+              </span>
+              <button type="button" className="underline" onClick={() => xtermRef.current?.focus()}>
+                Inspect terminal
+              </button>
+              {form.attempt.state === 'retryable' && form.attempt.confirmed === 0 && (
+                <button type="button" className="underline" onClick={form.edit}>
+                  Edit draft
+                </button>
+              )}
+              <button type="button" className="underline" onClick={form.clear}>
+                Discard form draft
+              </button>
+            </div>
+          )}
           <form onSubmit={handleSubmit} className="flex items-center gap-1.5">
             <Textarea
               ref={inputRef}
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
+              value={form.draft.text}
+              readOnly={Boolean(form.attempt)}
+              onChange={(e) => form.changeText(e.target)}
               onKeyDown={handleInputKeyDown}
               placeholder="Type command..."
               autoFocus
@@ -614,11 +810,22 @@ export const ChatTerminal = forwardRef<ChatTerminalHandle, ChatTerminalProps>(fu
             />
             <Button
               type="submit"
-              disabled={!socket.connected || input.trim().length === 0}
+              disabled={
+                !socket.connected ||
+                !form.draft.text.trim() ||
+                (form.draft.images.length > 0 && (!formProject || !isSubscribedRef.current)) ||
+                form.draft.images.some((image) => image.stage !== 'ready') ||
+                form.attempt?.state === 'inspect' ||
+                form.attempt?.state === 'sending'
+              }
               size="sm"
               className="h-7 px-3 text-xs"
             >
-              Send
+              {form.attempt?.state === 'retryable'
+                ? 'Retry send'
+                : form.attempt?.state === 'sending'
+                  ? 'Sending…'
+                  : 'Send'}
             </Button>
           </form>
         </div>

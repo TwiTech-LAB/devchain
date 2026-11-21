@@ -187,6 +187,7 @@ describe('provider CLI policy across home and VM', () => {
       } as never,
       push,
       { pushIfChanged: async () => undefined } as never,
+      { pushIfChanged: async () => undefined } as never,
       versions,
       new RemoteApiKeyService(storage),
       sharedVmGuardStub(),

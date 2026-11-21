@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { PresetTeamConfigsSchema } from '@devchain/shared';
 import {
   SEMVER_PATTERN,
   VALIDATION_MESSAGES,
@@ -59,6 +60,7 @@ export const ExportWithOverridesSchema = z.object({
             effortOverride: z.string().nullable().optional(),
           }),
         ),
+        teamConfigs: PresetTeamConfigsSchema.optional(),
       }),
     )
     .optional(),

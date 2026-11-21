@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { PresetDialog } from './PresetDialog';
@@ -23,7 +23,10 @@ global.fetch = mockFetch;
 
 // Helper to mock profile configs response
 const mockProfileConfigs = (
-  profileConfigs: Record<string, Array<{ id: string; name: string; providerId?: string }>>,
+  profileConfigs: Record<
+    string,
+    Array<{ id: string; name: string; providerId?: string; model?: string }>
+  >,
   providerModels: Record<string, Array<{ id?: string; name: string }>> = {},
   providerEfforts: Record<
     string,
@@ -35,6 +38,9 @@ const mockProfileConfigs = (
   > = {},
 ) => {
   mockFetch.mockImplementation((url: string) => {
+    if (url.startsWith('/api/teams?')) {
+      return Promise.resolve({ ok: true, json: async () => ({ items: [], total: 0 }) });
+    }
     if (url.includes('/provider-configs')) {
       // Extract profileId from URL like /api/profiles/{profileId}/provider-configs
       const match = url.match(/\/profiles\/([^\/]+)\/provider-configs/);
@@ -162,6 +168,216 @@ describe('PresetDialog', () => {
     global.fetch = mockFetch as unknown as typeof fetch;
   });
 
+  describe('team allowed configs', () => {
+    const hint =
+      'This is a template preset. A template import or upgrade replaces it. Rename it to keep your changes.';
+
+    beforeEach(() => {
+      mockProfileConfigs({
+        'coder-profile': [
+          { id: 'opus-id', name: 'opus' },
+          { id: 'sonnet-id', name: 'sonnet' },
+        ],
+        'reviewer-profile': [{ id: 'review-id', name: 'review' }],
+      });
+      const fallback = mockFetch.getMockImplementation()!;
+      const teams = {
+        builders: {
+          id: 'builders',
+          name: 'Builders',
+          profileIds: ['coder-profile', 'reviewer-profile'],
+          profileConfigSelections: [{ profileId: 'coder-profile', configIds: ['opus-id'] }],
+        },
+        observers: {
+          id: 'observers',
+          name: 'Observers',
+          profileIds: ['reviewer-profile'],
+          profileConfigSelections: [],
+        },
+        unlinked: {
+          id: 'unlinked',
+          name: 'Unlinked',
+          profileIds: [],
+          profileConfigSelections: [],
+        },
+      };
+      const reads: Record<string, unknown> = {
+        '/api/teams?projectId=project-123': {
+          items: [teams.builders, teams.observers],
+          total: 3,
+        },
+        '/api/teams?projectId=project-123&offset=2': { items: [teams.unlinked], total: 3 },
+        '/api/teams/builders': teams.builders,
+        '/api/teams/observers': teams.observers,
+        '/api/teams/unlinked': teams.unlinked,
+        '/api/profiles?projectId=project-123': {
+          items: [
+            { id: 'coder-profile', name: 'Coder' },
+            { id: 'reviewer-profile', name: 'Reviewer' },
+          ],
+        },
+      };
+      mockFetch.mockImplementation((url: string, init?: RequestInit) =>
+        Object.hasOwn(reads, url)
+          ? Promise.resolve({ ok: true, json: async () => reads[url] })
+          : fallback(url, init),
+      );
+    });
+
+    function savedBody(method: string): unknown {
+      const call = mockFetch.mock.calls.find(
+        ([url, init]) => url === '/api/projects/project-123/presets' && init?.method === method,
+      );
+      return call ? JSON.parse(call[1].body) : undefined;
+    }
+
+    // The dialog boundary verifies that fetched ID selections become names in the save payload.
+    it('seeds linked teams from current configs and saves checked teams only', async () => {
+      const user = userEvent.setup();
+      renderWithQueryClient(<PresetDialog {...defaultProps} agents={[]} />);
+
+      expect(await screen.findByRole('checkbox', { name: 'Include Builders' })).toBeChecked();
+      const observers = screen.getByRole('checkbox', { name: 'Include Observers' });
+      expect(observers).toBeChecked();
+      expect(screen.getByText('Coder: opus · Reviewer: All')).toBeInTheDocument();
+      expect(screen.queryByRole('checkbox', { name: 'Include Unlinked' })).toBeNull();
+      await user.click(observers);
+      await user.type(screen.getByLabelText('Name *'), 'Team preset');
+      await user.click(screen.getByRole('button', { name: 'Save Preset' }));
+
+      await waitFor(() =>
+        expect(savedBody('POST')).toEqual({
+          name: 'Team preset',
+          description: null,
+          agentConfigs: [],
+          teamConfigs: [
+            {
+              teamName: 'Builders',
+              profileSelections: [{ profileName: 'Coder', configNames: ['opus'] }],
+            },
+          ],
+        }),
+      );
+    });
+
+    it('saves an edited team-only preset with resolved names and omits missing entries', async () => {
+      const user = userEvent.setup();
+      renderWithQueryClient(
+        <PresetDialog
+          {...defaultProps}
+          agents={[]}
+          presetToEdit={{
+            name: 'Team preset',
+            agentConfigs: [],
+            teamConfigs: [
+              {
+                teamName: 'builders',
+                profileSelections: [
+                  { profileName: 'Coder', configNames: ['opus'] },
+                  { profileName: ' coder ', configNames: [' SONNET ', 'retired'] },
+                  { profileName: 'Removed', configNames: ['old'] },
+                ],
+              },
+              { teamName: 'builders', profileSelections: [] },
+              { teamName: 'Gone', profileSelections: [] },
+            ],
+          }}
+        />,
+      );
+
+      expect(await screen.findByRole('checkbox', { name: 'Include Builders' })).toBeChecked();
+      expect(screen.getByRole('checkbox', { name: 'Include Observers' })).not.toBeChecked();
+      expect(screen.getByText('Missing team: Gone')).toBeInTheDocument();
+      expect(screen.getByText('Missing profile: Removed (builders)')).toBeInTheDocument();
+      expect(screen.getByText(/Missing config: retired/)).toBeInTheDocument();
+      expect(screen.getByText('Coder: opus, sonnet · Reviewer: All')).toBeInTheDocument();
+      await user.click(screen.getByRole('button', { name: 'Configure Builders' }));
+      const modal = within(
+        await screen.findByRole('dialog', { name: 'Configure Allowed Configs' }),
+      );
+      expect(modal.getByRole('checkbox', { name: 'opus' })).toBeChecked();
+      expect(modal.getByRole('checkbox', { name: 'sonnet' })).toBeChecked();
+      await user.click(modal.getByRole('button', { name: 'Cancel' }));
+      await user.click(screen.getByRole('checkbox', { name: 'Include Observers' }));
+      await user.click(screen.getByRole('button', { name: 'Update Preset' }));
+
+      await waitFor(() =>
+        expect(savedBody('PATCH')).toEqual({
+          presetName: 'Team preset',
+          updates: {
+            name: 'Team preset',
+            description: null,
+            agentConfigs: [],
+            teamConfigs: [
+              {
+                teamName: 'Builders',
+                profileSelections: [{ profileName: 'Coder', configNames: ['opus', 'sonnet'] }],
+              },
+              { teamName: 'Observers', profileSelections: [] },
+            ],
+          },
+        }),
+      );
+    });
+
+    // The dialog is the layer that turns the stored names into the saved payload.
+    it('keeps a stored restriction when none of its config names resolve', async () => {
+      const user = userEvent.setup();
+      const teamConfigs = [
+        {
+          teamName: 'Builders',
+          profileSelections: [{ profileName: 'Coder', configNames: ['retired'] }],
+        },
+      ];
+      renderWithQueryClient(
+        <PresetDialog
+          {...defaultProps}
+          agents={[]}
+          presetToEdit={{ name: 'Team preset', agentConfigs: [], teamConfigs }}
+        />,
+      );
+
+      expect(await screen.findByText('Coder: retired · Reviewer: All')).toBeInTheDocument();
+      expect(screen.getByText('Missing config: retired (Builders / Coder)')).toBeInTheDocument();
+      await user.click(screen.getByRole('button', { name: 'Update Preset' }));
+
+      await waitFor(() =>
+        expect(savedBody('PATCH')).toEqual({
+          presetName: 'Team preset',
+          updates: { name: 'Team preset', description: null, agentConfigs: [], teamConfigs },
+        }),
+      );
+    });
+
+    it('requires a config for every linked profile before saving the preset modal', async () => {
+      const user = userEvent.setup();
+      renderWithQueryClient(<PresetDialog {...defaultProps} />);
+      await user.click(await screen.findByRole('button', { name: 'Configure Builders' }));
+      const modal = within(
+        await screen.findByRole('dialog', { name: 'Configure Allowed Configs' }),
+      );
+      await user.click(modal.getByRole('checkbox', { name: 'opus' }));
+      expect(modal.getByRole('button', { name: 'Save' })).toBeDisabled();
+      expect(modal.getByRole('button', { name: 'Coder 0 selected' })).toBeInTheDocument();
+      await user.click(modal.getByRole('checkbox', { name: 'sonnet' }));
+      await user.click(modal.getByRole('button', { name: 'Save' }));
+      expect(await screen.findByText('Coder: sonnet · Reviewer: All')).toBeInTheDocument();
+    });
+
+    it.each([undefined, 'user'] as const)(
+      'shows the template hint based on origin %s',
+      (origin) => {
+        renderWithQueryClient(
+          <PresetDialog
+            {...defaultProps}
+            presetToEdit={{ name: 'Existing', agentConfigs: [], origin }}
+          />,
+        );
+        expect(screen.queryByText(hint) !== null).toBe(origin !== 'user');
+      },
+    );
+  });
+
   describe('rendering - create mode', () => {
     beforeEach(() => {
       mockProfileConfigs({
@@ -177,9 +393,6 @@ describe('PresetDialog', () => {
       renderWithQueryClient(<PresetDialog {...defaultProps} />);
       {
         expect(screen.getByText('Save as Preset')).toBeInTheDocument();
-        expect(
-          screen.getByText('Create a named configuration from agent provider assignments'),
-        ).toBeInTheDocument();
       }
       {
         expect(screen.getByText('Agent Configurations')).toBeInTheDocument();
@@ -253,9 +466,6 @@ describe('PresetDialog', () => {
       renderWithQueryClient(<PresetDialog {...defaultProps} presetToEdit={mockPreset} />);
       {
         expect(screen.getByText('Edit Preset')).toBeInTheDocument();
-        expect(
-          screen.getByText('Modify the preset name, description, or agent configurations'),
-        ).toBeInTheDocument();
       }
       {
         expect(screen.getByLabelText('Name *')).toHaveValue('existing-preset');
@@ -344,7 +554,12 @@ describe('PresetDialog', () => {
         {
           'profile-1': [
             { id: 'config-1', name: 'claude-config', providerId: 'provider-claude' },
-            { id: 'config-2', name: 'codex-config', providerId: 'provider-codex' },
+            {
+              id: 'config-2',
+              name: 'codex-config',
+              providerId: 'provider-codex',
+              model: 'gpt-4o',
+            },
           ],
           'profile-2': [{ id: 'config-3', name: 'gpt-config', providerId: 'provider-openai' }],
         },
@@ -412,7 +627,7 @@ describe('PresetDialog', () => {
       });
     });
 
-    it('resets model override to Default when provider config changes', async () => {
+    it('resets model override to the Default of the new provider config, named by its model', async () => {
       renderWithQueryClient(<PresetDialog {...defaultProps} />);
 
       await waitFor(() => {
@@ -423,7 +638,9 @@ describe('PresetDialog', () => {
       await userEvent.click(await screen.findByRole('option', { name: 'codex-config' }));
 
       await waitFor(() => {
-        expect(screen.getByTestId('preset-model-select-agent-1')).toHaveTextContent('Default');
+        expect(screen.getByTestId('preset-model-select-agent-1')).toHaveTextContent(
+          'Default (gpt-4o)',
+        );
       });
     });
 
@@ -516,6 +733,9 @@ describe('PresetDialog', () => {
     beforeEach(() => {
       // Mock empty configs for profile
       mockFetch.mockImplementation((url: string) => {
+        if (url.startsWith('/api/teams?')) {
+          return Promise.resolve({ ok: true, json: async () => ({ items: [], total: 0 }) });
+        }
         if (url.includes('/provider-configs')) {
           return Promise.resolve({
             ok: true,

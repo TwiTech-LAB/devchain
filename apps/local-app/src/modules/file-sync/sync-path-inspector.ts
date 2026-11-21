@@ -32,6 +32,7 @@ interface PathTree {
   fileCount: number;
   foreignUids: Set<number>;
   children: string[];
+  incomplete?: true;
 }
 type IgnoreRule = NonNullable<SyncPathFacts['ignoreRule']>;
 interface CatalogueRule {
@@ -70,7 +71,11 @@ export class SyncPathInspector {
     paths: readonly string[] = [],
     patterns?: readonly string[],
     skipIgnores?: readonly string[],
+    options: { signal?: AbortSignal; requestedTreesOnly?: true } = {},
   ): Promise<SyncPathInspection> {
+    const { signal } = options;
+    const requestedTreesOnly = !scan && options.requestedTreesOnly;
+    signal?.throwIfAborted();
     if (!isAbsolute(root))
       throw new ValidationError('The inspection root must be an absolute path.');
     const request = SyncInspectRequestSchema.parse({
@@ -93,11 +98,13 @@ export class SyncPathInspector {
       );
     };
     root = resolve(request.path);
-    const stat = async (path: string): Promise<Stats | null> =>
-      this.files.lstat(path).catch((error: NodeJS.ErrnoException) => {
+    const stat = async (path: string): Promise<Stats | null> => {
+      signal?.throwIfAborted();
+      return this.files.lstat(path).catch((error: NodeJS.ErrnoException) => {
         if (error.code === 'ENOENT') return null;
         throw error;
       });
+    };
     const rootStat = await stat(root);
     const result: SyncPathInspection = {
       rootPath: root,
@@ -106,7 +113,7 @@ export class SyncPathInspector {
       projectOwner: null,
       gitState: 'no-repo',
       candidates: [],
-      requestedPaths: request.paths.filter((path) => !skipped(path)),
+      requestedPaths: request.paths.filter((path) => requestedTreesOnly || !skipped(path)),
       entries: [],
       ...(request.patterns !== undefined && {
         patternChecks: { state: rootStat ? 'no-repo' : 'no-root', results: [] },
@@ -138,13 +145,17 @@ export class SyncPathInspector {
           const children = await this.files
             .readdir(join(root, name))
             .catch((error: NodeJS.ErrnoException) => {
-              if (error.code === 'EACCES' || error.code === 'EPERM') return [];
+              if (error.code === 'EACCES' || error.code === 'EPERM') {
+                item.incomplete = true;
+                return [];
+              }
               throw error;
             });
           for (const child of children) {
             const childName = name ? `${name}/${child}` : child;
-            if (skipped(childName) || pruned(childName)) continue;
+            if (!requestedTreesOnly && (skipped(childName) || pruned(childName))) continue;
             const nested = await tree(childName);
+            if (nested.incomplete) item.incomplete = true;
             if (nested.stat?.isSymbolicLink()) continue;
             item.children.push(childName);
             item.fileCount += nested.fileCount;
@@ -179,6 +190,7 @@ export class SyncPathInspector {
     if (hidden.length) result.hiddenPaths = hidden;
     const gitDirectory = (await stat(join(root, '.git')))?.isDirectory() ?? false;
     const git = async (argv: string[], input?: string, noMatch = false): Promise<string> => {
+      signal?.throwIfAborted();
       const answer = await this.executor.run({
         argv: ['git', ...argv],
         cwd: root,
@@ -291,9 +303,9 @@ export class SyncPathInspector {
       .sort()
       .filter((name, _, all) => !all.some((parent) => parent !== name && within(name, parent)));
     const inspected = new Set([...given, ...result.candidates]);
-    for (const name of given) {
+    if (!requestedTreesOnly) {
       // The peer's ignore authority may choose an ancestor this index does not ignore.
-      for (const parent of ancestors(name)) inspected.add(parent);
+      for (const name of given) for (const parent of ancestors(name)) inspected.add(parent);
     }
     const catalogue = new Map<string, Promise<CatalogueRule[]>>();
     const sourceRules = (source: string): Promise<CatalogueRule[]> => {
@@ -354,6 +366,7 @@ export class SyncPathInspector {
         owner: owner(parentStat!.uid),
         foreignOwner: parentStat!.uid !== rootStat.uid,
         foreignOwners: [...item.foreignUids].map(owner),
+        ...(item.incomplete && { incomplete: true }),
         fileCount: item.fileCount,
         ignored: result.gitState === 'error' ? null : ignores(rule),
         ignoreRule: rule,

@@ -971,6 +971,7 @@ export function ChatPage() {
               }
             />
             <InlineTerminalPanel
+              projectId={projectId}
               sessionId={inlineTerminalSessionId}
               agentName={inlineTerminalAgentName}
               isWindowOpen={isInlineSessionWindowOpen}

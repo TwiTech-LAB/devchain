@@ -1,10 +1,48 @@
+import { Terminal } from '@xterm/xterm';
 import {
   decodeOsc52ClipboardPayload,
+  enableBracketedPaste,
   isTerminalInternalSequence,
+  resetTerminal,
   supportsWheelMouseTracking,
 } from './xterm-utils';
 
 describe('xterm-utils', () => {
+  // Real xterm exposes the parsed mode without mounting the terminal UI.
+  describe('bracketed paste', () => {
+    let terminal: Terminal;
+    const waitForParse = () => new Promise<void>((done) => terminal.write('', done));
+
+    beforeEach(() => {
+      terminal = new Terminal();
+    });
+
+    afterEach(() => {
+      terminal.dispose();
+    });
+
+    it('enables bracketed paste', async () => {
+      enableBracketedPaste(terminal);
+      await waitForParse();
+      expect(terminal.modes.bracketedPasteMode).toBe(true);
+    });
+
+    it('enables bracketed paste when resetting for a seed', async () => {
+      resetTerminal(terminal, 'on');
+      await waitForParse();
+      expect(terminal.modes.bracketedPasteMode).toBe(true);
+    });
+
+    it.each([true, false])('preserves mode %s when resetting', async (mode) => {
+      if (mode) enableBracketedPaste(terminal);
+      await waitForParse();
+
+      resetTerminal(terminal, 'keep');
+      await waitForParse();
+      expect(terminal.modes.bracketedPasteMode).toBe(mode);
+    });
+  });
+
   describe('isTerminalInternalSequence', () => {
     describe('OSC sequences (Operating System Command)', () => {
       it.each([

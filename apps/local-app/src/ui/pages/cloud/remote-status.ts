@@ -1,6 +1,9 @@
 import { PROVIDER_CLI_NAMES } from '@devchain/shared';
 import type { RemoteListItemDto } from '@/modules/remotes/dtos/remote.dto';
-import { HOST_LIFECYCLE_KINDS } from '@/modules/remotes/operations/remote-operation.types';
+import {
+  HOST_LIFECYCLE_KINDS,
+  isOpenShareOperation,
+} from '@/modules/remotes/operations/remote-operation.types';
 import { isStuckFileSyncProblem } from '@/modules/remotes/sync/remote-file-sync.dto';
 import type { RemoteNoticeDto, RemoteOperationDto } from './lib/remote-vm-contracts';
 import type { RemoteProjectBindingRow } from '@/ui/lib/backend-provider';
@@ -99,6 +102,49 @@ export function openHostOperation(
     .sort(newestFirst)[0];
 }
 
+/**
+ * VMs with a running or failed shared folder operation. The server refuses their Reset, Destroy,
+ * Update, Change logins and Remove until it ends; Connect and Disconnect stay open.
+ */
+export function shareOperationRemotes(operations: readonly RemoteOperationDto[]): Set<string> {
+  return new Set(
+    operations
+      .filter((operation) => isOpenShareOperation(operation))
+      .map((operation) => operation.remoteId),
+  );
+}
+
+/** `path` with this PC's home folder written as `~`. */
+export function homeRelativePath(path: string, home: string | null | undefined): string {
+  if (!home) return path;
+  const root = home.replace(/\/+$/, '');
+  if (path === root) return '~';
+  return path.startsWith(`${root}/`) ? `~${path.slice(root.length)}` : path;
+}
+
+/** `path` with a leading `~` replaced by the home folder; unchanged while home is unknown. */
+export function expandHome(path: string, home: string | null | undefined): string {
+  if (!home || (path !== '~' && !path.startsWith('~/'))) return path;
+  return `${home.replace(/\/+$/, '')}${path.slice(1)}`;
+}
+
+/** The folder a shared folder operation works on; null for other kinds. */
+export function shareOperationPath(operation: RemoteOperationDto): string | null {
+  if (operation.kind !== 'share_folder') return null;
+  const { path } = operation.details;
+  return typeof path === 'string' && path ? path : null;
+}
+
+/** "Sharing ~/data with vm-01", or null when the operation is not a folder share. */
+export function shareOperationText(
+  operation: RemoteOperationDto,
+  vm: string,
+  home: string | null | undefined,
+): string | null {
+  const path = shareOperationPath(operation);
+  return path ? `Sharing ${homeRelativePath(path, home)} with ${vm}` : null;
+}
+
 /** An operation kind's words: in progress, as a noun, and as a detail title. */
 interface KindWords {
   busy: string;
@@ -119,6 +165,7 @@ const KIND_WORDS: Record<string, KindWords> = {
   destroy_vm: { busy: 'Destroying', noun: 'Destroy', title: 'Destroy' },
   attach: { busy: 'Connecting', noun: 'Connect', title: 'Connect' },
   force_sync: { busy: 'Force syncing', noun: 'Force sync', title: 'Force sync' },
+  share_folder: { busy: 'Sharing a folder', noun: 'Folder share', title: 'Share folder' },
   // Manual Git switches no longer run; their rows stay as read-only history.
   git_owner: { busy: 'Moving Git', noun: 'Git switch', title: 'Git switch' },
   detach: { busy: 'Disconnecting', noun: 'Disconnect', title: 'Disconnect' },
@@ -382,6 +429,21 @@ export function connectBlockedReason(status: VmStatus): string | null {
   if (status.state === 'ready') return null;
   if (OFFLINE_STATES.has(status.state)) return 'Offline';
   return status.label;
+}
+
+/**
+ * Why Share a folder cannot start on this VM now; null when it can. The server refuses a share
+ * while a VM operation is open. An open share operation of another folder does not block it; the
+ * server refuses only a second operation of the same folder, which the overlap check also stops.
+ */
+export function shareBlockedReason(status: VmStatus): string | null {
+  if (status.state === 'busy') return 'A VM operation is running. Wait for it to end.';
+  if (status.state === 'stopped') return 'A VM operation failed. Retry or cancel it in Activity.';
+  if (status.state === 'ready') return null;
+  if (OFFLINE_STATES.has(status.state)) return 'The VM is offline.';
+  if (status.state === 'update-needed') return 'Update the VM first.';
+  if (status.state === 'home-mismatch') return 'The VM home folder differs from this PC.';
+  return sentence(status.label);
 }
 
 // ── Project state ───────────────────────────────────────────────────────────
@@ -700,14 +762,14 @@ export function attentionItems(
     const step = failedStep(operation);
     const error = errorFirstLine(operation);
     const where = step ? ` at “${step.label}”` : '';
+    const share = shareOperationText(operation, remoteName(ctx, operation.remoteId), pc.homePath);
+    const what = share
+      ? `${share} failed`
+      : `${kindWords(operation).noun} of ${operationTarget(ctx, operation)} stopped`;
     items.push({
       key: `operation:${operation.id}`,
       tone: 'error',
-      text: sentence(
-        `${kindWords(operation).noun} of ${operationTarget(ctx, operation)} stopped${where}${
-          error ? `: ${error}` : ''
-        }`,
-      ),
+      text: sentence(`${what}${where}${error ? `: ${error}` : ''}`),
       action: { kind: 'open-activity', label: 'Open', operationId: operation.id },
     });
   }

@@ -161,6 +161,42 @@ describe('Vault entry storage (integration)', () => {
     ]);
   });
 
+  it('gives an entry of another project to a requester as a shared entry in one transaction', async () => {
+    const grantRows = (id: string) =>
+      sqlite
+        .prepare('SELECT * FROM vault_entry_grants WHERE entry_id = ? ORDER BY project_id')
+        .all(id);
+    const other = await entry('B_TOKEN', 'B');
+    const before = row(other.id);
+
+    const shared = await storage.grantVaultEntryToRequester(other.id, 'A', 'Coder');
+
+    expect(shared).toMatchObject({ id: other.id, projectId: null, revision: 1 });
+    expect(row(other.id)).toEqual({ ...(before as object), project_id: null });
+    expect(await storage.listVaultEntryGrants(other.id)).toEqual([
+      { projectId: 'A', familySlug: 'coder', familyMatched: true },
+      { projectId: 'B', familySlug: null, familyMatched: true },
+    ]);
+    // An existing grant, "all agents" included, makes the same answer write nothing.
+    const own = await entry('A_TOKEN', 'A');
+    const rows = [grantRows(other.id), grantRows(own.id)];
+    await storage.grantVaultEntryToRequester(other.id, 'A', 'coder');
+    await storage.grantVaultEntryToRequester(own.id, 'A', null);
+    expect([grantRows(other.id), grantRows(own.id)]).toEqual(rows);
+
+    await entry('TAKEN', null);
+    const taken = await entry('TAKEN', 'B');
+    await expect(storage.grantVaultEntryToRequester(taken.id, 'A', null)).rejects.toMatchObject({
+      statusCode: 409,
+      message: 'A shared entry named TAKEN already exists.',
+      details: { code: 'VAULT_ENTRY_NAME_TAKEN' },
+    });
+    expect(row(taken.id)).toMatchObject({ project_id: 'B' });
+    expect(await storage.listVaultEntryGrants(taken.id)).toEqual([
+      { projectId: 'B', familySlug: null, familyMatched: true },
+    ]);
+  });
+
   it('keeps names unique per owner only', async () => {
     await entry('API_KEY', null);
     await entry('API_KEY', 'A');

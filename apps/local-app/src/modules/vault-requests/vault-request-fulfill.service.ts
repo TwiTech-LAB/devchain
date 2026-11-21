@@ -13,6 +13,7 @@ import {
   type RemoteStorage,
   type VaultEntryStorage,
 } from '../storage/interfaces/storage.interface';
+import type { VaultEntry, VaultEntryKind } from '../storage/models/domain.models';
 import { SessionRowStore } from '../storage/sessions/session-row.store';
 import { VaultAccessService } from '../vault/vault-access.service';
 import { VaultEntriesService } from '../vault/vault-entries.service';
@@ -23,6 +24,7 @@ import { VaultUseApprovalStore } from '../vault/vault-use-approvals';
 import {
   applyUseDecision,
   assertUseDecision,
+  existingEntryNotAccepted,
   isUseRequest,
   recordUseDenial,
   useRequestNotFulfillable,
@@ -36,7 +38,15 @@ import {
 } from './vault-request-session-value';
 import { findRequestedEntry } from './vault-request.service';
 import {
+  keepWhere,
+  listSelectableEntries,
+  requireSelectableEntry,
+  vaultScopeTest,
+  type VaultDeviceScope,
+} from './vault-request-selection';
+import {
   VaultRequestStore,
+  grantedUnderOtherName,
   vaultRequestNotPending,
   type VaultRequest,
 } from './vault-request.store';
@@ -55,6 +65,21 @@ export interface VaultRequestFulfillInput {
   value?: string;
   /** False keeps a `create` value in memory for the requesting session only. */
   permanent: boolean;
+  /** An existing entry that answers a `create` request in place of a value. */
+  entryId?: string;
+}
+
+/** An existing entry that can answer a `create` request. Never holds a value. */
+export interface VaultRequestCandidate {
+  id: string;
+  name: string;
+  kind: VaultEntryKind;
+  description: string;
+  /** Null for a shared entry. */
+  ownerProjectId: string | null;
+  ownerProjectName: string | null;
+  /** The requester already has this entry: the answer writes nothing. */
+  alreadyAvailable: boolean;
 }
 
 export interface VaultRequestApproveResult {
@@ -69,11 +94,20 @@ export interface VaultRequestFulfillResult {
   permanent: boolean;
   /** The entry that was created or granted; null for a session-only value. */
   entryId: string | null;
+  entryName: string | null;
 }
+
+type AnsweredEntry = Pick<VaultEntry, 'id' | 'name' | 'kind'>;
 
 type FulfillStorage = Pick<
   VaultEntryStorage,
-  'addVaultEntryGrant' | 'addVaultUseFamilyApproval' | 'getVaultEntry' | 'listVaultEntries'
+  | 'addVaultEntryGrant'
+  | 'addVaultUseFamilyApproval'
+  | 'getVaultEntry'
+  | 'grantVaultEntryToRequester'
+  | 'listVaultEntries'
+  | 'listVaultGrants'
+  | 'resolveVaultGrantsForAgent'
 > &
   Pick<ProjectStorage, 'getProject'> &
   Pick<RemoteStorage, 'getRemote'>;
@@ -104,21 +138,41 @@ function valueRequired(): ValidationError {
  */
 function assertAnswer(request: VaultRequest, input: VaultRequestFulfillInput): void {
   if (request.type === 'use') throw useRequestNotFulfillable();
+  if (input.entryId !== undefined) {
+    assertEntryAnswer(request, input);
+    return;
+  }
   if (request.type === 'grant') {
-    if (input.value !== undefined) {
-      throw new ValidationError('A grant request uses the stored value. Send no value.', {
-        code: 'VAULT_REQUEST_VALUE_NOT_ALLOWED',
-      });
-    }
-    if (!input.permanent) {
-      throw new ValidationError('A grant request can only be approved as a permanent grant.', {
-        code: 'VAULT_REQUEST_GRANT_PERMANENT_ONLY',
-      });
-    }
+    assertStoredValueAnswer(input, {
+      noValue: 'A grant request uses the stored value. Send no value.',
+      permanentOnly: 'A grant request can only be approved as a permanent grant.',
+    });
     return;
   }
   if (input.value === undefined || input.value === '') throw valueRequired();
   assertVaultEntryValue(request.kind, input.value);
+}
+
+/** An answer that gives an entry's stored value takes no value and is always permanent. */
+function assertStoredValueAnswer(
+  input: VaultRequestFulfillInput,
+  text: { noValue: string; permanentOnly: string },
+): void {
+  if (input.value !== undefined) {
+    throw new ValidationError(text.noValue, { code: 'VAULT_REQUEST_VALUE_NOT_ALLOWED' });
+  }
+  if (!input.permanent) {
+    throw new ValidationError(text.permanentOnly, { code: 'VAULT_REQUEST_GRANT_PERMANENT_ONLY' });
+  }
+}
+
+/** An existing entry answers only a `create` request, as a permanent grant without a value. */
+function assertEntryAnswer(request: VaultRequest, input: VaultRequestFulfillInput): void {
+  if (request.type !== 'create') throw existingEntryNotAccepted();
+  assertStoredValueAnswer(input, {
+    noValue: 'An existing entry uses its stored value. Send no value.',
+    permanentOnly: 'An existing entry can only be given as a permanent grant.',
+  });
 }
 
 /**
@@ -142,10 +196,15 @@ export class VaultRequestFulfillService {
     @Inject(REMOTE_VAULT_DELIVERY_PORT) private readonly delivery: RemoteVaultDeliveryPort,
   ) {}
 
-  /** Empty on a claimed VM: home lists and answers the request, so a VM shows none. */
-  async listPending(): Promise<VaultRequestView[]> {
+  /**
+   * Empty on a claimed VM: home lists and answers the request, so a VM shows none. With
+   * `scope`, only the requests of the projects inside it, without a `grant` request for
+   * an entry outside it.
+   */
+  async listPending(scope?: VaultDeviceScope): Promise<VaultRequestView[]> {
     if (this.vmCache.isClaimedHost()) return [];
-    const pending = this.store.listPending();
+    const all = this.store.listPending();
+    const pending = scope ? await this.requestsInScope(all, scope) : all;
     const remoteIds = new Set(
       pending
         .map((request) => this.store.remoteOrigin(request.requestId))
@@ -168,10 +227,7 @@ export class VaultRequestFulfillService {
     return Promise.all(
       pending.map(async (request) => ({
         ...request,
-        projectName: await this.storage
-          .getProject(request.projectId)
-          .then((project) => project.name)
-          .catch(() => request.projectId),
+        projectName: await this.projectNameOrId(request.projectId),
         entryDescription: request.entryId
           ? await this.storage
               .getVaultEntry(request.entryId)
@@ -183,22 +239,102 @@ export class VaultRequestFulfillService {
     );
   }
 
+  /**
+   * The requests of the projects inside `scope`. A `grant` request also needs its entry
+   * inside it.
+   */
+  private requestsInScope(
+    pending: VaultRequest[],
+    scope: VaultDeviceScope,
+  ): Promise<VaultRequest[]> {
+    const inScope = vaultScopeTest(this.storage, scope);
+    return keepWhere(
+      pending,
+      async (request) =>
+        (await inScope.project(request.projectId)) &&
+        (request.type !== 'grant' || (await inScope.entryId(request.entryId))),
+    );
+  }
+
+  /**
+   * The existing entries that can answer a `create` request: an exact name match first,
+   * then by name. Empty for another request type, and on a claimed VM (as `listPending`).
+   * With `scope`, only the entries inside it.
+   */
+  async listCandidates(
+    requestId: string,
+    scope?: VaultDeviceScope,
+  ): Promise<VaultRequestCandidate[]> {
+    if (this.vmCache.isClaimedHost()) return [];
+    const request = this.requirePending(requestId);
+    const selectable = await listSelectableEntries(
+      this.storage,
+      this.sessionValues,
+      request,
+      scope,
+    );
+    const ownerIds = new Set(
+      selectable.flatMap(({ entry }) => (entry.projectId ? [entry.projectId] : [])),
+    );
+    const ownerNames = new Map(
+      await Promise.all(
+        [...ownerIds].map(
+          async (projectId) => [projectId, await this.projectNameOrId(projectId)] as const,
+        ),
+      ),
+    );
+    const exact = (name: string) => (name === request.name ? 0 : 1);
+    // The sort is stable and the entries come ordered by name, so only the match moves.
+    return selectable
+      .map(({ entry, alreadyAvailable }) => ({
+        id: entry.id,
+        name: entry.name,
+        kind: entry.kind,
+        description: entry.description,
+        ownerProjectId: entry.projectId,
+        ownerProjectName: entry.projectId ? (ownerNames.get(entry.projectId) ?? null) : null,
+        alreadyAvailable,
+      }))
+      .sort((a, b) => exact(a.name) - exact(b.name));
+  }
+
+  /** The project's name, or its id when the project is gone. */
+  private projectNameOrId(projectId: string): Promise<string> {
+    return this.storage
+      .getProject(projectId)
+      .then((project) => project.name)
+      .catch(() => projectId);
+  }
+
+  /**
+   * With `scope`, the answer can grant only an entry inside it. The check runs inside
+   * the claim, so the list is not the only guard.
+   */
   async fulfill(
     requestId: string,
     input: VaultRequestFulfillInput,
+    scope?: VaultDeviceScope,
   ): Promise<VaultRequestFulfillResult> {
     this.vault.assertHome();
     assertAnswer(this.requirePending(requestId), input);
-    let entryId: string | null = null;
-    const done = (id: string) => (entryId = id);
+    // The cast keeps the declared type: the closure below assigns it.
+    let answered = null as AnsweredEntry | null;
     await this.store.resolve(requestId, 'fulfilled', {
       work: async (claimed) => {
         const remoteId = this.store.remoteOrigin(claimed.requestId);
-        if (remoteId) await this.fulfillOnRemote(remoteId, claimed, input, done);
-        else await this.fulfillLocally(claimed, input, done);
+        answered = remoteId
+          ? await this.fulfillOnRemote(remoteId, claimed, input, scope)
+          : await this.fulfillLocally(claimed, input, scope);
+        return grantedUnderOtherName(claimed, answered);
       },
     });
-    return { requestId, status: 'fulfilled', permanent: input.permanent, entryId };
+    return {
+      requestId,
+      status: 'fulfilled',
+      permanent: input.permanent,
+      entryId: answered?.id ?? null,
+      entryName: answered?.name ?? null,
+    };
   }
 
   /**
@@ -292,21 +428,23 @@ export class VaultRequestFulfillService {
     }
   }
 
-  /** Answers a request raised on this instance: a grant, a stored entry or a session value. */
+  /**
+   * Answers a request raised on this instance: a grant, a selected entry, a stored entry
+   * or a session value.
+   */
   private async fulfillLocally(
     request: VaultRequest,
     input: VaultRequestFulfillInput,
-    done: (entryId: string) => void,
-  ): Promise<void> {
+    scope: VaultDeviceScope | undefined,
+  ): Promise<AnsweredEntry | null> {
     if (request.type === 'grant') {
-      return this.grantExisting(request.entryId as string, request, done);
+      return this.grantExisting(request.entryId as string, request, scope);
     }
+    if (input.entryId !== undefined) return this.grantSelected(input.entryId, request, scope);
     const value = input.value as string;
-    if (input.permanent) {
-      done((await this.createStoredEntry(request, value)).id);
-      return;
-    }
+    if (input.permanent) return this.createStoredEntry(request, value);
     putVaultRequestSessionValue(this.sessionRows, this.sessionValues, request, value);
+    return null;
   }
 
   /**
@@ -314,36 +452,55 @@ export class VaultRequestFulfillService {
    * then pushed and acknowledged, and only then ends on the VM: the agent never hears
    * "available" before `vault exec` can resolve the name. The type is derived again
    * from the current entries, so a retry after a write whose delivery failed grants
-   * the entry it created.
+   * the entry it created. A selected entry that the first try granted is already
+   * available to the requester, so the retry writes nothing.
    */
   private async fulfillOnRemote(
     remoteId: string,
     request: VaultRequest,
     input: VaultRequestFulfillInput,
-    done: (entryId: string) => void,
-  ): Promise<void> {
+    scope: VaultDeviceScope | undefined,
+  ): Promise<AnsweredEntry | null> {
+    // `assertAnswer` refuses a selected entry that is not permanent, so this is a value.
     if (!input.permanent) {
       await this.resolveOnRemote(remoteId, request.requestId, {
         status: 'fulfilled',
         sessionValue: { value: input.value as string },
       });
-      return;
+      return null;
     }
+    const { entryId } = input;
+    const entry =
+      entryId !== undefined
+        ? await this.grantSelected(entryId, request, scope)
+        : await this.grantOrCreateRequested(request, input, scope);
+    await this.delivery.pushConfirmed(remoteId);
+    // With `entryId` the VM checks delivery by this id: the entry's name can differ from
+    // the request's.
+    await this.endOnRemote(remoteId, request.requestId, {
+      status: 'fulfilled',
+      ...(entryId !== undefined && { entryId }),
+    });
+    return entry;
+  }
+
+  /** A stored answer by the requested name: grants the entry that has it now, or creates it. */
+  private async grantOrCreateRequested(
+    request: VaultRequest,
+    input: VaultRequestFulfillInput,
+    scope: VaultDeviceScope | undefined,
+  ): Promise<AnsweredEntry> {
     const existing = await findRequestedEntry(this.storage, request.projectId, request.name);
-    if (existing) {
-      await this.grantExisting(existing.id, request, done);
-    } else if (request.type === 'grant') {
+    if (existing) return this.grantExisting(existing.id, request, scope);
+    if (request.type === 'grant') {
       // A grant answer carries no value (the modal shows no field for it), so a request
       // whose entry was deleted after adoption can only be denied.
       throw new ConflictError(
         `The entry "${request.name}" no longer exists. Deny the request so the agent can ask again.`,
         { code: 'VAULT_REQUEST_ENTRY_DELETED' },
       );
-    } else {
-      done((await this.createStoredEntry(request, input.value as string)).id);
     }
-    await this.delivery.pushConfirmed(remoteId);
-    await this.endOnRemote(remoteId, request.requestId, { status: 'fulfilled' });
+    return this.createStoredEntry(request, input.value as string);
   }
 
   /** Ends the request on its VM. A refusal by the VM keeps its code. */
@@ -362,15 +519,44 @@ export class VaultRequestFulfillService {
     }
   }
 
-  /** Adds to the entry's grants: the other families of the project keep theirs. */
+  /**
+   * Adds to the entry's grants: the other families of the project keep theirs. An entry
+   * outside `scope` gets the same refusal as a request that is gone, so the answer does
+   * not tell that the entry exists.
+   */
   private async grantExisting(
     entryId: string,
     request: VaultRequest,
-    done: (entryId: string) => void,
-  ): Promise<void> {
+    scope: VaultDeviceScope | undefined,
+  ): Promise<AnsweredEntry> {
+    if (scope && !(await vaultScopeTest(this.storage, scope).entryId(entryId))) {
+      throw vaultRequestNotPending();
+    }
     await this.access.assertAccessWritable();
     await this.storage.addVaultEntryGrant(entryId, request.projectId, request.familySlug);
-    done(entryId);
+    return { id: entryId, name: request.name, kind: request.kind };
+  }
+
+  /**
+   * Gives the user's selected entry to the requester. The selection rule runs again
+   * inside the claim, so the entries changed since the list cannot slip through. An
+   * entry the requester already has needs no write.
+   */
+  private async grantSelected(
+    entryId: string,
+    request: VaultRequest,
+    scope: VaultDeviceScope | undefined,
+  ): Promise<AnsweredEntry> {
+    const selected = await requireSelectableEntry(
+      this.storage,
+      this.sessionValues,
+      request,
+      entryId,
+      scope,
+    );
+    if (selected.alreadyAvailable) return selected.entry;
+    await this.access.assertAccessWritable();
+    return this.storage.grantVaultEntryToRequester(entryId, request.projectId, request.familySlug);
   }
 
   /** A new entry of the requesting project, granted to the requester's family. */

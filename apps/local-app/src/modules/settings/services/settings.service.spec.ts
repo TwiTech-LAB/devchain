@@ -593,7 +593,7 @@ describe('SettingsService (preset CRUD)', () => {
 
       const presets = service.getProjectPresets('proj-1');
       expect(presets).toHaveLength(1);
-      expect(presets[0]).toEqual(validPreset);
+      expect(presets[0]).toEqual({ ...validPreset, origin: 'user' });
     });
 
     it('trims whitespace from preset name', async () => {
@@ -1375,9 +1375,13 @@ describe('SettingsService — API surface inventory', () => {
       'updateLastUpdateCheck',
       'getProjectPresets',
       'setProjectPresets',
+      'mergeProjectTemplatePresets',
       'clearProjectPresets',
       'getAllProjectPresetsMap',
       'renameProviderConfigInProjectPresets',
+      'renameTeamInProjectPresets',
+      'removeTeamFromProjectPresets',
+      'renameProfileInProjectPresets',
       'removeAgentFromProjectPresets',
       'createProjectPreset',
       'updateProjectPreset',

@@ -2,6 +2,14 @@ export interface SessionTarget {
   readonly name: string;
 }
 
+export interface PinnedPane extends SessionTarget {
+  readonly paneId: string;
+}
+
+export function tmuxPaneTarget(target: SessionTarget | PinnedPane): string {
+  return 'paneId' in target ? target.paneId : `=${target.name}:`;
+}
+
 export type ExpectedSessionDestroyResult =
   | { readonly outcome: 'destroyed' }
   | { readonly outcome: 'known-absent' }

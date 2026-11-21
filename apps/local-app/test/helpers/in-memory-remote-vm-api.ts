@@ -13,6 +13,8 @@ import type {
   ProjectFileSyncStatus,
   VmProviderConnectionView,
   RemoteNoticeDto,
+  FolderList,
+  SharedFolderDto,
 } from '@/ui/pages/cloud/lib/remote-vm-contracts';
 import { FileListChangedError } from '@/ui/pages/cloud/lib/remote-vm-errors';
 import { DEFAULT_FILE_SYNC_IGNORES } from '@/modules/file-sync/file-sync.dto';
@@ -184,6 +186,12 @@ export class InMemoryRemoteVmApi implements RemoteVmApi {
   ignoreSaveError: string | null = null;
   ignoreSaveResult = { applied: true, message: 'Applied to the VM and this PC.' };
   loginEntries: ProviderAuthEntryItem[] = [];
+  sharedFoldersData: SharedFolderDto[] = [];
+  /** Folders under `homePath` by absolute path, each with its subfolder names. */
+  folderTree: Record<string, string[]> = {};
+  /** Absolute paths of folders that are links. */
+  folderLinks: string[] = [];
+  homePath = READY.identity.homePath ?? '/home/devchain';
   private generations: Record<string, ProviderAuthGenerationView> = {};
   readonly overrides: InMemoryRemoteVmApiOverrides = {};
   readonly calls: InMemoryRemoteVmApiCalls = {
@@ -245,6 +253,7 @@ export class InMemoryRemoteVmApi implements RemoteVmApi {
     readProjectFileSyncFailures: [],
     readFileSyncAutoFix: [],
     setFileSyncAutoFix: [],
+    readManagedExclusions: [],
     readProjectIgnores: [],
     saveProjectIgnores: [],
     readFileSyncSuggestions: [],
@@ -256,6 +265,11 @@ export class InMemoryRemoteVmApi implements RemoteVmApi {
     readDockerPresence: [],
     readDockerSyncState: [],
     readConnectChoices: [],
+    listSharedFolders: [],
+    shareFolder: [],
+    stopSharingFolder: [],
+    saveSharedFolderIgnores: [],
+    listFolders: [],
   };
 
   constructor(seed: Partial<InMemoryRemoteVmApiSeed> = {}) {
@@ -580,6 +594,7 @@ export class InMemoryRemoteVmApi implements RemoteVmApi {
       this.autoFixEnabled[projectId] = enabled;
       return { enabled, actions: [] };
     },
+    readManagedExclusions: async () => ({ exclusions: [] }),
     readProjectIgnores: async (projectId) => ({
       ignores: this.ignores[projectId] ?? [...DEFAULT_FILE_SYNC_IGNORES],
       revision: this.ignoreRevisions[projectId] ?? 0,
@@ -628,6 +643,35 @@ export class InMemoryRemoteVmApi implements RemoteVmApi {
     readDockerPresence: async () => ({ state: 'unknown' }),
     readDockerSyncState: async () => null,
     readConnectChoices: async () => ({ remoteId: undefined, includeDocker: false, git: 'present' }),
+    listSharedFolders: async (remoteId) =>
+      this.sharedFoldersData.filter((folder) => folder.remoteId === remoteId),
+    shareFolder: async (remoteId, input) =>
+      this.startOperation(
+        {
+          id: 'share-op',
+          kind: 'share_folder',
+          remoteId,
+          details: { path: input.path, ignores: input.ignores },
+          steps: [step('preflight', 'Check the folder and the VM', 'running')],
+        },
+        this.operationsData,
+      ),
+    stopSharingFolder: async (remoteId, shareId) => {
+      this.sharedFoldersData = this.sharedFoldersData.filter(
+        (folder) => folder.remoteId !== remoteId || folder.id !== shareId,
+      );
+      return { vmRemoved: true, message: 'Stopped sharing.' };
+    },
+    saveSharedFolderIgnores: async (remoteId, shareId, ignores) => {
+      const folder = this.sharedFoldersData.find(
+        (item) => item.remoteId === remoteId && item.id === shareId,
+      );
+      if (!folder) throw new Error('Shared folder not found');
+      Object.assign(folder, { ignores, patternsApplied: true });
+      const { state: _state, ...entry } = folder;
+      return entry;
+    },
+    listFolders: async ({ path = this.homePath, showHidden }) => this.folderList(path, showHidden),
   };
 
   readonly listRemotes = this.method('listRemotes');
@@ -688,6 +732,7 @@ export class InMemoryRemoteVmApi implements RemoteVmApi {
   readonly readProjectFileSyncFailures = this.method('readProjectFileSyncFailures');
   readonly readFileSyncAutoFix = this.method('readFileSyncAutoFix');
   readonly setFileSyncAutoFix = this.method('setFileSyncAutoFix');
+  readonly readManagedExclusions = this.method('readManagedExclusions');
   readonly readProjectIgnores = this.method('readProjectIgnores');
   readonly saveProjectIgnores = this.method('saveProjectIgnores');
   readonly readFileSyncSuggestions = this.method('readFileSyncSuggestions');
@@ -699,6 +744,11 @@ export class InMemoryRemoteVmApi implements RemoteVmApi {
   readonly readDockerPresence = this.method('readDockerPresence');
   readonly readDockerSyncState = this.method('readDockerSyncState');
   readonly readConnectChoices = this.method('readConnectChoices');
+  readonly listSharedFolders = this.method('listSharedFolders');
+  readonly shareFolder = this.method('shareFolder');
+  readonly stopSharingFolder = this.method('stopSharingFolder');
+  readonly saveSharedFolderIgnores = this.method('saveSharedFolderIgnores');
+  readonly listFolders = this.method('listFolders');
 
   private method<K extends keyof RemoteVmApi>(name: K): RemoteVmApi[K] {
     return (async (...args: MethodArgs<K>): Promise<MethodResult<K>> => {
@@ -757,6 +807,28 @@ export class InMemoryRemoteVmApi implements RemoteVmApi {
    * A running operation that replaces the open ones, or follows `others`.
    * Host operations have no project and keep the seed remote unless one is given.
    */
+  private folderList(path: string, showHidden: boolean): FolderList {
+    const home = this.homePath;
+    if (path !== home && !path.startsWith(`${home}/`))
+      throw new Error(`${path} is outside the home folder.`);
+    const names = this.folderTree[path];
+    if (!names) throw new Error(`${path} does not exist.`);
+    const entries = names
+      .filter((name) => showHidden || !name.startsWith('.'))
+      .sort()
+      .map((name) => {
+        const child = `${path}/${name}`;
+        return {
+          name,
+          path: child,
+          hidden: name.startsWith('.'),
+          link: this.folderLinks.includes(child),
+        };
+      });
+    const parent = path === home ? null : path.slice(0, path.lastIndexOf('/'));
+    return { path, parent, entries };
+  }
+
   private startOperation(
     fields: Partial<RemoteOperationDto>,
     others: RemoteOperationDto[] = [],

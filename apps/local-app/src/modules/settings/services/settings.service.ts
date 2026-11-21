@@ -257,6 +257,19 @@ export class SettingsService {
   async setProjectPresets(projectId: string, presets: unknown[]): Promise<void> {
     return this.presetDelegate.setProjectPresets(projectId, presets);
   }
+  async mergeProjectTemplatePresets(
+    projectId: string,
+    presets: readonly unknown[],
+    agentNames: readonly string[],
+    teamNames?: readonly string[],
+  ): Promise<void> {
+    return this.presetDelegate.mergeProjectTemplatePresets(
+      projectId,
+      presets,
+      agentNames,
+      teamNames,
+    );
+  }
   async clearProjectPresets(projectId: string): Promise<void> {
     return this.presetDelegate.clearProjectPresets(projectId);
   }
@@ -269,10 +282,27 @@ export class SettingsService {
   ): Promise<void> {
     return this.presetDelegate.renameProviderConfigInProjectPresets(projectId, input);
   }
+  async renameTeamInProjectPresets(
+    projectId: string,
+    oldName: string,
+    newName: string,
+  ): Promise<void> {
+    return this.presetDelegate.renameTeamInProjectPresets(projectId, oldName, newName);
+  }
+  async removeTeamFromProjectPresets(projectId: string, teamName: string): Promise<void> {
+    return this.presetDelegate.removeTeamFromProjectPresets(projectId, teamName);
+  }
+  async renameProfileInProjectPresets(
+    projectId: string,
+    oldName: string,
+    newName: string,
+  ): Promise<void> {
+    return this.presetDelegate.renameProfileInProjectPresets(projectId, oldName, newName);
+  }
   async removeAgentFromProjectPresets(projectId: string, agentName: string): Promise<void> {
     return this.presetDelegate.removeAgentFromProjectPresets(projectId, agentName);
   }
-  async createProjectPreset(projectId: string, preset: unknown): Promise<void> {
+  async createProjectPreset(projectId: string, preset: unknown): Promise<TemplatePresetDto> {
     return this.presetDelegate.createProjectPreset(projectId, preset);
   }
   async updateProjectPreset(

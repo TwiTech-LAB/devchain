@@ -67,7 +67,7 @@ describe('ProjectRegistryImportService', () => {
     } as unknown as jest.Mocked<ProjectsService>;
     const settings = {
       setProjectTemplateMetadata: jest.fn().mockResolvedValue(undefined),
-      setProjectPresets: jest.fn().mockResolvedValue(undefined),
+      mergeProjectTemplatePresets: jest.fn().mockResolvedValue(undefined),
       getRegistryConfig: jest.fn().mockReturnValue({ url: 'https://registry.example' }),
     } as unknown as jest.Mocked<SettingsService>;
     const service = new ProjectRegistryImportService(
@@ -109,9 +109,10 @@ describe('ProjectRegistryImportService', () => {
         registryUrl: 'https://registry.example',
       }),
     );
-    expect(settings.setProjectPresets).toHaveBeenCalledWith(
+    expect(settings.mergeProjectTemplatePresets).toHaveBeenCalledWith(
       'project-1',
       cachedTemplate.content.presets,
+      [],
     );
     expect(result.imported).toEqual({ prompts: 2, profiles: 2, agents: 3, statuses: 4 });
     expect(result.promptTransfer).toEqual({
@@ -178,7 +179,7 @@ describe('ProjectRegistryImportService', () => {
 
     expect(storage.createProject).not.toHaveBeenCalled();
     expect(settings.setProjectTemplateMetadata).not.toHaveBeenCalled();
-    expect(settings.setProjectPresets).not.toHaveBeenCalled();
+    expect(settings.mergeProjectTemplatePresets).not.toHaveBeenCalled();
   });
 
   it('preserves the missing-cache error and does not mutate when acquisition returns null', async () => {
@@ -202,7 +203,7 @@ describe('ProjectRegistryImportService', () => {
 
     expect(storage.createProject).not.toHaveBeenCalled();
     expect(settings.setProjectTemplateMetadata).not.toHaveBeenCalled();
-    expect(settings.setProjectPresets).not.toHaveBeenCalled();
+    expect(settings.mergeProjectTemplatePresets).not.toHaveBeenCalled();
   });
 
   it('rethrows provider mapping import failures but swallows generic import failures', async () => {

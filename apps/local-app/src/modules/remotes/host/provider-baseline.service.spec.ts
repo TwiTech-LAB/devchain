@@ -9,9 +9,9 @@ import { parseJsonc } from '../../../common/jsonc';
 import {
   ProviderBaselineService,
   containsBaseline,
-  getDevinUserConfigPath,
   mergeBaseline,
 } from './provider-baseline.service';
+import { getDevinUserConfigPath } from './host-home-files';
 
 const mockWarn = jest.fn();
 

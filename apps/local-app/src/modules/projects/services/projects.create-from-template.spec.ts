@@ -33,7 +33,11 @@ import { ValidationError, NotFoundError } from '../../../common/errors/error-typ
 
 import { createFromTemplateWithHelper } from '../helpers/template-loader';
 import { computeFamilyAlternativesFromStorage } from '../helpers/profile-mapping.helpers';
-import { applyAgentConfigs, applyPresetWithHelper } from '../helpers/project-presets.helpers';
+import {
+  applyAgentConfigs,
+  applyPresetWithHelper,
+  type ApplyPresetNameMaps,
+} from '../helpers/project-presets.helpers';
 import {
   applyProjectSettingsWithHelper,
   createSubscribersFromPayloadWithHelper,
@@ -74,9 +78,16 @@ function createHarness(): Harness {
 /** Thin, real, storage-backed adapter matching the teamsService deps shape. */
 function teamsAdapter(teamsStore: TeamsStore) {
   return {
-    listTeams: (projectId: string, options?: { limit?: number }) =>
-      teamsStore.listTeams(projectId, options),
+    listTeams: async (projectId: string, options?: { limit?: number }) => {
+      const result = await teamsStore.listTeams(projectId, options);
+      return {
+        ...result,
+        items: result.items.map((team) => ({ ...team, teamLeadAgentName: null })),
+      };
+    },
     getTeam: (id: string) => teamsStore.getTeam(id),
+    updateTeam: (id: string, data: Parameters<TeamsStore['updateTeam']>[1]) =>
+      teamsStore.updateTeam(id, data),
     createTeam: (data: Parameters<TeamsStore['createTeam']>[0]) => teamsStore.createTeam(data),
     deleteTeamsByProject: (projectId: string) => teamsStore.deleteTeamsByProject(projectId),
     deleteTeamsByIds: (ids: string[]) => teamsStore.deleteTeamsByIds(ids),
@@ -167,12 +178,18 @@ function buildDeps(h: Harness, unified: UnifiedMock): DepsBundle {
       createWatchersFromPayloadWithHelper(projectId, watchers, maps, watchersService as never),
     createSubscribersFromPayload: (projectId: string, subscribers: never) =>
       createSubscribersFromPayloadWithHelper(projectId, subscribers, h.storage),
-    applyPreset: (projectId: string, presetName: string, nameMaps?: never) =>
+    applyPreset: (
+      projectId: string,
+      presetName: string,
+      nameMaps: ApplyPresetNameMaps,
+      skipTeamNames: ReadonlySet<string>,
+    ) =>
       applyPresetWithHelper(
         projectId,
         presetName,
-        { storage: h.storage, settings: h.settings },
+        { storage: h.storage, settings: h.settings, teamsService },
         nameMaps,
+        skipTeamNames,
       ),
     applyAgentConfigs: (projectId: string, agentConfigs: never, nameMaps?: never) =>
       applyAgentConfigs(projectId, agentConfigs, { storage: h.storage }, nameMaps),
@@ -1855,8 +1872,7 @@ describe('ProjectsService.createFromTemplate (real storage)', () => {
   });
 
   // -------------------------------------------------------------------------
-  // Binding eligibility: an installed-but-deselected config is persisted but is
-  // never an agent's binding target (create path).
+  // Binding eligibility for installed providers in the create path.
   // -------------------------------------------------------------------------
   describe('installed/selected binding eligibility', () => {
     const beProfileId = 'c1c1c1c1-1111-4111-8111-111111111111';
@@ -1985,6 +2001,34 @@ describe('ProjectsService.createFromTemplate (real storage)', () => {
 
       expect(agent!.providerConfigId).toBe(claudeCfg!.id);
       expect(agent!.modelOverride).toBe('claude-selected-model');
+    });
+
+    it('binds an agent to a deselected installed provider through a wizard override', async () => {
+      await seedClaudeProvider(h);
+      await h.storage.createProvider({ name: 'codex', binPath: null });
+      const { deps } = buildDeps(
+        h,
+        bundledUnified(deselectedFirstTemplate({ providerConfigName: 'claude-cfg' })),
+      );
+
+      const result = (await createFromTemplateWithHelper(
+        {
+          name: 'Installed Provider Override',
+          rootPath: '/test/installed-provider-override',
+          slug: 'installed-provider-override',
+          selectedProviderNames: ['claude'],
+          agentOverrides: [{ agentName: 'Coder', providerConfigName: 'codex-cfg' }],
+        },
+        deps as never,
+      )) as AnyRec;
+
+      expect(result.success).toBe(true);
+      const projectId = (result.project as AnyRec).id as string;
+      const profile = await getProfileByName(h, projectId, 'Coder');
+      const codexCfg = await getConfigByName(h, profile!.id, 'codex-cfg');
+      const agent = await getAgentByName(h, projectId, 'Coder');
+
+      expect(agent!.providerConfigId).toBe(codexCfg!.id);
     });
 
     it('does NOT apply a preset that selects a deselected config (preset resolves against the eligible map)', async () => {

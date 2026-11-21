@@ -14,8 +14,11 @@ import type {
   ForceCopyBackupRequest,
   ForceCopyBackup,
   ReceiveOnlyChanges,
+  ShareBackupRequest,
+  ShareFolderRequest,
   SyncStatusOptions,
 } from '../file-sync.dto';
+import { shareFolderId, shareId } from '../share-paths';
 import { FILE_SYNC_IGNORES_CHANGED } from '../file-sync.dto';
 import {
   FileSyncService,
@@ -59,6 +62,9 @@ export class FakeFileSyncService
       | 'projectNeed'
       | 'ensureFolder'
       | 'forceCopyBackup'
+      | 'ensureShareFolder'
+      | 'shareBackup'
+      | 'assertSharePath'
       | 'localChanges'
       | 'override'
       | 'updateFolder'
@@ -185,6 +191,36 @@ export class FakeFileSyncService
     return {
       path: `/fake/sync-backups/${request.projectId}/${request.forceCopy.operationId}/${request.kind}`,
     };
+  }
+
+  async ensureShareFolder(request: ShareFolderRequest): Promise<SyncFolder> {
+    const id = shareFolderId(request.path);
+    const paused = request.paused ?? false;
+    const backupPath = request.backup
+      ? (await this.shareBackup({ shareId: shareId(request.path), backup: request.backup })).path
+      : undefined;
+    this.folders.set(id, {
+      type: request.type,
+      paused,
+      peerDeviceId: request.peerDeviceId,
+      ignores: request.ignores,
+      ...(backupPath && { backupPath }),
+    });
+    return {
+      id,
+      path: request.path,
+      type: request.type,
+      paused,
+      ...(backupPath && { backupPath }),
+    };
+  }
+
+  async shareBackup(request: ShareBackupRequest): Promise<ForceCopyBackup> {
+    return { path: `/fake/sync-backups/shares/${request.shareId}/${request.backup.operationId}` };
+  }
+
+  async assertSharePath(path: string): Promise<string> {
+    return path;
   }
 
   async updateFolder(folderId: string, patch: SyncFolderPatch): Promise<void> {

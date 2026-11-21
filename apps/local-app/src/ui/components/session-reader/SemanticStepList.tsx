@@ -2,6 +2,7 @@ import { memo, useMemo } from 'react';
 import type { SerializedSemanticStep } from '@/ui/hooks/useSessionTranscript';
 import type { StepHotspotEntry } from '@/ui/utils/hotspot-detection';
 import { MarkdownRenderer } from '@/ui/components/shared/MarkdownRenderer';
+import { CopyTextButton } from '@/ui/components/shared/CopyTextButton';
 import { ThinkingBlock } from './ThinkingBlock';
 import { ToolCallItem } from './ToolCallItem';
 import { SubagentItem } from './SubagentItem';
@@ -74,11 +75,17 @@ export const SemanticStepList = memo(function SemanticStepList({
             return step.content.outputText?.trim() ? (
               <div
                 key={step.id}
-                className="border-l-2 border-status-ok/40 bg-card/40 rounded-md px-3 py-2"
+                className="group/output relative border-l-2 border-status-ok/40 bg-card/40 rounded-md px-3 py-2"
               >
+                <CopyTextButton
+                  text={step.content.outputText}
+                  label="Copy output"
+                  className="absolute right-1 top-1 bg-card opacity-0 focus:opacity-100 group-hover/output:opacity-100"
+                />
                 <MarkdownRenderer
                   content={step.content.outputText}
                   className="text-sm leading-relaxed [&_p]:my-1"
+                  copyableCode
                 />
               </div>
             ) : null;

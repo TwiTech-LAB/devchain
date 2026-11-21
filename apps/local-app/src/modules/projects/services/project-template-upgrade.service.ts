@@ -1,15 +1,18 @@
+import type { PreservationReview } from '../../../common/project-preservation.contract';
 import { Injectable, OnModuleInit, OnModuleDestroy } from '@nestjs/common';
 import { createLogger } from '../../../common/logging/logger';
 import { ValidationError, NotFoundError } from '../../../common/errors/error-types';
 import type { PromptReferenceValidationFailure } from '../../../common/prompt-references';
 import { PROMPT_TRANSFER_POLICY, type PromptTransferCounts } from '../../../common/prompt-transfer';
 import { buildActiveSessionReadiness, type ImportReadiness } from '../helpers/project-import';
+import type { SnapshotEpicAssignments } from '../helpers/snapshot-epic-assignments';
 import type { SetupPreviewResponse } from '../dtos/setup-preview.dto';
 import { RegistryOrchestrationService } from '../../registry/services/registry-orchestration.service';
 import type { CachedTemplate } from '../../registry/services/template-cache.service';
 import { UnifiedTemplateService } from '../../registry/services/unified-template.service';
 import { SessionsService } from '../../sessions/services/sessions.service';
 import { SettingsService } from '../../settings/services/settings.service';
+import type { TemplatePresetDto } from '../../settings/dtos/settings.dto';
 import { ProjectsService, type ImportProjectInput } from './projects.service';
 import { ProjectWriteGate } from '../../storage/write-gate/project-write-gate';
 
@@ -18,6 +21,8 @@ const logger = createLogger('ProjectTemplateUpgradeService');
 interface BackupEntry {
   projectId: string;
   data: unknown;
+  epicAssignments: SnapshotEpicAssignments;
+  presets: TemplatePresetDto[];
   activePreset: string | null;
   createdAt: string;
   templateSlug: string;
@@ -34,12 +39,17 @@ export interface UpgradeProjectInput
     | 'agentOverrides'
     | 'teamOverrides'
     | 'statusMappings'
+    | 'preserveTeamSetup'
   > {
   projectId: string;
   targetVersion: string;
 }
 
-export interface UpgradePreviewInput {
+export interface UpgradePreviewInput
+  extends Pick<
+    ImportProjectInput,
+    'preserveTeamSetup' | 'selectedProviderNames' | 'familyProviderMappings'
+  > {
   projectId: string;
   targetVersion: string;
 }
@@ -74,9 +84,13 @@ export interface UpgradeResult {
   promptReferenceValidation?: PromptReferenceValidationFailure['promptReferenceValidation'];
   /** Structured replace-import readiness details for non-mutating failures. */
   readiness?: ImportReadiness;
+  preservationPlan?: PreservationReview;
 }
 
-export type UpgradePreviewResult = SetupPreviewResponse | UpgradeResult;
+export type UpgradePreviewResult =
+  | SetupPreviewResponse
+  | Extract<Awaited<ReturnType<ProjectsService['importProject']>>, { dryRun: true }>
+  | UpgradeResult;
 
 type ProjectTemplateMetadata = NonNullable<
   ReturnType<SettingsService['getProjectTemplateMetadata']>
@@ -159,12 +173,17 @@ export class ProjectTemplateUpgradeService implements OnModuleInit, OnModuleDest
     }
 
     const activePreset = this.settingsService.getProjectActivePreset(projectId);
+    const presets = this.settingsService.getProjectPresets(projectId);
 
     // Export current project state without redacting profile-config env. Provider-level env
     // continues through the exporter's fixed sanitizer.
     const exportData = await this.projectsService.exportProject(projectId, {
       profileConfigEnvTransform: (env) => env ?? null,
     });
+    const epicAssignments = await this.projectsService.captureSnapshotEpicAssignments(
+      projectId,
+      exportData.agents,
+    );
 
     // Generate backup ID
     const backupId = `backup-${projectId}-${Date.now()}`;
@@ -173,6 +192,8 @@ export class ProjectTemplateUpgradeService implements OnModuleInit, OnModuleDest
     this.backups.set(backupId, {
       projectId,
       data: exportData,
+      epicAssignments,
+      presets,
       activePreset,
       createdAt: new Date().toISOString(),
       templateSlug: metadata.templateSlug,
@@ -287,9 +308,30 @@ export class ProjectTemplateUpgradeService implements OnModuleInit, OnModuleDest
   }
 
   async previewUpgrade(input: UpgradePreviewInput): Promise<UpgradePreviewResult> {
-    logger.info(input, 'Resolving project upgrade preview');
+    const {
+      projectId,
+      targetVersion,
+      preserveTeamSetup,
+      selectedProviderNames,
+      familyProviderMappings,
+    } = input;
+    logger.info({ projectId, targetVersion }, 'Resolving project upgrade preview');
     const resolution = await this.resolveUpgradeTarget(input);
-    return resolution.success ? resolution.target.preview : resolution.result;
+    if (!resolution.success) return resolution.result;
+    const { preview, content } = resolution.target;
+    if (!preserveTeamSetup) return preview;
+
+    const check = await this.projectsService.importProject({
+      projectId,
+      payload: content,
+      dryRun: true,
+      preserveTeamSetup,
+      selectedProviderNames,
+      familyProviderMappings,
+    });
+    return 'dryRun' in check
+      ? check
+      : { success: false, mutationStarted: false, error: 'Could not check the preserved roster' };
   }
 
   /**
@@ -363,6 +405,7 @@ export class ProjectTemplateUpgradeService implements OnModuleInit, OnModuleDest
         ...(input.agentOverrides !== undefined ? { agentOverrides: input.agentOverrides } : {}),
         ...(input.teamOverrides !== undefined ? { teamOverrides: input.teamOverrides } : {}),
         ...(input.statusMappings !== undefined ? { statusMappings: input.statusMappings } : {}),
+        ...(input.preserveTeamSetup ? { preserveTeamSetup: input.preserveTeamSetup } : {}),
       });
 
       if (!('success' in importResult) || !importResult.success) {
@@ -387,6 +430,9 @@ export class ProjectTemplateUpgradeService implements OnModuleInit, OnModuleDest
         }
         if ('readiness' in importResult) {
           failure.readiness = importResult.readiness;
+        }
+        if (importResult.preservationPlan) {
+          failure.preservationPlan = importResult.preservationPlan;
         }
         return failure;
       }
@@ -414,6 +460,9 @@ export class ProjectTemplateUpgradeService implements OnModuleInit, OnModuleDest
       return {
         success: true,
         newVersion: targetVersion,
+        ...(importResult.preservationPlan
+          ? { preservationPlan: importResult.preservationPlan }
+          : {}),
         ...('promptTransfer' in importResult
           ? { promptTransfer: importResult.promptTransfer }
           : {}),
@@ -482,6 +531,7 @@ export class ProjectTemplateUpgradeService implements OnModuleInit, OnModuleDest
       payload: backup.data,
       dryRun: false,
       promptTransferPolicy: PROMPT_TRANSFER_POLICY.Snapshot,
+      snapshotEpicAssignments: backup.epicAssignments,
     });
     if (!('success' in importResult) || importResult.success !== true) {
       const detail =
@@ -490,6 +540,8 @@ export class ProjectTemplateUpgradeService implements OnModuleInit, OnModuleDest
           : '';
       throw new Error(`Backup restore import failed${detail}`);
     }
+
+    await this.settingsService.setProjectPresets(backup.projectId, backup.presets);
 
     // Restore original metadata with correct source
     await this.settingsService.setProjectTemplateMetadata(backup.projectId, {

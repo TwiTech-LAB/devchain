@@ -29,6 +29,17 @@ it('keeps automatic settings and the last ten actions separate from legacy ignor
     expect(reopened.get('p').actions).toHaveLength(10);
     expect(reopened.get('p').actions[0]).toMatchObject({ patterns: ['/output-3'] });
     expect(reopened.get('p').actions[9]).toMatchObject({ kind: 'chown', paths: ['output'] });
+    reopened.record('p', {
+      at: new Date(13_000).toISOString(),
+      kind: 'docker-exclusion-removed',
+      patterns: ['/tmp'],
+    });
+    expect(
+      auto
+        .get('p')
+        .actions.slice(-3)
+        .map((action) => action.kind),
+    ).toEqual(['exclude', 'chown', 'docker-exclusion-removed']);
     expect(reopened.get('other')).toEqual({ enabled: true, actions: [] });
     expect(new FileSyncIgnoresStore(db).get('p')).toEqual(['/kept']);
     const row = sqlite

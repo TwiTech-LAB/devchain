@@ -6,6 +6,7 @@ import type {
   ProjectTemplate,
   ProjectWorkspace,
   ProviderMismatchWarning,
+  SetupPreviewResponse,
   TemplateManifest,
   UpgradeProjectResponse,
 } from './lib/project-contracts';
@@ -197,6 +198,7 @@ export interface ProjectsCreateSourceModel {
   readonly changeSourceTab: (value: 'template' | 'file') => void;
   readonly values: CreateProjectFormData;
   readonly changeName: (value: string) => void;
+  readonly isNameAutomatic: boolean;
   readonly changeDescription: (value: string) => void;
   readonly changeVersion: (value: string) => void;
   readonly workspaces: ProjectWorkspace[];
@@ -204,6 +206,8 @@ export interface ProjectsCreateSourceModel {
   readonly changeWorkspace: (workspaceId: string) => void;
   readonly templates?: ProjectTemplate[];
   readonly selectedTemplateSource?: ProjectTemplate['source'];
+  /** Setup preview of the selected template; null while loading, on error, or for a file source. */
+  readonly selectedTemplatePreview: SetupPreviewResponse | null;
   readonly sortedVersions: string[];
   readonly selectTemplate: (slug: string) => void;
   readonly changeRootPath: (path: string) => void;

@@ -1,5 +1,6 @@
 import { memo } from 'react';
 import { MarkdownRenderer } from '@/ui/components/shared/MarkdownRenderer';
+import { CopyTextButton } from '@/ui/components/shared/CopyTextButton';
 import { formatTimestamp } from '@/ui/utils/session-reader-formatters';
 import type { LastOutput } from '@/ui/utils/ai-group-enhancer';
 
@@ -31,7 +32,7 @@ export const LastOutputDisplay = memo(function LastOutputDisplay({
       className="rounded-md border border-border/40 border-l-2 border-l-status-ok/40 bg-card/60"
       data-testid="last-output-display"
     >
-      <div className="border-b border-border/40 px-3 py-1.5 text-[10px] text-muted-foreground">
+      <div className="flex items-center border-b border-border/40 px-3 py-1.5 text-[10px] text-muted-foreground">
         <span>{lastOutput.type === 'tool_result' ? 'Latest tool result' : 'Latest output'}</span>
         {!hideTimestamp && (
           <>
@@ -39,11 +40,13 @@ export const LastOutputDisplay = memo(function LastOutputDisplay({
             <span>{formatTimestamp(lastOutput.timestamp.toISOString())}</span>
           </>
         )}
+        <CopyTextButton text={lastOutput.text} label="Copy output" className="ml-auto" />
       </div>
       <div className="max-h-96 overflow-y-auto px-3 py-2" data-testid="last-output-content">
         <MarkdownRenderer
           content={lastOutput.text}
           className="text-sm leading-relaxed [&_p]:my-1 [&_pre]:text-[11px]"
+          copyableCode
         />
       </div>
     </div>

@@ -44,11 +44,13 @@ const STORED_CANARY = 'canary-vm-request-stored-2c9d';
 const SESSION_CANARY = 'canary-vm-request-session-e41b';
 const USE_SESSION_CANARY = 'canary-vm-use-session-58a3';
 const USE_FAMILY_CANARY = 'canary-vm-use-family-0d96';
+const EXISTING_CANARY = 'canary-vm-existing-entry-7b30';
 const CANARIES = canaryForms([
   STORED_CANARY,
   SESSION_CANARY,
   USE_SESSION_CANARY,
   USE_FAMILY_CANARY,
+  EXISTING_CANARY,
 ]);
 /** A session of agent-1, whose profile is in the `coder` family. */
 const VM_SESSION = '77777777-7777-4777-8777-777777777777';
@@ -317,7 +319,7 @@ describe('Vault requests from an agent on a VM, answered at home', () => {
 
     expect([answered.status, answered.body]).toEqual([
       200,
-      { requestId, status: 'fulfilled', permanent: false, entryId: null },
+      { requestId, status: 'fulfilled', permanent: false, entryId: null, entryName: null },
     ]);
     expect([homeStore().get(requestId), hostStore().get(requestId)]).toEqual([null, null]);
     const resolved = await resolveOnVm(VM_SESSION, ['SESSION_TOKEN']);
@@ -339,6 +341,70 @@ describe('Vault requests from an agent on a VM, answered at home', () => {
       ],
     ]);
     expect(homeNotices).not.toHaveBeenCalled();
+  }, 30_000);
+
+  it('answers with an entry of another project under its own name, shared and delivered to the VM', async () => {
+    hostNotices.mockClear();
+    // Project B of the seed stays at home: only project A is on the VM.
+    const created = await api<{ id: string }>(home(), 'POST', '/api/vault/entries', {
+      projects: [{ projectId: 'B', mode: 'all' }],
+      name: 'TEAM_DEPLOY_KEY',
+      kind: 'secret',
+      description: 'Deploy key of project B',
+      value: EXISTING_CANARY,
+    });
+    const entryId = created.body.id;
+    const requestId = await askOnVm('DEPLOY_KEY');
+    await listedAtHome(requestId);
+
+    const answered = await api(home(), 'POST', `/api/vault/requests/${requestId}/fulfill`, {
+      entryId,
+      permanent: true,
+    });
+
+    expect([answered.status, answered.body]).toEqual([
+      200,
+      { requestId, status: 'fulfilled', permanent: true, entryId, entryName: 'TEAM_DEPLOY_KEY' },
+    ]);
+    expect(
+      home().sqlite.prepare('SELECT project_id FROM vault_entries WHERE id = ?').get(entryId),
+    ).toEqual({ project_id: null });
+    expect(
+      home()
+        .sqlite.prepare(
+          'SELECT project_id, family_slug FROM vault_entry_grants WHERE entry_id = ? ORDER BY project_id',
+        )
+        .all(entryId),
+    ).toEqual([
+      { project_id: 'A', family_slug: 'coder' },
+      { project_id: 'B', family_slug: null },
+    ]);
+    expect([homeStore().get(requestId), hostStore().get(requestId)]).toEqual([null, null]);
+    expect(
+      eventsNamed('host', 'vault.request.resolved').filter(
+        (event) => (event as { requestId: string }).requestId === requestId,
+      ),
+    ).toEqual([
+      expect.objectContaining({
+        status: 'fulfilled',
+        name: 'DEPLOY_KEY',
+        grantedName: 'TEAM_DEPLOY_KEY',
+        grantedKind: 'secret',
+      }),
+    ]);
+    await waitForValue(async () => hostNotices.mock.calls.length === 1, 2_000);
+    expect(noticesTo(hostNotices)).toEqual([
+      [
+        ['agent-1'],
+        `Secret DEPLOY_KEY is available under the name TEAM_DEPLOY_KEY — use devchain vault exec --only TEAM_DEPLOY_KEY -- <cmd>. If a tool reads $DEPLOY_KEY, set it inside the command: devchain vault exec --only TEAM_DEPLOY_KEY -- sh -c 'DEPLOY_KEY="$TEAM_DEPLOY_KEY" <cmd>'.`,
+      ],
+    ]);
+    expect(homeNotices).not.toHaveBeenCalled();
+    const resolved = await resolveOnVm(VM_SESSION, ['TEAM_DEPLOY_KEY']);
+    expect([resolved.status, resolved.body.env]).toEqual([
+      200,
+      { TEAM_DEPLOY_KEY: EXISTING_CANARY },
+    ]);
   }, 30_000);
 
   describe('a use ask raised on the VM', () => {

@@ -359,6 +359,26 @@ export class TeamsService {
     const previousMaxConcurrentTasks = current.maxConcurrentTasks;
     const previousAllowTeamLeadCreateAgents = current.allowTeamLeadCreateAgents;
     const result = await this.teamsStore.updateTeam(id, storeData);
+    if (data.name !== undefined && current.name !== result.name) {
+      try {
+        await this.settingsService.renameTeamInProjectPresets(
+          current.projectId,
+          current.name,
+          result.name,
+        );
+      } catch (error) {
+        logger.error(
+          {
+            error,
+            teamId: id,
+            projectId: current.projectId,
+            oldName: current.name,
+            newName: result.name,
+          },
+          'Failed to rename team in project presets',
+        );
+      }
+    }
     const eventNames = await this.resolveTeamEventNames(current.projectId, result.teamLeadAgentId);
     const leadRecipientIds = this.buildLeadRecipientIds(result.teamLeadAgentId);
 
@@ -444,7 +464,21 @@ export class TeamsService {
   }
 
   async disbandTeam(id: string): Promise<void> {
-    return this.teamsStore.deleteTeam(id);
+    const team = await this.teamsStore.getTeam(id).catch((error: unknown) => {
+      logger.error({ error, teamId: id }, 'Failed to read team for preset cleanup before disband');
+      return null;
+    });
+    await this.teamsStore.deleteTeam(id);
+    if (!team) return;
+
+    try {
+      await this.settingsService.removeTeamFromProjectPresets(team.projectId, team.name);
+    } catch (error) {
+      logger.error(
+        { error, teamId: id, projectId: team.projectId, teamName: team.name },
+        'Failed to remove disbanded team from project presets',
+      );
+    }
   }
 
   async deleteTeamsByProject(projectId: string): Promise<void> {

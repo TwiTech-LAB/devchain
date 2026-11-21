@@ -1,12 +1,7 @@
+import type { FamilyAlternative } from '../../../common/project-preservation.contract';
 import type { StorageService } from '../../storage/interfaces/storage.interface';
 
-export interface FamilyAlternative {
-  familySlug: string;
-  defaultProvider: string;
-  defaultProviderAvailable: boolean;
-  availableProviders: string[];
-  hasAlternatives: boolean;
-}
+export type { FamilyAlternative } from '../../../common/project-preservation.contract';
 
 export interface FamilyAlternativesResult {
   alternatives: FamilyAlternative[];
@@ -45,6 +40,27 @@ type FamilyTemplateAgent = {
   profileId?: string;
   providerConfigName?: string | null;
 };
+
+export function profileOptionProviderNames(profile: FamilyTemplateProfile): string[] {
+  const names = profile.providerConfigs?.length
+    ? profile.providerConfigs.map(({ providerName }) => providerName)
+    : [profile.provider.name];
+  return names.map((name) => name.trim().toLowerCase());
+}
+
+export function hasAvailableProfileOption(
+  profile: FamilyTemplateProfile,
+  providers: { has(name: string): boolean },
+): boolean {
+  return profileOptionProviderNames(profile).some((name) => providers.has(name));
+}
+
+function familyProviderNames(profile: FamilyTemplateProfile): string[] {
+  return [
+    profile.provider.name,
+    ...(profile.providerConfigs ?? []).map(({ providerName }) => providerName),
+  ].map((name) => name.trim().toLowerCase());
+}
 
 type NamedEntity = {
   id?: string;
@@ -145,6 +161,7 @@ export async function computeFamilyAlternativesFromStorage(
  * `installedProviderNames`. An installed-but-deselected provider is ineligible as a choice but
  * never "missing". When `installedProviderNames` is omitted the two views coincide (no wizard
  * selection in play).
+ * Keep adds profile-only dependencies and offers only variants that have an installed option.
  */
 export function computeFamilyAlternatives(
   templateProfiles: FamilyTemplateProfile[],
@@ -152,6 +169,7 @@ export function computeFamilyAlternatives(
   availableProviderNames: Set<string>,
   logger?: LoggerLike,
   installedProviderNames?: Set<string>,
+  preservedProfileIds?: ReadonlySet<string>,
 ): FamilyAlternativesResult {
   const profileById = new Map<string, FamilyTemplateProfile>();
   for (const prof of templateProfiles) {
@@ -160,61 +178,53 @@ export function computeFamilyAlternatives(
     }
   }
 
-  const usedFamilySlugs = new Set<string>();
+  const usedProfileIds = new Set<string>();
   for (const agent of templateAgents) {
-    if (!agent.profileId) continue;
-    const profile = profileById.get(agent.profileId);
+    if (agent.profileId) usedProfileIds.add(agent.profileId);
+  }
+  for (const id of preservedProfileIds ?? []) usedProfileIds.add(id);
+  const usedFamilySlugs = new Set<string>();
+  for (const id of usedProfileIds) {
+    const profile = profileById.get(id);
     if (profile?.familySlug) {
       usedFamilySlugs.add(profile.familySlug);
     }
   }
 
-  const familyProviders = new Map<string, Map<string, string[]>>();
+  const installed = installedProviderNames ?? availableProviderNames;
+  const familyProviders = new Map<string, { declared: Set<string>; persistable: Set<string> }>();
   for (const prof of templateProfiles) {
     if (!prof.familySlug) continue;
 
-    if (!familyProviders.has(prof.familySlug)) {
-      familyProviders.set(prof.familySlug, new Map());
+    const family = familyProviders.get(prof.familySlug) ?? {
+      declared: new Set<string>(),
+      persistable: new Set<string>(),
+    };
+    const canPersist = !preservedProfileIds || hasAvailableProfileOption(prof, installed);
+    for (const provider of familyProviderNames(prof)) {
+      family.declared.add(provider);
+      if (canPersist) family.persistable.add(provider);
     }
-
-    const familyMap = familyProviders.get(prof.familySlug)!;
-    const providerName = prof.provider.name.trim().toLowerCase();
-    if (!familyMap.has(providerName)) {
-      familyMap.set(providerName, []);
-    }
-    familyMap.get(providerName)!.push(prof.name);
-
-    if (prof.providerConfigs) {
-      for (const config of prof.providerConfigs) {
-        const configProviderName = config.providerName.trim().toLowerCase();
-        if (!familyMap.has(configProviderName)) {
-          familyMap.set(configProviderName, []);
-        }
-        if (!familyMap.get(configProviderName)!.includes(prof.name)) {
-          familyMap.get(configProviderName)!.push(prof.name);
-        }
-      }
-    }
+    familyProviders.set(prof.familySlug, family);
   }
 
   const alternatives: FamilyAlternative[] = [];
   const missingProviders = new Set<string>();
-  const installed = installedProviderNames ?? availableProviderNames;
   let canImport = true;
 
   for (const familySlug of usedFamilySlugs) {
     const providersForFamily = familyProviders.get(familySlug);
-    if (!providersForFamily || providersForFamily.size === 0) {
-      logger?.warn?.({ familySlug }, 'Family used by agent has no profiles');
+    if (!providersForFamily?.declared.size) {
+      logger?.warn?.({ familySlug }, 'Referenced family has no profiles');
       continue;
     }
 
-    const providerNamesForFamily = Array.from(providersForFamily.keys());
+    const providerNamesForFamily = [...providersForFamily.declared];
     const defaultProvider = providerNamesForFamily[0];
-    const defaultProviderAvailable = availableProviderNames.has(defaultProvider);
-    const availableForFamily = providerNamesForFamily.filter((name) =>
-      availableProviderNames.has(name),
+    const availableForFamily = providerNamesForFamily.filter(
+      (name) => availableProviderNames.has(name) && providersForFamily.persistable.has(name),
     );
+    const defaultProviderAvailable = availableForFamily.includes(defaultProvider);
 
     for (const providerName of providerNamesForFamily) {
       if (!installed.has(providerName)) {
@@ -416,6 +426,8 @@ export function selectProfilesForFamilies<TProfile extends FamilyTemplateProfile
   familyProviderMappings: Record<string, string> | undefined,
   availableProviders: Map<string, string>,
   options?: {
+    familySelectionProviders?: Map<string, string>;
+    requireInstalledOptions?: boolean;
     presetCoveredAgentNames?: Set<string>;
     /** Maps agent name (lowercase) → resolved provider name from the preset's providerConfig */
     presetAgentResolvedProviders?: Map<string, string>;
@@ -456,30 +468,20 @@ export function selectProfilesForFamilies<TProfile extends FamilyTemplateProfile
     }
   }
 
+  const keep = options?.requireInstalledOptions === true;
+  const persistableProfiles = keep
+    ? templateProfiles.filter((profile) => hasAvailableProfileOption(profile, availableProviders))
+    : templateProfiles;
   const profilesByFamilyAndProvider = new Map<string, Map<string, TProfile>>();
-  for (const prof of templateProfiles) {
+  for (const prof of persistableProfiles) {
     if (!prof.familySlug) continue;
     if (!profilesByFamilyAndProvider.has(prof.familySlug)) {
       profilesByFamilyAndProvider.set(prof.familySlug, new Map());
     }
-    const providerName = prof.provider.name.trim().toLowerCase();
     const familyMap = profilesByFamilyAndProvider.get(prof.familySlug)!;
-    if (!familyMap.has(providerName)) {
-      familyMap.set(providerName, prof);
-    }
-    // Asymmetry fix: index the family selection map by each providerConfig provider too, mirroring
-    // computeFamilyAlternatives (which counts config providers as alternatives). Without this a
-    // family mapped to a config-only provider — one present only in providerConfigs[].providerName,
-    // never as a profile default — has no entry here, so the mapping is silently ignored and the
-    // agent falls back to the profile default. First-writer-wins keeps ordering consistent with the
-    // alternatives map (defaults iterated before their configs, in template order).
-    if (prof.providerConfigs) {
-      for (const config of prof.providerConfigs) {
-        const configProviderName = config.providerName.trim().toLowerCase();
-        if (!familyMap.has(configProviderName)) {
-          familyMap.set(configProviderName, prof);
-        }
-      }
+    // Use the first variant that offers each provider, matching the alternatives view.
+    for (const providerName of familyProviderNames(prof)) {
+      if (!familyMap.has(providerName)) familyMap.set(providerName, prof);
     }
   }
 
@@ -491,22 +493,24 @@ export function selectProfilesForFamilies<TProfile extends FamilyTemplateProfile
     familyOriginalProviders.set(profile.familySlug, profile.provider.name.trim().toLowerCase());
   }
 
+  const familySelectionProviders = options?.familySelectionProviders ?? availableProviders;
   const selectedProfileIdsByFamily = new Map<string, string>();
   for (const [familySlug, providerMap] of profilesByFamilyAndProvider) {
     let selectedProvider: string | undefined;
-    if (familyProviderMappings?.[familySlug]) {
-      selectedProvider = familyProviderMappings[familySlug].trim().toLowerCase();
+    const mapped = familyProviderMappings?.[familySlug];
+    if (mapped && (!keep || familySelectionProviders.has(mapped.trim().toLowerCase()))) {
+      selectedProvider = mapped.trim().toLowerCase();
     } else {
       const originalProvider = familyOriginalProviders.get(familySlug);
       if (
         originalProvider &&
-        availableProviders.has(originalProvider) &&
+        familySelectionProviders.has(originalProvider) &&
         providerMap.has(originalProvider)
       ) {
         selectedProvider = originalProvider;
       } else {
         for (const providerName of providerMap.keys()) {
-          if (availableProviders.has(providerName)) {
+          if (familySelectionProviders.has(providerName)) {
             selectedProvider = providerName;
             break;
           }
@@ -514,6 +518,13 @@ export function selectProfilesForFamilies<TProfile extends FamilyTemplateProfile
       }
     }
 
+    // Permissions and watchers can reference persisted options whose providers were deselected
+    // for agents. Still select only one variant for the project's family uniqueness constraint.
+    if (keep && (!selectedProvider || !providerMap.has(selectedProvider))) {
+      selectedProvider = [...providerMap.keys()].find((provider) =>
+        availableProviders.has(provider),
+      );
+    }
     if (selectedProvider && providerMap.has(selectedProvider)) {
       const profile = providerMap.get(selectedProvider)!;
       if (profile.id) {
@@ -548,29 +559,19 @@ export function selectProfilesForFamilies<TProfile extends FamilyTemplateProfile
     profileAgentNames.set(agent.profileId, names);
   }
 
-  for (const prof of templateProfiles) {
+  for (const prof of persistableProfiles) {
     if (!prof.id || usedProfileIds.has(prof.id)) continue;
 
+    // A selected family variant is the only profile persisted for that family.
+    if (prof.familySlug) {
+      const selectedId = selectedProfileIdsByFamily.get(prof.familySlug);
+      if (selectedId && selectedId !== prof.id) continue;
+    }
     const providerName = prof.provider.name.trim().toLowerCase();
-
-    if (availableProviders.has(providerName)) {
-      // Provider is installed — import as-is, UNLESS the family already selected a DIFFERENT
-      // profile (e.g. a config-only-provider mapping picked a sibling whose default provider is
-      // unavailable). Without this guard both this profile and the selected one would be created,
-      // violating the project_id+family_slug uniqueness. Mirrors the fallback branch's guard.
-      if (prof.familySlug) {
-        const selectedId = selectedProfileIdsByFamily.get(prof.familySlug);
-        if (selectedId && selectedId !== prof.id) continue;
-      }
+    if (keep || availableProviders.has(providerName)) {
       usedProfileIds.add(prof.id);
       profilesToCreate.push(prof);
     } else if (fallbackProviderName) {
-      // Provider not installed — skip if the family already has a selected available profile
-      if (prof.familySlug) {
-        const selectedId = selectedProfileIdsByFamily.get(prof.familySlug);
-        if (selectedId && selectedId !== prof.id) continue;
-      }
-
       usedProfileIds.add(prof.id);
 
       // Only warn about agents NOT covered by the preset and whose template
@@ -634,18 +635,34 @@ export function selectProfilesForFamilies<TProfile extends FamilyTemplateProfile
   }
 
   const profileNameRemapMap = new Map<string, string>();
-  for (const [familySlug, providerMap] of profilesByFamilyAndProvider) {
-    const selectedProfileId = selectedProfileIdsByFamily.get(familySlug);
-    const selectedProfile = selectedProfileId
-      ? templateProfiles.find((profile) => profile.id === selectedProfileId)
-      : undefined;
-    if (!selectedProfile) continue;
+  if (keep) {
+    // The original name of an unavailable variant can still be a watcher's scope.
+    for (const profile of templateProfiles) {
+      const selectedId = profile.familySlug
+        ? selectedProfileIdsByFamily.get(profile.familySlug)
+        : undefined;
+      const selected = selectedId ? profileById.get(selectedId) : undefined;
+      if (selected && selected.id !== profile.id) {
+        profileNameRemapMap.set(
+          profile.name.trim().toLowerCase(),
+          selected.name.trim().toLowerCase(),
+        );
+      }
+    }
+  } else {
+    for (const [familySlug, providerMap] of profilesByFamilyAndProvider) {
+      const selectedProfileId = selectedProfileIdsByFamily.get(familySlug);
+      const selectedProfile = selectedProfileId
+        ? templateProfiles.find((profile) => profile.id === selectedProfileId)
+        : undefined;
+      if (!selectedProfile) continue;
 
-    const selectedNameLower = selectedProfile.name.trim().toLowerCase();
-    for (const profile of providerMap.values()) {
-      const profileNameLower = profile.name.trim().toLowerCase();
-      if (profileNameLower !== selectedNameLower) {
-        profileNameRemapMap.set(profileNameLower, selectedNameLower);
+      const selectedNameLower = selectedProfile.name.trim().toLowerCase();
+      for (const profile of providerMap.values()) {
+        const profileNameLower = profile.name.trim().toLowerCase();
+        if (profileNameLower !== selectedNameLower) {
+          profileNameRemapMap.set(profileNameLower, selectedNameLower);
+        }
       }
     }
   }

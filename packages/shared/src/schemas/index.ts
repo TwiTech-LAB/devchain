@@ -15,6 +15,10 @@ export {
   type ExportVaultAccess,
   ManifestSchema,
   type ManifestData,
+  PresetTeamConfigsSchema,
+  type PresetTeamConfigs,
+  presetNameKey,
+  firstPresetTeamEntries,
 } from './export-schema.js';
 
 export {
@@ -29,6 +33,7 @@ export {
   ReplicaSkillProjectDisabledRowSchema,
   ReplicaSourceProjectEnabledRowSchema,
   ReplicaInstanceSettingsSchema,
+  ReplicaProviderSettingsRowSchema,
   ProjectReplicaPreflightErrorSchema,
   PROJECT_REPLICA_CONTENT_TYPE,
   ProjectReplicaIdSetsSchema,

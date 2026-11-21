@@ -55,6 +55,11 @@ const RETAINED_ACCESS: readonly AccessEntry[] = [
     category: 'feature-store',
   },
   { path: 'modules/remotes/services/remote-shared-vm.store.ts', category: 'feature-store' },
+  {
+    path: 'modules/remotes/shared-folders/shared-folders.store.ts',
+    category: 'feature-store',
+  },
+  { path: 'modules/remotes/sync/managed-exclusions-removal.store.ts', category: 'feature-store' },
   { path: 'modules/remotes/transcripts/transcript-files.service.ts', category: 'main-db-reader' },
   {
     path: 'modules/runtime-context-capture/runtime-context-capture.service.ts',

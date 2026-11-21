@@ -1,6 +1,8 @@
 // The REST contract types are the server's own (docs/ui-kit-guide.md Part 1, item 1).
 import type {
   VaultRequestApproveResult,
+  VaultRequestCandidate,
+  VaultRequestFulfillInput,
   VaultRequestFulfillResult,
   VaultRequestView,
 } from '@/modules/vault-requests/vault-request-fulfill.service';
@@ -8,7 +10,7 @@ import type { VaultUseDecision } from '@/modules/vault-requests/vault-use-decisi
 import { HOME_BACKEND, apiFetch } from './api-transport';
 import { fetchJsonOrThrow, fetchOrThrow } from './http-json';
 
-export type { VaultRequestView, VaultUseDecision };
+export type { VaultRequestCandidate, VaultRequestView, VaultUseDecision };
 
 /** Agent requests always live on home, whichever project page is open. */
 const homeFetch = (input: RequestInfo | URL, init?: RequestInit) =>
@@ -16,13 +18,20 @@ const homeFetch = (input: RequestInfo | URL, init?: RequestInit) =>
 
 export const vaultRequestsQueryKey = ['vault', 'requests'] as const;
 
+/** Under `vaultRequestsQueryKey`, so a refresh of the request list also reloads it. */
+export const vaultRequestCandidatesQueryKey = (requestId: string) =>
+  [...vaultRequestsQueryKey, requestId, 'candidates'] as const;
+
 /** Socket frame types of the request events (topic `project/<id>/vault-requests`). */
 export const VAULT_REQUEST_FRAME_TYPES: ReadonlySet<string> = new Set([
   'vault_request.pending',
   'vault_request.resolved',
 ]);
 
-function requestPath(requestId: string, action: 'fulfill' | 'approve' | 'deny'): string {
+function requestPath(
+  requestId: string,
+  action: 'fulfill' | 'approve' | 'deny' | 'candidates',
+): string {
   return `/api/vault/requests/${encodeURIComponent(requestId)}/${action}`;
 }
 
@@ -35,10 +44,23 @@ export function fetchVaultRequests(): Promise<VaultRequestView[]> {
   );
 }
 
-/** `value` only for a `create` request; `permanent: false` keeps it for the session only. */
+/** The existing entries that can answer a `create` request; empty for other types. */
+export function fetchVaultRequestCandidates(requestId: string): Promise<VaultRequestCandidate[]> {
+  return fetchJsonOrThrow<VaultRequestCandidate[]>(
+    requestPath(requestId, 'candidates'),
+    {},
+    'The existing entries could not be loaded',
+    homeFetch,
+  );
+}
+
+/**
+ * `value` or `entryId` only for a `create` request; `permanent: false` keeps a value for
+ * the session only, and `entryId` takes `permanent: true` only.
+ */
 export function fulfillVaultRequest(
   requestId: string,
-  body: { value?: string; permanent: boolean },
+  body: VaultRequestFulfillInput,
 ): Promise<VaultRequestFulfillResult> {
   return fetchJsonOrThrow<VaultRequestFulfillResult>(
     requestPath(requestId, 'fulfill'),

@@ -2,7 +2,6 @@ import { Injectable, Inject, Optional } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { ExportSchema, type ExportData, type ManifestData } from '@devchain/shared';
 import { ValidationError } from '../../../common/errors/error-types';
-import type { PromptTransferPolicy } from '../../../common/prompt-transfer';
 import {
   StorageService,
   STORAGE_SERVICE,
@@ -40,8 +39,9 @@ import {
 } from './project-provider-provisioning.service';
 import type { Project, UpdateProject } from '../../storage/models/domain.models';
 import { TemplatePipeline } from '../template-codec/template-pipeline';
-import { importProjectWithHelper } from '../helpers/project-import';
+import { importProjectWithHelper, type ImportProjectInputLike } from '../helpers/project-import';
 import { exportProjectWithHelper, type ExportProjectOptions } from '../helpers/project-export';
+import { captureSnapshotEpicAssignments } from '../helpers/snapshot-epic-assignments';
 import { createFromTemplateWithHelper } from '../helpers/template-loader';
 import {
   buildProviderSummary,
@@ -55,7 +55,11 @@ import {
   applyAgentConfigs,
   applyPresetWithHelper,
   doesProjectMatchPresetWithHelper,
+  type ApplyPresetFn,
+  type ApplyPresetNameMaps,
+  type ApplyPresetResult,
   type PresetAgentConfig,
+  type ProjectPreset,
 } from '../helpers/project-presets.helpers';
 import {
   applyProjectSettingsWithHelper,
@@ -120,27 +124,7 @@ export interface ProviderMappingRequired {
   canImport: boolean;
 }
 
-export interface ImportProjectInput {
-  projectId: string;
-  payload: unknown;
-  dryRun?: boolean;
-  /** Internal-only. The HTTP controller does not accept or forward this field. */
-  promptTransferPolicy?: PromptTransferPolicy;
-  statusMappings?: Record<string, string>;
-  familyProviderMappings?: Record<string, string>;
-  presetName?: string;
-  agentOverrides?: PresetAgentConfig[];
-  /** Transient Step-1 provider choice metadata. Narrows selection eligibility; not persisted. */
-  selectedProviderNames?: string[];
-  teamOverrides?: Array<{
-    teamName: string;
-    allowTeamLeadCreateAgents?: boolean;
-    maxMembers?: number;
-    maxConcurrentTasks?: number;
-    profileNames?: string[];
-    profileSelections?: Array<{ profileName: string; configNames: string[] }>;
-  }>;
-}
+export type ImportProjectInput = ImportProjectInputLike;
 
 @Injectable()
 export class ProjectsService {
@@ -182,6 +166,18 @@ export class ProjectsService {
     @Optional() private readonly eventsService?: EventsService,
   ) {}
 
+  private get presetDeps() {
+    return { storage: this.storage, settings: this.settings, teamsService: this.teamsService };
+  }
+
+  /** The create and import pipelines apply a stored preset through this one entry. */
+  private readonly applyPresetInPipeline: ApplyPresetFn = (
+    projectId,
+    presetName,
+    nameMaps,
+    skipTeamNames,
+  ) => applyPresetWithHelper(projectId, presetName, this.presetDeps, nameMaps, skipTeamNames);
+
   async listTemplates(): Promise<TemplateInfo[]> {
     return listTemplatesWithHelper(__dirname);
   }
@@ -219,13 +215,7 @@ export class ProjectsService {
       teamsService: this.teamsService,
       scheduledEpicsRefresh: this.scheduledEpicRunnerRefresh,
       computeNextRunAt: getNextRunAt,
-      applyPreset: (projectId, presetName, nameMaps) =>
-        applyPresetWithHelper(
-          projectId,
-          presetName,
-          { storage: this.storage, settings: this.settings },
-          nameMaps,
-        ),
+      applyPreset: this.applyPresetInPipeline,
       applyAgentConfigs: (projectId, agentConfigs, nameMaps) =>
         applyAgentConfigs(projectId, agentConfigs, { storage: this.storage }, nameMaps),
     });
@@ -251,32 +241,31 @@ export class ProjectsService {
     });
   }
 
+  async captureSnapshotEpicAssignments(
+    projectId: string,
+    agents: Parameters<typeof captureSnapshotEpicAssignments>[1],
+  ) {
+    return captureSnapshotEpicAssignments(projectId, agents, this.storage);
+  }
+
   async doesProjectMatchPreset(
     projectId: string,
-    preset: {
-      name: string;
-      agentConfigs: PresetAgentConfig[];
-    },
+    preset: Pick<ProjectPreset, 'name' | 'agentConfigs' | 'teamConfigs'>,
   ): Promise<boolean> {
-    return doesProjectMatchPresetWithHelper(projectId, preset, { storage: this.storage });
+    return doesProjectMatchPresetWithHelper(projectId, preset, {
+      storage: this.storage,
+      teamsService: this.teamsService,
+    });
   }
 
   async applyPreset(
     projectId: string,
     presetName: string,
-    nameMaps?: {
-      agentNameToId: Map<string, string>;
-      configLookupMap: Map<string, string>;
-    },
-  ): Promise<{ applied: number; warnings: string[] }> {
+    nameMaps?: ApplyPresetNameMaps,
+  ): Promise<ApplyPresetResult> {
     // Admit before the preset lookup answers NotFound or a validation error.
     this.gate.assertWritable(projectId);
-    return applyPresetWithHelper(
-      projectId,
-      presetName,
-      { storage: this.storage, settings: this.settings },
-      nameMaps,
-    );
+    return applyPresetWithHelper(projectId, presetName, this.presetDeps, nameMaps);
   }
 
   async importProject(input: ImportProjectInput) {
@@ -310,13 +299,7 @@ export class ProjectsService {
       getImportErrorMessage,
       applyAgentConfigs: (projectId, agentConfigs, nameMaps) =>
         applyAgentConfigs(projectId, agentConfigs, { storage: this.storage }, nameMaps),
-      applyPreset: (projectId, presetName, nameMaps) =>
-        applyPresetWithHelper(
-          projectId,
-          presetName,
-          { storage: this.storage, settings: this.settings },
-          nameMaps,
-        ),
+      applyPreset: this.applyPresetInPipeline,
       teamsService: this.teamsService,
       scheduledEpicsRefresh: this.scheduledEpicRunnerRefresh,
       computeNextRunAt: getNextRunAt,

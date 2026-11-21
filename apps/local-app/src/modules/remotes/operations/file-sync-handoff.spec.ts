@@ -7,7 +7,12 @@ import {
   InvalidManagedExclusionsError,
   type FileSyncManagedExclusionsStore,
 } from '../../file-sync/file-sync-managed-exclusions.store';
-import { FileSyncService, FileSyncUnavailableError } from '../../file-sync/file-sync.service';
+import {
+  FileSyncService,
+  FileSyncTimeoutError,
+  FileSyncUnavailableError,
+} from '../../file-sync/file-sync.service';
+import { shareFolderId, shareId } from '../../file-sync/share-paths';
 import type { HomeGitGuardService } from '../../file-sync/home-git-guard.service';
 import { FakeFileSyncService } from '../../file-sync/testing/fake-file-sync.service';
 import type { RemoteOperation } from '../../storage/models/domain.models';
@@ -72,6 +77,8 @@ function setup(git = false) {
     }),
     syncFolders: jest.fn(async (_r: string, request) => peer.ensureFolder(request)),
     syncForceCopyBackup: jest.fn(async (_r: string, request) => peer.forceCopyBackup(request)),
+    syncShareBackup: jest.fn(async (_r: string, request) => peer.shareBackup(request)),
+    syncShareFolder: jest.fn(async (_r: string, request) => peer.ensureShareFolder(request)),
     syncFolderType: jest.fn(async (_r: string, id: string, patch) => {
       calls.push(`host ${id} ${JSON.stringify(patch)}`);
       await peer.updateFolder(id, patch);
@@ -1323,6 +1330,128 @@ describe('split git handoffs', () => {
       await expect(second).rejects.toThrow('The Connect was cancelled.');
       rescan.release(1);
     });
+  });
+});
+
+// The in-memory service keeps both sides' records; fake timers drive the waits.
+describe('FileSyncHandoff share folders', () => {
+  const path = '/home/u/notes';
+  const share = { shareId: shareId(path), path, ignores: ['/cache'] };
+  const id = shareFolderId(path);
+  const backupPath = `/fake/sync-backups/shares/${share.shareId}/op-1`;
+
+  it("replaces the VM folder with this PC's, recording the backup first, then syncs two ways without it", async () => {
+    const { home, peer, host, handoff, run } = setup();
+    await expect(handoff.syncShareBothWays(run, share)).rejects.toThrow('has not been verified');
+    // An orphan VM share keeps its old index unless the copy removes it first.
+    peer.folders.set(id, { type: 'sendreceive', paused: false, peerDeviceId: 'old', ignores: [] });
+    peer.receiveOnlyChanges.set(id, { count: 2, sample: ['vm-only.txt', 'vm-newer.txt'] });
+    const remove = peer.removeFolder.bind(peer);
+    jest.spyOn(peer, 'removeFolder').mockImplementation(async (folderId) => {
+      expect(run.details.shareFolder).toEqual({ backupPath, verified: false });
+      await remove(folderId);
+    });
+    const revert = peer.revertLocalChanges.bind(peer);
+    jest.spyOn(peer, 'revertLocalChanges').mockImplementation(async (folderId) => {
+      expect(run.details.shareFolder).toMatchObject({
+        replaced: { count: 2, sample: ['vm-only.txt', 'vm-newer.txt'] },
+      });
+      expect(host.syncStatus).toHaveBeenCalled();
+      await revert(folderId);
+    });
+
+    await handoff.copyShare(run, share);
+
+    expect(peer.removeFolder).toHaveBeenCalledWith(id);
+    expect(peer.revertLocalChanges).toHaveBeenCalledWith(id);
+    expect(home.folders.get(id)).toEqual({
+      type: 'sendonly',
+      paused: false,
+      peerDeviceId: peer.deviceId,
+      ignores: ['/cache'],
+    });
+    expect(peer.folders.get(id)).toEqual({
+      type: 'receiveonly',
+      paused: false,
+      peerDeviceId: home.deviceId,
+      ignores: ['/cache'],
+      backupPath,
+    });
+    expect(run.details.shareFolder).toEqual({
+      backupPath,
+      verified: true,
+      replaced: { count: 2, sample: ['vm-only.txt', 'vm-newer.txt'] },
+    });
+
+    const order: string[] = [];
+    host.syncShareFolder.mockImplementationOnce(
+      async (_r, request) => (order.push('vm'), peer.ensureShareFolder(request)),
+    );
+    const ensureHome = home.ensureShareFolder.bind(home);
+    jest
+      .spyOn(home, 'ensureShareFolder')
+      .mockImplementation(async (request) => (order.push('home'), ensureHome(request)));
+    await handoff.syncShareBothWays(run, share);
+    expect(order).toEqual(['vm', 'home']);
+    for (const [side, other] of [
+      [home, peer],
+      [peer, home],
+    ])
+      expect(side.folders.get(id)).toEqual({
+        type: 'sendreceive',
+        paused: false,
+        peerDeviceId: other.deviceId,
+        ignores: ['/cache'],
+      });
+  });
+
+  it('keeps a share copy waiting past 30 minutes while the VM index grows, and fails it 10 minutes after it stops', async () => {
+    jest.useFakeTimers();
+    try {
+      const { home, peer, host, handoff, run } = setup();
+      let globalFiles = 0;
+      const homeStatus = home.status.bind(home);
+      jest.spyOn(home, 'status').mockImplementation(async (folderId, device) => ({
+        ...(await homeStatus(folderId, device)),
+        localFiles: 10_000,
+      }));
+      host.syncStatus.mockImplementation(async (_r, folderId, device) => ({
+        ...(await peer.status(folderId, device)),
+        globalFiles,
+      }));
+      let error: unknown = null;
+      const copy = handoff.copyShare(run, share).catch((e: unknown) => (error = e));
+      for (let minute = 0; minute < 40; minute++) {
+        globalFiles += 1;
+        await jest.advanceTimersByTimeAsync(60_000);
+      }
+      await jest.advanceTimersByTimeAsync(9 * 60_000);
+      expect(error).toBeNull();
+      await jest.advanceTimersByTimeAsync(2 * 60_000);
+      await copy;
+      expect(error).toBeInstanceOf(FileSyncTimeoutError);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('ends a share copy wait with the cancel reason', async () => {
+    jest.useFakeTimers();
+    try {
+      const { peer, host, handoff, run } = setup();
+      host.syncStatus.mockImplementation(async (_r, folderId, device) => ({
+        ...(await peer.status(folderId, device)),
+        globalFiles: 0,
+      }));
+      const copy = handoff.copyShare(run, share).catch((e: unknown) => e);
+      await jest.advanceTimersByTimeAsync(2_000);
+      handoff.interrupt('op-1', 'Sharing the folder was cancelled.');
+      await jest.advanceTimersByTimeAsync(1_000);
+      expect(await copy).toMatchObject({ message: 'Sharing the folder was cancelled.' });
+      expect(host.syncRevert).not.toHaveBeenCalled();
+    } finally {
+      jest.useRealTimers();
+    }
   });
 });
 

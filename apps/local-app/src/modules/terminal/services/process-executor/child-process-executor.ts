@@ -14,6 +14,7 @@ import {
 @Injectable()
 export class ChildProcessExecutor extends ProcessExecutor {
   async run(options: ProcessExecutorOptions): Promise<ExecutorResult> {
+    options.signal?.throwIfAborted();
     if (options.env) validateEnv(options.env);
 
     const [command, ...args] = options.argv;
@@ -36,6 +37,7 @@ export class ChildProcessExecutor extends ProcessExecutor {
       let stderrBytes = 0;
       let truncated = false;
       let timedOut = false;
+      let inputFailed = false;
       let timeoutTimer: NodeJS.Timeout | undefined;
       let killTimer: NodeJS.Timeout | undefined;
 
@@ -52,6 +54,14 @@ export class ChildProcessExecutor extends ProcessExecutor {
         shell: false,
       });
 
+      const abort = () => {
+        child.kill('SIGKILL');
+        // A descendant can inherit a pipe. Wait for this child's exit without waiting for that pipe.
+        child.stdin?.destroy();
+        child.stdout?.destroy();
+        child.stderr?.destroy();
+      };
+      options.signal?.addEventListener('abort', abort, { once: true });
       child.stdout!.on('data', (data: Buffer) => {
         const chunk = stdoutDecoder.write(data);
         if (maxBytes !== undefined) {
@@ -90,14 +100,19 @@ export class ChildProcessExecutor extends ProcessExecutor {
         stderrBytes += chunk.length;
       });
 
-      const flushDecoders = () => {
-        const outTail = stdoutDecoder.end();
-        if (outTail) stdout += outTail;
-        const errTail = stderrDecoder.end();
-        if (errTail) stderr += errTail;
+      const cleanup = () => {
+        options.signal?.removeEventListener('abort', abort);
+        if (timeoutTimer) clearTimeout(timeoutTimer);
+        if (killTimer) clearTimeout(killTimer);
+        stdout += stdoutDecoder.end();
+        stderr += stderrDecoder.end();
       };
 
       if (options.input && child.stdin) {
+        // A cancelled pipe command can close its stdin before the buffered write finishes.
+        child.stdin.on('error', () => {
+          inputFailed = true;
+        });
         child.stdin.write(options.input);
         child.stdin.end();
       }
@@ -117,9 +132,7 @@ export class ChildProcessExecutor extends ProcessExecutor {
       }
 
       child.on('error', () => {
-        if (timeoutTimer) clearTimeout(timeoutTimer);
-        if (killTimer) clearTimeout(killTimer);
-        flushDecoders();
+        cleanup();
         resolve({
           success: false,
           exitCode: null,
@@ -131,11 +144,9 @@ export class ChildProcessExecutor extends ProcessExecutor {
       });
 
       child.on('close', (code) => {
-        if (timeoutTimer) clearTimeout(timeoutTimer);
-        if (killTimer) clearTimeout(killTimer);
-        flushDecoders();
+        cleanup();
         resolve({
-          success: !timedOut && code === 0,
+          success: !timedOut && !inputFailed && !options.signal?.aborted && code === 0,
           exitCode: timedOut ? null : code,
           stdout,
           stderr,

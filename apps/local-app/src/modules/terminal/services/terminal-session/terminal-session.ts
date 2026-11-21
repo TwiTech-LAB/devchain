@@ -56,6 +56,11 @@ export class TerminalSession {
 
   private readonly subscribers = new Set<string>();
   private authority: string | null = null;
+  private writer = new AbortController();
+
+  get writerToken(): AbortSignal {
+    return this.writer.signal;
+  }
   private dimensions: Dimensions = { cols: 80, rows: 24 };
   private lastDataAt: number | null = null;
   private lastInputAt: number | null = null;
@@ -69,7 +74,8 @@ export class TerminalSession {
   private resizeTimer: ReturnType<typeof setTimeout> | null = null;
   private pendingResize: { clientId: string; dims: Dimensions } | null = null;
   private idleTimer: ReturnType<typeof setTimeout> | null = null;
-  private disposed = false;
+  private readonly lifetime = new AbortController();
+  readonly disposedSignal = this.lifetime.signal;
   private readonly idleAfterMs: number;
   private readonly normalizeCapturedLineEndings: boolean;
   private io?: TerminalIORef;
@@ -87,7 +93,7 @@ export class TerminalSession {
   }
 
   subscribe(clientId: string): void {
-    if (this.disposed) return;
+    if (this.disposedSignal.aborted) return;
 
     this.subscribers.add(clientId);
 
@@ -111,6 +117,8 @@ export class TerminalSession {
     this.subscribers.delete(clientId);
 
     if (this.authority === clientId) {
+      this.writer.abort();
+      this.writer = new AbortController();
       this.authority = null;
       const next = this.subscribers.values().next().value;
       if (next) {
@@ -169,6 +177,8 @@ export class TerminalSession {
     this.authority = clientId;
 
     if (previous !== clientId) {
+      this.writer.abort();
+      this.writer = new AbortController();
       this.stream.emit('frame', {
         type: 'focus_changed',
         sessionId: this.sessionId,
@@ -253,14 +263,14 @@ export class TerminalSession {
   }
 
   signalInput(): void {
-    if (this.disposed) return;
+    if (this.disposedSignal.aborted) return;
     this.humanPromptState?.recordExecutedInput(this.tmuxSessionName);
     this.lastInputAt = Date.now();
     this.markBusy();
   }
 
   pushFrame(data: string): void {
-    if (this.disposed) return;
+    if (this.disposedSignal.aborted) return;
 
     if (this.hasMeaningfulOutput(data) && Date.now() >= this.suppressActivityUntil) {
       this.lastDataAt = Date.now();
@@ -308,7 +318,7 @@ export class TerminalSession {
     }
     this.idleTimer = setTimeout(() => {
       this.idleTimer = null;
-      if (!this.disposed) this.markIdle();
+      if (!this.disposedSignal.aborted) this.markIdle();
     }, this.idleAfterMs);
   }
 
@@ -340,7 +350,8 @@ export class TerminalSession {
   }
 
   dispose(): void {
-    this.disposed = true;
+    this.lifetime.abort();
+    this.writer.abort();
     if (this.resizeTimer) {
       clearTimeout(this.resizeTimer);
       this.resizeTimer = null;

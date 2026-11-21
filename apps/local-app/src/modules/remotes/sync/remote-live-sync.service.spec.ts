@@ -158,6 +158,8 @@ describe('RemoteLiveSyncService', () => {
           {} as never,
           {} as never,
           {} as never,
+          {} as never,
+          {} as never,
         );
         service = new RemoteLiveSyncService(
           health as never,
@@ -428,9 +430,11 @@ describe('RemoteLiveSyncService', () => {
   it('drains the active file tick before stop allows a handoff and cancels the remaining pull', async () => {
     let release!: () => void;
     let active!: () => boolean;
+    let tickSignal!: AbortSignal;
     files.tick.mockImplementationOnce(
-      (_project: string, _remote: string, isActive: () => boolean) => {
+      (_project: string, _remote: string, isActive: () => boolean, signal: AbortSignal) => {
         active = isActive;
+        tickSignal = signal;
         return new Promise<void>((resolve) => {
           release = resolve;
         });
@@ -448,6 +452,7 @@ describe('RemoteLiveSyncService', () => {
     await Promise.resolve();
     expect(stopped).toBe(false);
     expect(active()).toBe(false);
+    expect(tickSignal.aborted).toBe(true);
     release();
     await Promise.all([first, concurrent, stop]);
     expect(files.forget).toHaveBeenCalledWith(PROJECT);

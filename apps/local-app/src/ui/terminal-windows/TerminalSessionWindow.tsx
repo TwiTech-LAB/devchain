@@ -455,6 +455,7 @@ export function TerminalSessionWindowContent({
       <Terminal
         ref={handleTerminalRef}
         sessionId={session.id}
+        projectId={selectedProjectId ?? agent?.projectId}
         onSessionEnded={handleSessionEnded}
       />
       <ConfirmDialog

@@ -7,6 +7,7 @@ import {
   systemRuntimeDirectoryHost,
 } from './runtime-directory';
 import { RuntimeDirectoryService } from './runtime-directory.service';
+import { SessionImageStore } from './session-image-store.service';
 
 @Module({
   imports: [DbModule],
@@ -18,7 +19,8 @@ import { RuntimeDirectoryService } from './runtime-directory.service';
         systemRuntimeDirectoryHost(runtimeDirectoryDbPath(dbFilePath)),
     },
     RuntimeDirectoryService,
+    SessionImageStore,
   ],
-  exports: [RuntimeDirectoryService],
+  exports: [RuntimeDirectoryService, SessionImageStore],
 })
 export class RuntimeDirectoryModule {}

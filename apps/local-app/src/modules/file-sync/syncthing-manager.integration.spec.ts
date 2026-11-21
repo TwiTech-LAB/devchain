@@ -98,7 +98,7 @@ describe('SyncthingManager', () => {
     resetEnvConfig();
   });
 
-  it('removes legacy transcript shares after API readiness while retaining their files', async () => {
+  it('removes legacy transcript shares after API readiness, keeping their files and user folder shares', async () => {
     const folder = join(root, 'transcripts');
     mkdirSync(folder);
     writeFileSync(join(folder, 'session.jsonl'), 'kept');
@@ -106,12 +106,19 @@ describe('SyncthingManager', () => {
       { id: 'tx:claude:p1', path: folder },
       { id: 'tx:other:p2', path: folder },
       { id: 'code:p1', rescanIntervalS: 300 },
+      { id: 'share:0123456789abcdef', path: folder, rescanIntervalS: 300 },
     ];
     const { moduleRef, manager } = await createHarness(openDb(), join(root, 'st-home'));
     await moduleRef.init();
     await waitFor(() => manager.getState().running);
     expect(launcher.folders).toEqual([
       { id: 'code:p1', rescanIntervalS: 300, copyOwnershipFromParent: false },
+      {
+        id: 'share:0123456789abcdef',
+        path: folder,
+        rescanIntervalS: 300,
+        copyOwnershipFromParent: false,
+      },
     ]);
     expect(readFileSync(join(folder, 'session.jsonl'), 'utf8')).toBe('kept');
     expect(launcher.last.requests.filter((r) => r.method === 'DELETE').map((r) => r.path)).toEqual([

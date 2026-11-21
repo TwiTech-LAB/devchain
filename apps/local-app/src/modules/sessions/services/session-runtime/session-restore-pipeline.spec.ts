@@ -134,6 +134,7 @@ describe('SessionRestorePipeline', () => {
         'stopped',
         '2025-01-01T01:00:00Z',
         null,
+        'test-provider',
         expect.any(String),
         sessionId,
       );

@@ -1,45 +1,111 @@
-import type { SetupPreviewFamilyAlternative } from '@/ui/pages/projects/lib/project-contracts';
+import type { ExportData } from '@devchain/shared';
+import type {
+  SetupPreviewFamilyAlternative,
+  SetupPreviewResponse,
+} from '@/ui/pages/projects/lib/project-contracts';
+import {
+  agentsThatCannotRun,
+  availableConfigs,
+  configProviderName,
+  profileForAgent,
+  type TemplateAgent,
+  type TemplateProfile,
+} from './agentPlan';
+
+const normalize = (name: string): string => name.trim().toLowerCase();
 
 /**
- * Family-coverage gate for wizard Step 1 (provider selection). Returns the family slugs that LOSE
- * coverage under the current selection — families that have at least one locally-available provider
- * (per the setup-preview's `familyAlternatives[].availableProviders`) but none of them is selected.
- *
- * The UI MUST NOT reimplement `computeFamilyAlternatives`; this is a pure set-intersection over the
- * server-provided alternatives (the single derivation lives on the backend, surfaced via setup-preview).
- *
- * Families with NO available providers (`availableProviders.length === 0`, i.e. `hasAlternatives ===
- * false`) are intentionally NOT returned: they cannot be covered by any selection and represent a
- * pre-existing template condition handled by provider substitution server-side, not a Step-1
- * violation the user can resolve here.
- *
- * Provider-name matching is case-insensitive — names are lowercased canonical on both sides, but we
- * normalize defensively so mixed-case selections (e.g. 'CLAUDE') still match.
+ * Lowercased names of the locally installed providers. Read from `localAvailability`, never from
+ * `providerSummary`: the summary omits a config provider of a profile without a `familySlug`.
  */
-export function getUncoveredFamilies(
-  familyAlternatives: ReadonlyArray<SetupPreviewFamilyAlternative>,
-  selectedProviderNames: ReadonlyArray<string>,
-): string[] {
-  const selected = new Set(selectedProviderNames.map((name) => name.trim().toLowerCase()));
-  return familyAlternatives
-    .filter(
-      (family) =>
-        family.availableProviders.length > 0 &&
-        !family.availableProviders.some((provider) => selected.has(provider.trim().toLowerCase())),
-    )
-    .map((family) => family.familySlug);
+export function installedProviderNames(preview: SetupPreviewResponse): string[] {
+  return [...new Set(preview.localAvailability.installedProviders.map((p) => normalize(p.name)))];
+}
+
+/** Lowercased names of every provider the template payload references (profile defaults + configs). */
+export function referencedProviderNames(payload: SetupPreviewResponse['payload']): Set<string> {
+  const referenced = new Set<string>();
+  for (const profile of payload.profiles ?? []) {
+    if (profile.provider?.name) referenced.add(normalize(profile.provider.name));
+    for (const config of profile.providerConfigs ?? []) {
+      referenced.add(normalize(config.providerName));
+    }
+  }
+  return referenced;
+}
+
+/** Every installed provider the template references, sorted. */
+export function installedReferencedProviders(preview: SetupPreviewResponse): string[] {
+  const referenced = referencedProviderNames(preview.payload);
+  return installedProviderNames(preview)
+    .filter((name) => referenced.has(name))
+    .sort();
+}
+
+export interface SetupProvider {
+  name: string;
+  installed: boolean;
+}
+
+/** Lowercased provider of the option that an agent names (undefined when it names none). */
+function namedOptionProvider(agent: TemplateAgent, profiles: TemplateProfile[]) {
+  return configProviderName(profileForAgent(agent, profiles), agent.providerConfigName ?? null);
+}
+
+export function setupProviderList(
+  preview: SetupPreviewResponse,
+  currentExport?: ExportData | null,
+): SetupProvider[] {
+  const { payload, presetProviderCoverage } = preview;
+  const agents = payload.agents ?? [];
+  const profiles = payload.profiles ?? [];
+  const installedNames = installedProviderNames(preview);
+  const installed = new Set(installedNames);
+  const listed = new Set(
+    presetProviderCoverage.flatMap((setup) => setup.referencedProviders.map(normalize)),
+  );
+
+  for (const agent of agents) {
+    const provider = namedOptionProvider(agent, profiles);
+    if (provider) listed.add(provider);
+  }
+
+  if (![...listed].some((name) => installed.has(name))) {
+    for (const name of installedReferencedProviders(preview)) listed.add(name);
+  }
+
+  const installedListed = [...listed].filter((name) => installed.has(name));
+  const uncoveredAgents = new Set(agentsThatCannotRun(payload, installedListed));
+  for (const agent of agents) {
+    if (!uncoveredAgents.has(agent.name)) continue;
+    for (const config of availableConfigs(profileForAgent(agent, profiles), installedNames)) {
+      listed.add(normalize(config.providerName));
+    }
+  }
+
+  if (currentExport) {
+    const referenced = referencedProviderNames(payload);
+    for (const agent of currentExport.agents ?? []) {
+      const provider = namedOptionProvider(agent, currentExport.profiles ?? []);
+      if (provider && referenced.has(provider)) listed.add(provider);
+    }
+  }
+
+  return [...listed].sort().map((name) => ({ name, installed: installed.has(name) }));
+}
+
+export function defaultSelectedProviders(list: ReadonlyArray<SetupProvider>): string[] {
+  return list.filter(({ installed }) => installed).map(({ name }) => name);
 }
 
 /**
- * Derive the import `familyProviderMappings` from the Step-1 provider selection — this is how the
- * wizard's Step 1 ABSORBS the legacy ProviderMappingModal (family → available-provider mapping) with
- * no separate UI: the user's provider choices ARE the mapping.
+ * Derive the `familyProviderMappings` from the selected providers — this replaces the legacy
+ * ProviderMappingModal (family → available-provider mapping) with no separate UI.
  *
- * For every family whose template DEFAULT provider is not in the selection (unavailable or
- * deselected) but which HAS a selected available alternative, we map the family slug to the first
- * such alternative (in `availableProviders` order). Families already covered by their default need no
- * mapping; families with no selected alternative are left unmapped (the coverage gate blocks Next for
- * those that have alternatives, and families with none are a pre-existing server-substituted case).
+ * For every family whose template DEFAULT provider is not in the selection but which HAS a selected
+ * available alternative, we map the family slug to the first such alternative (in
+ * `availableProviders` order). Families already covered by their default need no mapping; families
+ * with no selected alternative are left unmapped (a pre-existing server-substituted case).
  *
  * Keys/values are lowercased canonical (the backend lowercases both on receipt).
  */

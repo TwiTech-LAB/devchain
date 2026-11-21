@@ -1,5 +1,6 @@
 import { fetchJsonOrThrow, fetchOrThrow, type FetchFn } from '@/ui/lib/http-json';
 import type { ListResult } from '@/modules/storage/interfaces/storage.interface';
+import type { QueryClient } from '@tanstack/react-query';
 
 export type { ListResult };
 
@@ -77,21 +78,46 @@ export function filterConfigurableTeams<T extends { allowTeamLeadCreateAgents?: 
   return teams.filter(isConfigurableTeam);
 }
 
+const teamDetailsKey = ['teams', 'detail'] as const;
+
 export const teamsQueryKeys = {
   teams: (projectId: string) => ['teams', projectId] as const,
-  detail: (teamId: string) => ['teams', 'detail', teamId] as const,
+  allTeams: (projectId: string) => ['teams', projectId, 'all'] as const,
+  details: teamDetailsKey,
+  detail: (teamId: string) => [...teamDetailsKey, teamId] as const,
 };
+
+export async function invalidateProjectTeams(queryClient: QueryClient, projectId: string) {
+  await Promise.all([
+    queryClient.invalidateQueries({ queryKey: teamsQueryKeys.teams(projectId) }),
+    queryClient.invalidateQueries({ queryKey: teamsQueryKeys.details }),
+  ]);
+}
 
 export async function fetchTeams(
   projectId: string,
   fetchFn: FetchFn,
+  offset = 0,
 ): Promise<ListResult<TeamListItem>> {
+  const page = offset > 0 ? `&offset=${offset}` : '';
   return fetchJsonOrThrow<ListResult<TeamListItem>>(
-    `/api/teams?projectId=${encodeURIComponent(projectId)}`,
+    `/api/teams?projectId=${encodeURIComponent(projectId)}${page}`,
     {},
     undefined,
     fetchFn,
   );
+}
+
+/** Reads every page of the project's team list. */
+export async function fetchAllTeams(projectId: string, fetchFn: FetchFn): Promise<TeamListItem[]> {
+  const first = await fetchTeams(projectId, fetchFn);
+  const teams = [...first.items];
+  while (teams.length < first.total) {
+    const page = await fetchTeams(projectId, fetchFn, teams.length);
+    if (page.items.length === 0) break;
+    teams.push(...page.items);
+  }
+  return [...new Map(teams.map((team) => [team.id, team])).values()];
 }
 
 export async function fetchTeamDetail(teamId: string, fetchFn: FetchFn): Promise<TeamDetail> {

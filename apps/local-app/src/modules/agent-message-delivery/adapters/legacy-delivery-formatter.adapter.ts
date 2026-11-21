@@ -26,6 +26,7 @@ export class LegacyDeliveryFormatterAdapter extends DeliveryFormatter {
           return message.body;
         }
         if (framing === 'sender-footer') {
+          if (message.body.startsWith('/')) return message.body;
           const senderName = sanitizeOneLineLabel(message.senderName);
           if (!senderName) return message.body;
           return `${message.body}\n[SentBy:${JSON.stringify(senderName)}]`;

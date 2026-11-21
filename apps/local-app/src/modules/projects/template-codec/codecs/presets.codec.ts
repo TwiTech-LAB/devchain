@@ -1,9 +1,5 @@
 /**
- * Presets codec — owns the `presets` IMPORT direction (set-or-clear semantics).
- *
- * Apply replicates the legacy `replaceProjectPresets`: a template WITH presets replaces the
- * stored presets; a template WITHOUT presets CLEARS the stored presets (logged). This asymmetry
- * is intentional and preserved exactly.
+ * Presets codec merges incoming template presets with user presets against the saved roster.
  *
  * EXPORT is not owned by this codec: presets export is driven by the export options
  * (`presetsOverride` merged with stored presets via `resolveExportPresets` in project-export.ts),
@@ -27,6 +23,7 @@ class PresetsCodec implements TemplateSectionCodec<PresetsSection> {
     section: 'presets',
     reads: [],
     writes: [],
+    requiresState: ['agentsPersisted'],
     modes: ['replace', 'create'],
   } as const;
 
@@ -49,15 +46,20 @@ class PresetsCodec implements TemplateSectionCodec<PresetsSection> {
       return { section: 'presets', log: { skipped: 'no settings service' } };
     }
 
+    const { projectId } = rt;
+    const options = { limit: Number.MAX_SAFE_INTEGER };
+    const [agents, teams] = await Promise.all([
+      rt.storage.listAgents(projectId, options),
+      rt.teamsService?.listTeams(projectId, options),
+    ]);
     const templatePresets = extractTemplatePresets({ presets });
-
-    if (templatePresets.length > 0) {
-      await rt.settings.setProjectPresets(rt.projectId, templatePresets);
-      return { section: 'presets', log: { presets: templatePresets.length, action: 'set' } };
-    }
-
-    await rt.settings.clearProjectPresets(rt.projectId);
-    return { section: 'presets', log: { presets: 0, action: 'cleared' } };
+    await rt.settings.mergeProjectTemplatePresets(
+      projectId,
+      templatePresets,
+      agents.items.map(({ name }) => name),
+      teams?.items.map(({ name }) => name),
+    );
+    return { section: 'presets', log: { presets: templatePresets.length, action: 'merged' } };
   }
 }
 

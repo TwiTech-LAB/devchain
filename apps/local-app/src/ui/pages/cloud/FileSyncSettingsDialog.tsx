@@ -16,17 +16,18 @@ import { IgnoreListEditor } from './IgnoreListEditor';
 import { useProjectIgnores, useSaveProjectIgnores, type IgnoreDraft } from './connect-ignores';
 import { FileListChangedError } from './lib/remote-vm-errors';
 import { FileSyncAutoFixControls } from './FileSyncAutoFixControls';
+import { ManagedExclusionsSection } from './ManagedExclusionsSection';
 
 export function FileSyncSettingsDialog({
   projectId,
   projectName,
-  connected,
+  remoteId,
   busy,
   onClose,
 }: {
   projectId: string;
   projectName: string;
-  connected: boolean;
+  remoteId?: string;
   busy: boolean;
   onClose: () => void;
 }) {
@@ -57,7 +58,7 @@ export function FileSyncSettingsDialog({
         <DialogHeader>
           <DialogTitle>File sync settings · {projectName}</DialogTitle>
           <DialogDescription>
-            {connected
+            {remoteId
               ? 'Save applies the list to the VM first, then this PC.'
               : 'Save keeps the list for the next Connect.'}
           </DialogDescription>
@@ -78,6 +79,7 @@ export function FileSyncSettingsDialog({
             }}
           />
         )}
+        <ManagedExclusionsSection projectId={projectId} remoteId={remoteId} placement="settings" />
         <FileSyncAutoFixControls projectId={projectId} disabled={disabled} />
         {mutation.error && (
           <p role="alert" className="text-sm text-destructive">

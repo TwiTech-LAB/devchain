@@ -48,6 +48,9 @@ import {
 import { TerminalSocketDrainAdapter } from '../services/terminal-socket-drain.adapter';
 import { HumanPromptStateService } from '../services/human-prompt-state.service';
 import { HumanPromptInputService } from '../services/human-prompt-input.service';
+import { TerminalImageInputService } from '../services/terminal-image-input.service';
+import { CliForegroundExecutor } from '../services/process-executor/fake-process-executor';
+import { randomUUID } from 'node:crypto';
 import { sessionHumanPromptStateChangedEvent } from '../../events/catalog/session.human-prompt-state-changed';
 
 /** The stable sequence-domain epoch the mock stream service reports for every session. */
@@ -166,6 +169,7 @@ const createGateway = (options?: {
   replayResult?: FrameReplayResult;
   scrollbackLines?: number;
   autoCreateRegistrySessions?: boolean;
+  imageProjectId?: string;
   sendScheduler?: TerminalSendSchedulerService;
 }) => {
   const streamService: Partial<TerminalStreamService> = {
@@ -291,6 +295,7 @@ const createGateway = (options?: {
     captureHistory: jest.fn().mockResolvedValue({ ok: true, output: '' }),
     getCursorPosition: jest.fn().mockResolvedValue(null),
     sendControl: jest.fn().mockResolvedValue(undefined),
+    sendLiteralText: jest.fn().mockResolvedValue(undefined),
     deliverImmediate: jest.fn().mockResolvedValue({ confirmed: true }),
     sessionExists: jest.fn().mockResolvedValue(true),
     applyWindowTheme: jest.fn().mockResolvedValue(undefined),
@@ -358,6 +363,22 @@ const createGateway = (options?: {
     mockRealtimeBroadcast as never,
     options?.sendScheduler ?? (sendScheduler as never),
     mockMetricsService,
+    new TerminalImageInputService(
+      registry,
+      {
+        getSession: (id: string) => ({
+          status: 'running',
+          tmuxSessionId: `tmux_${id}`,
+          providerNameAtLaunch: 'claude',
+        }),
+        getSessionProjectScope: () => ({ projectId: options?.imageProjectId }),
+      } as never,
+      { isWritable: () => true } as never,
+      { resolvePath: async (_id: string, file: string) => `/fixture/${file}` } as never,
+      humanPromptState,
+      humanPromptInput,
+      terminalIO as TerminalIOService,
+    ),
     options?.seedSettleMs ?? 0,
   );
 
@@ -434,6 +455,7 @@ describe('TerminalGateway.handleRequestFullHistory', () => {
         { name: 'tmux_history-session' },
         expected,
         true,
+        { joinWrappedLines: true },
       );
       expect(client.emit).toHaveBeenCalledWith(
         'message',
@@ -608,12 +630,14 @@ describe('TerminalGateway.handleRequestFullHistory', () => {
       { name: 'tmux_session-fresh' },
       1000,
       true,
+      { joinWrappedLines: true },
     );
     expect(terminalIO.captureHistory).toHaveBeenNthCalledWith(
       2,
       { name: 'tmux_session-fresh' },
       1000,
       true,
+      { joinWrappedLines: true },
     );
 
     const histories = (client.emit as jest.Mock).mock.calls
@@ -2898,7 +2922,7 @@ describe('TerminalGateway.handleInput authority guard', () => {
     );
   });
 
-  it('sends TTY paste text after option separator so leading dash stays literal', async () => {
+  it('routes TTY paste text with a leading dash to literal delivery', async () => {
     const { gateway, terminalIO } = createGateway();
     const client = createMockSocket('authority-client-tty-dash');
 
@@ -2916,11 +2940,11 @@ describe('TerminalGateway.handleInput authority guard', () => {
       ttyMode: true,
     });
 
-    expect(terminalIO.sendControl).toHaveBeenCalledWith({ name: 'tmux_auth-session-tty-dash' }, [
-      '-l',
-      '--',
+    expect(terminalIO.sendLiteralText).toHaveBeenCalledWith(
+      { name: 'tmux_auth-session-tty-dash' },
       '- leading dash paste',
-    ]);
+    );
+    expect(terminalIO.sendControl).not.toHaveBeenCalled();
     expect(terminalIO.deliverImmediate).not.toHaveBeenCalled();
   });
 
@@ -2955,15 +2979,18 @@ describe('TerminalGateway.handleInput authority guard', () => {
     await Promise.resolve();
     await Promise.resolve();
 
+    expect(terminalIO.sendLiteralText).not.toHaveBeenCalled();
     expect(terminalIO.sendControl).not.toHaveBeenCalled();
     expect(humanPromptState.getState('tmux_pending-text-backspace').phase).toBe('draft_active');
 
     release();
     await Promise.all([text, backspace]);
-    expect((terminalIO.sendControl as jest.Mock).mock.calls.map((call) => call[1])).toEqual([
-      ['-l', '--', 'a'],
-      ['BSpace'],
-    ]);
+    const target = { name: 'tmux_pending-text-backspace' };
+    expect(terminalIO.sendLiteralText).toHaveBeenCalledWith(target, 'a');
+    expect(terminalIO.sendControl).toHaveBeenCalledWith(target, ['BSpace']);
+    expect((terminalIO.sendLiteralText as jest.Mock).mock.invocationCallOrder[0]).toBeLessThan(
+      (terminalIO.sendControl as jest.Mock).mock.invocationCallOrder[0],
+    );
     expect(humanPromptState.getState('tmux_pending-text-backspace').phase).toBe(
       'awaiting_stable_idle',
     );
@@ -3908,14 +3935,59 @@ describe('TerminalGateway input arrival order', () => {
     secondAlive.resolve(true);
     await Promise.resolve();
     expect(terminalIO.sessionExists).toHaveBeenCalledTimes(1);
-    expect(terminalIO.sendControl).not.toHaveBeenCalled();
+    expect(terminalIO.sendLiteralText).not.toHaveBeenCalled();
     firstAlive.resolve(true);
     await Promise.all([first, second]);
-    expect((terminalIO.sendControl as jest.Mock).mock.calls.map((call) => call[1])).toEqual([
-      ['-l', '--', 'a'],
-      ['-l', '--', 'b'],
+    expect((terminalIO.sendLiteralText as jest.Mock).mock.calls).toEqual([
+      [{ name: 'tmux_ordered' }, 'a'],
+      [{ name: 'tmux_ordered' }, 'b'],
     ]);
     gateway.onModuleDestroy();
+  });
+
+  it('binds a pending image gesture to the draft after an earlier Enter while allowing immediate cancellation', async () => {
+    const projectId = randomUUID();
+    const sessionId = randomUUID();
+    const { gateway, registry, humanPromptState, terminalIO } = createGateway({
+      imageProjectId: projectId,
+    });
+    const client = createMockSocket('image-writer');
+    const session = registry.create(sessionId, `tmux_${sessionId}`);
+    session.subscribe(client.id);
+    const executor = new CliForegroundExecutor();
+    executor.setDefaultResponse({ type: 'success', stdout: '%72' });
+    const paneIO = new TerminalIOService(executor, {} as never, humanPromptState, {} as never);
+    (terminalIO.sendControl as jest.Mock).mockImplementation(paneIO.sendControl.bind(paneIO));
+    terminalIO.withComposer = paneIO.withComposer.bind(paneIO);
+    const alive = deferred<boolean>();
+    (terminalIO.sessionExists as jest.Mock).mockReturnValueOnce(alive.promise);
+    const enter = gateway.handleInput(client, { sessionId, data: '\r', ttyMode: true });
+    const gesture = { projectId, sessionId, gestureId: randomUUID() };
+    const cancelled = { ...gesture, gestureId: randomUUID() };
+    const begin = gateway.handleImageBegin(client, gesture);
+    const cancelledBegin = gateway.handleImageBegin(client, cancelled);
+    gateway.handleImageEnd(client, cancelled);
+    alive.resolve(true);
+    await enter;
+    expect(await begin).toMatchObject({ status: 'ready' });
+    const item = {
+      ...gesture,
+      kind: 'image-paste' as const,
+      index: 0,
+      attachmentId: randomUUID() + '.png',
+    };
+    expect(await gateway.handleInput(client, item)).toMatchObject({ status: 'delivered' });
+    expect(await cancelledBegin).toMatchObject({ status: 'stale' });
+    expect(
+      await gateway.handleInput(client, { ...item, gestureId: cancelled.gestureId }),
+    ).toMatchObject({ status: 'stale' });
+    expect(
+      executor.calls
+        .filter(({ argv }) => argv[1] === 'paste-buffer' || argv[1] === 'send-keys')
+        .map(({ argv }) => argv.at(-1)),
+    ).toEqual(['Enter', '%72']);
+    gateway.onModuleDestroy();
+    registry.dispose(sessionId);
   });
 
   it('keeps Ctrl+C behind printable input waiting for prompt activation', async () => {
@@ -3930,13 +4002,16 @@ describe('TerminalGateway input arrival order', () => {
     await started.promise;
     const second = gateway.handleInput(client, { sessionId: 'ordered', data: '\x03' });
     await Promise.resolve();
+    expect(terminalIO.sendLiteralText).not.toHaveBeenCalled();
     expect(terminalIO.sendControl).not.toHaveBeenCalled();
     promotion.resolve();
     await Promise.all([first, second]);
-    expect((terminalIO.sendControl as jest.Mock).mock.calls.map((call) => call[1])).toEqual([
-      ['-l', '--', 'a'],
-      ['C-c'],
-    ]);
+    const target = { name: 'tmux_ordered' };
+    expect(terminalIO.sendLiteralText).toHaveBeenCalledWith(target, 'a');
+    expect(terminalIO.sendControl).toHaveBeenCalledWith(target, ['C-c']);
+    expect((terminalIO.sendLiteralText as jest.Mock).mock.invocationCallOrder[0]).toBeLessThan(
+      (terminalIO.sendControl as jest.Mock).mock.invocationCallOrder[0],
+    );
     gateway.onModuleDestroy();
   });
 
@@ -3956,12 +4031,8 @@ describe('TerminalGateway input arrival order', () => {
       });
       await expect(first).rejects.toThrow('liveness failed');
       await second;
-      expect(terminalIO.sendControl).toHaveBeenCalledTimes(1);
-      expect(terminalIO.sendControl).toHaveBeenCalledWith({ name: 'tmux_ordered' }, [
-        '-l',
-        '--',
-        'b',
-      ]);
+      expect(terminalIO.sendLiteralText).toHaveBeenCalledTimes(1);
+      expect(terminalIO.sendLiteralText).toHaveBeenCalledWith({ name: 'tmux_ordered' }, 'b');
       gateway.onModuleDestroy();
     },
   );
@@ -3973,6 +4044,9 @@ describe('TerminalGateway input arrival order', () => {
     const pasteStarted = deferred<void>();
     const writes: string[] = [];
     (terminalIO.sessionExists as jest.Mock).mockReturnValueOnce(alive.promise);
+    (terminalIO.sendLiteralText as jest.Mock).mockImplementation(async (_target, data) => {
+      writes.push(data);
+    });
     (terminalIO.sendControl as jest.Mock).mockImplementation(async (_target, keys) => {
       writes.push(keys.at(-1));
     });
@@ -4000,12 +4074,8 @@ describe('TerminalGateway input arrival order', () => {
     (terminalIO.sessionExists as jest.Mock).mockReturnValueOnce(alive.promise);
     const blocked = gateway.handleInput(client, { sessionId: 'ordered', data: 'a', ttyMode: true });
     await gateway.handleInput(client, { sessionId: 'independent', data: 'b', ttyMode: true });
-    expect(terminalIO.sendControl).toHaveBeenCalledTimes(1);
-    expect(terminalIO.sendControl).toHaveBeenCalledWith({ name: 'tmux_independent' }, [
-      '-l',
-      '--',
-      'b',
-    ]);
+    expect(terminalIO.sendLiteralText).toHaveBeenCalledTimes(1);
+    expect(terminalIO.sendLiteralText).toHaveBeenCalledWith({ name: 'tmux_independent' }, 'b');
     alive.resolve(true);
     await blocked;
     gateway.onModuleDestroy();

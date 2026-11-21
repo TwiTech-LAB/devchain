@@ -26,6 +26,7 @@ const ID_SET_TABLES = ['epics', 'epic_comments', 'epic_time_segments'] as const;
 interface SyncTarget {
   readonly projectId: string;
   readonly remoteId: string;
+  readonly controller: AbortController;
   /** The next pull asks for complete ID sets. */
   fullDue: boolean;
   lastFullAt: number;
@@ -88,6 +89,7 @@ export class RemoteLiveSyncService
     this.timer = null;
     const targets = [...this.targets.values()];
     this.targets.clear();
+    for (const target of targets) target.controller.abort();
     await Promise.all(targets.map((target) => target.inFlight));
     for (const target of targets) this.files.forget(target.projectId);
   }
@@ -102,6 +104,7 @@ export class RemoteLiveSyncService
     this.targets.set(projectId, {
       projectId,
       remoteId,
+      controller: new AbortController(),
       fullDue: options.full === true,
       lastFullAt: Date.now(),
       offline: false,
@@ -111,6 +114,7 @@ export class RemoteLiveSyncService
       inFlight: null,
       queuedPull: null,
     });
+    existing?.controller.abort();
     logger.info({ projectId, remoteId }, 'Live sync started');
   }
 
@@ -119,6 +123,7 @@ export class RemoteLiveSyncService
     const target = this.targets.get(projectId);
     if (!target) return;
     this.targets.delete(projectId);
+    target.controller.abort();
     logger.info({ projectId }, 'Live sync stopped');
     await target.inFlight;
     this.files.forget(projectId);
@@ -181,7 +186,12 @@ export class RemoteLiveSyncService
   }
 
   private async pullWithFiles(target: SyncTarget): Promise<void> {
-    await this.files.tick(target.projectId, target.remoteId, () => this.isCurrent(target));
+    await this.files.tick(
+      target.projectId,
+      target.remoteId,
+      () => this.isCurrent(target),
+      target.controller.signal,
+    );
     if (this.isCurrent(target)) await this.pull(target);
   }
 

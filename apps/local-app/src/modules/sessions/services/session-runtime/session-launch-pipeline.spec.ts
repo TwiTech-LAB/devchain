@@ -62,7 +62,7 @@ import { ShellForegroundError } from '../../../terminal/services/terminal-io/del
 import { vaultInstructionBlock } from '../../../vault/vault-instructions';
 
 const SHIPPED_INITIAL_PROMPT = readFileSync(
-  join(__dirname, '../../../../../templates-src/teams-dev/prompts/009-initialize-agent.md'),
+  join(__dirname, '../../../../../templates-src/teams-dev/prompts/010-initialize-agent.md'),
   'utf8',
 );
 

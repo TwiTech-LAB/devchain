@@ -139,8 +139,7 @@ describe('importProjectWithHelper — session preservation', () => {
     settings: {
       updateSettings: jest.fn().mockResolvedValue(undefined),
       setProjectTemplateMetadata: jest.fn().mockResolvedValue(undefined),
-      clearProjectPresets: jest.fn().mockResolvedValue(undefined),
-      setProjectPresets: jest.fn().mockResolvedValue(undefined),
+      mergeProjectTemplatePresets: jest.fn().mockResolvedValue(undefined),
     } as unknown as import('../../settings/services/settings.service').SettingsService,
     watchersService: { deleteWatcher: jest.fn().mockResolvedValue(undefined) },
     unifiedTemplateService: {
@@ -156,7 +155,7 @@ describe('importProjectWithHelper — session preservation', () => {
     applyProjectSettings: jest.fn().mockResolvedValue({ initialPromptSet: false }),
     getImportErrorMessage: jest.fn().mockImplementation((e: unknown) => String(e)),
     applyAgentConfigs: jest.fn().mockResolvedValue({ applied: 0, warnings: [] }),
-    applyPreset: jest.fn().mockResolvedValue({ applied: 0, warnings: [] }),
+    applyPreset: jest.fn().mockResolvedValue({ applied: 0, warnings: [], teamsApplied: 0 }),
   });
 
   it('(a) preserves sessions when old agent name matches new template agent name', async () => {
@@ -220,11 +219,6 @@ describe('importProjectWithHelper — session preservation', () => {
     expect(calledMaps.agentNameToId).toBeInstanceOf(Map);
     expect(calledMaps.agentNameToId.get('coder')).toBe('new-agent-coder');
     expect(calledMaps.configLookupMap).toBeInstanceOf(Map);
-
-    // Regression: batch-6 presets codec still runs unchanged (payload has no presets → clear).
-    expect(
-      (deps.settings as unknown as { clearProjectPresets: jest.Mock }).clearProjectPresets,
-    ).toHaveBeenCalledWith(PROJECT_ID);
   });
 
   it('does not invoke applyAgentConfigs when no agentOverrides are provided', async () => {
@@ -266,9 +260,10 @@ describe('importProjectWithHelper — session preservation', () => {
         agentNameToId: expect.any(Map),
         configLookupMap: expect.any(Map),
       }),
+      new Set(),
     );
-    const settings = deps.settings as unknown as { setProjectPresets: jest.Mock };
-    expect(settings.setProjectPresets.mock.invocationCallOrder[0]).toBeLessThan(
+    const settings = deps.settings as unknown as { mergeProjectTemplatePresets: jest.Mock };
+    expect(settings.mergeProjectTemplatePresets.mock.invocationCallOrder[0]).toBeLessThan(
       deps.applyPreset.mock.invocationCallOrder[0],
     );
     expect(deps.applyAgentConfigs).not.toHaveBeenCalled();

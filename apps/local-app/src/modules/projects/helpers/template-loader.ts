@@ -23,7 +23,8 @@ import {
   type FamilyAlternativesResult,
   type ProjectSettingsTemplateInput,
 } from './profile-mapping.helpers';
-import type { PresetAgentConfig } from './project-presets.helpers';
+import type { ApplyPresetFn, PresetAgentConfig } from './project-presets.helpers';
+import { getPresetSkippedTeamNames } from './team-overrides.helpers';
 import type { TeamsService } from '../../teams/services/teams.service';
 import type { WatchersService } from '../../watchers/services/watchers.service';
 import { ImportContext } from '../template-codec/import-context';
@@ -110,14 +111,7 @@ interface CreateFromTemplateDeps {
     projectId: string,
     subscribers: ParsedTemplatePayload['subscribers'],
   ) => Promise<{ created: number; subscriberIdMap: Record<string, string> }>;
-  applyPreset: (
-    projectId: string,
-    presetName: string,
-    nameMaps?: {
-      agentNameToId: Map<string, string>;
-      configLookupMap: Map<string, string>;
-    },
-  ) => Promise<{ applied: number; warnings: string[] }>;
+  applyPreset: ApplyPresetFn;
   applyAgentConfigs: (
     projectId: string,
     agentConfigs: PresetAgentConfig[],
@@ -383,8 +377,6 @@ export async function createFromTemplateWithHelper(
     deps.settings,
   );
 
-  // Preset APPLICATION (create-specific: selects each agent's provider config by name). The presets
-  // themselves were stored by the presets codec above; here we apply the chosen one.
   const presetName = input.presetName;
   if (presetName) {
     const templatePresets = extractTemplatePresets(resolvedPayload as { presets?: unknown });
@@ -392,22 +384,25 @@ export async function createFromTemplateWithHelper(
     if (!selectedPreset) {
       logger.warn({ projectId: project.id, presetName }, 'Selected preset not found in template');
     } else {
-      await deps.applyPreset(project.id, presetName, {
-        agentNameToId: new Map(Object.entries(pipelineCtx.get('agentNameToId'))),
-        configLookupMap: pipelineCtx.get('selectionEligibleConfigLookupMap'),
-      });
+      await deps.applyPreset(
+        project.id,
+        presetName,
+        {
+          agentNameToId: new Map(Object.entries(pipelineCtx.get('agentNameToId'))),
+          configLookupMap: pipelineCtx.get('selectionEligibleConfigLookupMap'),
+        },
+        getPresetSkippedTeamNames(input.teamOverrides),
+      );
       logger.info({ projectId: project.id, presetName }, 'Applied preset to project');
     }
   }
 
-  // Per-agent config overrides (wizard/API). Mutually exclusive with presetName (enforced at the
-  // controller); applied via the shared inner helper and NEVER marks an active preset. Uses the
-  // same name maps the preset path uses so config resolution is byte-identical.
+  // An explicit per-agent override can use a config from any installed provider.
   const agentOverrides = input.agentOverrides;
   if (agentOverrides && agentOverrides.length > 0) {
     const { applied, warnings } = await deps.applyAgentConfigs(project.id, agentOverrides, {
       agentNameToId: new Map(Object.entries(pipelineCtx.get('agentNameToId'))),
-      configLookupMap: pipelineCtx.get('selectionEligibleConfigLookupMap'),
+      configLookupMap: pipelineCtx.get('configLookupMap'),
     });
     logger.info(
       { projectId: project.id, applied, warnings: warnings.length },

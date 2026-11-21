@@ -10,22 +10,30 @@ import { useHomeSocket } from '@/ui/hooks/useHomeSocket';
 import {
   approveVaultRequest,
   denyVaultRequest,
+  fetchVaultRequestCandidates,
   fetchVaultRequests,
   fulfillVaultRequest,
+  type VaultRequestCandidate,
   type VaultRequestView,
 } from '@/ui/lib/vault-requests';
 import { VaultRequestModal } from './VaultRequestModal';
 
+const mockToast = jest.fn();
 jest.mock('@/ui/hooks/useHomeSocket', () => ({ useHomeSocket: jest.fn() }));
+jest.mock('@/ui/hooks/use-toast', () => ({ useToast: () => ({ toast: mockToast }) }));
 jest.mock('@/ui/lib/vault-requests', () => ({
   ...jest.requireActual('@/ui/lib/vault-requests'),
   fetchVaultRequests: jest.fn(),
+  fetchVaultRequestCandidates: jest.fn(),
   fulfillVaultRequest: jest.fn(),
   approveVaultRequest: jest.fn(),
   denyVaultRequest: jest.fn(),
 }));
 
 const listMock = fetchVaultRequests as jest.MockedFunction<typeof fetchVaultRequests>;
+const candidatesMock = fetchVaultRequestCandidates as jest.MockedFunction<
+  typeof fetchVaultRequestCandidates
+>;
 const fulfillMock = fulfillVaultRequest as jest.MockedFunction<typeof fulfillVaultRequest>;
 const approveMock = approveVaultRequest as jest.MockedFunction<typeof approveVaultRequest>;
 const denyMock = denyVaultRequest as jest.MockedFunction<typeof denyVaultRequest>;
@@ -70,8 +78,10 @@ beforeEach(() => {
     status: 'fulfilled',
     permanent: false,
     entryId: null,
+    entryName: null,
   });
   denyMock.mockResolvedValue();
+  candidatesMock.mockResolvedValue([]);
   approveMock.mockImplementation((requestId, decision) =>
     Promise.resolve({ requestId, status: 'approved', decision }),
   );
@@ -86,12 +96,12 @@ const useRequest = (overrides: Partial<VaultRequestView> = {}) =>
     ...overrides,
   });
 
-const USE_ACTIONS = ['Approve for this session', 'Approve once', 'Never ask for this role'];
+const USE_ACTIONS = ['Approve for this session', 'Approve once', 'Always approve for this role'];
 
 it.each([
   ['Approve for this session', 'session'],
   ['Approve once', 'once'],
-  ['Never ask for this role', 'family'],
+  ['Always approve for this role', 'family'],
 ] as const)('answers a use request with "%s"', async (label, decision) => {
   listMock.mockResolvedValueOnce([useRequest()]).mockResolvedValue([]);
   const user = renderModal();
@@ -106,7 +116,7 @@ it.each([
 });
 
 it.each([
-  ['a requester without a role', { familySlug: null }, 'Never ask for this role'],
+  ['a requester without a role', { familySlug: null }, 'Always approve for this role'],
   ['a file entry', { kind: 'file' as const }, 'Approve once'],
 ])('hides one use action for %s', async (_case, overrides, hidden) => {
   listMock.mockResolvedValue([useRequest(overrides)]);
@@ -136,6 +146,8 @@ it('opens a request that was pending before the page loaded and gives it for one
   const user = renderModal();
 
   expect(await screen.findByText('Needed to run the payment tests')).toBeTruthy();
+  await waitFor(() => expect(candidatesMock).toHaveBeenCalledWith('r1'));
+  expect(screen.queryByLabelText('Use an existing entry')).toBeNull();
   await user.type(screen.getByLabelText('Value'), 'sk-canary');
   await user.click(screen.getByLabelText(/This session only/));
   await user.click(screen.getByRole('button', { name: 'Give for this session' }));
@@ -183,6 +195,8 @@ it('approves a grant request without a value field', async () => {
 
   expect(await screen.findByText('Live key of the shop')).toBeTruthy();
   expect(screen.queryByLabelText('Value')).toBeNull();
+  expect(screen.queryByLabelText('Use an existing entry')).toBeNull();
+  expect(candidatesMock).not.toHaveBeenCalled();
   await user.click(screen.getByRole('button', { name: 'Grant access' }));
 
   await waitFor(() => expect(fulfillMock).toHaveBeenCalledWith('r1', { permanent: true }));
@@ -196,6 +210,120 @@ it('denies with the optional reason', async () => {
   await user.click(screen.getByRole('button', { name: 'Deny' }));
 
   await waitFor(() => expect(denyMock).toHaveBeenCalledWith('r1', 'Use the test key'));
+});
+
+function candidate(overrides: Partial<VaultRequestCandidate> = {}): VaultRequestCandidate {
+  return {
+    id: 'e-shared',
+    name: 'SHOP_STRIPE_KEY',
+    kind: 'secret',
+    description: 'Live key of the shop',
+    ownerProjectId: null,
+    ownerProjectName: null,
+    alreadyAvailable: false,
+    ...overrides,
+  };
+}
+
+const EXACT = candidate({ id: 'e-exact', name: 'STRIPE_KEY', description: 'Test key' });
+const OF_BETA = candidate({
+  id: 'e-beta',
+  name: 'BETA_KEY',
+  ownerProjectId: 'B',
+  ownerProjectName: 'Beta',
+});
+
+/** Opens a create request that has candidates and switches to the existing-entry mode. */
+async function openExistingEntryMode(
+  candidates: VaultRequestCandidate[],
+  overrides: Partial<VaultRequestView> = {},
+) {
+  listMock.mockResolvedValue([request(overrides)]);
+  candidatesMock.mockResolvedValue(candidates);
+  const user = renderModal();
+  await user.click(await screen.findByLabelText('Use an existing entry'));
+  return user;
+}
+
+it('replaces the value field with the entry picker in the existing-entry mode', async () => {
+  listMock.mockResolvedValue([request()]);
+  candidatesMock.mockResolvedValue([candidate()]);
+  const user = renderModal();
+
+  expect(await screen.findByLabelText('Enter a new value')).toBeChecked();
+  expect(screen.getByLabelText('Value')).toBeTruthy();
+  await user.click(screen.getByLabelText('Use an existing entry'));
+
+  expect(screen.queryByLabelText('Value')).toBeNull();
+  expect(screen.queryByLabelText(/This session only/)).toBeNull();
+  expect(screen.getByRole('radio', { name: /SHOP_STRIPE_KEY/ })).toBeTruthy();
+});
+
+it('preselects the entry with the requested name and marks an entry the agent already has', async () => {
+  await openExistingEntryMode([candidate({ alreadyAvailable: true }), EXACT]);
+
+  expect(screen.getByRole('radio', { name: /^STRIPE_KEY/ })).toBeChecked();
+  expect(
+    screen.getByRole('radio', { name: /SHOP_STRIPE_KEY.*already available to Coder 1/ }),
+  ).not.toBeChecked();
+  expect(screen.queryByRole('radio', { name: /^STRIPE_KEY.*already available/ })).toBeNull();
+});
+
+it.each([
+  ['an entry of another project', OF_BETA, {}, [/belongs to Beta.*becomes a shared entry/]],
+  ['a shared entry', candidate(), {}, []],
+  [
+    'an entry of the same project',
+    candidate({ ownerProjectId: 'A', ownerProjectName: 'Alpha' }),
+    {},
+    [],
+  ],
+  [
+    'a requester without a role',
+    candidate(),
+    { familySlug: null },
+    [/gives SHOP_STRIPE_KEY to all agents of Alpha\.$/],
+  ],
+])('shows the notices for %s before the answer', async (_case, entry, overrides, notices) => {
+  const user = await openExistingEntryMode([entry], overrides);
+  await user.click(screen.getByRole('radio', { name: new RegExp(entry.name) }));
+
+  const alerts = screen.queryAllByRole('alert').filter((node) => node.tagName !== 'P');
+  expect(alerts.map((node) => node.textContent)).toEqual(
+    notices.map((notice) => expect.stringMatching(notice)),
+  );
+});
+
+it('grants the selected entry with no value and names it in the toast', async () => {
+  fulfillMock.mockResolvedValue({
+    requestId: 'r1',
+    status: 'fulfilled',
+    permanent: true,
+    entryId: 'e-shared',
+    entryName: 'SHOP_STRIPE_KEY',
+  });
+  const user = await openExistingEntryMode([EXACT, candidate()]);
+
+  await user.click(screen.getByRole('radio', { name: /SHOP_STRIPE_KEY/ }));
+  await user.click(screen.getByRole('button', { name: 'Grant access' }));
+
+  await waitFor(() =>
+    expect(fulfillMock).toHaveBeenCalledWith('r1', { entryId: 'e-shared', permanent: true }),
+  );
+  expect(mockToast).toHaveBeenCalledWith({ title: 'Coder 1 can now use SHOP_STRIPE_KEY.' });
+});
+
+it('keeps the error and the selected entry after a failed answer reloads the list', async () => {
+  fulfillMock.mockRejectedValue(new Error('The entry cannot answer this request.'));
+  const user = await openExistingEntryMode([EXACT, candidate()]);
+
+  await user.click(screen.getByRole('radio', { name: /SHOP_STRIPE_KEY/ }));
+  await user.click(screen.getByRole('button', { name: 'Grant access' }));
+
+  expect(await screen.findByText('The entry cannot answer this request.')).toBeTruthy();
+  await waitFor(() => expect(candidatesMock.mock.calls.length).toBeGreaterThan(1));
+  expect(screen.getByRole('radio', { name: /SHOP_STRIPE_KEY/ })).toBeChecked();
+  expect(screen.getByRole('dialog')).toBeTruthy();
 });
 
 it('loads the list again when a request frame arrives on the home socket', async () => {

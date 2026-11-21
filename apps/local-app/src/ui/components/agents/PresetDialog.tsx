@@ -33,8 +33,10 @@ import { Loader2, Save, AlertCircle, Pencil } from 'lucide-react';
 import type { Preset, PresetAgentConfig } from '@/ui/lib/preset-types';
 import { providerModelQueryKeys } from '@/ui/lib/provider-model-query-keys';
 import { shortModelName } from '@/ui/lib/model-utils';
-import { HOME_BACKEND, apiFetch } from '@/ui/lib/api-transport';
+import type { FetchFn } from '@/ui/lib/api-transport';
 import { useFetchFactory } from '@/ui/hooks/useFetchFactory';
+import { PresetTeamConfigsSection } from './PresetTeamConfigsSection';
+import { usePresetTeamConfigs } from './usePresetTeamConfigs';
 
 interface Agent {
   id: string;
@@ -69,6 +71,11 @@ interface ProviderModelOption {
 const DEFAULT_MODEL_OVERRIDE = '__default_model_override__';
 const DEFAULT_EFFORT_OVERRIDE = '__default_effort_override__';
 
+/** The label of a "no override" item: it names the value of the selected option, when it has one. */
+function defaultLabel(optionValue: string | null | undefined): string {
+  return optionValue ? `Default (${optionValue})` : 'Default';
+}
+
 function parseProviderModels(payload: unknown, providerId: string): ProviderModelOption[] {
   if (!Array.isArray(payload)) {
     return [];
@@ -100,16 +107,16 @@ function parseProviderModels(payload: unknown, providerId: string): ProviderMode
     .filter((model): model is ProviderModelOption => Boolean(model));
 }
 
-async function createPreset(projectId: string, preset: Preset): Promise<CreatePresetResponse> {
-  const res = await apiFetch(
-    `/api/projects/${projectId}/presets`,
-    {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(preset),
-    },
-    { backend: HOME_BACKEND },
-  );
+async function createPreset(
+  fetchFn: FetchFn,
+  projectId: string,
+  preset: Preset,
+): Promise<CreatePresetResponse> {
+  const res = await fetchFn(`/api/projects/${projectId}/presets`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(preset),
+  });
   if (!res.ok) {
     const error = await res.json().catch(() => ({ message: 'Failed to create preset' }));
     throw new Error(error.message || 'Failed to create preset');
@@ -118,23 +125,16 @@ async function createPreset(projectId: string, preset: Preset): Promise<CreatePr
 }
 
 async function updatePreset(
+  fetchFn: FetchFn,
   projectId: string,
   presetName: string,
-  updates: {
-    name?: string;
-    description?: string | null;
-    agentConfigs?: PresetAgentConfig[];
-  },
+  updates: Partial<Omit<Preset, 'origin'>>,
 ): Promise<UpdatePresetResponse> {
-  const res = await apiFetch(
-    `/api/projects/${projectId}/presets`,
-    {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ presetName, updates }),
-    },
-    { backend: HOME_BACKEND },
-  );
+  const res = await fetchFn(`/api/projects/${projectId}/presets`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ presetName, updates }),
+  });
   if (!res.ok) {
     const error = await res.json().catch(() => ({ message: 'Failed to update preset' }));
     throw new Error(error.message || 'Failed to update preset');
@@ -157,6 +157,7 @@ export function PresetDialog({
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
   const [selectedAgentConfigs, setSelectedAgentConfigs] = useState<PresetAgentConfig[]>([]);
+  const teamEditor = usePresetTeamConfigs(fetchFn, projectId, open, presetToEdit);
 
   const isEditMode = !!presetToEdit;
 
@@ -291,7 +292,10 @@ export function PresetDialog({
       : ''
     : 'Name is required';
 
-  const isValid = !nameError && name.trim() !== '' && selectedAgentConfigs.length > 0;
+  const isValid =
+    !nameError &&
+    teamEditor.isReady &&
+    (selectedAgentConfigs.length > 0 || teamEditor.teamConfigs.length > 0);
 
   const handleClose = () => {
     if (!isSaving) {
@@ -315,31 +319,26 @@ export function PresetDialog({
         }),
       );
 
-      if (isEditMode) {
-        const updates = {
-          name: name.trim(),
-          description: description.trim() || null,
-          agentConfigs: normalizedAgentConfigs,
-        };
+      const payload = {
+        name: name.trim(),
+        description: description.trim() || null,
+        agentConfigs: normalizedAgentConfigs,
+        teamConfigs: teamEditor.teamConfigs,
+      };
 
-        const result = await updatePreset(projectId, presetToEdit!.name, updates);
+      if (isEditMode) {
+        const result = await updatePreset(fetchFn, projectId, presetToEdit!.name, payload);
 
         toast({
           title: 'Preset Updated',
-          description: `Updated preset "${result.name}" with ${selectedAgentConfigs.length} agent configuration(s)`,
+          description: `Updated preset "${result.name}"`,
         });
       } else {
-        const preset = {
-          name: name.trim(),
-          description: description.trim() || null,
-          agentConfigs: normalizedAgentConfigs,
-        };
-
-        const result = await createPreset(projectId, preset);
+        const result = await createPreset(fetchFn, projectId, payload);
 
         toast({
           title: 'Preset Created',
-          description: `Saved preset "${result.name}" with ${selectedAgentConfigs.length} agent configuration(s)`,
+          description: `Saved preset "${result.name}"`,
         });
       }
 
@@ -452,17 +451,25 @@ export function PresetDialog({
 
   return (
     <Dialog open={open} onOpenChange={handleClose}>
-      <DialogContent className="max-w-xl">
-        <DialogHeader>
+      {/* An agent row is a name and three selects, so the dialog is wide. The header and footer
+          stay in view; only the body scrolls. */}
+      <DialogContent className="flex max-w-3xl flex-col overflow-hidden">
+        <DialogHeader className="shrink-0">
           <DialogTitle>{isEditMode ? 'Edit Preset' : 'Save as Preset'}</DialogTitle>
           <DialogDescription>
             {isEditMode
-              ? 'Modify the preset name, description, or agent configurations'
-              : 'Create a named configuration from agent provider assignments'}
+              ? 'Modify the preset name, description, or configurations'
+              : 'Save agent and team configurations for this project'}
           </DialogDescription>
         </DialogHeader>
 
-        <div className="space-y-4 py-4">
+        <div className="min-h-0 space-y-4 overflow-y-auto py-4 pr-1">
+          {presetToEdit && presetToEdit.origin !== 'user' && (
+            <p className="text-sm text-muted-foreground">
+              This is a template preset. A template import or upgrade replaces it. Rename it to keep
+              your changes.
+            </p>
+          )}
           {/* Name field */}
           <div className="space-y-2">
             <Label htmlFor="preset-name">Name *</Label>
@@ -559,7 +566,7 @@ export function PresetDialog({
                     return (
                       <div
                         key={agent.id}
-                        className="flex items-center gap-2 p-2 rounded hover:bg-muted"
+                        className="flex flex-wrap items-center gap-2 rounded p-2 hover:bg-muted"
                       >
                         <Checkbox
                           checked={isSelected}
@@ -568,7 +575,7 @@ export function PresetDialog({
                           }
                         />
                         <span
-                          className="flex-1 min-w-0 truncate text-sm"
+                          className="min-w-[8rem] flex-1 truncate text-sm"
                           title={agent.name}
                           data-testid={`preset-agent-name-${agent.id}`}
                         >
@@ -612,14 +619,17 @@ export function PresetDialog({
                             }
                           >
                             <SelectTrigger
-                              className="h-7 w-36 text-xs"
+                              className="h-7 w-48 text-xs"
                               data-testid={`preset-model-select-${agent.id}`}
                             >
                               <SelectValue placeholder="Default" />
                             </SelectTrigger>
                             <SelectContent>
                               <SelectItem value={DEFAULT_MODEL_OVERRIDE} className="text-xs">
-                                Default
+                                {defaultLabel(
+                                  selectedConfigOption?.model &&
+                                    shortModelName(selectedConfigOption.model),
+                                )}
                               </SelectItem>
                               {providerModels.map((model) => (
                                 <SelectItem
@@ -653,7 +663,7 @@ export function PresetDialog({
                             </SelectTrigger>
                             <SelectContent>
                               <SelectItem value={DEFAULT_EFFORT_OVERRIDE} className="text-xs">
-                                Default
+                                {defaultLabel(selectedConfigOption?.effort)}
                               </SelectItem>
                               {providerEfforts.map((effort) => (
                                 <SelectItem
@@ -685,9 +695,10 @@ export function PresetDialog({
               Check agents to include them, then select a provider configuration for each
             </p>
           </div>
+          <PresetTeamConfigsSection editor={teamEditor} disabled={isSaving} />
         </div>
 
-        <DialogFooter>
+        <DialogFooter className="shrink-0">
           <Button variant="outline" onClick={handleClose} disabled={isSaving}>
             Cancel
           </Button>

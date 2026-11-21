@@ -11,6 +11,7 @@ import { parseJsonc, setJsoncValue } from '../../../common/jsonc';
 import { createLogger } from '../../../common/logging/logger';
 import { ensureClaudeConfigKeys, writeConfigAtomically } from '../../providers/utils/claude-config';
 import { HostHelperService } from './host-helper.service';
+import { CLAUDE_SETTINGS_FILE, getDevinUserConfigPath } from './host-home-files';
 
 const logger = createLogger('ProviderBaselineService');
 const SETTINGS_FILE_MODE = 0o600;
@@ -48,12 +49,6 @@ function baselineLeaves(
       ? baselineLeaves(wanted, [...path, key])
       : [{ path: [...path, key], value: wanted }],
   );
-}
-
-/** Devin's own path rule: `$XDG_CONFIG_HOME/devin/config.json`, else `~/.config/devin/config.json`. */
-export function getDevinUserConfigPath(): string {
-  const configHome = process.env.XDG_CONFIG_HOME || join(homedir(), '.config');
-  return join(configHome, 'devin', 'config.json');
 }
 
 type BaselineMerge = { ok: true; value: Record<string, unknown> } | { ok: false; key: string };
@@ -161,7 +156,7 @@ export class ProviderBaselineService implements OnApplicationBootstrap {
   }
 
   private async applySettingsBaseline(): Promise<void> {
-    const settingsPath = join(homedir(), '.claude', 'settings.json');
+    const settingsPath = join(homedir(), CLAUDE_SETTINGS_FILE);
     await mkdir(dirname(settingsPath), { recursive: true, mode: SETTINGS_DIRECTORY_MODE });
 
     let current: Record<string, unknown> | null = null;

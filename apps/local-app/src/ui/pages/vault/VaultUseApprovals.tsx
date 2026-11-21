@@ -66,7 +66,7 @@ function ProjectApprovals({
 }
 
 /**
- * The roles the user chose "Never ask for this role" for. Remove takes effect at once,
+ * The roles the user chose "Always approve for this role" for. Remove takes effect at once,
  * not with Save: the next session of that role asks again.
  */
 export function VaultUseApprovals({
@@ -98,7 +98,7 @@ export function VaultUseApprovals({
   return (
     <section aria-labelledby="vault-use-approvals" className="space-y-2">
       <h4 id="vault-use-approvals" className="text-sm font-medium">
-        Roles that are not asked
+        Roles that are always approved
       </h4>
       {readOnly || rows.length === 0 ? null : (
         <p className="text-sm text-muted-foreground">

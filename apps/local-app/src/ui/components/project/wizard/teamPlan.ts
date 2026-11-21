@@ -1,7 +1,11 @@
 import type { ProfileSelection } from '@/ui/components/team/ProviderGroupedConfigSelector';
 import { filterConfigurableTeams } from '@/ui/lib/teams';
+import type { SetupPreviewResponse } from '@/ui/pages/projects/lib/project-contracts';
+import { eqName } from './agentPlan';
 
-/** Pure state and emission logic for the shared wizard's Configure Teams step. */
+/** Pure state and emission logic for the team rows of the setup review. */
+
+type TemplatePreset = NonNullable<SetupPreviewResponse['payload']['presets']>[number];
 
 export interface ParsedTemplateTeam {
   name: string;
@@ -32,40 +36,142 @@ export interface TeamOverrideOutput {
 export interface TeamPanelState {
   selections: ProfileSelection<string, string>[];
   templateSelections: ProfileSelection<string, string>[];
+  /** Profiles whose initial config subset was replaced by the provider fallback. */
+  fallbacks?: TeamProfileFallback[];
 }
 
-/** Teams the wizard's Step 3 can configure (template enables team-lead agent creation). */
+export interface TeamProfileFallback {
+  profileName: string;
+  /** The initial subset, none of which is on an installed provider. */
+  fromConfigNames: string[];
+  /** The replacement: the profile's first config, in template order, on an installed provider. */
+  configName: string;
+}
+
+/** Template profiles + installed providers that drive the team provider fallback. */
+export interface TeamFallbackInput {
+  profiles: ParsedTemplateProfile[];
+  installedProviderNames: string[];
+}
+
+/** Teams the wizard can configure (template enables team-lead agent creation). */
 export function configurableTeams(teams: ParsedTemplateTeam[]): ParsedTemplateTeam[] {
   return filterConfigurableTeams(teams);
 }
 
 /**
- * Build the initial per-team panel state from the template (verbatim from the legacy dialog's
- * open-effect): each profile starts in `subset` mode when the template pins configs, else `allow-all`.
+ * Build the initial per-team panel state from the template: each profile starts in `subset` mode
+ * when the template pins configs, else `allow-all`.
+ *
+ * With `fallback`, a subset whose every config is on a provider that is not installed is replaced by
+ * the profile's first config on an installed provider, in both `selections` and
+ * `templateSelections` (the config selector offers only template configs). A subset with an
+ * unknown config name, or a profile with no installed config, is left unchanged.
  */
-export function initialTeamStates(visibleTeams: ParsedTemplateTeam[]): Map<string, TeamPanelState> {
+export function initialTeamStates(
+  visibleTeams: ParsedTemplateTeam[],
+  fallback?: TeamFallbackInput,
+): Map<string, TeamPanelState> {
+  const installed = new Set(
+    (fallback?.installedProviderNames ?? []).map((n) => n.trim().toLowerCase()),
+  );
+  const findProfile = (name: string) => fallback?.profiles.find((p) => eqName(p.name, name));
+
   const initial = new Map<string, TeamPanelState>();
   for (const team of visibleTeams) {
     const profileNames = team.profileNames ?? [];
+    const fallbacks: TeamProfileFallback[] = [];
     const selections: ProfileSelection<string, string>[] = profileNames.map((pn) => {
-      const sel = team.profileSelections?.find(
-        (s) => s.profileName.toLowerCase() === pn.toLowerCase(),
-      );
-      if (sel && sel.configNames.length > 0) {
-        return { profileKey: pn, mode: 'subset' as const, configKeys: sel.configNames };
+      const sel = team.profileSelections?.find((s) => eqName(s.profileName, pn));
+      if (!sel || sel.configNames.length === 0) {
+        return { profileKey: pn, mode: 'allow-all' as const };
       }
-      return { profileKey: pn, mode: 'allow-all' as const };
+      const replacement = fallback
+        ? fallbackConfigName(findProfile(pn), sel.configNames, installed)
+        : undefined;
+      if (replacement) {
+        fallbacks.push({
+          profileName: pn,
+          fromConfigNames: sel.configNames,
+          configName: replacement,
+        });
+        return { profileKey: pn, mode: 'subset' as const, configKeys: [replacement] };
+      }
+      return { profileKey: pn, mode: 'subset' as const, configKeys: sel.configNames };
     });
 
     initial.set(team.name, {
       selections,
       templateSelections: selections.map((s) => ({ ...s })),
+      ...(fallbacks.length > 0 ? { fallbacks } : {}),
     });
   }
   return initial;
 }
 
-/** Restricts emitted subset config names to the Step-1 provider selection. */
+/** Start configurable teams from the selected preset when it supplies a team entry. */
+export function templateTeamStates(
+  payload: SetupPreviewResponse['payload'],
+  providerNames: string[],
+  preset?: TemplatePreset,
+): Map<string, TeamPanelState> {
+  const profiles = (payload.profiles ?? []) as ParsedTemplateProfile[];
+  const teams = configurableTeams((payload.teams ?? []) as ParsedTemplateTeam[]).map((team) => {
+    const entry = preset?.teamConfigs?.find((item) => eqName(item.teamName, team.name));
+    if (!entry) return team;
+
+    const profileSelections = (team.profileNames ?? []).flatMap((profileName) => {
+      const selections = entry.profileSelections.filter((item) =>
+        eqName(item.profileName, profileName),
+      );
+      if (selections.length === 0) return [];
+
+      const configs = profiles.find((profile) =>
+        eqName(profile.name, profileName),
+      )?.providerConfigs;
+      const configNames = new Set<string>();
+      for (const name of selections.flatMap((selection) => selection.configNames)) {
+        const config = configs?.find((item) => eqName(item.name, name));
+        if (config) configNames.add(config.name);
+      }
+      if (configNames.size > 0) return [{ profileName, configNames: [...configNames] }];
+
+      const templateSelection = team.profileSelections?.find((item) =>
+        eqName(item.profileName, profileName),
+      );
+      return templateSelection ? [templateSelection] : [];
+    });
+
+    return { ...team, profileSelections };
+  });
+
+  return initialTeamStates(teams, {
+    profiles,
+    installedProviderNames: providerNames,
+  });
+}
+
+/** The fallback config for a subset that has no config on an installed provider, else undefined. */
+function fallbackConfigName(
+  profile: ParsedTemplateProfile | undefined,
+  configNames: string[],
+  installed: ReadonlySet<string>,
+): string | undefined {
+  const configs = profile?.providerConfigs ?? [];
+  const providerOf = (name: string) =>
+    configs
+      .find((c) => eqName(c.name, name))
+      ?.providerName.trim()
+      .toLowerCase();
+  const subsetRuns = configNames.some((name) => {
+    const provider = providerOf(name);
+    return provider === undefined || installed.has(provider);
+  });
+  if (subsetRuns) return undefined;
+  return configs.find((c) => installed.has(c.providerName.trim().toLowerCase()))?.name;
+}
+
+/** Restricts emitted subset config names to the selected providers. */
 export interface TeamOverrideProviderFilter {
   profiles: ParsedTemplateProfile[];
   selectedProviderNames: string[];

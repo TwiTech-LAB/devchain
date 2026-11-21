@@ -43,6 +43,7 @@ interface HarnessOptions {
   pendingFrames?: { sequence: number; data: string }[];
   cols?: number;
   rows?: number;
+  bracketedPasteMode?: boolean;
   inFlight?: boolean;
   expectingSeed?: boolean;
   /** Seed the owner into a settled, refreshable, given-baseline state before the test acts. */
@@ -66,6 +67,7 @@ function makeMockTerminal(options?: HarnessOptions): jest.Mocked<Terminal> {
     rows: options?.rows ?? 24,
     cols: options?.cols ?? 80,
     options: { scrollback: 1000 },
+    modes: { bracketedPasteMode: options?.bracketedPasteMode ?? false },
     buffer: { active: { baseY: 50, viewportY: 40 } },
   } as unknown as jest.Mocked<Terminal>;
 }
@@ -355,6 +357,37 @@ describe('useTerminalMessageHandlers', () => {
     expect(result.current.historySync.hasActiveAttempt()).toBe(true);
 
     jest.useRealTimers();
+  });
+
+  // The hook controls when the replacement reaches xterm's write queue.
+  it.each([true, false])('preserves bracketed paste mode %s when writing history', (mode) => {
+    const { sessionId, result } = renderHarness({
+      withActiveAttempt: true,
+      bracketedPasteMode: mode,
+    });
+    const { mockTerminal, token, handler } = result.current;
+
+    act(() => {
+      handler({
+        topic: `terminal/${sessionId}`,
+        type: 'full_history',
+        payload: {
+          history: 'HISTORY',
+          capturedSequence: 5,
+          hasHistory: false,
+          correlationId: token,
+        },
+        ts: new Date().toISOString(),
+      });
+    });
+
+    expect(mockTerminal.write.mock.calls).toEqual([
+      ...(mode ? [['\x1b[?2004h']] : []),
+      ['HISTORY', expect.any(Function)],
+    ]);
+    expect(mockTerminal.reset.mock.invocationCallOrder[0]).toBeLessThan(
+      mockTerminal.write.mock.invocationCallOrder[0],
+    );
   });
 
   it('merges buffered frames, commits the baseline, and advances the watermark on completion', () => {

@@ -26,6 +26,7 @@ import {
 } from '../../storage/interfaces/storage.interface';
 import { UpdateProject, Project } from '../../storage/models/domain.models';
 import { z } from 'zod';
+import { PresetTeamConfigsSchema } from '@devchain/shared';
 import { createLogger } from '../../../common/logging/logger';
 import {
   SLUG_PATTERN,
@@ -35,11 +36,16 @@ import {
 import { ProjectsService, type ImportProjectInput } from '../services/projects.service';
 import { SettingsService } from '../../settings/services/settings.service';
 import {
+  PresetInputSchema,
   RegistryTemplateMetadataDto,
   TemplatePresetAgentConfigSchema,
-  TemplatePresetSchema,
 } from '../../settings/dtos/settings.dto';
 import { ExportWithOverridesSchema } from '../dtos/export.dto';
+import {
+  mixesPreserveTeamSetup,
+  PRESERVE_SETUP_EXCLUSIVE_MESSAGE,
+  PreserveTeamSetupSchema,
+} from '../dtos/preserve-team-setup.schema';
 import {
   CreateProjectFromRegistryDto,
   RestoreTemplateBackupDto,
@@ -161,10 +167,15 @@ const UpgradeTemplateRequestSchema = z
     agentOverrides: z.array(TemplatePresetAgentConfigSchema).optional(),
     teamOverrides: TeamOverridesSchema,
     statusMappings: StatusMappingsSchema,
+    preserveTeamSetup: PreserveTeamSetupSchema.optional(),
   })
   .refine((data) => !(data.presetName && data.agentOverrides), {
     message: 'Provide either presetName or agentOverrides, but not both',
     path: ['agentOverrides'],
+  })
+  .refine((data) => !mixesPreserveTeamSetup(data), {
+    message: PRESERVE_SETUP_EXCLUSIVE_MESSAGE,
+    path: ['preserveTeamSetup'],
   });
 
 /**
@@ -448,6 +459,7 @@ export class ProjectsController {
       ...(parsed.agentOverrides !== undefined ? { agentOverrides: parsed.agentOverrides } : {}),
       ...(parsed.teamOverrides !== undefined ? { teamOverrides: parsed.teamOverrides } : {}),
       ...(parsed.statusMappings !== undefined ? { statusMappings: parsed.statusMappings } : {}),
+      ...(parsed.preserveTeamSetup ? { preserveTeamSetup: parsed.preserveTeamSetup } : {}),
     });
   }
 
@@ -463,6 +475,13 @@ export class ProjectsController {
     return this.templateUpgrade.previewUpgrade({
       projectId: id,
       targetVersion: parsed.targetVersion,
+      ...(parsed.preserveTeamSetup
+        ? {
+            preserveTeamSetup: parsed.preserveTeamSetup,
+            selectedProviderNames: normalizeSelectedProviderNames(parsed.selectedProviderNames),
+            familyProviderMappings: normalizeFamilyProviderMappings(parsed.familyProviderMappings),
+          }
+        : {}),
     });
   }
 
@@ -751,13 +770,14 @@ export class ProjectsController {
       presetName?: unknown;
       agentOverrides?: unknown;
       selectedProviderNames?: unknown;
+      preserveTeamSetup?: unknown;
       [key: string]: unknown;
     },
   ) {
     logger.info({ projectId: id, dryRun }, 'POST /api/projects/:id/import');
     const isDryRun = (dryRun ?? '').toString().toLowerCase() === 'true';
     // Strip control fields (statusMappings/familyProviderMappings/teamOverrides/agentOverrides/
-    // presetName/selectedProviderNames) so ONLY the template export reaches `...payload` →
+    // presetName/selectedProviderNames/preserveTeamSetup) so ONLY the template export reaches `...payload` →
     // ExportSchema.parse. Without this explicit destructure the catch-all `...payload` would
     // silently swallow these control fields into the template.
     const {
@@ -767,8 +787,21 @@ export class ProjectsController {
       presetName: rawPresetName,
       agentOverrides: rawAgentOverrides,
       selectedProviderNames: rawSelectedProviderNames,
+      preserveTeamSetup: rawPreserveTeamSetup,
       ...payload
     } = body ?? {};
+
+    if (mixesPreserveTeamSetup(body ?? {})) {
+      throw new BadRequestException(PRESERVE_SETUP_EXCLUSIVE_MESSAGE);
+    }
+    const preserveTeamSetup =
+      rawPreserveTeamSetup === undefined
+        ? undefined
+        : parseRequestBody(
+            PreserveTeamSetupSchema,
+            rawPreserveTeamSetup,
+            'Invalid preserveTeamSetup',
+          );
 
     // Validate familyProviderMappings if provided
     let familyProviderMappings: Record<string, string> | undefined;
@@ -849,6 +882,7 @@ export class ProjectsController {
       ...(agentOverrides ? { agentOverrides } : {}),
       ...(selectedProviderNames ? { selectedProviderNames } : {}),
       ...(teamOverrides ? { teamOverrides } : {}),
+      ...(preserveTeamSetup ? { preserveTeamSetup } : {}),
     });
   }
 
@@ -903,7 +937,7 @@ export class ProjectsController {
 
   /**
    * Apply a preset to a project
-   * Batch updates agent provider config assignments based on the preset definition
+   * Updates agent provider assignments and team config selections.
    */
   @Post(':id/presets/apply')
   @HttpCode(HttpStatus.OK)
@@ -927,6 +961,7 @@ export class ProjectsController {
 
     return {
       applied: result.applied,
+      teamsApplied: result.teamsApplied,
       warnings: result.warnings,
       agents: agentsRes.items,
     };
@@ -934,15 +969,13 @@ export class ProjectsController {
 
   /**
    * Create a new preset for a project
-   * Body: { name: string, description?: string, agentConfigs: Array<{agentName, providerConfigName}> }
    */
   @Post(':id/presets')
   @HttpCode(HttpStatus.CREATED)
   async createPreset(@Param('id') id: string, @Body() body: unknown) {
     logger.info({ projectId: id }, 'POST /api/projects/:id/presets');
 
-    // Validate request body against TemplatePresetSchema
-    const result = TemplatePresetSchema.safeParse(body);
+    const result = PresetInputSchema.safeParse(body);
     if (!result.success) {
       const errors = result.error.errors.map((e) => `${e.path.join('.')}: ${e.message}`).join('; ');
       throw new BadRequestException(`Invalid preset data: ${errors}`);
@@ -955,7 +988,7 @@ export class ProjectsController {
 
     // Create the preset via SettingsService
     try {
-      await this.settings.createProjectPreset(id, preset);
+      return await this.settings.createProjectPreset(id, preset);
     } catch (error) {
       // Handle conflict (duplicate name)
       if (error instanceof Error && error.message.includes('already exists')) {
@@ -963,14 +996,10 @@ export class ProjectsController {
       }
       throw error;
     }
-
-    // Return the created preset
-    return preset;
   }
 
   /**
    * Update an existing preset for a project
-   * Body: { presetName: string, updates: { name?, description?, agentConfigs? } }
    */
   @Patch(':id/presets')
   @HttpCode(HttpStatus.OK)
@@ -986,6 +1015,7 @@ export class ProjectsController {
             name: z.string().min(1).optional(),
             description: z.string().nullable().optional(),
             agentConfigs: z.array(TemplatePresetAgentConfigSchema).optional(),
+            teamConfigs: PresetTeamConfigsSchema.optional(),
           })
           .strict(),
       })

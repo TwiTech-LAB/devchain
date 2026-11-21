@@ -7,6 +7,17 @@ import { VaultRequestStore } from './vault-request.store';
 
 const logger = createLogger('VaultRequestNotifier');
 
+function fulfilledNotice(payload: EventPayload<'vault.request.resolved'>): string {
+  const { name: requested, grantedName: granted, grantedKind } = payload;
+  if (!granted) {
+    return `Secret ${requested} is available — use devchain vault exec --only ${requested} -- <cmd>`;
+  }
+  const notice = `Secret ${requested} is available under the name ${granted} — use devchain vault exec --only ${granted} -- <cmd>. If a tool reads $${requested}, set it inside the command: devchain vault exec --only ${granted} -- sh -c '${requested}="$${granted}" <cmd>'.`;
+  return grantedKind === 'file'
+    ? `${notice} ${granted} is a file entry: $${granted} holds the path of a file.`
+    : notice;
+}
+
 /** Tells the requesting agent, through its message pool, how the user answered. */
 @Injectable()
 export class VaultRequestNotifierSubscriber {
@@ -23,7 +34,7 @@ export class VaultRequestNotifierSubscriber {
     if (this.store.remoteOrigin(payload.requestId)) return;
     const body =
       payload.status === 'fulfilled'
-        ? `Secret ${payload.name} is available — use devchain vault exec --only ${payload.name} -- <cmd>`
+        ? fulfilledNotice(payload)
         : `The user denied your request for secret ${payload.name}.${
             payload.reason ? ` Reason: ${payload.reason}` : ''
           }`;

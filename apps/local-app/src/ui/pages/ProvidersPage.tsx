@@ -1,6 +1,6 @@
 import type { ProjectsQueryData } from '@/ui/pages/projects/lib/project-contracts';
 import type { ProvidersController } from '@/modules/providers/controllers/providers.controller';
-import { useRef, useState, useMemo } from 'react';
+import { useEffect, useRef, useState, useMemo } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { providerConfigQueryPredicates } from '@/ui/lib/provider-configs';
 import { Button } from '@/ui/components/ui/button';
@@ -73,7 +73,7 @@ import {
   type ProviderCliName,
 } from '@devchain/shared';
 import type { FetchFn } from '@/ui/lib/api-transport';
-import { useFetchFactory } from '@/ui/hooks/useFetchFactory';
+import { useFetchFactory, useHomeFetch } from '@/ui/hooks/useFetchFactory';
 import { markProviderCliOwnInstall, useProviderClisOverview } from '@/ui/hooks/useProviderClis';
 import { ProviderCliVersionsSection } from '@/ui/components/providers/ProviderCliVersionsSection';
 import { ProviderUsageSettingsCard } from '@/ui/components/providers/ProviderUsageSettingsCard';
@@ -113,6 +113,28 @@ function isProviderMutationError(error: unknown): error is ProviderMutationError
   return Boolean(error && typeof error === 'object' && 'field' in error);
 }
 
+async function toProviderMutationError(
+  res: Response,
+  fallbackMessage: string,
+): Promise<ProviderMutationError> {
+  const body = await res.json().catch(() => ({ message: fallbackMessage }));
+  const mutationError = new Error(body.message || fallbackMessage) as ProviderMutationError;
+  // The HTTP exception filter nests the hint under `details`.
+  const field = body.field ?? body.details?.field;
+  if (typeof field === 'string') {
+    mutationError.field = field;
+  }
+  return mutationError;
+}
+
+type FormErrorField = 'binPath' | 'autoCompactThreshold' | 'claudeLaunchSettingsJson' | 'env';
+
+function formErrorFieldFor(field: string, fallback: FormErrorField = 'binPath'): FormErrorField {
+  if (field === 'autoCompactThreshold' || field === 'claudeLaunchSettingsJson') return field;
+  if (/^env(Scopes)?(\.|$)/.test(field)) return 'env';
+  return fallback;
+}
+
 interface ProvidersQueryData {
   items: Provider[];
   total?: number;
@@ -136,43 +158,28 @@ async function createProvider(
     body: JSON.stringify(data),
   });
   if (!res.ok) {
-    const error = await res.json().catch(() => ({ message: 'Failed to create provider' }));
-    const mutationError = new Error(
-      error.message || 'Failed to create provider',
-    ) as ProviderMutationError;
-    if (error.field) {
-      mutationError.field = error.field;
-    }
-    throw mutationError;
+    throw await toProviderMutationError(res, 'Failed to create provider');
   }
   return res.json() as Promise<Awaited<ReturnType<ProvidersController['createProvider']>>>;
 }
 
-async function updateProvider(
-  fetchFn: FetchFn,
-  id: string,
-  data: {
-    binPath?: string | null;
-    autoCompactThreshold?: number | null;
-    claudeLaunchSettingsJson?: string | null;
-    env?: Record<string, string> | null;
-    envScopes?: Record<string, string[]>;
-  },
-) {
+interface HomeOwnedProviderFields {
+  autoCompactThreshold?: number | null;
+  claudeLaunchSettingsJson?: string | null;
+  env?: Record<string, string> | null;
+  envScopes?: Record<string, string[]>;
+}
+
+type ProviderUpdateData = HomeOwnedProviderFields & { binPath?: string | null };
+
+async function updateProvider(fetchFn: FetchFn, id: string, data: ProviderUpdateData) {
   const res = await fetchFn(`/api/providers/${id}`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(data),
   });
   if (!res.ok) {
-    const error = await res.json().catch(() => ({ message: 'Failed to update provider' }));
-    const mutationError = new Error(
-      error.message || 'Failed to update provider',
-    ) as ProviderMutationError;
-    if (error.field) {
-      mutationError.field = error.field;
-    }
-    throw mutationError;
+    throw await toProviderMutationError(res, 'Failed to update provider');
   }
   return res.json() as Promise<Awaited<ReturnType<ProvidersController['updateProvider']>>>;
 }
@@ -689,12 +696,73 @@ function ProviderEffortsSection({ provider }: { provider: Provider }) {
   );
 }
 
+const HOME_OWNED_NOTE =
+  'These settings belong to this PC. DevChain copies them to the VM at the next successful health check.';
+const HOME_OWNED_SESSION_NOTE = 'A session that runs keeps its values until the next start.';
+
+/**
+ * Where a provider's home-owned fields (threshold, launch settings, env, env
+ * scopes) live for the selected backend. A VM takes them from home's row of the
+ * same name at each health check, so they must be read and saved there.
+ * - `own`: the selected backend owns every field (home cards, or home has no
+ *   provider of that name).
+ * - `pending`: home's list is loading or failed; whether home owns the fields
+ *   is unknown, so they are neither shown from the VM nor saved.
+ * - `home`: home's row owns them.
+ */
+type HomeRowState =
+  | { kind: 'own' }
+  | { kind: 'pending'; failed: boolean }
+  | { kind: 'home'; row: Provider };
+
+function resolveHomeRow(
+  name: string,
+  cardsAreHome: boolean,
+  homeProviders: Provider[] | undefined,
+  homeFailed: boolean,
+): HomeRowState {
+  if (cardsAreHome) return { kind: 'own' };
+  if (!homeProviders) return { kind: 'pending', failed: homeFailed };
+  const row = homeProviders.find((p) => p.name === name);
+  return row ? { kind: 'home', row } : { kind: 'own' };
+}
+
+/** The row an edit loads the home-owned form fields from; null while home's list is unavailable. */
+function homeOwnedSource(state: HomeRowState, provider: Provider): Provider | null {
+  if (state.kind === 'pending') return null;
+  return state.kind === 'home' ? state.row : provider;
+}
+
+function homeOwnedFormFields(provider: Provider | null) {
+  return {
+    autoCompactThreshold:
+      provider?.autoCompactThreshold != null ? String(provider.autoCompactThreshold) : '',
+    claudeLaunchSettingsJson: provider?.claudeLaunchSettingsJson ?? '',
+    env: provider?.env ?? {},
+    envScopes: provider?.envScopes ?? {},
+  };
+}
+
+interface SplitSaveVars {
+  /** The VM part: the binary path only; null when it did not change. */
+  vm: { id: string; binPath: string | null } | null;
+  /** The home part, keyed by home's own provider id. */
+  home: { id: string; data: HomeOwnedProviderFields } | null;
+}
+
+class SplitSaveError extends Error {
+  constructor(readonly failures: Array<{ target: 'vm' | 'home'; error: unknown }>) {
+    super('Provider save failed');
+  }
+}
+
 const TAB_KEYS = ['providers', 'cli-versions'] as const;
 type TabKey = (typeof TAB_KEYS)[number];
 
 export function ProvidersPage() {
   const [tab, setTab] = useSubNavSearchParam([...TAB_KEYS], 'providers', 'tab');
   const fetchFn = useFetchFactory();
+  const homeFetch = useHomeFetch();
   const queryClient = useQueryClient();
   const homeQueryClient = useHomeQueryClient();
   const { toast, showSuccess, showError } = useToastHelpers();
@@ -712,9 +780,12 @@ export function ProvidersPage() {
   const [showDialog, setShowDialog] = useState(false);
   const [editingProvider, setEditingProvider] = useState<Provider | null>(null);
   const [deleteConfirm, setDeleteConfirm] = useState<Provider | null>(null);
+  // Edit mode only: where the home-owned form fields were loaded from. While
+  // it is `pending`, the fields stay empty and locked until home's list loads.
+  const [editHomeState, setEditHomeState] = useState<HomeRowState>({ kind: 'own' });
   const [pendingOwnInstallUpdate, setPendingOwnInstallUpdate] = useState<{
     id: string;
-    data: Parameters<typeof updateProvider>[2];
+    data: ProviderUpdateData;
     cliProvider: ProviderCliName;
   } | null>(null);
   const [formData, setFormData] = useState({
@@ -725,9 +796,7 @@ export function ProvidersPage() {
     envScopes: {} as Record<string, string[]>,
   });
   const [formError, setFormError] = useState<string | null>(null);
-  const [formErrorField, setFormErrorField] = useState<
-    'binPath' | 'autoCompactThreshold' | 'claudeLaunchSettingsJson' | null
-  >(null);
+  const [formErrorField, setFormErrorField] = useState<FormErrorField | null>(null);
   const [providerType, setProviderType] = useState<ProviderType>('codex');
   const [binPathTouched, setBinPathTouched] = useState(false);
   const envEditorRef = useRef<EnvEditorHandle>(null);
@@ -736,6 +805,39 @@ export function ProvidersPage() {
     queryKey: providersQueryKeys.list(),
     queryFn: () => fetchProviders(fetchFn),
   });
+
+  // Home's provider list, on home's client: the ambient client is the VM's
+  // when a remote project is selected.
+  const homeProvidersQuery = useQuery(
+    {
+      queryKey: providersQueryKeys.list(),
+      queryFn: () => fetchProviders(homeFetch),
+      enabled: !cardsAreHome,
+    },
+    homeQueryClient,
+  );
+  const homeProviders = homeProvidersQuery.data?.items;
+  const homeProvidersFailed = homeProvidersQuery.isError;
+  const homeRowStateFor = (name: string) =>
+    resolveHomeRow(name, cardsAreHome, homeProviders, homeProvidersFailed);
+
+  // An edit opened before home's list arrived fills its home-owned fields
+  // once the list resolves.
+  useEffect(() => {
+    if (!editingProvider || editHomeState.kind !== 'pending') return;
+    const state = resolveHomeRow(
+      editingProvider.name,
+      cardsAreHome,
+      homeProviders,
+      homeProvidersFailed,
+    );
+    if (state.kind === 'pending') return;
+    setFormData((prev) => ({
+      ...prev,
+      ...homeOwnedFormFields(homeOwnedSource(state, editingProvider)),
+    }));
+    setEditHomeState(state);
+  }, [editingProvider, editHomeState, cardsAreHome, homeProviders, homeProvidersFailed]);
 
   const { data: allProjectsData } = useQuery({
     queryKey: ['projects', 'all'],
@@ -773,6 +875,14 @@ export function ProvidersPage() {
   type ProvidersList = ProvidersQueryData;
   const providersListKey = providersQueryKeys.list();
 
+  const resetDialog = () => {
+    setShowDialog(false);
+    setEditingProvider(null);
+    setFormData({ binPath: '', ...homeOwnedFormFields(null) });
+    setFormError(null);
+    setFormErrorField(null);
+  };
+
   const createMutation = useCrudMutation<
     Awaited<ReturnType<typeof createProvider>>,
     Parameters<typeof createProvider>[1],
@@ -808,16 +918,7 @@ export function ProvidersPage() {
     // (invalidateProviderConfigQueries), which the kit's key-list can't express.
     onSuccessSideEffects: (data) => {
       invalidateProviderConfigQueries(queryClient);
-      setShowDialog(false);
-      setFormData({
-        binPath: '',
-        autoCompactThreshold: '',
-        claudeLaunchSettingsJson: '',
-        env: {},
-        envScopes: {},
-      });
-      setFormError(null);
-      setFormErrorField(null);
+      resetDialog();
       if (data.sync) {
         const desc =
           data.sync.insertedCount > 0
@@ -836,13 +937,7 @@ export function ProvidersPage() {
     onErrorSideEffects: (error) => {
       if (isProviderMutationError(error) && error.field) {
         setFormError(error.message);
-        setFormErrorField(
-          error.field === 'autoCompactThreshold'
-            ? 'autoCompactThreshold'
-            : error.field === 'claudeLaunchSettingsJson'
-              ? 'claudeLaunchSettingsJson'
-              : 'binPath',
-        );
+        setFormErrorField(formErrorFieldFor(error.field));
       }
     },
   });
@@ -851,13 +946,7 @@ export function ProvidersPage() {
     Provider,
     {
       id: string;
-      data: {
-        binPath?: string | null;
-        autoCompactThreshold?: number | null;
-        claudeLaunchSettingsJson?: string | null;
-        env?: Record<string, string> | null;
-        envScopes?: Record<string, string[]>;
-      };
+      data: ProviderUpdateData;
       // Set only when the save went through the own-install confirmation; it
       // names the home CLI whose cached overview must flip to own install.
       cliProvider?: ProviderCliName;
@@ -888,17 +977,7 @@ export function ProvidersPage() {
       if (vars.cliProvider) {
         markProviderCliOwnInstall(homeQueryClient, vars.cliProvider);
       }
-      setShowDialog(false);
-      setEditingProvider(null);
-      setFormData({
-        binPath: '',
-        autoCompactThreshold: '',
-        claudeLaunchSettingsJson: '',
-        env: {},
-        envScopes: {},
-      });
-      setFormError(null);
-      setFormErrorField(null);
+      resetDialog();
       showSuccess({
         title: 'Success',
         description: 'Provider updated successfully',
@@ -907,13 +986,72 @@ export function ProvidersPage() {
     onErrorSideEffects: (error) => {
       if (isProviderMutationError(error) && error.field) {
         setFormError(error.message);
-        setFormErrorField(
-          error.field === 'autoCompactThreshold'
-            ? 'autoCompactThreshold'
-            : error.field === 'claudeLaunchSettingsJson'
-              ? 'claudeLaunchSettingsJson'
-              : 'binPath',
-        );
+        setFormErrorField(formErrorFieldFor(error.field));
+      }
+    },
+  });
+
+  // The VM part of a split save. It has no toast and no dialog effects: the
+  // split save reports both parts together.
+  const vmBinPathMutation = useCrudMutation<Provider, NonNullable<SplitSaveVars['vm']>, void>({
+    mutationFn: ({ id, binPath }) => updateProvider(fetchFn, id, { binPath }),
+    optimistic: {
+      queryKey: providersListKey,
+      project: (previous, { id, binPath }) => {
+        const list = (previous as ProvidersList | undefined) ?? { items: [] as Provider[] };
+        return optimisticMergeById(list, id, (p) => ({
+          ...p,
+          binPath,
+          updatedAt: new Date().toISOString(),
+        }));
+      },
+    },
+    invalidateKeys: [providersListKey, providersQueryKeys.preflightAll()],
+  });
+
+  // Each part keeps its own cache update when the other part fails, so a
+  // second save may resend values that already landed.
+  const splitUpdateMutation = useMutation<void, SplitSaveError, SplitSaveVars>({
+    mutationFn: async ({ vm, home }) => {
+      const failures: SplitSaveError['failures'] = [];
+      if (vm) {
+        await vmBinPathMutation
+          .mutateAsync(vm)
+          .catch((error: unknown) => failures.push({ target: 'vm', error }));
+      }
+      if (home) {
+        try {
+          await updateProvider(homeFetch, home.id, home.data);
+          await homeQueryClient.invalidateQueries({ queryKey: providersQueryKeys.list() });
+        } catch (error) {
+          failures.push({ target: 'home', error });
+        }
+      }
+      if (failures.length > 0) throw new SplitSaveError(failures);
+    },
+    onSuccess: () => {
+      resetDialog();
+      showSuccess({ title: 'Success', description: 'Provider updated successfully' });
+    },
+    onError: ({ failures }) => {
+      let fieldShown = false;
+      for (const { target, error: partError } of failures) {
+        showError({
+          title: 'Error',
+          description: getErrorMessage(
+            partError,
+            target === 'vm'
+              ? 'Failed to update the binary path on the VM'
+              : "Failed to save this PC's provider settings",
+          ),
+        });
+        if (!fieldShown && isProviderMutationError(partError) && partError.field) {
+          setFormError(partError.message);
+          setFormErrorField(
+            formErrorFieldFor(partError.field, target === 'vm' ? 'binPath' : 'env'),
+          );
+          fieldShown = true;
+        }
       }
     },
   });
@@ -999,6 +1137,12 @@ export function ProvidersPage() {
     },
   });
 
+  const dialogHomeState = homeRowStateFor(editingProvider?.name ?? providerType);
+  // An edit keeps the source its fields were loaded from; a create follows
+  // the chosen type.
+  const homeFieldsMode = editingProvider ? editHomeState.kind : dialogHomeState.kind;
+  const hideHomeFields = !editingProvider && homeFieldsMode === 'home';
+
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     const binPath = formData.binPath.trim() === '' ? null : formData.binPath.trim();
@@ -1006,7 +1150,11 @@ export function ProvidersPage() {
     setFormError(null);
     setFormErrorField(null);
 
-    const thresholdStr = formData.autoCompactThreshold.trim();
+    // Locked or hidden home-owned fields are not part of this save. Values
+    // read on one machine are never saved to the other.
+    const homeOwned = homeFieldsMode === 'pending' || hideHomeFields ? 'skip' : homeFieldsMode;
+
+    const thresholdStr = homeOwned === 'skip' ? '' : formData.autoCompactThreshold.trim();
     // Validate autoCompactThreshold when non-empty
     if (thresholdStr !== '') {
       const parsed = Number(thresholdStr);
@@ -1020,7 +1168,7 @@ export function ProvidersPage() {
     const isClaude = providerName.toLowerCase() === 'claude';
     const claudeLaunchSettingsJson =
       formData.claudeLaunchSettingsJson.trim() === '' ? null : formData.claudeLaunchSettingsJson;
-    if (isClaude) {
+    if (isClaude && homeOwned !== 'skip') {
       const validation = validateClaudeLaunchSettingsJson(claudeLaunchSettingsJson);
       if (!validation.valid) {
         setFormError(validation.message);
@@ -1029,19 +1177,35 @@ export function ProvidersPage() {
       }
     }
 
-    const committedEnv = envEditorRef.current?.commitPending();
-    if (committedEnv === null) return;
-    const env = committedEnv ?? formData.env;
+    let env = formData.env;
+    if (homeOwned !== 'skip') {
+      const committedEnv = envEditorRef.current?.commitPending();
+      if (committedEnv === null) return;
+      env = committedEnv ?? formData.env;
+    }
 
     if (editingProvider) {
       const autoCompactThreshold: number | null = thresholdStr === '' ? null : Number(thresholdStr);
-      const updateData = {
-        binPath,
+      const homeOwnedData: HomeOwnedProviderFields = {
         autoCompactThreshold,
         ...(isClaude ? { claudeLaunchSettingsJson } : {}),
         env: Object.keys(env).length > 0 ? env : null,
         envScopes: formData.envScopes,
       };
+      if (homeOwned !== 'own') {
+        splitUpdateMutation.mutate({
+          vm:
+            binPath !== (editingProvider.binPath ?? null)
+              ? { id: editingProvider.id, binPath }
+              : null,
+          home:
+            editHomeState.kind === 'home'
+              ? { id: editHomeState.row.id, data: homeOwnedData }
+              : null,
+        });
+        return;
+      }
+      const updateData = { binPath, ...homeOwnedData };
       // A custom Binary Path on a DevChain-managed provider switches it back to
       // the own install; the switch is server-side, the confirmation is here.
       if (cardsAreHome && isManaged(providerName) && binPath !== editingProvider.binPath) {
@@ -1060,30 +1224,27 @@ export function ProvidersPage() {
         autoCompactThreshold?: number;
         claudeLaunchSettingsJson?: string | null;
         env?: Record<string, string> | null;
-      } = {
-        name: providerName,
-        binPath,
-        env: Object.keys(env).length > 0 ? env : null,
-      };
-      if (thresholdStr !== '' && providerType === 'claude') {
-        payload.autoCompactThreshold = Number(thresholdStr);
-      }
-      if (providerType === 'claude') {
-        payload.claudeLaunchSettingsJson = claudeLaunchSettingsJson;
+      } = { name: providerName, binPath };
+      if (homeOwned === 'own') {
+        payload.env = Object.keys(env).length > 0 ? env : null;
+        if (thresholdStr !== '' && providerType === 'claude') {
+          payload.autoCompactThreshold = Number(thresholdStr);
+        }
+        if (providerType === 'claude') {
+          payload.claudeLaunchSettingsJson = claudeLaunchSettingsJson;
+        }
       }
       createMutation.mutate(payload);
     }
   };
 
   const handleEdit = (provider: Provider) => {
+    const state = homeRowStateFor(provider.name);
     setEditingProvider(provider);
+    setEditHomeState(state);
     setFormData({
       binPath: provider.binPath || '',
-      autoCompactThreshold:
-        provider.autoCompactThreshold != null ? String(provider.autoCompactThreshold) : '',
-      claudeLaunchSettingsJson: provider.claudeLaunchSettingsJson ?? '',
-      env: provider.env ?? {},
-      envScopes: provider.envScopes ?? {},
+      ...homeOwnedFormFields(homeOwnedSource(state, provider)),
     });
     // derive provider type from existing provider
     const t: ProviderType = (PROVIDER_TYPES as readonly string[]).includes(provider.name)
@@ -1195,6 +1356,10 @@ export function ProvidersPage() {
 
               {providersData.items.map((provider: Provider) => {
                 const isSupported = supportedProviders.includes(provider.name);
+                const cardHomeState = homeRowStateFor(provider.name);
+                // The VM list refetches before home's push lands; home's row
+                // is what the VM will hold.
+                const settings = cardHomeState.kind === 'home' ? cardHomeState.row : provider;
                 const pf = preflightResult?.providers?.find((p) => p.id === provider.id);
                 const mcpStatus = pf?.mcpStatus;
 
@@ -1306,16 +1471,16 @@ export function ProvidersPage() {
                         {provider.name.toLowerCase() === 'claude' && (
                           <div className="text-sm text-muted-foreground">
                             Default threshold:{' '}
-                            {provider.autoCompactThreshold != null
-                              ? `${provider.autoCompactThreshold}%`
+                            {settings.autoCompactThreshold != null
+                              ? `${settings.autoCompactThreshold}%`
                               : 'disabled'}
                           </div>
                         )}
-                        {provider.env && Object.keys(provider.env).length > 0 && (
+                        {settings.env && Object.keys(settings.env).length > 0 && (
                           <div className="text-sm">
                             <span className="text-muted-foreground">Env:</span>{' '}
                             <span className="font-mono">
-                              {Object.keys(provider.env).join(', ')}
+                              {Object.keys(settings.env).join(', ')}
                             </span>
                           </div>
                         )}
@@ -1395,18 +1560,7 @@ export function ProvidersPage() {
         open={showDialog}
         onOpenChange={(open) => {
           setShowDialog(open);
-          if (!open) {
-            setEditingProvider(null);
-            setFormData({
-              binPath: '',
-              autoCompactThreshold: '',
-              claudeLaunchSettingsJson: '',
-              env: {},
-              envScopes: {},
-            });
-            setFormError(null);
-            setFormErrorField(null);
-          }
+          if (!open) resetDialog();
         }}
       >
         <DialogContent>
@@ -1493,128 +1647,153 @@ export function ProvidersPage() {
               )}
             </div>
 
-            {(editingProvider?.name ?? providerType).toLowerCase() === 'claude' && (
-              <>
-                <div>
-                  <Label htmlFor="provider-threshold">Default Threshold (%)</Label>
-                  <Input
-                    id="provider-threshold"
-                    type="number"
-                    min={1}
-                    max={100}
-                    value={formData.autoCompactThreshold}
-                    onChange={(e) => {
-                      setFormData({ ...formData, autoCompactThreshold: e.target.value });
-                      if (formErrorField === 'autoCompactThreshold') {
-                        setFormError(null);
-                        setFormErrorField(null);
-                      }
-                    }}
-                    className={cn(
-                      formErrorField === 'autoCompactThreshold' &&
-                        'border-destructive focus-visible:ring-destructive',
-                    )}
-                    placeholder="Default: 85"
-                  />
-                  <p className="text-xs text-muted-foreground mt-1">
-                    Context usage percentage (1-100) that triggers auto-compact. Leave empty to use
-                    default on create, or to disable on edit.
+            {hideHomeFields && <p className="text-xs text-muted-foreground">{HOME_OWNED_NOTE}</p>}
+
+            {!hideHomeFields && (
+              <fieldset
+                disabled={homeFieldsMode === 'pending'}
+                className="min-w-0 space-y-4"
+                aria-label="Settings owned by this PC"
+              >
+                {homeFieldsMode === 'pending' && (
+                  <p role="status" className="text-xs text-muted-foreground">
+                    {dialogHomeState.kind === 'pending' && dialogHomeState.failed
+                      ? "Could not load this PC's settings for this provider. Only the binary path can be saved."
+                      : "Loading this PC's settings for this provider…"}
                   </p>
-                  {formError && formErrorField === 'autoCompactThreshold' && (
+                )}
+                {(editingProvider?.name ?? providerType).toLowerCase() === 'claude' && (
+                  <>
+                    {homeFieldsMode === 'home' && (
+                      <p className="text-xs text-muted-foreground">{HOME_OWNED_NOTE}</p>
+                    )}
+                    <div>
+                      <Label htmlFor="provider-threshold">Default Threshold (%)</Label>
+                      <Input
+                        id="provider-threshold"
+                        type="number"
+                        min={1}
+                        max={100}
+                        value={formData.autoCompactThreshold}
+                        onChange={(e) => {
+                          setFormData({ ...formData, autoCompactThreshold: e.target.value });
+                          if (formErrorField === 'autoCompactThreshold') {
+                            setFormError(null);
+                            setFormErrorField(null);
+                          }
+                        }}
+                        className={cn(
+                          formErrorField === 'autoCompactThreshold' &&
+                            'border-destructive focus-visible:ring-destructive',
+                        )}
+                        placeholder="Default: 85"
+                      />
+                      <p className="text-xs text-muted-foreground mt-1">
+                        Context usage percentage (1-100) that triggers auto-compact. Leave empty to
+                        use default on create, or to disable on edit.
+                      </p>
+                      {formError && formErrorField === 'autoCompactThreshold' && (
+                        <p className="mt-2 text-sm text-destructive">{formError}</p>
+                      )}
+                    </div>
+
+                    <div className="space-y-2 rounded-md border p-3">
+                      <div className="flex items-center justify-between gap-3">
+                        <Label htmlFor="provider-claude-launch-settings">
+                          Advanced: Claude Launch Settings JSON
+                        </Label>
+                        {editingProvider && (
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            onClick={() => {
+                              setFormData((previous) => ({
+                                ...previous,
+                                claudeLaunchSettingsJson: DEFAULT_CLAUDE_LAUNCH_SETTINGS_JSON,
+                              }));
+                              setFormError(null);
+                              setFormErrorField(null);
+                            }}
+                          >
+                            Restore DevChain default
+                          </Button>
+                        )}
+                      </div>
+                      <Textarea
+                        id="provider-claude-launch-settings"
+                        rows={9}
+                        spellCheck={false}
+                        value={formData.claudeLaunchSettingsJson}
+                        onChange={(event) => {
+                          setFormData((previous) => ({
+                            ...previous,
+                            claudeLaunchSettingsJson: event.target.value,
+                          }));
+                          if (formErrorField === 'claudeLaunchSettingsJson') {
+                            setFormError(null);
+                            setFormErrorField(null);
+                          }
+                        }}
+                        className={cn(
+                          'font-mono text-xs',
+                          formErrorField === 'claudeLaunchSettingsJson' &&
+                            'border-destructive focus-visible:ring-destructive',
+                        )}
+                      />
+                      {formError && formErrorField === 'claudeLaunchSettingsJson' && (
+                        <p className="text-sm text-destructive">{formError}</p>
+                      )}
+                    </div>
+                  </>
+                )}
+
+                <div>
+                  <Label>Environment Variables</Label>
+                  <p className="text-xs text-muted-foreground mt-1 mb-2">
+                    {homeFieldsMode === 'home'
+                      ? `${HOME_OWNED_NOTE} ${HOME_OWNED_SESSION_NOTE}`
+                      : 'This env is shared across all projects using this provider.'}
+                  </p>
+                  <EnvEditor
+                    ref={envEditorRef}
+                    env={formData.env}
+                    onChange={(env) =>
+                      setFormData((prev) => {
+                        const prevKeys = new Set(Object.keys(prev.env));
+                        const nextKeys = new Set(Object.keys(env));
+                        const removed = [...prevKeys].filter((k) => !nextKeys.has(k));
+                        if (removed.length === 0) return { ...prev, env };
+                        const envScopes = { ...prev.envScopes };
+                        removed.forEach((k) => delete envScopes[k]);
+                        return { ...prev, env, envScopes };
+                      })
+                    }
+                    renderRowExtra={(key, _value) => (
+                      <ProviderEnvScopePopover
+                        envKey={key}
+                        selectedProjectIds={formData.envScopes[key] ?? []}
+                        allProjects={allProjectsForScope}
+                        onChange={(ids) =>
+                          setFormData((prev) => {
+                            const envScopes = { ...prev.envScopes };
+                            if (ids.length === 0) {
+                              delete envScopes[key];
+                            } else {
+                              envScopes[key] = ids;
+                            }
+                            return { ...prev, envScopes };
+                          })
+                        }
+                      />
+                    )}
+                  />
+                  {formError && formErrorField === 'env' && (
                     <p className="mt-2 text-sm text-destructive">{formError}</p>
                   )}
                 </div>
-
-                <div className="space-y-2 rounded-md border p-3">
-                  <div className="flex items-center justify-between gap-3">
-                    <Label htmlFor="provider-claude-launch-settings">
-                      Advanced: Claude Launch Settings JSON
-                    </Label>
-                    {editingProvider && (
-                      <Button
-                        type="button"
-                        variant="outline"
-                        size="sm"
-                        onClick={() => {
-                          setFormData((previous) => ({
-                            ...previous,
-                            claudeLaunchSettingsJson: DEFAULT_CLAUDE_LAUNCH_SETTINGS_JSON,
-                          }));
-                          setFormError(null);
-                          setFormErrorField(null);
-                        }}
-                      >
-                        Restore DevChain default
-                      </Button>
-                    )}
-                  </div>
-                  <Textarea
-                    id="provider-claude-launch-settings"
-                    rows={9}
-                    spellCheck={false}
-                    value={formData.claudeLaunchSettingsJson}
-                    onChange={(event) => {
-                      setFormData((previous) => ({
-                        ...previous,
-                        claudeLaunchSettingsJson: event.target.value,
-                      }));
-                      if (formErrorField === 'claudeLaunchSettingsJson') {
-                        setFormError(null);
-                        setFormErrorField(null);
-                      }
-                    }}
-                    className={cn(
-                      'font-mono text-xs',
-                      formErrorField === 'claudeLaunchSettingsJson' &&
-                        'border-destructive focus-visible:ring-destructive',
-                    )}
-                  />
-                  {formError && formErrorField === 'claudeLaunchSettingsJson' && (
-                    <p className="text-sm text-destructive">{formError}</p>
-                  )}
-                </div>
-              </>
+              </fieldset>
             )}
-
-            <div>
-              <Label>Environment Variables</Label>
-              <p className="text-xs text-muted-foreground mt-1 mb-2">
-                This env is shared across all projects using this provider.
-              </p>
-              <EnvEditor
-                ref={envEditorRef}
-                env={formData.env}
-                onChange={(env) =>
-                  setFormData((prev) => {
-                    const prevKeys = new Set(Object.keys(prev.env));
-                    const nextKeys = new Set(Object.keys(env));
-                    const removed = [...prevKeys].filter((k) => !nextKeys.has(k));
-                    if (removed.length === 0) return { ...prev, env };
-                    const envScopes = { ...prev.envScopes };
-                    removed.forEach((k) => delete envScopes[k]);
-                    return { ...prev, env, envScopes };
-                  })
-                }
-                renderRowExtra={(key, _value) => (
-                  <ProviderEnvScopePopover
-                    envKey={key}
-                    selectedProjectIds={formData.envScopes[key] ?? []}
-                    allProjects={allProjectsForScope}
-                    onChange={(ids) =>
-                      setFormData((prev) => {
-                        const envScopes = { ...prev.envScopes };
-                        if (ids.length === 0) {
-                          delete envScopes[key];
-                        } else {
-                          envScopes[key] = ids;
-                        }
-                        return { ...prev, envScopes };
-                      })
-                    }
-                  />
-                )}
-              />
-            </div>
 
             {/* MCP endpoint is auto-configured: ${window.location.origin}/mcp */}
 
@@ -1641,7 +1820,14 @@ export function ProvidersPage() {
               >
                 Cancel
               </Button>
-              <Button type="submit" disabled={createMutation.isPending || updateMutation.isPending}>
+              <Button
+                type="submit"
+                disabled={
+                  createMutation.isPending ||
+                  updateMutation.isPending ||
+                  splitUpdateMutation.isPending
+                }
+              >
                 {editingProvider ? 'Update' : 'Create'}
               </Button>
             </DialogFooter>

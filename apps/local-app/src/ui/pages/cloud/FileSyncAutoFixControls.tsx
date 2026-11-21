@@ -4,6 +4,12 @@ import { Checkbox } from '@/ui/components/ui/checkbox';
 import { useRemoteVmApi } from './lib/remote-vm-api-context';
 import { fileSyncAutoFixQueryKey } from './lib/remote-vm-query-keys';
 
+const actionLabels = {
+  exclude: 'Added automatically on',
+  chown: 'Owner changed on',
+  'docker-exclusion-removed': 'Docker exclusion removed on',
+};
+
 export function FileSyncAutoFixControls({
   projectId,
   disabled,
@@ -47,10 +53,9 @@ export function FileSyncAutoFixControls({
         </p>
       )}
       {query.data?.actions.map((action, index) => (
-        <p key={`${action.at}:${action.side}:${index}`}>
-          {action.kind === 'exclude' ? 'Added automatically on' : 'Owner changed on'}{' '}
-          {new Date(action.at).toLocaleString()}:{' '}
-          {(action.kind === 'exclude' ? action.patterns : action.paths).join(', ')}
+        <p key={`${action.at}:${action.kind}:${index}`}>
+          {actionLabels[action.kind]} {new Date(action.at).toLocaleString()}:{' '}
+          {(action.kind === 'chown' ? action.paths : action.patterns).join(', ')}
         </p>
       ))}
     </section>

@@ -70,10 +70,10 @@ function createAccessHarness(options?: {
 }
 
 describe('MobileRpcWorkspaceAccessService classification', () => {
-  it('classifies every one of the 44 non-E2EE methods exactly once', () => {
+  it('classifies every one of the 45 non-E2EE methods exactly once', () => {
     const nonE2eeMethods = MOBILE_RPC_METHODS.filter((method) => !method.startsWith('e2ee.'));
     expect(Object.keys(MOBILE_RPC_WORKSPACE_SCOPES)).toEqual(nonE2eeMethods);
-    expect(nonE2eeMethods).toHaveLength(44);
+    expect(nonE2eeMethods).toHaveLength(45);
 
     const scopes = Object.values(MOBILE_RPC_WORKSPACE_SCOPES);
     expect(scopes.filter((scope) => scope === 'projectId')).toHaveLength(34);
@@ -87,7 +87,7 @@ describe('MobileRpcWorkspaceAccessService classification', () => {
           'vaultRequestId',
         ].includes(scope),
       ),
-    ).toHaveLength(7);
+    ).toHaveLength(8);
     expect(
       scopes.filter((scope) => ['authorized-workspaces', 'authorized-projects'].includes(scope)),
     ).toHaveLength(3);
@@ -196,6 +196,7 @@ describe('MobileRpcWorkspaceAccessService classification', () => {
       ),
     ).resolves.toEqual({ allowedWorkspaceIds: new Set([WORKSPACE_A]) });
     const answers = [
+      ['vault.listRequestCandidates', {}],
       ['vault.denyRequest', {}],
       ['vault.approveUse', { decision: 'session' }],
     ] as const;

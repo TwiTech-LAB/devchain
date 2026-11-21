@@ -1,11 +1,17 @@
 import type { ProcessExecutor } from '../process-executor/process-executor.port';
 import type {
   SessionTarget,
+  PinnedPane,
   DeliveryOptions,
   DeliveryResult,
   GuardedDeliveryResult,
 } from './types';
-import { captureStrict } from './capture';
+import { basename } from 'node:path';
+import { pathToFileURL } from 'node:url';
+import { setTimeout as delay } from 'node:timers/promises';
+import { providerTraits } from '../../../providers/adapters/provider-traits';
+import type { ProviderTraits } from '../../../providers/provider-traits.types';
+import { captureHistory, captureStrict } from './capture';
 import { readForegroundState } from './foreground';
 import { generateDeliveryNonce } from '../../../../common/delivery-nonce';
 import { FOLLOW_NOTE } from '../../../../common/follow-note';
@@ -97,11 +103,13 @@ async function loadBuffer(
   executor: ProcessExecutor,
   bufferName: string,
   content: string,
+  signal?: AbortSignal,
 ): Promise<void> {
   const result = await executor.run({
     argv: ['tmux', 'load-buffer', '-b', bufferName, '-'],
     mode: 'pipe',
     input: content,
+    signal,
   });
   if (!result.success) {
     throw new Error(`Failed to load tmux buffer "${bufferName}": ${result.stderr}`);
@@ -112,20 +120,27 @@ async function pasteBuffer(
   executor: ProcessExecutor,
   bufferName: string,
   sessionName: string,
+  signal?: AbortSignal,
 ): Promise<void> {
   const result = await executor.run({
     argv: ['tmux', 'paste-buffer', '-b', bufferName, '-t', sessionName],
     mode: 'pipe',
+    signal,
   });
   if (!result.success) {
     throw new Error(`Failed to paste tmux buffer: ${result.stderr}`);
   }
 }
 
-async function deleteBuffer(executor: ProcessExecutor, bufferName: string): Promise<void> {
+async function deleteBuffer(
+  executor: ProcessExecutor,
+  bufferName: string,
+  signal?: AbortSignal,
+): Promise<void> {
   await executor.run({
     argv: ['tmux', 'delete-buffer', '-b', bufferName],
     mode: 'pipe',
+    signal,
   });
 }
 
@@ -357,14 +372,178 @@ async function prepareBuffer(
   target: SessionTarget,
   text: string,
   bracketed: boolean,
+  signal?: AbortSignal,
 ): Promise<PreparedBuffer> {
   const prepared = text.replace(/\r?\n/g, '\r');
   const payload = bracketed ? `\x1b[200~${prepared}\x1b[201~` : prepared;
   const safeSession = target.name.replace(/[^a-zA-Z0-9_.-]/g, '');
   const name = `devchain-${safeSession}-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
 
-  await loadBuffer(executor, name, payload);
+  try {
+    await loadBuffer(executor, name, payload, signal);
+  } catch (error) {
+    if (signal) discardComposerBuffer(executor, name);
+    throw error;
+  }
   return { name };
+}
+
+// Each buffer has a unique name. Its cleanup can finish outside the pane queue after cancellation.
+function discardComposerBuffer(executor: ProcessExecutor, name: string): void {
+  void deleteBuffer(executor, name, AbortSignal.timeout(2000)).catch(() => undefined);
+}
+
+export type ImageWriteResult = 'delivered' | 'recognized' | 'unconfirmed' | 'uncertain';
+
+export function draftChipCount(
+  screen: string,
+  filename: string,
+  chip: NonNullable<ProviderTraits['imagePasteChip']>,
+): number {
+  const lines = screen.split('\n');
+  const rules = lines.flatMap((line, i) => (/^\s*[─━]{3}/.test(line) ? [i] : []));
+  if (rules.length < 2) return 0;
+  let editor = '';
+  for (const row of lines.slice(rules[rules.length - 2] + 1, rules[rules.length - 1])) {
+    // Copilot indents continuations by two columns and can consume the space after a chip label.
+    const indented = row.startsWith('  ');
+    const text = indented ? row.slice(2) : row;
+    if (
+      indented &&
+      !text.startsWith(' ') &&
+      chip.prefixes.some((prefix) => editor.endsWith(prefix.trimEnd()))
+    ) {
+      editor += ' ';
+    }
+    editor += text;
+  }
+  if (!editor.trimStart().startsWith(chip.prompt)) return 0;
+  return chip.prefixes.reduce(
+    (count, prefix) => count + editor.split(prefix + filename + ']').length - 1,
+    0,
+  );
+}
+
+export type ComposerGuard = (paneId?: string) => void;
+
+async function resolveComposerPane(
+  executor: ProcessExecutor,
+  target: SessionTarget,
+  signal: AbortSignal,
+): Promise<PinnedPane> {
+  const pane = await executor.run({
+    argv: ['tmux', 'display-message', '-p', '-t', `=${target.name}:`, '#{pane_id}'],
+    mode: 'pipe',
+    signal,
+  });
+  const id = pane.stdout.trim();
+  if (!pane.success || pane.timedOut || pane.truncated || !/^%\d+$/.test(id)) {
+    throw new Error('Agent pane is unavailable');
+  }
+  return { name: target.name, paneId: id };
+}
+
+async function pasteComposerBuffer(
+  executor: ProcessExecutor,
+  pane: PinnedPane,
+  text: string,
+  assertCurrent: ComposerGuard,
+  signal: AbortSignal,
+): Promise<'delivered' | 'uncertain'> {
+  const buffer = await prepareBuffer(executor, pane, text, true, signal);
+  try {
+    await requireForegroundProgram(executor, pane, signal);
+    signal.throwIfAborted();
+    assertCurrent(pane.paneId);
+    try {
+      await pasteBuffer(executor, buffer.name, pane.paneId, signal);
+      return 'delivered';
+    } catch {
+      return 'uncertain';
+    }
+  } finally {
+    discardComposerBuffer(executor, buffer.name);
+  }
+}
+
+export async function pasteDraftText(
+  executor: ProcessExecutor,
+  target: SessionTarget,
+  text: string,
+  assertCurrent: ComposerGuard,
+  signal: AbortSignal,
+): Promise<'delivered' | 'uncertain'> {
+  const pane = await resolveComposerPane(executor, target, signal);
+  const result = await pasteComposerBuffer(executor, pane, text, assertCurrent, signal);
+  if (result === 'delivered')
+    await delay(DEFAULT_POST_PASTE_DELAY_MS, undefined, { signal }).catch(() => undefined);
+  return result;
+}
+
+export async function submitDraft(
+  executor: ProcessExecutor,
+  target: SessionTarget,
+  assertCurrent: ComposerGuard,
+  invalidate: () => void,
+  signal: AbortSignal,
+): Promise<'submitted' | 'uncertain'> {
+  const pane = await resolveComposerPane(executor, target, signal);
+  await requireForegroundProgram(executor, pane, signal);
+  signal.throwIfAborted();
+  assertCurrent(pane.paneId);
+  try {
+    const result = await executor.run({
+      argv: ['tmux', 'send-keys', '-t', pane.paneId, 'Enter'],
+      mode: 'pipe',
+      signal,
+    });
+    return result.success && !result.timedOut ? 'submitted' : 'uncertain';
+  } catch {
+    return 'uncertain';
+  } finally {
+    invalidate();
+  }
+}
+
+/** Called under the pane FIFO. The final guard and paste-buffer invocation must stay adjacent. */
+export async function pasteDraftImage(
+  executor: ProcessExecutor,
+  target: SessionTarget,
+  path: string,
+  provider: string,
+  assertCurrent: ComposerGuard,
+  signal: AbortSignal,
+): Promise<ImageWriteResult> {
+  if (/[\u0000-\u001f\u007f]/u.test(path))
+    throw new Error('Image path contains terminal control bytes');
+  const traits = providerTraits(provider);
+  const encoded =
+    traits.fileUrlForEscapedImagePath && /["\\]/.test(path)
+      ? pathToFileURL(path).href.replace(/'/g, '%27')
+      : path.replace(/["\\]/g, '\\$&');
+  const pane = await resolveComposerPane(executor, target, signal);
+  const capture = (signal: AbortSignal) =>
+    captureHistory(executor, pane, 0, false, { joinWrappedLines: true, signal });
+  const filename = basename(path);
+  const chip = traits.imagePasteChip;
+  const before = chip ? await capture(signal) : null;
+  if (before && !before.ok) throw new Error('Cannot inspect the active composer');
+  const count = before && chip ? draftChipCount(before.output, filename, chip) : 0;
+  const result = await pasteComposerBuffer(executor, pane, `"${encoded}"`, assertCurrent, signal);
+  if (result === 'uncertain' || !chip) return result;
+  const recognition = AbortSignal.any([signal, AbortSignal.timeout(2500)]);
+  try {
+    while (!recognition.aborted) {
+      assertCurrent(pane.paneId);
+      const frame = await capture(recognition);
+      if (!frame.ok) return 'unconfirmed';
+      if (draftChipCount(frame.output, filename, chip) > count) return 'recognized';
+      await delay(50, undefined, { signal: recognition });
+    }
+  } catch {
+    return 'unconfirmed';
+  }
+  return 'unconfirmed';
 }
 
 export class PasteNotConfirmedError extends Error {
@@ -386,9 +565,10 @@ export class ShellForegroundError extends Error {
 
 export async function requireForegroundProgram(
   executor: ProcessExecutor,
-  target: SessionTarget,
+  target: SessionTarget | PinnedPane,
+  signal?: AbortSignal,
 ): Promise<void> {
-  const foreground = await readForegroundState(executor, target);
+  const foreground = await readForegroundState(executor, target, signal);
   if (!foreground || foreground.shellInFront) {
     throw new ShellForegroundError(target.name);
   }

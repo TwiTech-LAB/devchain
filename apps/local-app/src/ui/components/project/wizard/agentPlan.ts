@@ -4,22 +4,29 @@ import type {
 } from '@/ui/pages/projects/lib/project-contracts';
 
 /**
- * Pure state + emission logic for wizard Step 2 (agent configuration). No React, no I/O — every
+ * Pure state + emission logic for the wizard's agent plan. No React, no I/O — every
  * function here is a deterministic transform over the setup-preview payload + the user's edits, so
  * the delta-6 emission rules (below) are unit-testable in isolation from the component.
  *
  * ## Row model
  * Each template agent owns one {@link AgentRow}: its chosen provider config (by name) plus optional
  * model/effort OVERRIDES (config-independent — `null` means "inherit the config's structured
- * default"). We store the config NAME even when its provider is deselected in Step 1 so that
- * re-selecting the provider restores the row instead of silently re-picking a different config.
+ * default"). We store the config NAME even when its provider is not selected, so the row never
+ * silently re-picks a different config.
  *
- * ## Resolution (Step-1 filtering)
- * {@link resolveAgentRow} projects a stored row onto the current provider selection:
- *  - config still on a selected provider   → resolved to that config,
- *  - `pinned` config on a deselected one    → UNRESOLVED (hard-block, NEVER auto-falls-back — the
- *                                             user named it, so we surface the loss instead),
- *  - non-`pinned` (template left it blank)  → auto-pick the first config on a selected provider.
+ * ## Resolution
+ * {@link resolveAgentRow} resolves a stored row against the provider lists:
+ *  - a config chosen in the popover resolves when its provider is installed,
+ *  - other named configs resolve when their provider is selected,
+ *  - a pinned config that fails its provider check blocks the step,
+ *  - an unpinned row can auto-pick the first config on a selected provider.
+ *
+ * ## Provider fallback
+ * {@link applyProviderFallback} runs once when the rows are created, before any preset: a
+ * template-named config on a provider outside the selection moves to the first config of the same
+ * profile on a selected provider (the config the server binds in the same case) and drops the
+ * template's model/effort overrides, which belong to the other provider. A config the user picks
+ * later never falls back.
  *
  * ## Emission (delta 6)
  * {@link buildAgentOverrides} compares each resolved row to the template BASELINE (the same agent
@@ -49,25 +56,28 @@ export function agentKey(name: string): string {
 }
 
 /**
- * A single agent's editable configuration. `configName` is preserved across Step-1 selection changes
- * (see module doc); `pinned` marks configs the user must not lose to auto-fallback (template-named or
- * user-selected). `modelOverride`/`effortOverride` are OVERRIDES: `null` = inherit config default.
+ * A single agent's editable configuration. `pinned` prevents automatic selection of another
+ * config during resolution. `modelOverride`/`effortOverride` inherit the config default when null.
  */
 export interface AgentRow {
   agentName: string;
   profileId?: string;
   configName: string | null;
   pinned: boolean;
+  /** Allows a popover choice to use any installed provider. */
+  userSelectedOption?: boolean;
   modelOverride: string | null;
   effortOverride: string | null;
+  /** Set when the provider fallback replaced the template-named config: that config's name. */
+  fallbackFromConfigName?: string;
 }
 
-/** A row projected onto the current provider selection. */
+/** A row resolved against the applicable provider list. */
 export interface ResolvedAgentRow {
   agentName: string;
   /** The config actually in effect (null when unresolved). */
   resolvedConfigName: string | null;
-  /** True when no config could be resolved under the current selection (hard-blocks Next). */
+  /** True when no config could be resolved (blocks the step). */
   unresolved: boolean;
 }
 
@@ -146,27 +156,6 @@ export function buildAgentGroups(agents: TemplateAgent[], teams: TemplateTeam[])
   return groups;
 }
 
-/**
- * The providers the template's DEFAULT (non-preset) setup runs on: for each agent, its
- * template-named config's provider when that config resolves, else the agent profile's default
- * provider. Lowercased names. Step 1 preselects these (intersected with local availability) so
- * the wizard opens ready to create the template as authored.
- */
-export function defaultSetupProviders(
-  agents: TemplateAgent[],
-  profiles: TemplateProfile[],
-): Set<string> {
-  const providers = new Set<string>();
-  for (const agent of agents) {
-    const profile = profileForAgent(agent, profiles);
-    if (!profile) continue;
-    const named = findConfig(profile, agent.providerConfigName?.trim() || null);
-    const provider = named?.providerName ?? profile.provider?.name;
-    if (provider) providers.add(provider.trim().toLowerCase());
-  }
-  return providers;
-}
-
 /** The profile an agent belongs to (matched by `profileId`). */
 export function profileForAgent(
   agent: TemplateAgent,
@@ -181,14 +170,14 @@ export function configsForProfile(profile: TemplateProfile | undefined): Templat
   return profile?.providerConfigs ?? [];
 }
 
-/** Configs whose provider is currently selected in Step 1. */
+/** Configs whose provider is in the given list. */
 export function availableConfigs(
   profile: TemplateProfile | undefined,
-  selectedProviderNames: string[],
+  providerNames: string[],
 ): TemplateProviderConfig[] {
-  const selected = new Set(selectedProviderNames.map((n) => n.trim().toLowerCase()));
+  const providers = new Set(providerNames.map((n) => n.trim().toLowerCase()));
   return configsForProfile(profile).filter((c) =>
-    selected.has(c.providerName.trim().toLowerCase()),
+    providers.has(c.providerName.trim().toLowerCase()),
   );
 }
 
@@ -201,33 +190,122 @@ export function findConfig(
   return configsForProfile(profile).find((c) => eqName(c.name, configName));
 }
 
+/** Lowercased provider of a named config in a profile (undefined when the name does not resolve). */
+export function configProviderName(
+  profile: TemplateProfile | undefined,
+  configName: string | null,
+): string | undefined {
+  return findConfig(profile, configName)?.providerName.trim().toLowerCase();
+}
+
+/** The first config of a profile, in template order, whose provider is in `providerNames`. */
+function firstConfigOnProviders(
+  profile: TemplateProfile | undefined,
+  providerNames: ReadonlySet<string>,
+): TemplateProviderConfig | undefined {
+  return configsForProfile(profile).find((c) =>
+    providerNames.has(c.providerName.trim().toLowerCase()),
+  );
+}
+
 /**
- * Project a stored row onto the current provider selection — see the module doc for the three cases.
- * Never mutates the row; returns only the resolved config + the unresolved flag.
+ * Move each row whose template-named config is on a provider outside `providerNames` to the first
+ * config of its profile on one of those providers (see the module doc). Rows with no such config
+ * stay as they are and resolve as unresolved. Returns a NEW map.
+ */
+export function applyProviderFallback(
+  rows: Record<string, AgentRow>,
+  agents: TemplateAgent[],
+  profiles: TemplateProfile[],
+  providerNames: string[],
+): Record<string, AgentRow> {
+  const providers = new Set(providerNames.map((n) => n.trim().toLowerCase()));
+  const next: Record<string, AgentRow> = { ...rows };
+  for (const agent of agents) {
+    const key = agentKey(agent.name);
+    const row = next[key];
+    if (!row?.configName) continue;
+    const profile = profileForAgent(agent, profiles);
+    const named = findConfig(profile, row.configName);
+    if (!named || providers.has(named.providerName.trim().toLowerCase())) continue;
+    const fallback = firstConfigOnProviders(profile, providers);
+    if (!fallback) continue;
+    next[key] = {
+      ...row,
+      configName: fallback.name,
+      pinned: true,
+      modelOverride: null,
+      effortOverride: null,
+      fallbackFromConfigName: named.name,
+    };
+  }
+  return next;
+}
+
+/** The row without its provider-fallback mark. */
+export function withoutProviderFallback(row: AgentRow): AgentRow {
+  const { fallbackFromConfigName: _replaced, ...rest } = row;
+  return rest;
+}
+
+/** The template's agent rows for `providerNames`: the template rows with the fallback applied. */
+export function templateAgentRows(
+  payload: ExportData,
+  providerNames: string[],
+): Record<string, AgentRow> {
+  const agents = payload.agents ?? [];
+  return applyProviderFallback(
+    initialAgentRows(agents),
+    agents,
+    payload.profiles ?? [],
+    providerNames,
+  );
+}
+
+/**
+ * True when a row still carries a provider fallback. Applying a preset clears the mark on the
+ * agents it names, so after a preset any remaining mark belongs to an agent outside that preset.
+ */
+export function hasProviderFallback(rows: Record<string, AgentRow>): boolean {
+  return Object.values(rows).some((row) => row.fallbackFromConfigName !== undefined);
+}
+
+/** Names of the template agents whose profile has no config on any of `installedProviderNames`. */
+export function agentsThatCannotRun(
+  payload: ExportData,
+  installedProviderNames: string[],
+): string[] {
+  const installed = new Set(installedProviderNames.map((n) => n.trim().toLowerCase()));
+  const profiles = payload.profiles ?? [];
+  return (payload.agents ?? [])
+    .filter((agent) => !firstConfigOnProviders(profileForAgent(agent, profiles), installed))
+    .map((agent) => agent.name);
+}
+
+/**
+ * Resolve a stored row (see the module doc). `installedProviderNames` applies only to a row with
+ * `userSelectedOption`. Never mutates the row.
  */
 export function resolveAgentRow(
   row: AgentRow,
   profile: TemplateProfile | undefined,
   selectedProviderNames: string[],
+  installedProviderNames: string[],
 ): ResolvedAgentRow {
-  const selected = new Set(selectedProviderNames.map((n) => n.trim().toLowerCase()));
-  const isAvailable = (config: TemplateProviderConfig) =>
-    selected.has(config.providerName.trim().toLowerCase());
-
   if (row.configName) {
     const named = findConfig(profile, row.configName);
-    if (named && isAvailable(named)) {
+    const allowedProviders = row.userSelectedOption
+      ? installedProviderNames
+      : selectedProviderNames;
+    if (named && allowedProviders.some((provider) => eqName(provider, named.providerName))) {
       return { agentName: row.agentName, resolvedConfigName: named.name, unresolved: false };
     }
-    // A pinned (template-named or user-selected) config whose provider is gone: hard-block, never
-    // auto-fall-back — the user chose it, so surface the loss instead of silently swapping configs.
     if (row.pinned) {
       return { agentName: row.agentName, resolvedConfigName: null, unresolved: true };
     }
   }
 
-  // Unpinned: auto-pick the first config on a selected provider (or unresolved when none remain).
-  const first = configsForProfile(profile).find((c) => isAvailable(c));
+  const first = availableConfigs(profile, selectedProviderNames)[0];
   return {
     agentName: row.agentName,
     resolvedConfigName: first?.name ?? null,
@@ -251,6 +329,19 @@ export function selectablePresetNames(
 }
 
 /**
+ * The selectable presets, newest first. Storage order represents update time (newest appended
+ * last) — the same convention the Agents page's PresetSelector sorts by. The first entry is the
+ * default preset that the wizard applies on open.
+ */
+export function selectablePresetsNewestFirst(
+  preview: Pick<SetupPreviewResponse, 'payload' | 'presetProviderCoverage'>,
+  selectedProviderNames: string[],
+): NonNullable<ExportData['presets']> {
+  const selectable = selectablePresetNames(preview.presetProviderCoverage, selectedProviderNames);
+  return [...(preview.payload.presets ?? [])].reverse().filter((p) => selectable.has(p.name));
+}
+
+/**
  * Apply a preset to the row map: for every agent the preset names, pin its config and set its
  * model/effort overrides verbatim from the preset. Agents the preset does not mention keep their
  * current rows. Returns a NEW map (the input is not mutated).
@@ -265,7 +356,7 @@ export function applyPresetToRows(
     const existing = next[key];
     if (!existing) continue;
     next[key] = {
-      ...existing,
+      ...withoutProviderFallback(existing),
       configName: config.providerConfigName,
       pinned: true,
       modelOverride: config.modelOverride ?? null,
@@ -301,7 +392,7 @@ export function computeOverridePayload(
 export interface AgentOverridesResult {
   /** Emit-worthy overrides (untouched/back-to-baseline agents omitted). */
   overrides: AgentOverridePayload[];
-  /** Agent names with no resolvable config under the current selection (hard-blocks Next). */
+  /** Agent names with no resolvable config (blocks the step). */
   unresolvedAgents: string[];
 }
 
@@ -315,6 +406,7 @@ export function buildAgentOverrides(
   agents: TemplateAgent[],
   profiles: TemplateProfile[],
   selectedProviderNames: string[],
+  installedProviderNames: string[],
 ): AgentOverridesResult {
   const overrides: AgentOverridePayload[] = [];
   const unresolvedAgents: string[] = [];
@@ -325,13 +417,18 @@ export function buildAgentOverrides(
     if (!row) continue;
     const profile = profileForAgent(agent, profiles);
 
-    const current = resolveAgentRow(row, profile, selectedProviderNames);
+    const current = resolveAgentRow(row, profile, selectedProviderNames, installedProviderNames);
     if (current.unresolved || current.resolvedConfigName === null) {
       unresolvedAgents.push(agent.name);
       continue;
     }
 
-    const baseline = resolveAgentRow(initialRowForAgent(agent), profile, selectedProviderNames);
+    const baseline = resolveAgentRow(
+      initialRowForAgent(agent),
+      profile,
+      selectedProviderNames,
+      installedProviderNames,
+    );
     const config = findConfig(profile, current.resolvedConfigName);
     const modelPayload = computeOverridePayload(
       row.modelOverride,
@@ -380,22 +477,31 @@ export type AgentPlanEmission =
   | Record<string, never>;
 
 /**
- * The final Step-2 contribution to the create payload (presetName XOR agentOverrides, never both):
+ * The agent-plan contribution to the create payload (presetName XOR agentOverrides, never both):
  *  - an unmodified, still-selectable preset → `{ presetName }`,
  *  - otherwise → `{ agentOverrides }` (omitted entirely when nothing changed).
+ *
+ * A preset that does not name an agent with a provider fallback goes out as `agentOverrides` for
+ * all rows: `presetName` alone would leave that agent's template model override in place.
  */
 export function buildAgentPlanEmission(params: {
   rows: Record<string, AgentRow>;
   agents: TemplateAgent[];
   profiles: TemplateProfile[];
   selectedProviderNames: string[];
+  installedProviderNames: string[];
   presetName: string | null;
   presetModified: boolean;
   selectablePresets: Set<string>;
 }): AgentPlanEmission {
   const { presetName, presetModified, selectablePresets } = params;
 
-  if (presetName && !presetModified && selectablePresets.has(presetName)) {
+  if (
+    presetName &&
+    !presetModified &&
+    selectablePresets.has(presetName) &&
+    !hasProviderFallback(params.rows)
+  ) {
     return { presetName };
   }
 
@@ -404,6 +510,7 @@ export function buildAgentPlanEmission(params: {
     params.agents,
     params.profiles,
     params.selectedProviderNames,
+    params.installedProviderNames,
   );
   if (overrides.length === 0) return {};
   return { agentOverrides: overrides };

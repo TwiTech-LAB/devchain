@@ -29,6 +29,7 @@ import {
   truncateText,
 } from '@/ui/utils/session-reader-formatters';
 import { MarkdownRenderer } from '@/ui/components/shared/MarkdownRenderer';
+import { CopyTextButton } from '@/ui/components/shared/CopyTextButton';
 import { SessionMetricsHeader } from './SessionMetricsHeader';
 import { AIGroupCard } from './AIGroupCard';
 import { SessionViewModeProvider } from '@/ui/hooks/useSessionViewMode';
@@ -289,6 +290,7 @@ const AIMessageCard = memo(function AIMessageCard({ sessionId, message }: Messag
               </span>
             </>
           )}
+          {text.trim() && <CopyTextButton text={text} label="Copy message" className="ml-auto" />}
         </div>
 
         {/* Thinking blocks (collapsible, dimmed) */}
@@ -308,7 +310,11 @@ const AIMessageCard = memo(function AIMessageCard({ sessionId, message }: Messag
 
         {/* Output text (markdown rendered) */}
         {text.trim() && (
-          <MarkdownRenderer content={text} className="text-sm leading-relaxed [&_p]:my-1" />
+          <MarkdownRenderer
+            content={text}
+            className="text-sm leading-relaxed [&_p]:my-1"
+            copyableCode
+          />
         )}
       </div>
     </div>

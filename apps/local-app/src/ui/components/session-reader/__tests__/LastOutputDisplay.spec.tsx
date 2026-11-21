@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { LastOutputDisplay } from '../LastOutputDisplay';
 
 jest.mock('@/ui/components/shared/MarkdownRenderer', () => ({
@@ -24,6 +24,26 @@ describe('LastOutputDisplay', () => {
 
     expect(screen.getByTestId('last-output-display')).toBeInTheDocument();
     expect(screen.getByTestId('markdown-renderer')).toHaveTextContent('**Final** answer');
+  });
+
+  it('copies the raw output text with its original line breaks', async () => {
+    const writeText = jest.fn().mockResolvedValue(undefined);
+    Object.assign(navigator, { clipboard: { writeText } });
+    const text = 'First paragraph\nsame paragraph\n\n```sh\n  echo "hi"\n```';
+    render(
+      <LastOutputDisplay
+        lastOutput={{
+          type: 'text',
+          text,
+          timestamp: new Date('2026-02-24T12:00:03.000Z'),
+          stepId: 'output-1',
+        }}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Copy output' }));
+
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith(text));
   });
 
   it('shows placeholder for null output when session is live', () => {

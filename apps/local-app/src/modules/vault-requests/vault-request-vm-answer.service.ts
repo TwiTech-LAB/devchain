@@ -19,8 +19,10 @@ import { VaultVmCacheService } from '../vault/vault-vm-cache.service';
 import { putVaultRequestSessionValue } from './vault-request-session-value';
 import {
   VaultRequestStore,
+  grantedUnderOtherName,
   vaultRequestNotPending,
   type VaultRequest,
+  type VaultRequestGrantedEntry,
 } from './vault-request.store';
 import {
   applyUseDecision,
@@ -75,7 +77,7 @@ export class VaultRequestVmAnswerService {
     const sessionValue = answer.sessionValue?.value;
     if (sessionValue === undefined) {
       await this.store.resolve(requestId, 'fulfilled', {
-        work: (request) => this.assertDelivered(request),
+        work: (request) => this.assertDelivered(request, answer.entryId),
       });
       return;
     }
@@ -133,10 +135,14 @@ export class VaultRequestVmAnswerService {
 
   /**
    * Home's push can fail without home knowing, so a stored answer ends the request only
-   * once the agent resolves the name here: granted, with its value cached at the
-   * granted revision.
+   * once the agent resolves the entry here: granted, with its value cached at the
+   * granted revision. Without `entryId` the entry is the one of the requested name; with
+   * it, the agent gets the notice under that entry's own name.
    */
-  private async assertDelivered(request: VaultRequest): Promise<void> {
+  private async assertDelivered(
+    request: VaultRequest,
+    entryId: string | undefined,
+  ): Promise<VaultRequestGrantedEntry | void> {
     let view: VaultGrantedView;
     try {
       const agent = await this.storage.getAgent(request.agentId);
@@ -147,9 +153,14 @@ export class VaultRequestVmAnswerService {
       }
       throw error;
     }
-    // A session value of the same name overrides the stored entry, so the agent has it.
-    if (view.sessionValues.some((value) => value.name === request.name)) return;
-    const entry = view.stored.find((granted) => granted.name === request.name);
+    // A session value of the requested name overrides the stored entry, so the agent has it.
+    if (entryId === undefined && view.sessionValues.some((value) => value.name === request.name)) {
+      return;
+    }
+    const entry = view.stored.find((granted) =>
+      entryId === undefined ? granted.name === request.name : granted.id === entryId,
+    );
     if (!entry || !(await this.vmCache.holds([entry]))) throw valueNotDelivered();
+    return grantedUnderOtherName(request, entry);
   }
 }

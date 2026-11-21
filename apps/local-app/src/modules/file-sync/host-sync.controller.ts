@@ -8,14 +8,20 @@ import {
   Param,
   Patch,
   Post,
+  Put,
   Query,
+  Req,
+  Res,
 } from '@nestjs/common';
+import type { FastifyReply, FastifyRequest } from 'fastify';
+import { requestAbortSignal } from '../../common/http/request-abort-signal';
 import { ApiNoContentResponse, ApiOkResponse, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { createLogger } from '../../common/logging/logger';
 import {
   FolderIdSchema,
   RemoteNeedQuerySchema,
   RemoteNeedThroughQuerySchema,
+  ShareFolderIdSchema,
   SyncStatusQuerySchema,
 } from './file-sync.dto';
 import { FileSyncService, gitFolderProjectId, projectFolderId } from './file-sync.service';
@@ -48,15 +54,22 @@ export class HostSyncController {
   @HttpCode(200)
   async inspect(
     @Body() body: unknown,
+    @Req() req: FastifyRequest,
+    @Res({ passthrough: true }) reply: FastifyReply,
   ): Promise<HostHandlerResponse<typeof hostRoutes.syncInspect, 200>> {
-    const { path, scan, paths, patterns, skipIgnores } = hostRoutes.syncInspect.body.parse(body);
+    const { path, scan, paths, patterns, skipIgnores, requestedTreesOnly } =
+      hostRoutes.syncInspect.body.parse(body);
+    const signal = requestAbortSignal(req, reply);
     await assertVmHomePath(resolve(path), {
       code: 'FILE_SYNC_INSPECT_OUTSIDE_HOME',
       message: 'Inspection paths must be under the VM home',
       linkMessage: 'Inspection paths must not be links',
       rejectAncestorLinks: true,
     });
-    return this.inspector.inspect(path, scan, paths, patterns, skipIgnores);
+    return this.inspector.inspect(path, scan, paths, patterns, skipIgnores, {
+      signal,
+      requestedTreesOnly,
+    });
   }
 
   @Get('device')
@@ -96,6 +109,42 @@ export class HostSyncController {
     @Body() body: unknown,
   ): Promise<HostHandlerResponse<typeof hostRoutes.syncForceCopyBackup, 200>> {
     return this.fileSync.forceCopyBackup(hostRoutes.syncForceCopyBackup.body.parse(body));
+  }
+
+  @Post('shares')
+  @HttpCode(200)
+  @ApiOperation({ summary: 'Share a user folder at the same path, after checking the path here' })
+  @ApiOkResponse({ description: 'The share folder; a missing allowed folder is created' })
+  async shareFolder(
+    @Body() body: unknown,
+  ): Promise<HostHandlerResponse<typeof hostRoutes.syncShareFolder, 200>> {
+    const request = hostRoutes.syncShareFolder.body.parse(body);
+    const folder = await this.fileSync.ensureShareFolder(request, { createMissing: true });
+    logger.info({ folderId: folder.id, type: request.type }, 'POST /api/host/sync/shares');
+    return folder;
+  }
+
+  @Post('shares/backup')
+  @HttpCode(200)
+  @ApiOperation({ summary: 'Prepare the backup directory of a share first copy' })
+  @ApiOkResponse({ description: 'The backup directory on this host' })
+  shareBackup(
+    @Body() body: unknown,
+  ): Promise<HostHandlerResponse<typeof hostRoutes.syncShareBackup, 200>> {
+    return this.fileSync.shareBackup(hostRoutes.syncShareBackup.body.parse(body));
+  }
+
+  @Put('shares/:id/ignores')
+  @HttpCode(204)
+  @ApiOperation({ summary: 'Install the ignore patterns of a shared user folder' })
+  @ApiNoContentResponse()
+  async shareIgnores(
+    @Param('id') id: string,
+    @Body() body: unknown,
+  ): Promise<HostHandlerResponse<typeof hostRoutes.syncShareIgnores, 204>> {
+    const folderId = ShareFolderIdSchema.parse(id);
+    const { ignores } = hostRoutes.syncShareIgnores.body.parse(body);
+    await this.fileSync.updateFolder(folderId, { ignores }).catch(folderNotFound);
   }
 
   @Patch('folders/:id')

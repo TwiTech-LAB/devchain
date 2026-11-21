@@ -28,6 +28,12 @@ import { DestroyVmOperation } from './destroy-vm.operation';
 import { VmOperationsService } from './vm-operations.service';
 import { VmOperationsController } from './vm-operations.controller';
 import { RemotesService } from '../services/remotes.service';
+import { FakeFileSyncService } from '../../file-sync/testing/fake-file-sync.service';
+import type { FileSyncService } from '../../file-sync/file-sync.service';
+import { shareFolderId, shareId } from '../../file-sync/share-paths';
+import { SharedFoldersLifecycle } from '../shared-folders/shared-folders.lifecycle';
+import { SharedFoldersStore } from '../shared-folders/shared-folders.store';
+import { SHARE_OPERATION_OPEN_MESSAGE } from './share-operation-lock';
 import { ClaimOperation } from './claim.operation';
 import { HostSshKeysService } from '../host/host-ssh-keys.service';
 import { readFile } from 'node:fs/promises';
@@ -64,6 +70,8 @@ describe('VM operation composition with fake Proxmox and bootstrap', () => {
   let vmOperations: VmOperationsService;
   let sharedVm: ReturnType<typeof sharedVmGuardStub>;
   let remotes: RemotesService;
+  let sharedFolders: SharedFoldersStore;
+  let homeFolders: FakeFileSyncService;
   let connectionId: string;
   let nextVmid: number;
   let imageImported: boolean;
@@ -471,6 +479,13 @@ describe('VM operation composition with fake Proxmox and bootstrap', () => {
         runtimeAt: async () => ({ state: 'unclaimed', imageVersion: '1.4.0' }),
       } as never,
     );
+    sharedFolders = new SharedFoldersStore(db);
+    homeFolders = new FakeFileSyncService();
+    const shareLifecycle = new SharedFoldersLifecycle(
+      storage,
+      sharedFolders,
+      homeFolders as unknown as FileSyncService,
+    );
     const reset = new ResetVmOperation(
       storage,
       providers,
@@ -492,8 +507,16 @@ describe('VM operation composition with fake Proxmox and bootstrap', () => {
         thawRemoteAdmission: jest.fn().mockResolvedValue(true),
       } as never,
       sharedVm,
+      shareLifecycle,
     );
-    const destroy = new DestroyVmOperation(storage, providers, writeback, lifecycle, sharedVm);
+    const destroy = new DestroyVmOperation(
+      storage,
+      providers,
+      writeback,
+      lifecycle,
+      sharedVm,
+      shareLifecycle,
+    );
     runner = new RemoteOperationRunner(
       storage,
       { broadcastEvent: jest.fn() } as never,
@@ -564,6 +587,7 @@ describe('VM operation composition with fake Proxmox and bootstrap', () => {
       runner,
       {} as never,
       {} as never,
+      shareLifecycle,
     );
   });
 
@@ -1231,6 +1255,101 @@ describe('VM operation composition with fake Proxmox and bootstrap', () => {
     pullGate.release();
     expect((await settle(reset)).state).toBe('done');
   });
+
+  // One table over real storage: the lock is a stored-operation query each entry point shares.
+  it('refuses lifecycle actions and the same share while a share operation is open, and still starts Connect', async () => {
+    const created = await settle(await vmOperations.create(connectionId, input()));
+    const { remoteId } = created;
+    const notes = join(directory, 'notes');
+    await storage.createRemoteOperation({
+      kind: 'share_folder',
+      remoteId,
+      projectId: null,
+      steps: [],
+      details: { shareId: shareId(notes) },
+    });
+    const refused: Array<[string, () => Promise<unknown>]> = [
+      ['Reset', () => vmOperations.reset(remoteId, { force: false, providerAuth: {} })],
+      ['Destroy', () => vmOperations.destroy(remoteId, { force: false })],
+      ['Update', () => operations.updateHost(remoteId)],
+      [
+        'Change logins',
+        () => operations.updateLogins(remoteId, { providerAuth: { codex: 'skip' }, force: false }),
+      ],
+      ['Remove', () => remotes.delete(remoteId)],
+      ['the same share', () => operations.shareFolder(remoteId, { path: notes, ignores: [] })],
+    ];
+    const outcomes: Array<[string, string]> = [];
+    for (const [action, start] of refused)
+      outcomes.push([
+        action,
+        await start().then(
+          () => 'started',
+          (error: Error) => error.message,
+        ),
+      ]);
+    expect(outcomes).toEqual(refused.map(([action]) => [action, SHARE_OPERATION_OPEN_MESSAGE]));
+    const project = await storage.createProject({
+      name: 'beside-share',
+      description: null,
+      rootPath: join(directory, 'beside-share'),
+      isTemplate: false,
+    });
+    expect((await settle(await operations.attach(remoteId, project.id))).state).toBe('done');
+  });
+
+  it('refuses a share while a host operation of the VM is open', async () => {
+    const created = await settle(await vmOperations.create(connectionId, input()));
+    updateGate = gate();
+    const entered = new Promise<void>((resolve) => {
+      updateEntered = resolve;
+    });
+    const update = await operations.updateHost(created.remoteId);
+    await entered;
+    await expect(
+      operations.shareFolder(created.remoteId, {
+        path: join(directory, 'notes'),
+        ignores: [],
+      }),
+    ).rejects.toMatchObject({
+      statusCode: 409,
+      message: 'A host lifecycle operation is already open for this remote.',
+    });
+    updateGate.release();
+    await settle(update);
+  });
+
+  it.each(['Remove', 'Destroy', 'Reset'] as const)(
+    "forgets the VM's shared folders and this PC's folders of them on %s",
+    async (action) => {
+      const created = await settle(await vmOperations.create(connectionId, input()));
+      const paths = [join(directory, 'docs'), join(directory, 'notes')];
+      for (const path of paths) {
+        sharedFolders.add(created.remoteId, path, []);
+        homeFolders.folders.set(shareFolderId(path), {
+          type: 'sendreceive',
+          paused: false,
+          peerDeviceId: 'VM',
+          ignores: [],
+        });
+      }
+      const other = join(directory, 'other-vm');
+      sharedFolders.add('00000000-0000-4000-8000-000000000000', other, []);
+      if (action === 'Remove') await remotes.delete(created.remoteId);
+      else if (action === 'Destroy')
+        await runner.whenIdle((await vmOperations.destroy(created.remoteId, { force: false })).id);
+      else
+        expect(
+          (
+            await settle(
+              await vmOperations.reset(created.remoteId, { force: false, providerAuth: {} }),
+            )
+          ).state,
+        ).toBe('done');
+      expect(sharedFolders.list().map((entry) => entry.path)).toEqual([other]);
+      for (const path of paths) expect(homeFolders.folders.has(shareFolderId(path))).toBe(false);
+    },
+  );
 
   it('destroys a guarded VM after pulling families and removes its remote and operation', async () => {
     const created = await settle(await vmOperations.create(connectionId, input()));

@@ -49,6 +49,7 @@ import {
   createStatusContext,
   canFixFileSync,
   projectStatus,
+  shareOperationRemotes,
   vmReachable,
   vmStatus,
   type AttentionAction,
@@ -410,6 +411,7 @@ export function useRemoteVmSectionController(): RemoteVmSectionPresentation {
       ),
     [statusContext, readiness.readiness, runtime.data, homeIdentity, notices.notices],
   );
+  const shareBusyVms = useMemo(() => shareOperationRemotes(operations), [operations]);
   // An open failed create or reset reserves its VM, so no newer operation can hide it.
   const failedVmOperations = useMemo(
     () =>
@@ -440,8 +442,12 @@ export function useRemoteVmSectionController(): RemoteVmSectionPresentation {
     [remotes],
   );
   const activityNames = useMemo(
-    () => ({ remotes: remoteNameById, projects: projectNames }),
-    [remoteNameById, projectNames],
+    () => ({
+      remotes: remoteNameById,
+      projects: projectNames,
+      homePath: homeIdentity?.homePath ?? null,
+    }),
+    [remoteNameById, projectNames, homeIdentity],
   );
   const anyVmReady = [...statuses.values()].some((status) => status.state === 'ready');
   // Bindings must settle before the summary may show: with a VM but no binding
@@ -469,6 +475,7 @@ export function useRemoteVmSectionController(): RemoteVmSectionPresentation {
     truncated: projectsTruncated,
   };
   const settingsRow = projectRows.find((row) => row.project.id === fileSyncProjectId);
+  const settingsBinding = settingsRow && bindingByProjectId.get(settingsRow.project.id);
   /** The projects bound to a VM, for the dialogs that list what a change affects. */
   const boundProjects = (remoteId: string) =>
     (statusContext.bindingsByRemote.get(remoteId) ?? []).map((binding) => ({
@@ -805,6 +812,7 @@ export function useRemoteVmSectionController(): RemoteVmSectionPresentation {
       loading: remotesLoading,
       statuses,
       failedVmOperations,
+      shareOperationRemotes: shareBusyVms,
       connectionNames,
       projectCounts,
       highlightedId: viewedVmId,
@@ -831,6 +839,7 @@ export function useRemoteVmSectionController(): RemoteVmSectionPresentation {
             status,
             failedVmOperations.has(remote.id),
             projectCounts.get(remote.id) ?? 0,
+            shareBusyVms.has(remote.id),
           ).some((item) => item.key === 'change-logins')
         );
       }),
@@ -861,7 +870,7 @@ export function useRemoteVmSectionController(): RemoteVmSectionPresentation {
         ? {
             projectId: settingsRow.project.id,
             projectName: settingsRow.project.name,
-            connected: bindingByProjectId.get(settingsRow.project.id)?.state === 'remote',
+            remoteId: settingsBinding?.state === 'remote' ? settingsBinding.remoteId : undefined,
             busy: settingsRow.status.state === 'busy',
             onClose: () => setFileSyncProjectId(null),
           }
@@ -1055,6 +1064,7 @@ export function useRemoteVmSectionController(): RemoteVmSectionPresentation {
                 viewedStatus,
                 failedVmOperations.has(viewedRemote.id),
                 projectCounts.get(viewedRemote.id) ?? 0,
+                shareBusyVms.has(viewedRemote.id),
               ),
               projects: viewedProjects,
               operations,

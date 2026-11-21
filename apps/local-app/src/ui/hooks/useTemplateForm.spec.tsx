@@ -165,3 +165,39 @@ describe('useTemplateForm — handleTemplateFilePathChange', () => {
     });
   });
 });
+
+describe('useTemplateForm — name from the project folder', () => {
+  type Step = { folder: string } | { name: string };
+
+  it.each<[string, Step[], string]>([
+    [
+      'takes the last segment and drops a trailing slash',
+      [{ folder: '/home/me/code/checkout-service/' }],
+      'checkout-service',
+    ],
+    ['supports backslash separators', [{ folder: 'C:\\work\\shop\\' }], 'shop'],
+    [
+      'follows later folder changes while automatic',
+      [{ folder: '/a/one' }, { folder: '/a/two' }],
+      'two',
+    ],
+    [
+      'keeps a typed name when the folder changes',
+      [{ folder: '/a/one' }, { name: 'Mine' }, { folder: '/a/two' }],
+      'Mine',
+    ],
+    ['keeps a typed name when the folder is cleared', [{ name: 'Mine' }, { folder: '' }], 'Mine'],
+  ])('%s', async (_case, steps, expectedName) => {
+    const api = new InMemoryProjectsPageApi();
+    const { result } = renderHook(() =>
+      useTemplateForm({ templates: [], setShowTemplateDialog: jest.fn(), api, toast: jest.fn() }),
+    );
+    for (const step of steps) {
+      await act(async () => {
+        if ('folder' in step) await result.current.handleTemplatePathChange(step.folder);
+        else result.current.handleNameChange(step.name);
+      });
+    }
+    expect(result.current.templateFormData.name).toBe(expectedName);
+  });
+});

@@ -78,6 +78,7 @@ export const MOBILE_RPC_WORKSPACE_SCOPES = {
   'terminal.viewport.unsubscribe': 'subscriptionId',
   'terminal.sendKey': 'projectId',
   'vault.listRequests': 'authorized-workspaces',
+  'vault.listRequestCandidates': 'vaultRequestId',
   'vault.fulfillRequest': 'vaultRequestId',
   'vault.denyRequest': 'vaultRequestId',
   'vault.approveUse': 'vaultRequestId',

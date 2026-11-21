@@ -2,6 +2,16 @@
 
 Release notes for each published `devchain-cli` version, newest first. The `changelog` field in `package.json` keeps the newest 10 versions for the CLI update notice.
 
+## 0.28.0 — 2026-11-21
+
+- Projects: one Review page to create, import or upgrade a project, and an upgrade keeps your current agents and teams
+- Terminal: paste images and large text into agent sessions
+- Remote VMs: share any folder with a VM, and this PC manages the provider settings of VM projects
+- Vault: answer a secret request with an entry that you already have
+- Chat: copy buttons for transcript messages, output and code
+- Dev Template: new Codex models and shorter setup names
+- Mobile app 1.14.0: answer a Vault request with an existing entry
+
 ## 0.27.1 — 2026-11-11
 
 - https://devchain.cc/releases/0.27.0/

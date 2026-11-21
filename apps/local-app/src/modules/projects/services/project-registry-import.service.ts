@@ -167,7 +167,13 @@ export class ProjectRegistryImportService {
       templateContent.presets.length > 0
     ) {
       try {
-        await this.settingsService.setProjectPresets(project.id, templateContent.presets);
+        // Registry content is template input: the merge writer removes `origin`.
+        // A new project has no user presets, so no roster is necessary.
+        await this.settingsService.mergeProjectTemplatePresets(
+          project.id,
+          templateContent.presets,
+          [],
+        );
         logger.info(
           { projectId: project.id, presetCount: templateContent.presets.length },
           'Presets persisted from template',

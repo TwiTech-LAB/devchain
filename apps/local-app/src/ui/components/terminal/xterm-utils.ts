@@ -1,6 +1,34 @@
 /**
  * Utility functions for xterm.js terminal management
  */
+import type { Terminal } from '@xterm/xterm';
+
+const ENABLE_BRACKETED_PASTE = '\x1b[?2004h';
+
+/**
+ * Enables bracketed paste locally in xterm. Provider CLIs enable it at startup
+ * before the browser attaches. Without the wrappers, Claude holds the prompt
+ * and Codex can lose part of a large paste. A later `?2004l` from the live
+ * stream still turns the mode off.
+ */
+export function enableBracketedPaste(terminal: Terminal): void {
+  terminal.write(ENABLE_BRACKETED_PASTE);
+}
+
+/**
+ * Captured seed content carries no terminal modes, so a new seed enables paste
+ * wrappers. Reloading the same pane content preserves its previous mode.
+ *
+ * The mode write goes straight to xterm, which parses it before the data that
+ * follows. Do not send it through the write pump: the pump refuses or delays a
+ * write while it seeds or recovers.
+ */
+export function resetTerminal(terminal: Terminal, pasteMode: 'on' | 'keep'): void {
+  const enable = pasteMode === 'on' || terminal.modes.bracketedPasteMode;
+  terminal.reset();
+  terminal.clear();
+  if (enable) enableBracketedPaste(terminal);
+}
 
 /**
  * Detects terminal-internal control sequences that should not be sent to the shell.

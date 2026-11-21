@@ -10,6 +10,7 @@ import {
 } from '@/ui/lib/preset-validation';
 import type { Preset } from '@/ui/lib/preset-types';
 import { restartKeyForMain } from '@/ui/lib/restart-keys';
+import { invalidateProjectTeams } from '@/ui/lib/teams';
 
 type FetchFn = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
 
@@ -122,10 +123,13 @@ export function usePresetApply({
       }
 
       queryClient.invalidateQueries({ queryKey: agentQueryKeys.project(projectId) });
+      if (projectId) void invalidateProjectTeams(queryClient, projectId);
 
       showSuccess({
         title: 'Preset applied',
-        description: `${result.applied} agent(s) updated. Restart sessions to apply.`,
+        description: `${result.applied} agent(s) updated${
+          result.warnings.length > 0 ? ` (${result.warnings.length} warning(s))` : ''
+        }. Restart sessions to apply.`,
       });
     },
     onError: (error) => {

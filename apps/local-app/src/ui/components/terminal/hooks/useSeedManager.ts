@@ -6,6 +6,7 @@ import { DEFAULT_TERMINAL_SCROLLBACK } from '@/common/constants/terminal';
 import { useTerminalWritePump } from './useTerminalWritePump';
 import type { TerminalWritePumpApi } from './terminal-write-pump';
 import type { TerminalHistorySync } from '../terminal-history-sync';
+import { resetTerminal } from '../xterm-utils';
 import type {
   TerminalResyncAbortPayload,
   TerminalResyncCompletePayload,
@@ -232,7 +233,7 @@ export function useSeedManager(
           historySync.beginSeed();
         }
         if (xtermRef.current) {
-          xtermRef.current.reset();
+          resetTerminal(xtermRef.current, 'on');
         }
 
         // Set 30-second timeout for seed completion
@@ -457,8 +458,7 @@ export function useSeedManager(
               beforeWrite: () => {
                 const current = xtermRef.current;
                 if (!current) return;
-                current.reset();
-                current.clear();
+                resetTerminal(current, 'on');
                 current.options.scrollback = scrollbackLines;
               },
               onComplete: writeCursorOrFinish,

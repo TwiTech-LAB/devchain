@@ -105,8 +105,7 @@ describe('ProjectsService', () => {
     setProjectTemplateMetadata: jest.Mock;
     getProjectTemplateMetadata: jest.Mock;
     getProjectPresets: jest.Mock;
-    setProjectPresets: jest.Mock;
-    clearProjectPresets: jest.Mock;
+    mergeProjectTemplatePresets: jest.Mock;
   };
   let watchersService: {
     deleteWatcher: jest.Mock;
@@ -199,8 +198,7 @@ describe('ProjectsService', () => {
       setProjectTemplateMetadata: jest.fn().mockResolvedValue(undefined),
       getProjectTemplateMetadata: jest.fn().mockReturnValue(null),
       getProjectPresets: jest.fn().mockReturnValue([]),
-      setProjectPresets: jest.fn().mockResolvedValue(undefined),
-      clearProjectPresets: jest.fn().mockResolvedValue(undefined),
+      mergeProjectTemplatePresets: jest.fn().mockResolvedValue(undefined),
     };
 
     watchersService = {
@@ -1709,8 +1707,12 @@ describe('ProjectsService', () => {
 
         await service.importProject({ projectId, payload, dryRun: false });
 
-        expect(settings.setProjectPresets).toHaveBeenCalledWith(projectId, payload.presets);
-        expect(settings.clearProjectPresets).not.toHaveBeenCalled();
+        expect(settings.mergeProjectTemplatePresets).toHaveBeenCalledWith(
+          projectId,
+          payload.presets,
+          [],
+          [],
+        );
       });
 
       it('stores legacy imported presets without modelOverride (backward compatibility)', async () => {
@@ -1745,7 +1747,12 @@ describe('ProjectsService', () => {
 
         await service.importProject({ projectId, payload, dryRun: false });
 
-        expect(settings.setProjectPresets).toHaveBeenCalledWith(projectId, payload.presets);
+        expect(settings.mergeProjectTemplatePresets).toHaveBeenCalledWith(
+          projectId,
+          payload.presets,
+          [],
+          [],
+        );
       });
     });
   });

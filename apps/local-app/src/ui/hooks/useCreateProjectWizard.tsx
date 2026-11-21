@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useQuery } from '@tanstack/react-query';
+import { queryOptions, useQuery } from '@tanstack/react-query';
 import type {
   CreateFromTemplateInput,
   SetupPreviewRequest,
@@ -8,16 +8,16 @@ import type {
 import { projectsQueryKeys } from '@/ui/pages/projects/lib/project-query-keys';
 import type { ProjectsPageApi } from '@/ui/pages/projects/lib/projects-page-api';
 import { projectsHttpApi } from '@/ui/pages/projects/lib/projects-http-api';
-import type { ExportVaultAccess } from '@devchain/shared';
 import {
   useProjectSetupWizard,
   type ProjectSetupWizardController,
   type WizardStep,
 } from '@/ui/hooks/useProjectSetupWizard';
-import { TemplateVaultAccessNotice } from '@/ui/components/project/wizard/TemplateVaultAccessNotice';
+import { CreateReview } from '@/ui/components/project/wizard/SetupReview';
+import { HowItWorks, findHowItWorksGuide } from '@/ui/components/project/wizard/HowItWorks';
 import {
   buildConfigEmission,
-  buildConfigSteps,
+  buildSetupStep,
   initialWizardConfigState,
   useWizardConfigHandlers,
   type WizardConfigState,
@@ -25,8 +25,8 @@ import {
 
 /**
  * Domain state accumulated across the create wizard. Owned here (the flow controller), NOT by the
- * step components — Back/Next never lose it. This is exactly the shared Steps 1-3 config surface
- * (create adds no extra fields beyond it).
+ * step components — Back/Next never lose it. This is exactly the shared setup state (create adds
+ * no extra fields beyond it).
  */
 export type CreateWizardState = WizardConfigState;
 
@@ -53,7 +53,9 @@ export interface CreateProjectWizardResult {
   preview: SetupPreviewResponse | null;
 }
 
-function toPreviewRequest(payload: CreateFromTemplateInput): SetupPreviewRequest | null {
+export function toPreviewRequest(
+  payload: Pick<CreateFromTemplateInput, 'templatePath' | 'templateId' | 'version'>,
+): SetupPreviewRequest | null {
   if (payload.templatePath) return { templatePath: payload.templatePath };
   if (payload.templateId) {
     return { slug: payload.templateId, ...(payload.version ? { version: payload.version } : {}) };
@@ -62,34 +64,28 @@ function toPreviewRequest(payload: CreateFromTemplateInput): SetupPreviewRequest
 }
 
 /**
- * Create has no Review step, so the template's Vault access line goes on the step that shows the
- * final Create button.
+ * The setup-preview query of the Create dialog and the create wizard. One key and one set of
+ * options, so the wizard reads the dialog's fetch: one fetch per opening, never a refetch mid-flow.
  */
-function withVaultAccessOnLastStep(
-  steps: WizardStep[],
-  vaultAccess: ExportVaultAccess | undefined,
-): WizardStep[] {
-  const last = steps.filter((step) => !step.skipped).at(-1);
-  if (!vaultAccess || !last) return steps;
-  return steps.map((step) =>
-    step === last
-      ? {
-          ...step,
-          render: () => (
-            <div className="space-y-3">
-              {step.render()}
-              <TemplateVaultAccessNotice vaultAccess={vaultAccess} />
-            </div>
-          ),
-        }
-      : step,
-  );
+export function setupPreviewQueryOptions(
+  api: ProjectsPageApi,
+  request: SetupPreviewRequest | null,
+) {
+  return queryOptions({
+    queryKey: projectsQueryKeys.setupPreview(request),
+    queryFn: () => api.loadSetupPreview(request!),
+    staleTime: Infinity,
+    gcTime: Infinity,
+    retry: false,
+    refetchOnWindowFocus: false,
+  });
 }
 
 /**
  * Create-flow controller composing the flow-agnostic step machine (`useProjectSetupWizard`) with:
  *  - a ONCE-per-session setup-preview fetch (react-query, cached + shared to every step),
- *  - the shared Steps 1-3 config state + handlers + step registration (`useWizardConfig`), and
+ *  - the template's "How it works" guide step (skipped when the template has none),
+ *  - the shared setup state + handlers + "Review setup" step (`useWizardConfig`), and
  *  - the single final create mutation (base payload + selectedProviderNames + presetName XOR
  *    agentOverrides + teamOverrides).
  *
@@ -110,14 +106,8 @@ export function useCreateProjectWizard(
   );
 
   const previewQuery = useQuery({
-    queryKey: projectsQueryKeys.setupPreview(previewRequest),
-    queryFn: () => api.loadSetupPreview(previewRequest!),
+    ...setupPreviewQueryOptions(api, previewRequest),
     enabled: isOpen && previewRequest !== null,
-    // One fetch per wizard session, shared to all steps — never refetch mid-flow.
-    staleTime: Infinity,
-    gcTime: Infinity,
-    retry: false,
-    refetchOnWindowFocus: false,
   });
   const preview = previewQuery.data ?? null;
 
@@ -130,14 +120,18 @@ export function useCreateProjectWizard(
 
   const handlers = useWizardConfigHandlers(preview, setState);
 
-  const steps = useMemo(
-    () =>
-      withVaultAccessOnLastStep(
-        buildConfigSteps({ preview, state, handlers }).steps,
-        preview?.payload.vaultAccess,
-      ),
-    [preview, state, handlers],
-  );
+  const steps = useMemo<WizardStep[]>(() => {
+    const guide = preview ? findHowItWorksGuide(preview.payload) : null;
+    return [
+      {
+        id: 'how-it-works',
+        title: 'How it works',
+        skipped: guide === null,
+        render: () => (guide ? <HowItWorks content={guide} /> : null),
+      },
+      buildSetupStep({ preview, state, handlers, Review: CreateReview }),
+    ];
+  }, [preview, state, handlers]);
 
   const submit = useCallback(() => {
     if (!basePayload || !state) return;

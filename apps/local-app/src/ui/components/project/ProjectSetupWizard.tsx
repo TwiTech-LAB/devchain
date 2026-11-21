@@ -33,8 +33,7 @@ interface ProjectSetupWizardProps {
 /**
  * Flow-agnostic wizard shell: hosts a step-indicator header, the active step's body, and a
  * Back/Next(or Create)/Cancel footer driven entirely by the injected controller. It renders step
- * CONTENT via `currentStep.render()` (supplied by the flow — create Steps 1-3 land in Tasks 5-7)
- * and never fires a mutation itself: the final action calls the controller's `submit`, and Cancel
+ * CONTENT via `currentStep.render()` (supplied by the flow) and never fires a mutation itself: the final action calls the controller's `submit`, and Cancel
  * calls `cancel`, so closing at any step creates nothing.
  */
 export function ProjectSetupWizard({
@@ -66,17 +65,22 @@ export function ProjectSetupWizard({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-2xl">
-        <DialogHeader>
+      <DialogContent
+        className={cn(
+          'flex flex-col overflow-hidden p-4 sm:p-6',
+          showSteps && currentStep?.wide ? 'max-w-5xl' : 'max-w-2xl',
+        )}
+      >
+        <DialogHeader className="shrink-0">
           <DialogTitle>{title}</DialogTitle>
           {(currentStep?.description ?? description) && (
             <DialogDescription>{currentStep?.description ?? description}</DialogDescription>
           )}
         </DialogHeader>
 
-        {/* Step indicator: Providers → Agents → Teams */}
-        {showSteps && visibleSteps.length > 0 && (
-          <nav aria-label="Setup steps" className="flex items-center gap-1 text-sm">
+        {/* Step indicator, only when there is more than one step */}
+        {showSteps && visibleSteps.length > 1 && (
+          <nav aria-label="Setup steps" className="flex shrink-0 items-center gap-1 text-sm">
             {visibleSteps.map((step, index) => {
               const isActive = index === currentIndex;
               const isComplete = index < currentIndex;
@@ -112,9 +116,10 @@ export function ProjectSetupWizard({
           </nav>
         )}
 
-        {/* Body: capped + scrollable so long step content (agent lists, team panels)
-            never pushes the dialog past the viewport — header/stepper/footer stay pinned. */}
-        <div className="min-h-[8rem] max-h-[60vh] overflow-y-auto py-2 pr-1">
+        {/* Body: capped + scrollable so long step content never pushes the dialog past the
+            viewport — header/stepper/footer stay pinned. Popovers portal out of it. The Review
+            setup step sizes its own scroll blocks from this 60dvh cap (SetupReviewSections.tsx). */}
+        <div className="min-h-0 max-h-[60dvh] overflow-y-auto overscroll-contain py-2 pr-1">
           {isLoading
             ? (loadingContent ?? (
                 <div className="flex items-center justify-center gap-2 py-8 text-muted-foreground">
@@ -127,7 +132,7 @@ export function ProjectSetupWizard({
               : currentStep?.render()}
         </div>
 
-        <DialogFooter className="sm:justify-between">
+        <DialogFooter className="shrink-0 sm:justify-between">
           <Button type="button" variant="ghost" onClick={cancel}>
             Cancel
           </Button>

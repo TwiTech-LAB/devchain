@@ -80,6 +80,37 @@ export const ExportVaultAccessSchema = z.discriminatedUnion('mode', [
 
 export type ExportVaultAccess = z.infer<typeof ExportVaultAccessSchema>;
 
+export const PresetTeamConfigsSchema = z.array(
+  z.object({
+    teamName: z.string().min(1),
+    profileSelections: z.array(
+      z.object({
+        profileName: z.string().min(1),
+        configNames: z.array(z.string()).min(1),
+      }),
+    ),
+  }),
+);
+
+export type PresetTeamConfigs = z.infer<typeof PresetTeamConfigsSchema>;
+
+/** The key that identifies a team, profile, or provider config named by a preset. */
+export function presetNameKey(name: string): string {
+  return name.trim().toLowerCase();
+}
+
+/** One entry per team: when a preset names a team more than once, the first entry applies. */
+export function firstPresetTeamEntries<T extends { teamName: string }>(
+  teamConfigs: readonly T[],
+): Map<string, T> {
+  const entries = new Map<string, T>();
+  for (const entry of teamConfigs) {
+    const key = presetNameKey(entry.teamName);
+    if (!entries.has(key)) entries.set(key, entry);
+  }
+  return entries;
+}
+
 /**
  * ExportSchema - The canonical schema for template/project export format.
  * Used by both local-app and template-registry for consistent data interchange.
@@ -324,6 +355,7 @@ export const ExportSchema = z
               effortOverride: z.string().nullable().optional(),
             }),
           ),
+          teamConfigs: PresetTeamConfigsSchema.optional(),
         }),
       )
       .optional()

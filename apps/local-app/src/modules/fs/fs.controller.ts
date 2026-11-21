@@ -1,7 +1,8 @@
-import { Controller, Post, Body } from '@nestjs/common';
+import { Body, Controller, HttpCode, Post } from '@nestjs/common';
 import { z } from 'zod';
 import { createLogger } from '../../common/logging/logger';
 import { existsSync, statSync } from 'fs';
+import { ListFoldersSchema, listFolders, type FolderList } from './folder-list';
 
 const logger = createLogger('FsController');
 
@@ -30,5 +31,13 @@ export class FsController {
       logger.error({ error, path }, 'Error checking path');
       return { exists: false, error: 'Permission denied or invalid path' };
     }
+  }
+
+  /** This PC only; the UI calls it as a home request, never through the `/r` proxy. */
+  @Post('list')
+  @HttpCode(200)
+  list(@Body() body: unknown): Promise<FolderList> {
+    logger.info('POST /api/fs/list');
+    return listFolders(ListFoldersSchema.parse(body ?? {}));
   }
 }

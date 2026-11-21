@@ -69,6 +69,7 @@ describe('RemoteHealthService', () => {
   let apiKeys: RemoteApiKeyService;
   let cliSettings: { pushIfChanged: jest.Mock; checkNow: jest.Mock };
   let usageSettings: { pushIfChanged: jest.Mock };
+  let providerSettings: { pushIfChanged: jest.Mock };
   let vaultPush: { pushIfChanged: jest.Mock; useHealth: jest.Mock };
   let cliVersions: { registerRemoteCheck: jest.Mock };
   let sharedVm: ReturnType<typeof sharedVmGuardStub>;
@@ -95,6 +96,7 @@ describe('RemoteHealthService', () => {
       checkNow: jest.fn().mockResolvedValue(undefined),
     };
     usageSettings = { pushIfChanged: jest.fn().mockResolvedValue(undefined) };
+    providerSettings = { pushIfChanged: jest.fn().mockResolvedValue(undefined) };
     vaultPush = { pushIfChanged: jest.fn().mockResolvedValue(undefined), useHealth: jest.fn() };
     cliVersions = { registerRemoteCheck: jest.fn().mockReturnValue(jest.fn()) };
     let key = 'first';
@@ -116,6 +118,7 @@ describe('RemoteHealthService', () => {
       skillSettings as never,
       cliSettings as never,
       usageSettings as never,
+      providerSettings as never,
       cliVersions as never,
       apiKeys,
       sharedVm,
@@ -195,6 +198,7 @@ describe('RemoteHealthService', () => {
     expect(skillSettings.pushIfChanged).not.toHaveBeenCalled();
     expect(cliSettings.pushIfChanged).not.toHaveBeenCalled();
     expect(usageSettings.pushIfChanged).not.toHaveBeenCalled();
+    expect(providerSettings.pushIfChanged).not.toHaveBeenCalled();
     rejected = false;
     await service.refresh('remote-1');
     expect(service.getState('remote-1')).toMatchObject({ online: true, apiKeyRejected: false });
@@ -364,6 +368,7 @@ describe('RemoteHealthService', () => {
     expect(listener.lost.mock.calls).toEqual([['old']]);
     expect(cliSettings.pushIfChanged.mock.calls).toEqual([['remote-1']]);
     expect(usageSettings.pushIfChanged.mock.calls).toEqual([['remote-1']]);
+    expect(providerSettings.pushIfChanged.mock.calls).toEqual([['remote-1']]);
     expect(vaultPush.pushIfChanged.mock.calls).toEqual([['remote-1', vault]]);
     await cliVersions.registerRemoteCheck.mock.calls[0][0]();
     expect(cliSettings.checkNow.mock.calls).toEqual([['remote-1']]);

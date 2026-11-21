@@ -32,10 +32,18 @@ export class FileSyncAutoFixStore {
   }
 
   setEnabled(projectId: string, enabled: boolean): FileSyncAutoFix {
-    return this.update(projectId, (value) => ({ ...value, enabled }));
+    return this.transactions.runImmediate(() =>
+      this.update(projectId, (value) => ({ ...value, enabled })),
+    );
   }
 
   record(projectId: string, action: FileSyncAutoFixAction): FileSyncAutoFix {
+    return this.transactions.runImmediate(() => this.recordInTransaction(projectId, action));
+  }
+
+  recordInTransaction(projectId: string, action: FileSyncAutoFixAction): FileSyncAutoFix {
+    if (!this.sqlite.inTransaction)
+      throw new Error('Recording a file sync action requires an active transaction.');
     const parsed = FileSyncAutoFixActionSchema.parse(action);
     return this.update(projectId, (value) => ({
       ...value,
@@ -47,20 +55,18 @@ export class FileSyncAutoFixStore {
     projectId: string,
     change: (value: FileSyncAutoFix) => FileSyncAutoFix,
   ): FileSyncAutoFix {
-    return this.transactions.runImmediate(() => {
-      const map = this.readMap();
-      const value = change(map[projectId] ?? defaults());
-      map[projectId] = value;
-      const now = new Date().toISOString();
-      this.sqlite
-        .prepare(
-          `INSERT INTO settings (id, key, value, created_at, updated_at)
+    const map = this.readMap();
+    const value = change(map[projectId] ?? defaults());
+    map[projectId] = value;
+    const now = new Date().toISOString();
+    this.sqlite
+      .prepare(
+        `INSERT INTO settings (id, key, value, created_at, updated_at)
          VALUES (lower(hex(randomblob(16))), ?, ?, ?, ?)
          ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`,
-        )
-        .run(SETTINGS_KEY, JSON.stringify(map), now, now);
-      return value;
-    });
+      )
+      .run(SETTINGS_KEY, JSON.stringify(map), now, now);
+    return value;
   }
 
   private readMap(): Record<string, FileSyncAutoFix> {
