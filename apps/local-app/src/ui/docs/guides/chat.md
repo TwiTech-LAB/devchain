@@ -34,6 +34,39 @@ On mobile, live editable chats expose the same **Prompts** action above the comp
 
 ---
 
+## Disable and Enable an Agent
+
+Disable an agent to pause it for a while without deleting it. The agent stays on its team.
+
+- Right-click a team member in the agent list and select **Disable**. The item is available for a team member that leads no team and is not the Project Owner.
+- An agent that is known to be offline is disabled at once. In every other case a confirmation opens first: Disable stops a running session.
+- A disabled agent shows as a dimmed row with a **Disabled** label, after the enabled agents. You cannot open or start it, and its context menu has only **Enable**.
+- Other agents and automations do not see a disabled agent, and it gets no messages. Its epics stay assigned and wait until you enable it.
+- If the team lead has a running session, it gets a short message when you disable or enable the agent.
+- Select **Enable** to bring the agent back. Enable starts no session; start the agent when you need it.
+
+---
+
+## Team Status Dots
+
+A folded team shows one dot per team member after the team name. An unfolded team shows no dots, because its rows are visible. The team lead has no dot, because the lead's row is always visible. A team with no lead shows a dot for each of its agents.
+
+The dots are small, the same size as the live dot in the terminal header.
+
+| Dot              | State                   | Meaning                                                                                                      |
+| ---------------- | ----------------------- | ------------------------------------------------------------------------------------------------------------ |
+| Amber diamond    | Waiting for your answer | The agent's session is open and asks you a question.                                                         |
+| Pulsing green    | Working                 | The agent's session is open and busy. It blinks slowly, once every 4 s, like the terminal header's live dot. |
+| Dark green       | Idle                    | The agent's session is open and idle. The dot does not pulse.                                                |
+| Hollow grey ring | Offline                 | The agent has no session.                                                                                    |
+
+- Hover a dot to see the agent's name and state. For a working agent the tooltip also shows how long it has been busy.
+- Click a dot to open that agent. The click does not fold or unfold the team.
+- A disabled agent has no dot.
+- Only Claude agents report a pending question. The amber dot can appear up to about 10 seconds after the question.
+
+---
+
 ## Tips for Maintaining Automated Development
 
 ### Respect Agent Roles

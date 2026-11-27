@@ -305,8 +305,8 @@ function ProjectRow({ row, drag }: { row: ProjectTableRowModel; drag: ProjectsTa
               )}
               <DropdownMenuItem
                 onClick={row.startImport}
-                disabled={row.remoteLock !== null}
-                title={row.remoteLock?.message}
+                disabled={row.importLock !== null}
+                title={row.importLock?.message}
               >
                 <Download className="mr-2 h-4 w-4" aria-hidden="true" />
                 Import

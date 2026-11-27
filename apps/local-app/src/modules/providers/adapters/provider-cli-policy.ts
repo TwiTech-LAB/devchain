@@ -1,3 +1,4 @@
+import { inheritableEnv } from '../../terminal/services/process-executor/process-executor.port';
 import type { OpencodeCliVersion } from './opencode-cli-version';
 
 export interface ProviderCliNoUpdateOptions {
@@ -10,14 +11,7 @@ export function getProviderCliNoUpdateOptions(
   providerName: string,
   baseEnv: NodeJS.ProcessEnv = {},
 ): ProviderCliNoUpdateOptions {
-  // eslint-disable-next-line no-control-regex
-  const controlChars = /[\x00-\x1f\x7f]/;
-  const inherited: Record<string, string> = {};
-  for (const [key, value] of Object.entries(baseEnv)) {
-    if (value !== undefined && /^[A-Za-z_][A-Za-z0-9_]*$/.test(key) && !controlChars.test(value)) {
-      inherited[key] = value;
-    }
-  }
+  const inherited = inheritableEnv(baseEnv);
   switch (providerName.toLowerCase()) {
     case 'claude':
       return { env: { ...inherited, DISABLE_AUTOUPDATER: '1' }, args: [] };

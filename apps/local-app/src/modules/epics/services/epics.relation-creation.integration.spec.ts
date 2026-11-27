@@ -15,6 +15,7 @@ import type { EventsService } from '../../events/services/events.service';
 import type { SettingsService } from '../../settings/services/settings.service';
 import type { Agent, Epic, Project } from '../../storage/models/domain.models';
 import { LocalStorageService } from '../../storage/local/local-storage.service';
+import { ManagedProjectionLock } from '../../external-integrations/subscribers/managed-projection-lock';
 import { EpicsService } from './epics.service';
 import { createProjectWriteGateStub } from '../../storage/write-gate/testing/project-write-gate.stub';
 
@@ -69,6 +70,9 @@ describe('EpicsService atomic relation creation', () => {
       createProjectWriteGateStub() as never,
       {} as never,
       { pullNow: jest.fn() } as never,
+      new ManagedProjectionLock(),
+      { isClaimedHost: () => false },
+      { write: jest.fn() },
     );
     project = await createProject('Atomic Focal');
     actor = await createAgent(project.id, 'Atomic Agent', true);

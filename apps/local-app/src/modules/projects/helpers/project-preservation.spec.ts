@@ -437,6 +437,46 @@ describe('preserved team roster', () => {
     expect(new Set(result.agents.map(({ id }) => id)).size).toBe(result.agents.length);
   });
 
+  it('keeps a standalone agent that the template moves into a new team and selects that team by default', () => {
+    const live = current();
+    live.agents.push(agent('Reviewer'));
+    const target = template();
+    target.agents!.push({ name: 'Reviewer', profileId, providerConfigName: 'gpt' });
+    target.teams = [
+      { name: 'Review', memberAgentNames: ['Reviewer'], teamLeadAgentName: 'Reviewer' },
+      // A new team of agents that a current team holds is a regrouping: the user selects it.
+      { name: 'Design', memberAgentNames: ['Lead'], teamLeadAgentName: 'Lead' },
+    ];
+    const claudeOnly = new Map([['claude', 'provider-claude']]);
+
+    // The template option "gpt" is not eligible here. An agent new to the project would need a
+    // repair; an agent that the project already has takes the first eligible option.
+    const byDefault = plan(target, live, {}, claudeOnly);
+    expect(byDefault.issues).toEqual([]);
+    expect(byDefault.review.additions.teams).toMatchObject([
+      { name: 'Review', selected: true },
+      { name: 'Design', selected: false },
+    ]);
+    expect(byDefault.review.teams.map(({ name }) => name)).toEqual(['Planning', 'Review']);
+    expect(byDefault.agents.find(({ name }) => name === 'Reviewer')).toMatchObject({
+      providerConfigName: 'alternate',
+    });
+
+    const cleared = plan(target, live, { addTeams: [] });
+    expect(cleared.issues).toEqual([]);
+    expect(cleared.review.additions.teams).toMatchObject([
+      { name: 'Review', selected: false },
+      { name: 'Design', selected: false },
+    ]);
+    expect(cleared.review.teams.map(({ name }) => name)).toEqual(['Planning']);
+    expect(cleared.agents.map(({ name }) => name)).toEqual([
+      'Lead',
+      'Worker',
+      'Helper',
+      'Reviewer',
+    ]);
+  });
+
   it('composes current-only families before resolving the selected family profile', () => {
     const target = template();
     target.profiles![0].providerConfigs!.pop();

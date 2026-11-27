@@ -13,6 +13,29 @@ import {
 } from '../dtos/mcp.dto';
 import type { ToolMetadataEntry } from './types';
 
+const EXTERNAL_TASK_REF_PROPERTIES = {
+  ref: {
+    type: 'string',
+    minLength: 1,
+    maxLength: 2048,
+    description:
+      'Remote task URL (preferred), or its id or key. A bare id or key works only when the project has one connected integration or provider is set',
+  },
+  provider: {
+    type: 'string',
+    enum: ['clickup', 'jira'],
+    description: 'Optional provider; needed for a bare id when both ClickUp and Jira are connected',
+  },
+} as const;
+
+/** JSON schema of `externalTask: { ref, provider? }`. */
+export const EXTERNAL_TASK_REF_INPUT_SCHEMA = {
+  type: 'object',
+  required: ['ref'],
+  properties: EXTERNAL_TASK_REF_PROPERTIES,
+  additionalProperties: false,
+} as const;
+
 /** JSON schema of one relation attached at Epic creation (`relation` and `relations` items). */
 const NEW_EPIC_RELATION_INPUT_SCHEMA = {
   type: 'object',
@@ -89,17 +112,25 @@ export const epicMetadata: ToolMetadataEntry[] = [
   {
     name: 'devchain_create_epic',
     description:
-      'Create a new epic within the project resolved from the session. Optional relation (single) or relations (1-20) are created atomically with the epic in one transaction; a failed create leaves no partial state',
+      'Create a new epic within the project resolved from the session. Optional relation (single) or relations (1-20) are created atomically with the epic in one transaction; a failed create leaves no partial state. Optional externalTask links the new epic to a ClickUp or Jira task in the same transaction (read it first with devchain_external_tasks_get); a task already linked in the project fails with EXTERNAL_TASK_ALREADY_LINKED and data.epicId, and nothing is created',
     inputSchema: {
       type: 'object',
-      required: ['sessionId', 'title'],
+      required: ['sessionId'],
       properties: {
         sessionId: {
           type: 'string',
           description: 'Session ID (full UUID or 8+ char prefix)',
         },
-        title: { type: 'string', description: 'Epic title' },
-        description: { type: 'string', description: 'Optional epic description' },
+        title: {
+          type: 'string',
+          description:
+            'Epic title. Required unless externalTask is given; then it defaults to the remote task title',
+        },
+        description: {
+          type: 'string',
+          description:
+            'Optional epic description. With externalTask it defaults to the remote task description',
+        },
         statusName: {
           type: 'string',
           description: 'Optional status name (case-insensitive)',
@@ -135,6 +166,11 @@ export const epicMetadata: ToolMetadataEntry[] = [
           description:
             'Optional relations (1-20) created atomically with the Epic in one transaction, written in input order (mutually exclusive with relation). Each target may appear once; a rolled-back create leaves no Epic, no relation, and no event. A new root Epic can hold only one eligible Related time route to same-project roots, so two such related entries fail with RELATION_ROUTE_CONFLICT naming both indexes; child-Epic and cross-project related entries never conflict',
         },
+        externalTask: {
+          ...EXTERNAL_TASK_REF_INPUT_SCHEMA,
+          description:
+            'Optional remote ClickUp or Jira task to link the new epic to: { ref, provider? }. Top-level epics only: together with parentId it fails with EXTERNAL_TASK_LINK_TOP_LEVEL_ONLY and nothing is created',
+        },
       },
       additionalProperties: false,
     },
@@ -143,7 +179,7 @@ export const epicMetadata: ToolMetadataEntry[] = [
   {
     name: 'devchain_get_epic_by_id',
     description:
-      "Fetch a single epic, including comments and related hierarchy details. Linked lanes appear in worktrees with name, path, branch, baseBranch and projectRootPath, plus worktreeInstruction telling the worker to work by path and set up the lane from the root; both fields are omitted when no lane is linked. The parent is a summary ({ id, title, status, agentName }); pass includeParentDescription: true to also get the parent's full description for phase context, or call this tool with the parent id",
+      "Fetch a single epic, including comments and related hierarchy details. Linked lanes appear in worktrees with name, path, branch, baseBranch and projectRootPath, plus worktreeInstruction telling the worker to work by path and set up the lane from the root; both fields are omitted when no lane is linked. The parent is a summary ({ id, title, status, agentName }); pass includeParentDescription: true to also get the parent's full description for phase context, or call this tool with the parent id. Linked ClickUp/Jira tasks appear in externalLinks ({ linkId, provider, remoteKey, title, webUrl, managed }) from local data, with no vendor call; the field is omitted when there are none",
     inputSchema: {
       type: 'object',
       required: ['sessionId', 'id'],
@@ -414,6 +450,26 @@ export const epicMetadata: ToolMetadataEntry[] = [
           type: 'array',
           items: { type: 'string' },
           description: 'Replace required skill slugs for this epic',
+        },
+        externalTask: {
+          type: 'object',
+          description:
+            'Agent sessions only. Link the epic to a remote ClickUp or Jira task with { ref, provider? }, or unlink it with { clear: true }. Combinable with other edits under the same version check; a link change bumps the version. An epic has one link: unlink first to change it (EPIC_ALREADY_LINKED). After a reconnect, set the same task again to attach its existing link to the new connection. Only a top-level epic can be linked: { ref } on an epic that has a parent after the update fails with EXTERNAL_TASK_LINK_TOP_LEVEL_ONLY; { clear: true } works on any epic. Unlinking a parent keeps its remote subtasks; they are no longer synced',
+          oneOf: [
+            EXTERNAL_TASK_REF_INPUT_SCHEMA,
+            {
+              type: 'object',
+              required: ['clear'],
+              properties: {
+                clear: {
+                  type: 'boolean',
+                  const: true,
+                  description: 'Set to true to unlink the epic from its remote task',
+                },
+              },
+              additionalProperties: false,
+            },
+          ],
         },
       },
       additionalProperties: false,

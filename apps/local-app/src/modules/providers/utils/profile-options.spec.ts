@@ -26,6 +26,19 @@ describe('parseProfileOptions', () => {
       inputs: ['--flag\\ value "double\\"quote"'],
       expected: ['--flag value', 'double"quote'],
     },
+    {
+      label: 'quoted empty',
+      inputs: ['--settings ""', "--settings ''", '  --settings  ""  '],
+      expected: ['--settings', ''],
+    },
+    {
+      label: 'quoted empty before another option',
+      inputs: ['--settings "" --sandbox', "--settings '' --sandbox"],
+      expected: ['--settings', '', '--sandbox'],
+    },
+    { label: 'adjacent quotes', inputs: ['a""b'], expected: ['ab'] },
+    { label: 'an empty quoted = value', inputs: ["--x=''"], expected: ['--x='] },
+    { label: 'whitespace only', inputs: ['   '], expected: [] },
   ])('parses $label arguments', ({ inputs, expected }) => {
     for (const input of inputs) expect(parseProfileOptions(input)).toEqual(expected);
   });

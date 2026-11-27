@@ -173,6 +173,7 @@ export const AIGroupCard = memo(function AIGroupCard({
                 element: (
                   <SemanticStepList
                     sessionId={sessionId}
+                    chunkId={chunk.id}
                     steps={runSteps}
                     stepHotspots={stepHotspots}
                   />
@@ -191,6 +192,7 @@ export const AIGroupCard = memo(function AIGroupCard({
                   element: (
                     <ToolGroupItem
                       sessionId={sessionId}
+                      chunkId={chunk.id}
                       group={item}
                       isStepHot={groupHotspot?.isHot}
                       percentOfChunk={groupHotspot?.percentOfChunk}
@@ -215,7 +217,13 @@ export const AIGroupCard = memo(function AIGroupCard({
       )}
 
       <div className="mt-2 pl-4">
-        <LastOutputDisplay lastOutput={lastOutput} isLive={isLive} hideTimestamp />
+        <LastOutputDisplay
+          sessionId={sessionId}
+          lastOutput={lastOutput}
+          chunkId={chunk.id}
+          isLive={isLive}
+          hideTimestamp
+        />
       </div>
     </div>
   );

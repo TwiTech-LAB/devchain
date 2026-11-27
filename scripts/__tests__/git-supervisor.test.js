@@ -114,6 +114,33 @@ describePosix("git supervisor", () => {
     ]);
   });
 
+  it("fences an automatic recovery to its VM and journals the write before Git runs", async () => {
+    const prepareWrite = jest.fn(async () => {
+      expect(existsSync(join(directory, "args"))).toBe(false);
+    });
+    const code = await run(
+      ["fetch"],
+      {
+        "/api/git-writes/acquire": (body) => {
+          expect(body).toEqual({ projectId: "p", pid: expect.any(Number), expectedRemoteId: "vm-id" });
+          expect(prepareWrite).not.toHaveBeenCalled();
+          return response({ writeId: "hw-recovery" });
+        },
+      },
+      {
+        env: {
+          ...process.env,
+          DEVCHAIN_GIT_PROJECT: "p",
+          DEVCHAIN_GIT_REMOTE_NAME: "vm-01",
+          DEVCHAIN_GIT_EXPECTED_REMOTE_ID: "vm-id",
+        },
+        prepareWrite,
+      },
+    );
+    expect(code).toBe(0);
+    expect(prepareWrite).toHaveBeenCalledWith("hw-recovery", expect.any(AbortSignal));
+  });
+
   it("forwards a termination signal to git and returns git's signal exit code", async () => {
     await writeFile(join(directory, "sleep"), "10");
     const signals = new EventEmitter();
@@ -205,6 +232,25 @@ describePosix("git supervisor", () => {
       expect(stderr.lines).toEqual([]);
     });
 
+    it("prints the reclaim notice on stderr before Git starts", async () => {
+      const notice = "git: this VM took Git back from PC 'my-PC' at 1970-01-01T00:01:40.000Z. Files that the PC changed can show here as uncommitted changes. Do not commit them as your own work.";
+      const writes = [];
+      const code = await run(
+        ["commit"],
+        {
+          "/api/git-coordinator/projects/p/acquire": () => response({ owner: "vm", notice }),
+          "/api/git-coordinator/projects/p/release": () => response(null),
+        },
+        {
+          env: vm,
+          processIdentity: identity,
+          stderr: { write: (line) => writes.push({ line, gitRan: existsSync(join(directory, "args")) }) },
+        },
+      );
+      expect(code).toBe(0);
+      expect(writes).toEqual([{ line: `${notice}\n`, gitRan: false }]);
+    });
+
     it("prints one line after 1 s of waiting on a terminal", async () => {
       const code = await run(
         ["commit"],
@@ -217,6 +263,28 @@ describePosix("git supervisor", () => {
       );
       expect(code).toBe(0);
       expect(stderr.lines).toEqual(["git: waiting for Git to come back to this VM…\n"]);
+    });
+
+    it("prints the wait line, then one refusal line, when the PC keeps Git past the wait", async () => {
+      const message =
+        "Git is on PC 'my-PC': a Git write there is not confirmed. This is temporary: this VM takes Git back at 12:00:00 (in 210 s) if the PC stays away. Wait until then and run the same command again. Do not stop your task.";
+      const code = await run(
+        ["commit"],
+        {
+          "/api/git-coordinator/projects/p/acquire": () =>
+            new Promise((done) => {
+              const refusal = response({ code: "GIT_VM_ACQUIRE_TIMEOUT", message }, 409);
+              setTimeout(() => done(refusal), 1_100);
+            }),
+        },
+        { env: vm, processIdentity: identity, isTTY: true },
+      );
+      expect(code).toBe(1);
+      expect(existsSync(join(directory, "args"))).toBe(false);
+      expect(stderr.lines).toEqual([
+        "git: waiting for Git to come back to this VM…\n",
+        `git: ${message}\n`,
+      ]);
     });
 
     it("never runs git when the hold is refused", async () => {

@@ -1,7 +1,14 @@
 import { Inject, Injectable, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import { createHash, randomUUID } from 'node:crypto';
-import { BusyError, ConflictError, NotFoundError } from '../../../common/errors/error-types';
+import {
+  BusyError,
+  ConflictError,
+  NotFoundError,
+  ValidationError,
+  VaultUnavailableError,
+} from '../../../common/errors/error-types';
 import { createLogger } from '../../../common/logging/logger';
+import type { EpicExternalLinkChangedEventPayload } from '../../events/catalog/epic.external_link.changed';
 import type { RemoteProjectSyncedEventPayload } from '../../events/catalog/remote.project.synced';
 import type { CommittedEvent } from '../../events/services/durable-event-registry.service';
 import { EventsService } from '../../events/services/events.service';
@@ -19,6 +26,10 @@ import type {
   IntegrationCredentials,
   IntegrationProvider,
 } from '../../storage/models/domain.models';
+import {
+  isOrdinaryExternalTaskLink,
+  MANAGED_PROJECTION_SOURCE_CHANGED,
+} from '../../storage/models/domain.models';
 import { ExternalProviderError } from '../errors/external-provider.errors';
 import { ExternalTaskProviderRegistry } from '../external-task-provider.registry';
 import type {
@@ -26,9 +37,15 @@ import type {
   ExternalSubtaskSnapshot,
   ExternalSubtaskSyncCapability,
 } from '../models/external-provider.models';
-import { normalizeExternalTaskSourceUrl } from '../models/external-task-source';
+import { jiraSiteHostname, normalizeExternalTaskSourceUrl } from '../models/external-task-source';
 import { ProviderOperationGate } from '../sessions/provider-operation-gate';
-import { managedSubtaskRetryDecision } from './managed-subtask-recovery-policy';
+import {
+  isManagedSubtaskRetryBlockedReason,
+  isOutcomeUnknownPhase,
+  managedSubtaskRetryDecision,
+} from './managed-subtask-recovery-policy';
+import { ManagedProjectionLock } from './managed-projection-lock';
+import { IntegrationVmCacheService } from '../vm-cache/integration-vm-cache.service';
 import {
   managedSubtaskContentMatches,
   type ManagedSubtaskContent,
@@ -38,6 +55,24 @@ import {
 const logger = createLogger('ExternalSubtaskSyncSubscriber');
 export const MANAGED_SUBTASK_DELIVERY_KEY = 'managed-subtask-sync';
 const RETRY_DELAY_MS = 30_000;
+/** Safe error code of a projection whose connection now serves another remote scope. */
+export const REMOTE_SCOPE_MISMATCH = 'remote_scope_mismatch';
+
+/** Unwinds a reconcile before any vendor call; `reconcileExisting` records it on the row. */
+class RemoteScopeMismatchError extends Error {}
+
+/**
+ * The remote scope a set of credentials serves, or null when the provider's
+ * scope is not bound to the credentials. A Jira scope key is the site
+ * hostname, and replacing the site keeps the connection id. ClickUp task ids
+ * are global, so a ClickUp token never resolves a parent in another scope.
+ */
+function credentialRemoteScope(credentials: IntegrationCredentials): string | null {
+  if (credentials.provider !== 'jira') {
+    return null;
+  }
+  return jiraSiteHostname(credentials.siteUrl) ?? '';
+}
 
 export type ManagedSubtaskReconcileOutcome =
   | 'confirmed'
@@ -63,6 +98,12 @@ interface DesiredProjection {
   connection: IntegrationConnection;
   workAreaRemoteId: string;
   desiredFingerprint: string;
+  /**
+   * The connection now serves another remote scope than the parent link. The
+   * projection stays desired, so its row is kept as a diagnostic instead of
+   * being removed as obsolete, but nothing is dispatched for it.
+   */
+  scopeMismatch: boolean;
 }
 
 interface ProviderAccess {
@@ -82,16 +123,18 @@ interface MutationFailure {
 @Injectable()
 export class ExternalSubtaskSyncSubscriber implements OnModuleInit, OnModuleDestroy {
   private unregister?: () => void;
-  private readonly projectionTails = new Map<string, Promise<void>>();
 
   constructor(
     @Inject(STORAGE_SERVICE)
     private readonly storage: IntegrationStorage &
       ProjectStorage &
-      Pick<StorageService, 'getEpic' | 'listProjectEpics'>,
+      Pick<StorageService, 'getEpic' | 'listProjectEpics' | 'listDirectChildEpicIds'>,
     private readonly events: EventsService,
     private readonly providers: ExternalTaskProviderRegistry,
     private readonly providerGate: ProviderOperationGate,
+    private readonly projectionLock: ManagedProjectionLock,
+    @Inject(IntegrationVmCacheService)
+    private readonly host: Pick<IntegrationVmCacheService, 'isClaimedHost'>,
   ) {}
 
   onModuleInit(): void {
@@ -102,6 +145,7 @@ export class ExternalSubtaskSyncSubscriber implements OnModuleInit, OnModuleDest
         'epic.created',
         'epic.updated',
         'epic.deleted',
+        'epic.external_link.changed',
         'integration.connection.created',
         'integration.connection.updated',
         'integration.connection.deleted',
@@ -117,6 +161,9 @@ export class ExternalSubtaskSyncSubscriber implements OnModuleInit, OnModuleDest
   }
 
   async handleCommittedEvent(event: CommittedEvent): Promise<void> {
+    // Managed sync is home-only: a claimed VM holds delivered connections but never
+    // projects sub-epics to the vendor.
+    if (this.host.isClaimedHost()) return;
     let results: ManagedSubtaskReconcileResult[] = [];
     if (
       event.name === 'epic.created' ||
@@ -125,6 +172,15 @@ export class ExternalSubtaskSyncSubscriber implements OnModuleInit, OnModuleDest
     ) {
       const epicId = (event.payload as { epicId: string }).epicId;
       results = await this.reconcileEpic(epicId);
+    } else if (event.name === 'epic.external_link.changed') {
+      // The link write already released any projection it replaced; the
+      // children now converge on the parent's current links.
+      const { epicId } = event.payload as EpicExternalLinkChangedEventPayload;
+      // One consistent read; each child then reconciles to its current state,
+      // so a child deleted or moved since the read cannot end the loop.
+      for (const childId of await this.storage.listDirectChildEpicIds(epicId)) {
+        results.push(...(await this.reconcileEpic(childId)));
+      }
     } else if (
       event.name === 'integration.connection.created' ||
       event.name === 'integration.connection.updated'
@@ -150,6 +206,12 @@ export class ExternalSubtaskSyncSubscriber implements OnModuleInit, OnModuleDest
       if (payload.remoteId !== null) {
         for (const epicId of [...payload.changedEpicIds, ...payload.deletedEpicIds]) {
           results.push(...(await this.reconcileEpic(epicId)));
+        }
+        // A VM link change moves no child: its children converge on the parent's links.
+        for (const epicId of payload.linkChangedEpicIds ?? []) {
+          for (const childId of await this.storage.listDirectChildEpicIds(epicId)) {
+            results.push(...(await this.reconcileEpic(childId)));
+          }
         }
       }
     }
@@ -182,8 +244,10 @@ export class ExternalSubtaskSyncSubscriber implements OnModuleInit, OnModuleDest
     const replacementBlockedProviders = new Set<IntegrationProvider>();
 
     for (const row of [...obsolete, ...current]) {
-      const result = await this.withProjectionLock(row.id, () =>
-        this.reconcileExisting(row, epic, desired.get(row.parentSourceLinkIdSnapshot) ?? null),
+      const result = await this.reconcileLocked(
+        row,
+        epic,
+        desired.get(row.parentSourceLinkIdSnapshot) ?? null,
       );
       results.push(result);
       if (
@@ -231,13 +295,52 @@ export class ExternalSubtaskSyncSubscriber implements OnModuleInit, OnModuleDest
         continue;
       }
       const created = await this.createManagedProjection(projection);
-      results.push(
-        await this.withProjectionLock(created.id, () =>
-          this.reconcileExisting(created, epic, projection),
-        ),
-      );
+      if (!created) {
+        results.push({
+          epicId: epic.id,
+          provider: projection.parentSource.provider,
+          managedLinkId: null,
+          outcome: 'unchanged',
+          reason: 'projection_source_changed',
+        });
+        continue;
+      }
+      results.push(await this.reconcileLocked(created, epic, projection));
     }
     return results;
+  }
+
+  /**
+   * An epic link change can release a projection while it is queued or in
+   * flight here. Its next write then finds the row gone: that ends the
+   * reconcile as a no-op, never as a retry, and nothing is recreated.
+   */
+  private async reconcileLocked(
+    row: ExternalManagedSubtaskLink,
+    epic: Epic | null,
+    desired: DesiredProjection | null,
+  ): Promise<ManagedSubtaskReconcileResult> {
+    return this.withProjectionLock(row.id, async () => {
+      try {
+        return await this.reconcileExisting(row, epic, desired);
+      } catch (error) {
+        if (error instanceof NotFoundError && !(await this.projectionExists(row))) {
+          logger.info(
+            { epicId: row.epicIdSnapshot, managedLinkId: row.id },
+            'Managed projection was released during reconciliation',
+          );
+          return this.result(row, 'unchanged', 'projection_released');
+        }
+        throw error;
+      }
+    });
+  }
+
+  private async projectionExists(row: ExternalManagedSubtaskLink): Promise<boolean> {
+    const rows = await this.storage.listExternalManagedSubtaskLinksForEpicSnapshot(
+      row.epicIdSnapshot,
+    );
+    return rows.some((candidate) => candidate.id === row.id);
   }
 
   async reconcileProvider(provider: IntegrationProvider): Promise<ManagedSubtaskReconcileResult[]> {
@@ -428,7 +531,7 @@ export class ExternalSubtaskSyncSubscriber implements OnModuleInit, OnModuleDest
     this.assertExpectedConnection(row, expectedConnectionId);
     const [epic, connection] = await Promise.all([
       this.loadEpicOrNull(row.epicIdSnapshot),
-      this.storage.getIntegrationConnectionById(row.connectionIdSnapshot),
+      this.servingConnection(row),
     ]);
     const allowUnassignedConnection = Boolean(expectedConnectionId && !connection?.projectId);
     const desired =
@@ -443,14 +546,91 @@ export class ExternalSubtaskSyncSubscriber implements OnModuleInit, OnModuleDest
     );
   }
 
+  /**
+   * A projection whose connection now serves another remote scope (a Jira
+   * site replaced under the same connection id) is not dispatchable: it gets
+   * `remote_scope_mismatch` with no vendor call, no retry, no delete and the
+   * tombstone it had when this pass began, and its remote subtask stays where
+   * it is. Retry or Verify resumes it once the connection serves the link's
+   * scope again. A row whose reason already refuses Retry keeps that reason.
+   */
   private async reconcileExisting(
     original: ExternalManagedSubtaskLink,
     epic: Epic | null,
     desired: DesiredProjection | null,
     allowUnassignedConnection = false,
   ): Promise<ManagedSubtaskReconcileResult> {
-    let row = await this.storage.getExternalManagedSubtaskLink(original.id);
-    const connection = await this.storage.getIntegrationConnectionById(row.connectionIdSnapshot);
+    const before = await this.storage.getExternalManagedSubtaskLink(original.id);
+    if (desired?.scopeMismatch) {
+      return this.markRemoteScopeMismatch(before);
+    }
+    try {
+      return await this.reconcileExistingInScope(before, epic, desired, allowUnassignedConnection);
+    } catch (error) {
+      if (!(error instanceof RemoteScopeMismatchError)) {
+        throw error;
+      }
+      return this.markRemoteScopeMismatch(before);
+    }
+  }
+
+  private async markRemoteScopeMismatch(
+    before: ExternalManagedSubtaskLink,
+  ): Promise<ManagedSubtaskReconcileResult> {
+    const row = await this.storage.getExternalManagedSubtaskLink(before.id);
+    // An unknown outcome stays unknown: only a verification may settle it.
+    const operationPhase = isOutcomeUnknownPhase(row.operationPhase)
+      ? 'outcome_unknown'
+      : 'needs_attention';
+    // A reason that already refuses Retry (an incomplete ownership scan, for
+    // example) stays: once the site is restored, Retry must still need proof
+    // that another create is safe.
+    const safeErrorCode = isManagedSubtaskRetryBlockedReason(row.safeErrorCode)
+      ? row.safeErrorCode
+      : REMOTE_SCOPE_MISMATCH;
+    if (
+      row.operationPhase === operationPhase &&
+      row.safeErrorCode === safeErrorCode &&
+      row.retryAt === null &&
+      row.tombstoneState === before.tombstoneState
+    ) {
+      return this.result(row, 'needs_attention', REMOTE_SCOPE_MISMATCH);
+    }
+    // A removal found during this pass may already have tombstoned the row
+    // before a fence saw the replaced site; that removal never dispatched.
+    const updated = await this.storage.updateExternalManagedSubtaskLink(row.id, {
+      operationPhase,
+      safeErrorCode,
+      retryAt: null,
+      tombstoneState: before.tombstoneState,
+      tombstonedAt: before.tombstonedAt,
+    });
+    logger.warn(
+      { epicId: row.epicIdSnapshot, managedLinkId: row.id, provider: row.provider },
+      'Managed subtask connection serves another remote scope; dispatch stopped',
+    );
+    return this.result(updated, 'needs_attention', REMOTE_SCOPE_MISMATCH);
+  }
+
+  /** Throws `RemoteScopeMismatchError` when the credentials serving a call left the row's scope. */
+  private assertCredentialScope(
+    row: ExternalManagedSubtaskLink,
+    credentials: IntegrationCredentials,
+  ): void {
+    const scope = credentialRemoteScope(credentials);
+    if (scope !== null && scope !== row.remoteScopeKey) {
+      throw new RemoteScopeMismatchError();
+    }
+  }
+
+  private async reconcileExistingInScope(
+    current: ExternalManagedSubtaskLink,
+    epic: Epic | null,
+    desired: DesiredProjection | null,
+    allowUnassignedConnection: boolean,
+  ): Promise<ManagedSubtaskReconcileResult> {
+    let row = current;
+    const connection = await this.servingConnection(row);
     if (
       !connection ||
       connection.provider !== row.provider ||
@@ -462,7 +642,21 @@ export class ExternalSubtaskSyncSubscriber implements OnModuleInit, OnModuleDest
       return this.result(row, 'paused', connection ? 'sync_disabled' : 'connection_missing');
     }
 
-    row = await this.refreshConnectionFence(row, connection);
+    const fence = await this.refreshConnectionFence(row, connection);
+    row = fence.row;
+    if (!fence.current) {
+      // The row stays on its prior connection with its state; nothing below
+      // may run until a later pass verifies the remote child on this one.
+      return this.result(
+        row,
+        row.operationPhase === 'needs_attention' ||
+          row.tombstoneState === 'orphan_risk' ||
+          !row.retryAt
+          ? 'needs_attention'
+          : 'retry',
+        row.safeErrorCode ?? 'connection_fence_verification_pending',
+      );
+    }
     const safeAbsentProjection =
       !row.remoteTaskId &&
       (row.operationPhase === 'pre_dispatch' ||
@@ -517,17 +711,11 @@ export class ExternalSubtaskSyncSubscriber implements OnModuleInit, OnModuleDest
     } else if (row.operationPhase === 'confirmed') {
       confirmationUpdate = { operationPhase: 'pre_dispatch' };
     }
+    // The connection epoch belongs to the fence above; this records only the desired content.
     const desiredChanged =
-      row.desiredVersion !== epic.version ||
-      row.desiredFingerprint !== desired.desiredFingerprint ||
-      row.connectionIdSnapshot !== connection.id ||
-      row.connectionGeneration !== connection.generation ||
-      row.syncSettingRevision !== connection.syncSettingRevision;
+      row.desiredVersion !== epic.version || row.desiredFingerprint !== desired.desiredFingerprint;
     if (desiredChanged) {
       row = await this.storage.updateExternalManagedSubtaskLink(row.id, {
-        connectionIdSnapshot: connection.id,
-        connectionGeneration: connection.generation,
-        syncSettingRevision: connection.syncSettingRevision,
         desiredVersion: epic.version,
         desiredFingerprint: desired.desiredFingerprint,
         ...confirmationUpdate,
@@ -574,6 +762,7 @@ export class ExternalSubtaskSyncSubscriber implements OnModuleInit, OnModuleDest
       const project = await this.storage.getProject(epic.projectId);
       await this.events.publish('epic.time.scope.invalidated', {
         workspaceId: project.workspaceId,
+        externalLinks: true,
       });
     } catch {
       // Scope hints never block reconciliation.
@@ -1056,6 +1245,7 @@ export class ExternalSubtaskSyncSubscriber implements OnModuleInit, OnModuleDest
           ) {
             return null;
           }
+          this.assertCredentialScope(row, credentials);
           await this.storage.updateExternalManagedSubtaskLink(row.id, {
             operationPhase: 'dispatch_admitted',
             safeErrorCode: null,
@@ -1082,10 +1272,12 @@ export class ExternalSubtaskSyncSubscriber implements OnModuleInit, OnModuleDest
     }
   }
 
-  private async captureReadAccess(row: ExternalManagedSubtaskLink): Promise<ProviderAccess | null> {
-    const scopedConnection = await this.storage.getIntegrationConnectionById(
-      row.connectionIdSnapshot,
-    );
+  /** `connectionId` is the connection that serves the read; the fence passes the one it verifies. */
+  private async captureReadAccess(
+    row: ExternalManagedSubtaskLink,
+    connectionId = row.connectionIdSnapshot,
+  ): Promise<ProviderAccess | null> {
+    const scopedConnection = await this.storage.getIntegrationConnectionById(connectionId);
     if (!scopedConnection || scopedConnection.provider !== row.provider) {
       return null;
     }
@@ -1093,16 +1285,11 @@ export class ExternalSubtaskSyncSubscriber implements OnModuleInit, OnModuleDest
       return await this.providerGate.run(
         this.connectionOperationScope(scopedConnection),
         async () => {
-          const connection = await this.storage.getIntegrationConnectionById(
-            row.connectionIdSnapshot,
-          );
+          const connection = await this.storage.getIntegrationConnectionById(connectionId);
           const adapter = this.providers.get(row.provider);
-          const credentials = await this.storage.getIntegrationConnectionCredentialsById(
-            row.connectionIdSnapshot,
-          );
-          const rechecked = await this.storage.getIntegrationConnectionById(
-            row.connectionIdSnapshot,
-          );
+          const credentials =
+            await this.storage.getIntegrationConnectionCredentialsById(connectionId);
+          const rechecked = await this.storage.getIntegrationConnectionById(connectionId);
           if (
             connection?.provider !== row.provider ||
             connection.projectId !== scopedConnection.projectId ||
@@ -1119,6 +1306,7 @@ export class ExternalSubtaskSyncSubscriber implements OnModuleInit, OnModuleDest
           ) {
             return null;
           }
+          this.assertCredentialScope(row, credentials);
           return {
             connection,
             credentials,
@@ -1135,28 +1323,59 @@ export class ExternalSubtaskSyncSubscriber implements OnModuleInit, OnModuleDest
     }
   }
 
+  /**
+   * The row's own connection, or, once that connection is gone, the current
+   * connection of its parent link (a disconnect, then the parent linked to
+   * the same task again). The connection fence verifies the remote child on
+   * it before the row moves there.
+   */
+  private async servingConnection(
+    row: ExternalManagedSubtaskLink,
+  ): Promise<IntegrationConnection | null> {
+    const stored = await this.storage.getIntegrationConnectionById(row.connectionIdSnapshot);
+    if (stored) {
+      return stored;
+    }
+    const parentLink = (
+      await this.storage.listExternalTaskLinksForEpic(row.parentEpicIdSnapshot)
+    ).find((link) => link.id === row.parentSourceLinkIdSnapshot);
+    if (!parentLink?.connectionId || !isOrdinaryExternalTaskLink(parentLink)) {
+      return null;
+    }
+    const connection = await this.storage.getIntegrationConnectionById(parentLink.connectionId);
+    if (
+      connection?.provider !== row.provider ||
+      connection.projectId !== parentLink.projectId ||
+      !connection.subtaskSyncEnabled
+    ) {
+      return null;
+    }
+    return connection;
+  }
+
   private async refreshConnectionFence(
     row: ExternalManagedSubtaskLink,
     connection: IntegrationConnection,
-  ): Promise<ExternalManagedSubtaskLink> {
+  ): Promise<{ row: ExternalManagedSubtaskLink; current: boolean }> {
     if (
       row.connectionIdSnapshot === connection.id &&
       row.connectionGeneration === connection.generation &&
       row.syncSettingRevision === connection.syncSettingRevision
     ) {
-      return row;
+      return { row, current: true };
     }
     if (!row.remoteTaskId) {
-      return this.storage.updateExternalManagedSubtaskLink(row.id, {
+      const moved = await this.storage.updateExternalManagedSubtaskLink(row.id, {
         connectionIdSnapshot: connection.id,
         connectionGeneration: connection.generation,
         syncSettingRevision: connection.syncSettingRevision,
       });
+      return { row: moved, current: true };
     }
 
-    const access = await this.captureReadAccess(row);
+    const access = await this.captureReadAccess(row, connection.id);
     if (!access) {
-      return this.storage.updateExternalManagedSubtaskLink(row.id, {
+      return this.deferConnectionFence(row, {
         operationPhase: 'pre_dispatch',
         safeErrorCode: 'connection_fence_verification_pending',
         retryAt: new Date(Date.now() + RETRY_DELAY_MS).toISOString(),
@@ -1169,42 +1388,74 @@ export class ExternalSubtaskSyncSubscriber implements OnModuleInit, OnModuleDest
         row.remoteTaskId,
       );
       if (!(await this.fenceStillCurrent(access.connection))) {
-        return this.storage.updateExternalManagedSubtaskLink(row.id, {
+        return this.deferConnectionFence(row, {
           operationPhase: 'pre_dispatch',
           safeErrorCode: 'connection_fence_verification_pending',
           retryAt: new Date(Date.now() + RETRY_DELAY_MS).toISOString(),
         });
       }
       if (!snapshot) {
-        return this.storage.updateExternalManagedSubtaskLink(row.id, {
-          operationPhase: 'needs_attention',
-          safeErrorCode: 'connection_generation_changed',
-          retryAt: null,
-        });
+        return this.stopConnectionFence(row, 'connection_generation_changed');
       }
       this.assertOwnedSnapshot(row, snapshot);
-      return this.storage.updateExternalManagedSubtaskLink(row.id, {
-        connectionIdSnapshot: connection.id,
-        connectionGeneration: connection.generation,
-        syncSettingRevision: connection.syncSettingRevision,
-        safeErrorCode: null,
-        retryAt: null,
+      const moved = await this.storage.updateExternalManagedSubtaskLink(row.id, {
+        connectionIdSnapshot: access.connection.id,
+        connectionGeneration: access.connection.generation,
+        syncSettingRevision: access.connection.syncSettingRevision,
+        // A row that needs attention keeps its reason: it decides whether Retry is allowed.
+        ...(row.operationPhase === 'needs_attention' ? {} : { safeErrorCode: null, retryAt: null }),
       });
+      return { row: moved, current: true };
     } catch (error) {
       if (this.isOwnershipFailure(error)) {
-        return this.storage.updateExternalManagedSubtaskLink(row.id, {
-          operationPhase: 'needs_attention',
-          safeErrorCode: this.ownershipFailureCode(error),
-          retryAt: null,
-        });
+        return this.stopConnectionFence(row, this.ownershipFailureCode(error));
       }
       const failure = this.classifyFailure(error);
-      return this.storage.updateExternalManagedSubtaskLink(row.id, {
+      return this.deferConnectionFence(row, {
         operationPhase: failure.retry ? 'pre_dispatch' : 'needs_attention',
         safeErrorCode: failure.safeErrorCode,
         retryAt: failure.retryAt,
       });
     }
+  }
+
+  /** The remote child failed the check on this connection; the row stays on its own. */
+  private async stopConnectionFence(
+    row: ExternalManagedSubtaskLink,
+    safeErrorCode: string,
+  ): Promise<{ row: ExternalManagedSubtaskLink; current: false }> {
+    const stopped = await this.storage.updateExternalManagedSubtaskLink(row.id, {
+      operationPhase: 'needs_attention',
+      safeErrorCode,
+      retryAt: null,
+    });
+    return { row: stopped, current: false };
+  }
+
+  /**
+   * Records a connection fence that could not verify the remote child. The
+   * row stays on its connection. A row that needs attention keeps its phase
+   * and reason, and an unknown outcome stays unknown, so verification still
+   * comes before any write when a later pass checks the fence again.
+   */
+  private async deferConnectionFence(
+    row: ExternalManagedSubtaskLink,
+    failure: {
+      operationPhase: 'pre_dispatch' | 'needs_attention';
+      safeErrorCode: string;
+      retryAt: string | null;
+    },
+  ): Promise<{ row: ExternalManagedSubtaskLink; current: false }> {
+    if (row.operationPhase === 'needs_attention') {
+      return { row, current: false };
+    }
+    const deferred = await this.storage.updateExternalManagedSubtaskLink(
+      row.id,
+      isOutcomeUnknownPhase(row.operationPhase)
+        ? { ...failure, operationPhase: 'outcome_unknown' }
+        : failure,
+    );
+    return { row: deferred, current: false };
   }
 
   private async desiredProjections(
@@ -1217,6 +1468,7 @@ export class ExternalSubtaskSyncSubscriber implements OnModuleInit, OnModuleDest
     if (!epic.parentId) {
       return result;
     }
+    const credentialScopes = new Map<string, Promise<string | null | undefined>>();
     const workspaceProjects = await this.storage.getProjectWorkspaceSnapshot(epic.projectId);
     const project = workspaceProjects.find((candidate) => candidate.id === epic.projectId);
     if (!project) {
@@ -1251,6 +1503,10 @@ export class ExternalSubtaskSyncSubscriber implements OnModuleInit, OnModuleDest
       if (!workAreaRemoteId) {
         continue;
       }
+      if (!credentialScopes.has(connection.id)) {
+        credentialScopes.set(connection.id, this.readCredentialScope(connection));
+      }
+      const credentialScope = await credentialScopes.get(connection.id);
       result.set(source.id, {
         epic,
         content,
@@ -1258,14 +1514,39 @@ export class ExternalSubtaskSyncSubscriber implements OnModuleInit, OnModuleDest
         connection,
         workAreaRemoteId,
         desiredFingerprint: this.desiredFingerprint(content, source),
+        scopeMismatch:
+          typeof credentialScope === 'string' && credentialScope !== source.remoteScopeKey,
       });
     }
     return result;
   }
 
+  /**
+   * The remote scope the connection's credentials serve now; undefined when
+   * that cannot be read. Read and write admission check again on the
+   * credentials that serve the call, so undefined only defers the decision.
+   */
+  private async readCredentialScope(
+    connection: IntegrationConnection,
+  ): Promise<string | null | undefined> {
+    if (connection.provider !== 'jira') {
+      return null;
+    }
+    try {
+      const credentials = await this.storage.getIntegrationConnectionCredentialsById(connection.id);
+      return credentials ? credentialRemoteScope(credentials) : undefined;
+    } catch (error) {
+      if (error instanceof VaultUnavailableError) {
+        return undefined;
+      }
+      throw error;
+    }
+  }
+
+  /** Null when the desired source changed after it was read; that change has its own wake-up. */
   private async createManagedProjection(
     desired: DesiredProjection,
-  ): Promise<ExternalManagedSubtaskLink> {
+  ): Promise<ExternalManagedSubtaskLink | null> {
     try {
       return await this.storage.createExternalManagedSubtaskLink({
         epicId: desired.epic.id,
@@ -1290,6 +1571,12 @@ export class ExternalSubtaskSyncSubscriber implements OnModuleInit, OnModuleDest
       if (existing) {
         return existing;
       }
+      if (
+        error instanceof ValidationError &&
+        error.details?.reason === MANAGED_PROJECTION_SOURCE_CHANGED
+      ) {
+        return null;
+      }
       throw error;
     }
   }
@@ -1303,8 +1590,13 @@ export class ExternalSubtaskSyncSubscriber implements OnModuleInit, OnModuleDest
     ).filter((row) => row.provider === provider);
     return Promise.all(
       rows.map(async (row) => {
+        // A reason that already refuses Retry stays: after a reconnect and a
+        // rebind, Retry must still need proof that another create is safe.
+        const safeErrorCode = isManagedSubtaskRetryBlockedReason(row.safeErrorCode)
+          ? row.safeErrorCode
+          : 'connection_missing';
         const updated = await this.storage.updateExternalManagedSubtaskLink(row.id, {
-          safeErrorCode: 'connection_missing',
+          safeErrorCode,
           retryAt: null,
         });
         return this.result(updated, 'paused', 'connection_missing');
@@ -1600,22 +1892,7 @@ export class ExternalSubtaskSyncSubscriber implements OnModuleInit, OnModuleDest
     };
   }
 
-  private async withProjectionLock<T>(id: string, operation: () => Promise<T>): Promise<T> {
-    const previous = this.projectionTails.get(id) ?? Promise.resolve();
-    let release!: () => void;
-    const tail = new Promise<void>((resolve) => {
-      release = resolve;
-    });
-    const queued = previous.then(() => tail);
-    this.projectionTails.set(id, queued);
-    await previous;
-    try {
-      return await operation();
-    } finally {
-      release();
-      if (this.projectionTails.get(id) === queued) {
-        this.projectionTails.delete(id);
-      }
-    }
+  private withProjectionLock<T>(id: string, operation: () => Promise<T>): Promise<T> {
+    return this.projectionLock.run(id, operation);
   }
 }

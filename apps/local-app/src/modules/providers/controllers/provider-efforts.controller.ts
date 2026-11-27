@@ -11,7 +11,6 @@ import {
 import { z } from 'zod';
 import { StorageService, STORAGE_SERVICE } from '../../storage/interfaces/storage.interface';
 import { ProviderAdapterFactory } from '../adapters';
-import { isEffortCapable } from '../adapters/capabilities';
 import { createLogger } from '../../../common/logging/logger';
 import type { ProviderEffort } from '../../storage/models/domain.models';
 
@@ -73,21 +72,10 @@ export class ProviderEffortsController {
     logger.info({ providerId }, 'GET /api/providers/:id/efforts');
     const provider = await this.storage.getProvider(providerId);
 
-    // supportsEffort is derived via isEffortCapable(adapter) at THIS endpoint only —
-    // provider list/get DTOs stay undecorated (validated team decision). An unknown
-    // or unsupported provider yields supportsEffort=false. Empty ≠ unsupported: a
-    // capable-but-unseeded catalog still returns supportsEffort=true with efforts: [],
-    // so the UI can manage (add/remove) effort values for capable providers whose
-    // catalog has been emptied, while hiding the surface entirely for agy.
-    let supportsEffort = false;
-    let requiresModelForEffort = false;
-    if (this.adapterFactory.isSupported(provider.name)) {
-      const adapter = this.adapterFactory.getAdapter(provider.name);
-      if (isEffortCapable(adapter)) {
-        supportsEffort = true;
-        requiresModelForEffort = adapter.requiresModelForEffort === true;
-      }
-    }
+    // Capability comes from the adapter only; provider list/get DTOs carry no effort metadata.
+    const { supportsEffort, requiresModelForEffort } = this.adapterFactory.getEffortSupport(
+      provider.name,
+    );
 
     const efforts = await this.storage.listProviderEffortsByProvider(providerId);
     return { efforts, supportsEffort, requiresModelForEffort };

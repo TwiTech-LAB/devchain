@@ -1,6 +1,6 @@
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
 import { mkdirSync, realpathSync, writeFileSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import type { TestingModuleBuilder } from '@nestjs/testing';
 import { createProductionFileSyncPaths } from '../../modules/file-sync/file-sync-paths';
 import type { FileSyncPaths } from '../../modules/file-sync/file-sync-paths';
@@ -13,12 +13,20 @@ import {
 import { GitCoordinatorStore } from '../../modules/remotes/git-coordinator/git-coordinator.store';
 import type { GitCoordinatorRecord } from '../../modules/remotes/git-coordinator/git-coordinator.dto';
 import { GitOwnerStore } from '../../modules/remotes/git-owner.store';
-import { GIT_SHIM_REFRESH_MS } from '../../modules/remotes/git-shim/git-shim-registry.service';
+import {
+  GIT_SHIM_HOME,
+  GIT_SHIM_REFRESH_MS,
+} from '../../modules/remotes/git-shim/git-shim-registry.service';
+import {
+  DEFAULT_HOME_GIT_HANDOVER_TIMINGS,
+  HOME_GIT_HANDOVER_TIMINGS,
+} from '../../modules/remotes/git-writes/home-git-handover.service';
 import {
   DEFAULT_HOME_GIT_WRITE_TIMINGS,
   HOME_GIT_WRITE_TIMINGS,
 } from '../../modules/remotes/git-writes/home-git-write.service';
 import { HomeGitWriteStore } from '../../modules/remotes/git-writes/home-git-write.store';
+import { HomeGitRecoveryService } from '../../modules/remotes/git-writes/home-git-recovery.service';
 import { ensureProvider } from '../../modules/remotes/replica/__fixtures__/replica-seed';
 import { RemoteFileSyncService } from '../../modules/remotes/sync/remote-file-sync.service';
 import type { Remote, RemoteOperation } from '../../modules/storage/models/domain.models';
@@ -97,25 +105,50 @@ function pathsFor(dataDir: string): FileSyncPaths {
 export async function startGitOwnership(
   options: {
     vmAcquireMs?: number;
+    vmGraceMs?: number;
     homeWrites?: Partial<typeof DEFAULT_HOME_GIT_WRITE_TIMINGS>;
+    stepDownSettleMs?: number;
+    recoverBackups?: boolean;
   } = {},
 ): Promise<GitOwnershipPair> {
-  const configure = (builder: TestingModuleBuilder, instance: 'home' | 'host') => {
+  const configure = (builder: TestingModuleBuilder, instance: 'home' | 'host', dataDir: string) => {
     // The test writes each side's shim project list itself: both apps share one HOME here.
     builder.overrideProvider(GIT_SHIM_REFRESH_MS).useValue(0);
+    builder
+      .overrideProvider(GIT_SHIM_HOME)
+      .useValue(
+        join(
+          dirname(dataDir),
+          instance === 'home' ? 'shim-home' : 'shim-vm',
+          '.devchain',
+          'git-shim',
+        ),
+      );
+    if (!options.recoverBackups)
+      builder
+        .overrideProvider(HomeGitRecoveryService)
+        .useValue({ schedule: () => undefined, bindingWarnings: () => new Map() });
     if (instance === 'host')
       builder.overrideProvider(GIT_COORDINATOR_TIMINGS).useValue({
         ...DEFAULT_GIT_COORDINATOR_TIMINGS,
         pollMs: 200,
         acquireMs: options.vmAcquireMs ?? 3_000,
+        graceMs: options.vmGraceMs ?? DEFAULT_GIT_COORDINATOR_TIMINGS.graceMs,
         gcMs: Infinity,
       });
-    else
+    else {
       builder.overrideProvider(HOME_GIT_WRITE_TIMINGS).useValue({
         ...DEFAULT_HOME_GIT_WRITE_TIMINGS,
         stepDownPollMs: 300,
         ...options.homeWrites,
       });
+      if (options.stepDownSettleMs !== undefined) {
+        builder.overrideProvider(HOME_GIT_HANDOVER_TIMINGS).useValue({
+          ...DEFAULT_HOME_GIT_HANDOVER_TIMINGS,
+          settleMs: options.stepDownSettleMs,
+        });
+      }
+    }
     return builder;
   };
   const pair = await startTwoInstances({

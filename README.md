@@ -42,7 +42,7 @@ devchain start
 DevChain opens in your browser:
 
 1. Create a project.
-2. Import the `teams-dev` template: a Planning team (Brainstormer and Architects), a Builders team (Epic Manager and Coders), and a Code Reviewer.
+2. Import the `teams-dev` template: a Planning team (Brainstormer and Architects), a Builders team (Epic Manager and Coders), and a Code Review team (Code Reviewer, with optional Peer Reviewers).
 3. Start the Brainstormer and describe what you want to build.
 
 `devchain start --help` lists the port, host, and foreground options. `devchain stop` stops the server. The install checks that SQLite loads on your platform and stops if it does not; `DEVCHAIN_SKIP_POSTINSTALL=1` skips that check.

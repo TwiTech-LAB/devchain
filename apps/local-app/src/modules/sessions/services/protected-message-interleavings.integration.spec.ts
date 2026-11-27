@@ -205,6 +205,7 @@ describe('protected message ownership interleavings', () => {
         {
           provide: STORAGE_SERVICE,
           useValue: {
+            isAgentDisabled: jest.fn().mockReturnValue(false),
             getAgent: jest.fn(async () => ({
               id: 'agent-1',
               name: 'Agent One',

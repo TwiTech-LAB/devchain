@@ -3,6 +3,7 @@ import { useRef } from 'react';
 import type { Terminal } from '@xterm/xterm';
 import type { FitAddon } from '@xterm/addon-fit';
 import { useTerminalMessageHandlers } from './useTerminalMessageHandlers';
+import { useTerminalAttachRevision } from '@/ui/lib/terminal-attach-revision';
 import { createTerminalHistorySync, type TerminalHistorySync } from '../terminal-history-sync';
 import type { ScrollIntentController, ScrollDragEndReason } from '../scroll-intent-binding';
 
@@ -501,7 +502,7 @@ describe('useTerminalMessageHandlers', () => {
   });
 
   describe('sequence-domain reconciliation (Task 3)', () => {
-    it('resets recovery guards + watermark and accepts a lower currentSequence on a domain switch', () => {
+    it('attaches again only its own session on a restart signal, then resets recovery guards + watermark and accepts a lower currentSequence on a domain switch', () => {
       const { sessionId, result } = renderHarness({
         expectingSeed: false,
         primeOwner: (sync) => {
@@ -510,6 +511,25 @@ describe('useTerminalMessageHandlers', () => {
         },
       });
       result.current.lastSequenceRef.current = 60;
+      const revisions = renderHook(() => ({
+        own: useTerminalAttachRevision(sessionId),
+        other: useTerminalAttachRevision('other-session'),
+      }));
+      const before = revisions.result.current;
+
+      act(() => {
+        for (const id of [sessionId, 'other-session']) {
+          result.current.handler({
+            topic: `session/${id}`,
+            type: 'state_change',
+            payload: { sessionId: id, status: 'restarted' },
+            ts: new Date().toISOString(),
+          });
+        }
+      });
+
+      expect(revisions.result.current).toEqual({ own: before.own + 1, other: before.other });
+      expect(result.current.queueOrWrite).not.toHaveBeenCalled();
 
       act(() => {
         result.current.handler({

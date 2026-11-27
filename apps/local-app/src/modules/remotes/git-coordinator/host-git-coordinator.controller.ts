@@ -51,6 +51,17 @@ export class HostGitCoordinatorController {
     );
   }
 
+  @Post('home-renew')
+  @HttpCode(200)
+  @ApiOperation({ summary: 'Renew the home Git lease on the VM' })
+  @ApiOkResponse({ description: 'Current coordinator record' })
+  homeRenew(@Param('id') id: string, @Body() body: unknown): Promise<GitCoordinatorRecord> {
+    return this.coordinator.homeRenew(
+      HostProjectIdSchema.parse(id),
+      hostRoutes.homeRenew.body.parse(body),
+    );
+  }
+
   @Post('handover-begin')
   @HttpCode(200)
   @ApiOperation({ summary: 'Close new VM holds and journal a leased home handover' })

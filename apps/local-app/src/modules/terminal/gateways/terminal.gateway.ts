@@ -1507,6 +1507,13 @@ export class TerminalGateway implements OnGatewayConnection, OnGatewayDisconnect
       message: 'Session restored successfully',
     };
     this.server.emit('message', createEnvelope('sessions', 'started', ep));
+
+    // A view subscribes once per mount, and the restart replaced the registry entry it subscribed
+    // to. Views attached before the restart are still in this room and must attach again.
+    const restarted: SessionStatePayload = { sessionId: payload.sessionId, status: 'restarted' };
+    this.server
+      .to(`session:${payload.sessionId}`)
+      .emit('message', createEnvelope(`session/${payload.sessionId}`, 'state_change', restarted));
   }
 
   @OnCatalogEvent('session.stopped')

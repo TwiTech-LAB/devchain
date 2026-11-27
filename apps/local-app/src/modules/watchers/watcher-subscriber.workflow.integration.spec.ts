@@ -1,6 +1,7 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { EventEmitterModule } from '@nestjs/event-emitter';
 import { WatcherRunnerService } from './services/watcher-runner.service';
+import { HooksService } from '../hooks/services/hooks.service';
 import { SubscriberExecutorService } from '../subscribers/services/subscriber-executor.service';
 import { AutomationSchedulerService } from '../subscribers/services/automation-scheduler.service';
 import { EventsService } from '../events/services/events.service';
@@ -200,6 +201,7 @@ describe('Watcher → Subscriber E2E Flow', () => {
       imports: [EventEmitterModule.forRoot({ wildcard: false, maxListeners: 20 })],
       providers: [
         { provide: ProjectWriteGate, useValue: createProjectWriteGateStub() },
+        { provide: HooksService, useValue: { firedBeforeFence: () => false } },
         WatcherRunnerService,
         SubscriberExecutorService,
         AutomationSchedulerService,

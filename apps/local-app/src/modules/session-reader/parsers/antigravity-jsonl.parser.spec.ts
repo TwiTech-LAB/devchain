@@ -104,6 +104,31 @@ describe('parseAntigravitySteps', () => {
         isError: false,
       },
     ]);
+
+    // Only the selected call keeps its whole output; the other result keeps the cap.
+    const twoCalls = parseAntigravitySteps(
+      [
+        step({
+          step_index: 4,
+          type: 'PLANNER_RESPONSE',
+          tool_calls: [{ name: 'run_command' }, { name: 'run_command' }],
+        }),
+        step({ step_index: 5, type: 'RUN_COMMAND', content: 'aaaaaaaa' }),
+        step({ step_index: 6, type: 'RUN_COMMAND', content: 'bbbbbbbb' }),
+      ],
+      100,
+      { maxToolOutputChars: 4, fullOutputToolCallId: 'agy-tc-4-1' },
+    );
+    expect(twoCalls.messages[0].toolResults).toEqual([
+      {
+        toolCallId: 'agy-tc-4-0',
+        content: 'aaaa',
+        isError: false,
+        isTruncated: true,
+        fullLength: 8,
+      },
+      { toolCallId: 'agy-tc-4-1', content: 'bbbbbbbb', isError: false },
+    ]);
   });
 
   it('degrades an unmatched tool-result step to a system meta message', () => {

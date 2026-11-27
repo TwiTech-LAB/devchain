@@ -20,6 +20,7 @@ import type {
   McpResponse,
 } from '../../dtos/mcp.dto';
 import {
+  AppError,
   NotFoundError,
   OptimisticLockError,
   RelationConfirmationRequiredError,
@@ -31,6 +32,7 @@ import {
   RelationRouteConflictError,
 } from '../../../../common/errors/error-types';
 import { ServiceUnavailableError } from '../../../../common/errors/service-unavailable.error';
+import { JiraProviderError } from '../../../external-integrations/errors/external-provider.errors';
 
 /** `McpResponse.data` is `unknown` by design; tests state the payload they expect. */
 function dataOf<T>(result: McpResponse): T {
@@ -111,6 +113,7 @@ function makeAgentCtx(): AgentSessionContext {
 function makeStorageMock() {
   return {
     listWorktrees: jest.fn().mockResolvedValue([]),
+    listExternalTaskLinksForEpic: jest.fn().mockResolvedValue([]),
     listAgents: jest.fn().mockResolvedValue({
       items: [
         {
@@ -315,6 +318,8 @@ function makeEpicCtx(overrides: Partial<EpicToolContext> = {}): EpicTestCtx {
       deleteRelation: jest.fn(),
     } as never,
     resolveSessionContext: jest.fn().mockResolvedValue({ success: true, data: makeAgentCtx() }),
+    externalTaskResolver: { resolve: jest.fn() } as never,
+    admitExternalTasks: jest.fn(() => true),
     ...overrides,
   };
 }
@@ -1551,6 +1556,410 @@ describe('epic-tools handlers', () => {
       const result = await handleDeleteEpic(ctx, { sessionId: SESSION_ID, id: EPIC_ID });
       expect(result.success).toBe(false);
       expect(result.error?.code).toBe('EPIC_NOT_FOUND');
+    });
+  });
+});
+
+describe('epic-tools external task links', () => {
+  const LINK_ID = '00000000-0000-0000-0000-0000000000aa';
+  const linkPayload = {
+    connectionId: 'connection-jira',
+    connectionGeneration: 4,
+    provider: 'jira' as const,
+    remoteScopeKey: 'acme.atlassian.net',
+    remoteTaskId: 'ENG-1',
+    sourceSnapshot: {
+      remoteKey: 'ENG-1',
+      title: 'Remote title',
+      description: 'Remote body',
+      webUrl: 'https://acme.atlassian.net/browse/ENG-1',
+      workAreaId: 'project-eng',
+      workAreaName: 'Engineering',
+      statusName: 'In Progress',
+    },
+  };
+  const storedLink = {
+    id: LINK_ID,
+    epicId: EPIC_ID,
+    projectId: PROJECT_ID,
+    connectionId: 'connection-jira',
+    provider: 'jira' as const,
+    remoteScopeKey: 'acme.atlassian.net',
+    remoteTaskId: 'ENG-1',
+    sourceSnapshot: linkPayload.sourceSnapshot,
+    createdAt: '2024-01-01T00:00:00Z',
+    updatedAt: '2024-01-01T00:00:00Z',
+  };
+
+  function linkCtx(overrides: Partial<EpicToolContext> = {}) {
+    const resolve = jest.fn().mockResolvedValue({
+      provider: 'jira',
+      detail: { title: 'Remote title', description: 'Remote body' },
+      link: linkPayload,
+      linkedEpicId: null,
+    });
+    const ctx = makeEpicCtx({ externalTaskResolver: { resolve } as never, ...overrides });
+    return { ctx, resolve };
+  }
+
+  afterEach(() => {
+    jest.clearAllMocks();
+  });
+
+  describe('handleCreateEpic', () => {
+    it('defaults title and description to the remote task and writes the link with the epic', async () => {
+      const { ctx, resolve } = linkCtx();
+
+      const result = await handleCreateEpic(ctx, {
+        sessionId: SESSION_ID,
+        externalTask: { ref: 'https://acme.atlassian.net/browse/ENG-1' },
+      });
+
+      expect(result.success).toBe(true);
+      expect(resolve).toHaveBeenCalledWith({
+        projectId: PROJECT_ID,
+        ref: 'https://acme.atlassian.net/browse/ENG-1',
+        provider: undefined,
+      });
+      expect(ctx.epicsService.createEpicForProject).toHaveBeenCalledWith(
+        PROJECT_ID,
+        expect.objectContaining({
+          title: 'Remote title',
+          description: 'Remote body',
+          parentId: null,
+          externalTaskLink: linkPayload,
+        }),
+        expect.anything(),
+      );
+      // The link was written atomically with the epic; no second read after commit.
+      expect(result.data).toEqual({ id: EPIC_ID, version: 1 });
+      expect(ctx.storage.listExternalTaskLinksForEpic).not.toHaveBeenCalled();
+    });
+
+    it('keeps an explicit title and description', async () => {
+      const { ctx } = linkCtx();
+
+      await handleCreateEpic(ctx, {
+        sessionId: SESSION_ID,
+        title: 'Own title',
+        description: 'Own body',
+        externalTask: { ref: 'ENG-1', provider: 'jira' },
+      });
+
+      expect(ctx.epicsService.createEpicForProject).toHaveBeenCalledWith(
+        PROJECT_ID,
+        expect.objectContaining({ title: 'Own title', description: 'Own body' }),
+        expect.anything(),
+      );
+    });
+
+    it('refuses a link on a new sub-epic before any vendor read and creates nothing', async () => {
+      const { ctx, resolve } = linkCtx();
+
+      const result = await handleCreateEpic(ctx, {
+        sessionId: SESSION_ID,
+        title: 'Child',
+        parentId: RELATED_ID,
+        externalTask: { ref: 'ENG-1' },
+      });
+
+      expect(result.error?.code).toBe('EXTERNAL_TASK_LINK_TOP_LEVEL_ONLY');
+      expect(resolve).not.toHaveBeenCalled();
+      expect(ctx.epicsService.createEpicForProject).not.toHaveBeenCalled();
+    });
+
+    it('returns EXTERNAL_TASK_ALREADY_LINKED with the linked epic id', async () => {
+      const { ctx } = linkCtx();
+      (ctx.epicsService.createEpicForProject as jest.Mock).mockRejectedValue(
+        new AppError('Already linked.', 'EXTERNAL_TASK_ALREADY_LINKED', 409, {
+          epicId: RELATED_ID,
+          linkId: LINK_ID,
+        }),
+      );
+
+      const result = await handleCreateEpic(ctx, {
+        sessionId: SESSION_ID,
+        externalTask: { ref: 'ENG-1' },
+      });
+
+      expect(result.error).toMatchObject({
+        code: 'EXTERNAL_TASK_ALREADY_LINKED',
+        data: { epicId: RELATED_ID },
+      });
+    });
+
+    it.each([
+      [
+        new AppError('Pick one.', 'PROVIDER_REQUIRED', 400, {
+          connectedProviders: ['clickup', 'jira'],
+        }),
+        { code: 'PROVIDER_REQUIRED', data: { connectedProviders: ['clickup', 'jira'] } },
+      ],
+      [new JiraProviderError('not_found'), { code: 'EXTERNAL_TASK_NOT_FOUND' }],
+    ])('maps a resolver refusal %# without creating the epic', async (error, expected) => {
+      const { ctx, resolve } = linkCtx();
+      resolve.mockRejectedValue(error);
+
+      const result = await handleCreateEpic(ctx, {
+        sessionId: SESSION_ID,
+        externalTask: { ref: 'ENG-1' },
+      });
+
+      expect(result.error).toMatchObject(expected);
+      expect(ctx.epicsService.createEpicForProject).not.toHaveBeenCalled();
+    });
+
+    it('refuses a guest with AGENT_CONTEXT_REQUIRED before any vendor read', async () => {
+      const { ctx, resolve } = linkCtx({
+        resolveSessionContext: jest.fn().mockResolvedValue({
+          success: true,
+          data: {
+            type: 'guest',
+            guest: { id: 'guest-1', name: 'Guest' },
+            project: { id: PROJECT_ID, name: 'Test Project', rootPath: '/tmp/test' },
+          },
+        }),
+      });
+
+      const result = await handleCreateEpic(ctx, {
+        sessionId: SESSION_ID,
+        externalTask: { ref: 'ENG-1' },
+      });
+
+      expect(result.error?.code).toBe('AGENT_CONTEXT_REQUIRED');
+      expect(resolve).not.toHaveBeenCalled();
+    });
+
+    it('refuses with INTEGRATIONS_UNAVAILABLE when the instance may not call vendors', async () => {
+      const { ctx, resolve } = linkCtx({ admitExternalTasks: () => false });
+
+      const result = await handleCreateEpic(ctx, {
+        sessionId: SESSION_ID,
+        externalTask: { ref: 'ENG-1' },
+      });
+
+      expect(result.error?.code).toBe('INTEGRATIONS_UNAVAILABLE');
+      expect(resolve).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('handleUpdateEpic', () => {
+    it('sets the link together with other edits under the version check', async () => {
+      const { ctx } = linkCtx();
+      (ctx.epicsService.updateEpicWithOutcome as jest.Mock).mockResolvedValueOnce({
+        epic: { id: EPIC_ID, version: 3 },
+        outcome: {
+          statusChanged: false,
+          agentUnchanged: true,
+          previousAssigneeAgent: null,
+          externalTask: { change: 'set', link: storedLink, releasedManagedLinkIds: ['managed-1'] },
+        },
+      });
+
+      const result = await handleUpdateEpic(ctx, {
+        sessionId: SESSION_ID,
+        id: EPIC_ID,
+        version: 2,
+        title: 'Renamed',
+        externalTask: { ref: 'ENG-1' },
+      });
+
+      expect(ctx.epicsService.updateEpicWithOutcome).toHaveBeenCalledWith(
+        EPIC_ID,
+        { title: 'Renamed', externalTask: { set: linkPayload } },
+        2,
+        expect.anything(),
+      );
+      expect(result.data).toEqual({
+        id: EPIC_ID,
+        version: 3,
+        externalTask: {
+          change: 'set',
+          linkId: LINK_ID,
+          provider: 'jira',
+          remoteKey: 'ENG-1',
+          releasedManagedLinkIds: ['managed-1'],
+        },
+      });
+    });
+
+    /** Makes the stored epic a sub-epic. The parent lookup of an update reads the same mock. */
+    async function storeAsSubEpic(ctx: EpicToolContext) {
+      const epic = await ctx.storage.getEpic(EPIC_ID);
+      (ctx.storage.getEpic as jest.Mock).mockResolvedValue({ ...epic, parentId: RELATED_ID });
+    }
+
+    it.each([
+      ['an epic that has a parent', true, {}],
+      ['an update that sets a parent', false, { parentId: RELATED_ID }],
+    ])('refuses a link on %s before any vendor read', async (_case, subEpic, edit) => {
+      const { ctx, resolve } = linkCtx();
+      if (subEpic) await storeAsSubEpic(ctx);
+
+      const result = await handleUpdateEpic(ctx, {
+        sessionId: SESSION_ID,
+        id: EPIC_ID,
+        version: 2,
+        externalTask: { ref: 'ENG-1' },
+        ...edit,
+      });
+
+      expect(result.error?.code).toBe('EXTERNAL_TASK_LINK_TOP_LEVEL_ONLY');
+      expect(resolve).not.toHaveBeenCalled();
+      expect(ctx.epicsService.updateEpicWithOutcome).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ['a clear', { externalTask: { clear: true as const } }, { externalTask: { clear: true } }],
+      [
+        'a link in an update that removes the parent',
+        { externalTask: { ref: 'ENG-1' }, clearParent: true },
+        { parentId: null, externalTask: { set: linkPayload } },
+      ],
+    ])('allows %s on a sub-epic', async (_case, edit, expected) => {
+      const { ctx } = linkCtx();
+      await storeAsSubEpic(ctx);
+
+      const result = await handleUpdateEpic(ctx, {
+        sessionId: SESSION_ID,
+        id: EPIC_ID,
+        version: 2,
+        ...edit,
+      });
+
+      expect(result.success).toBe(true);
+      expect(ctx.epicsService.updateEpicWithOutcome).toHaveBeenCalledWith(
+        EPIC_ID,
+        expected,
+        2,
+        expect.anything(),
+      );
+    });
+
+    it('refuses a guest clear with AGENT_CONTEXT_REQUIRED before any write', async () => {
+      const { ctx, resolve } = linkCtx({
+        resolveSessionContext: jest.fn().mockResolvedValue({
+          success: true,
+          data: {
+            type: 'guest',
+            guest: { id: 'guest-1', name: 'Guest' },
+            project: { id: PROJECT_ID, name: 'Test Project', rootPath: '/tmp/test' },
+          },
+        }),
+      });
+
+      const result = await handleUpdateEpic(ctx, {
+        sessionId: SESSION_ID,
+        id: EPIC_ID,
+        version: 2,
+        title: 'Renamed',
+        externalTask: { clear: true },
+      });
+
+      expect(result.error?.code).toBe('AGENT_CONTEXT_REQUIRED');
+      expect(resolve).not.toHaveBeenCalled();
+      for (const write of Object.values(ctx.epicsService as unknown as Record<string, jest.Mock>)) {
+        expect(write).not.toHaveBeenCalled();
+      }
+    });
+
+    it('clears the link without a vendor read', async () => {
+      const { ctx, resolve } = linkCtx();
+
+      await handleUpdateEpic(ctx, {
+        sessionId: SESSION_ID,
+        id: EPIC_ID,
+        version: 2,
+        externalTask: { clear: true },
+      });
+
+      expect(resolve).not.toHaveBeenCalled();
+      expect(ctx.epicsService.updateEpicWithOutcome).toHaveBeenCalledWith(
+        EPIC_ID,
+        { externalTask: { clear: true } },
+        2,
+        expect.anything(),
+      );
+    });
+
+    it('returns VERSION_CONFLICT for a stale clear', async () => {
+      const { ctx } = linkCtx();
+      (ctx.epicsService.updateEpicWithOutcome as jest.Mock).mockRejectedValue(
+        new OptimisticLockError('Epic', EPIC_ID),
+      );
+
+      const result = await handleUpdateEpic(ctx, {
+        sessionId: SESSION_ID,
+        id: EPIC_ID,
+        version: 1,
+        externalTask: { clear: true },
+      });
+
+      expect(result.error?.code).toBe('VERSION_CONFLICT');
+    });
+
+    it.each(['EPIC_ALREADY_LINKED', 'EPIC_NOT_LINKED', 'INTEGRATION_CONNECTION_CHANGED'])(
+      'passes the %s refusal through with its data',
+      async (code) => {
+        const { ctx } = linkCtx();
+        (ctx.epicsService.updateEpicWithOutcome as jest.Mock).mockRejectedValue(
+          new AppError('Refused.', code, 409, { epicId: EPIC_ID }),
+        );
+
+        const result = await handleUpdateEpic(ctx, {
+          sessionId: SESSION_ID,
+          id: EPIC_ID,
+          version: 2,
+          externalTask: { ref: 'ENG-1' },
+        });
+
+        expect(result.error).toMatchObject({ code, data: { epicId: EPIC_ID } });
+      },
+    );
+  });
+
+  describe('handleGetEpicById', () => {
+    it('lists linked remote tasks from local rows', async () => {
+      const { ctx, resolve } = linkCtx();
+      (ctx.storage.listExternalTaskLinksForEpic as jest.Mock).mockResolvedValue([
+        storedLink,
+        {
+          ...storedLink,
+          id: 'managed-link',
+          remoteTaskId: 'ENG-9',
+          sourceSnapshot: { managedProjectionId: 'projection-1', remoteKey: 'ENG-9' },
+        },
+      ]);
+
+      const result = await handleGetEpicById(ctx, { sessionId: SESSION_ID, id: EPIC_ID });
+
+      expect(dataOf<GetEpicByIdResponse>(result).externalLinks).toEqual([
+        {
+          linkId: LINK_ID,
+          provider: 'jira',
+          remoteKey: 'ENG-1',
+          title: 'Remote title',
+          webUrl: 'https://acme.atlassian.net/browse/ENG-1',
+          managed: false,
+        },
+        {
+          linkId: 'managed-link',
+          provider: 'jira',
+          remoteKey: 'ENG-9',
+          title: null,
+          webUrl: null,
+          managed: true,
+        },
+      ]);
+      expect(resolve).not.toHaveBeenCalled();
+    });
+
+    it('omits externalLinks when the epic has none', async () => {
+      const { ctx } = linkCtx();
+
+      const result = await handleGetEpicById(ctx, { sessionId: SESSION_ID, id: EPIC_ID });
+
+      expect(result.data).not.toHaveProperty('externalLinks');
     });
   });
 });

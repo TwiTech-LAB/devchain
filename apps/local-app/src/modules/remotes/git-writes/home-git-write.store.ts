@@ -7,6 +7,8 @@ import { getRawSqliteClient } from '../../storage/db/sqlite-raw';
 import { TransactionRunner } from '../../storage/db/transaction-runner';
 
 const WRITES_KEY = 'remotes.homeGitWrites';
+const HANDOVERS_KEY = 'remotes.homeGitHandovers';
+const STEP_DOWNS_KEY = 'remotes.homeGitStepDowns';
 
 export const HomeGitWriteSchema = z.object({
   writeId: z.string(),
@@ -20,6 +22,10 @@ export const HomeGitWriteSchema = z.object({
 });
 export type HomeGitWrite = z.infer<typeof HomeGitWriteSchema>;
 const WritesSchema = z.record(HomeGitWriteSchema);
+const HandoversSchema = z.record(z.object({ id: z.string(), remoteId: z.string() }));
+const StepDownsSchema = z.record(
+  z.object({ remoteId: z.string(), generation: z.number(), startedAt: z.number() }),
+);
 
 /** Home writes that the VM has not confirmed yet; they survive a restart. */
 @Injectable()
@@ -33,36 +39,78 @@ export class HomeGitWriteStore {
   }
 
   list(): HomeGitWrite[] {
-    return Object.values(this.readWrites());
+    return Object.values(this.read(WRITES_KEY, WritesSchema));
   }
 
   get(writeId: string): HomeGitWrite | null {
-    return this.readWrites()[writeId] ?? null;
+    return this.read(WRITES_KEY, WritesSchema)[writeId] ?? null;
   }
 
   put(write: HomeGitWrite): void {
-    this.update((writes) => {
+    this.update(WRITES_KEY, WritesSchema, (writes) => {
       writes[write.writeId] = HomeGitWriteSchema.parse(write);
     });
   }
 
   delete(writeId: string): void {
-    this.update((writes) => {
+    this.update(WRITES_KEY, WritesSchema, (writes) => {
       delete writes[writeId];
     });
   }
 
-  private readWrites(): Record<string, HomeGitWrite> {
-    const row = this.sqlite.prepare('SELECT value FROM settings WHERE key = ?').get(WRITES_KEY) as
-      | { value: string }
-      | undefined;
-    return row ? WritesSchema.parse(JSON.parse(row.value)) : {};
+  handover(projectId: string): { id: string; remoteId: string } | null {
+    return this.read(HANDOVERS_KEY, HandoversSchema)[projectId] ?? null;
   }
 
-  private update(change: (writes: Record<string, HomeGitWrite>) => void): void {
+  rememberHandover(projectId: string, remoteId: string, id: string): void {
+    this.update(HANDOVERS_KEY, HandoversSchema, (handovers) => {
+      handovers[projectId] = { id, remoteId };
+    });
+  }
+
+  clearHandover(projectId: string, remoteId: string): void {
+    this.update(HANDOVERS_KEY, HandoversSchema, (handovers) => {
+      if (handovers[projectId]?.remoteId === remoteId) delete handovers[projectId];
+    });
+  }
+
+  stepDownStartedAt(projectId: string, remoteId: string, generation: number): number | null {
+    const saved = this.read(STEP_DOWNS_KEY, StepDownsSchema)[projectId];
+    return saved?.remoteId === remoteId && saved.generation === generation ? saved.startedAt : null;
+  }
+
+  rememberStepDown(
+    projectId: string,
+    remoteId: string,
+    generation: number,
+    startedAt: number,
+  ): void {
+    this.update(STEP_DOWNS_KEY, StepDownsSchema, (stepDowns) => {
+      stepDowns[projectId] = { remoteId, generation, startedAt };
+    });
+  }
+
+  clearStepDown(projectId: string, remoteId: string): void {
+    this.update(STEP_DOWNS_KEY, StepDownsSchema, (stepDowns) => {
+      if (stepDowns[projectId]?.remoteId === remoteId) delete stepDowns[projectId];
+    });
+  }
+
+  private read<T>(key: string, schema: z.ZodType<Record<string, T>>): Record<string, T> {
+    const row = this.sqlite.prepare('SELECT value FROM settings WHERE key = ?').get(key) as
+      | { value: string }
+      | undefined;
+    return row ? schema.parse(JSON.parse(row.value)) : {};
+  }
+
+  private update<T>(
+    key: string,
+    schema: z.ZodType<Record<string, T>>,
+    change: (entries: Record<string, T>) => void,
+  ): void {
     this.transactions.runImmediate(() => {
-      const writes = this.readWrites();
-      change(writes);
+      const entries = this.read(key, schema);
+      change(entries);
       const at = new Date().toISOString();
       // Local coordination metadata: it must drain even while project writes are frozen.
       this.sqlite
@@ -71,7 +119,7 @@ export class HomeGitWriteStore {
            VALUES (lower(hex(randomblob(16))), ?, ?, ?, ?)
            ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`,
         )
-        .run(WRITES_KEY, JSON.stringify(writes), at, at);
+        .run(key, JSON.stringify(entries), at, at);
     });
   }
 }

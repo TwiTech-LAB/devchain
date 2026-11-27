@@ -9,7 +9,9 @@ describe('projectsQueryKeys', () => {
     expect(projectsQueryKeys.templatesForCreate()).toEqual(['project-templates']);
     expect(projectsQueryKeys.templatesForUpgrade()).toEqual(['templates-for-upgrade']);
     expect(projectsQueryKeys.manifest('project-1')).toEqual(['template-manifest', 'project-1']);
-    expect(projectsQueryKeys.setupPreview(request)).toEqual(['setup-preview', request]);
+    const remoteKey = projectsQueryKeys.setupPreview(request, 'remote-1');
+    expect(remoteKey).toEqual(['setup-preview', request, 'remote-1']);
+    expect(remoteKey.slice(0, 1)).toEqual(projectsQueryKeys.setupPreviews());
     expect(projectsQueryKeys.upgradePreview('project-1', '2.0.0', 'remote-1')).toEqual([
       'upgrade-template-preview',
       'project-1',

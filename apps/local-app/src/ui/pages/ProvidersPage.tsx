@@ -73,7 +73,7 @@ import {
   type ProviderCliName,
 } from '@devchain/shared';
 import type { FetchFn } from '@/ui/lib/api-transport';
-import { useFetchFactory, useHomeFetch } from '@/ui/hooks/useFetchFactory';
+import { useAmbientBackend, useFetchFactory, useHomeFetch } from '@/ui/hooks/useFetchFactory';
 import { markProviderCliOwnInstall, useProviderClisOverview } from '@/ui/hooks/useProviderClis';
 import { ProviderCliVersionsSection } from '@/ui/components/providers/ProviderCliVersionsSection';
 import { ProviderUsageSettingsCard } from '@/ui/components/providers/ProviderUsageSettingsCard';
@@ -328,12 +328,13 @@ function invalidateProviderConfigQueries(queryClient: ReturnType<typeof useQuery
 
 function ProviderModelsSection({ provider }: { provider: Provider }) {
   const fetchFn = useFetchFactory();
+  const backend = useAmbientBackend();
   const queryClient = useQueryClient();
   const { toast, showSuccess, showError } = useToastHelpers();
   const [isOpen, setIsOpen] = useState(false);
   const [newModelName, setNewModelName] = useState('');
   const [modelDeleteConfirm, setModelDeleteConfirm] = useState<ProviderModel | null>(null);
-  const modelsQueryKey = providerModelQueryKeys.main(provider.id);
+  const modelsQueryKey = providerModelQueryKeys.main(provider.id, backend);
 
   const {
     data: models = [],
@@ -522,6 +523,7 @@ function ProviderModelsSection({ provider }: { provider: Provider }) {
 
 function ProviderEffortsSection({ provider }: { provider: Provider }) {
   const fetchFn = useFetchFactory();
+  const backend = useAmbientBackend();
   const queryClient = useQueryClient();
   const { toast, showSuccess, showError } = useToastHelpers();
   const [isOpen, setIsOpen] = useState(false);
@@ -529,7 +531,7 @@ function ProviderEffortsSection({ provider }: { provider: Provider }) {
   const [effortDeleteConfirm, setEffortDeleteConfirm] = useState<ProviderEffort | null>(null);
 
   const { data, isLoading, isFetching, isError, error } = useQuery({
-    ...providerEffortQueries.catalog(fetchFn, provider.id),
+    ...providerEffortQueries.catalog(fetchFn, provider.id, backend),
     enabled: true,
   });
 
@@ -1460,7 +1462,7 @@ export function ProvidersPage() {
                               variant="secondary"
                               className="text-xs border border-primary/30 bg-primary/10 text-primary"
                             >
-                              Managed by DevChain
+                              Auto-update
                             </Badge>
                           ) : (
                             <code className="text-sm bg-muted px-2 py-0.5 rounded">
@@ -1844,15 +1846,15 @@ export function ProvidersPage() {
           <DialogHeader>
             <DialogTitle>Switch to your own install?</DialogTitle>
             <DialogDescription>
-              Saving a custom Binary Path turns off <strong>Managed by DevChain</strong> for{' '}
-              <strong>{editingProvider?.name}</strong>. New sessions will launch with your path; the
-              managed copy stays on disk.
+              Saving a custom Binary Path turns off <strong>Auto-update</strong> for{' '}
+              <strong>{editingProvider?.name}</strong>. New sessions will launch with your path;
+              DevChain&apos;s copy stays on disk.
             </DialogDescription>
           </DialogHeader>
           <div className="bg-status-warn/10 border border-status-warn/40 rounded-lg p-3 flex items-start gap-2">
             <AlertCircle className="h-5 w-5 text-status-warn mt-0.5 flex-shrink-0" />
             <p className="text-sm text-status-warn">
-              You can turn Managed by DevChain back on in the CLI versions section.
+              You can turn Auto-update back on in the CLI versions section.
             </p>
           </div>
           <DialogFooter>

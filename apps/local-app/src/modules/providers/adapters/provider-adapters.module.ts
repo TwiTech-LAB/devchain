@@ -10,6 +10,8 @@ import { StorageModule } from '../../storage/storage.module';
 import { AntigravityTrustedWorkspacesModule } from '../../core/services/antigravity-trusted-workspaces.module';
 import { CopilotTrustedFoldersModule } from '../../core/services/copilot-trusted-folders.module';
 import { CopilotAuthProbeModule } from '../../core/services/copilot-auth-probe.module';
+import { CodexAppServerClient } from '../services/codex-app-server.client';
+import { ProcessExecutorModule } from '../../terminal/services/process-executor/process-executor.module';
 
 @Module({
   imports: [
@@ -17,6 +19,7 @@ import { CopilotAuthProbeModule } from '../../core/services/copilot-auth-probe.m
     AntigravityTrustedWorkspacesModule,
     CopilotTrustedFoldersModule,
     CopilotAuthProbeModule,
+    ProcessExecutorModule,
   ],
   providers: [
     ClaudeAdapter,
@@ -25,8 +28,9 @@ import { CopilotAuthProbeModule } from '../../core/services/copilot-auth-probe.m
     AntigravityAdapter,
     CopilotAdapter,
     DevinAdapter,
+    CodexAppServerClient,
     ProviderAdapterFactory,
   ],
-  exports: [ProviderAdapterFactory],
+  exports: [ProviderAdapterFactory, CodexAppServerClient],
 })
 export class ProviderAdaptersModule {}

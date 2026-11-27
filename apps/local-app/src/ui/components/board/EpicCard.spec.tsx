@@ -110,6 +110,8 @@ function renderCard(epic = createEpic(), isActiveParent = false) {
 }
 
 const externalSource: ExternalTaskSourceSummary = {
+  id: 'link-1',
+  managed: false,
   provider: 'jira',
   remoteTaskId: 'ENG-1',
   remoteKey: 'ENG-1',

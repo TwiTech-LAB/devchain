@@ -94,9 +94,11 @@ const minimalParams: Record<string, Record<string, unknown>> = {
   devchain_worktrees_remove: { sessionId: SESSION_ID, name: 'lane' },
   devchain_vault_list: { sessionId: SESSION_ID },
   devchain_vault_request: { sessionId: SESSION_ID, name: 'API_TOKEN', description: 'Deploy' },
+  devchain_external_tasks_get: { sessionId: SESSION_ID, ref: 'ENG-1' },
 };
 
 const optionalServiceTools = new Set([
+  'devchain_external_tasks_get',
   'devchain_vault_list',
   'devchain_vault_request',
   'devchain_send_message',
@@ -135,6 +137,7 @@ const optionalServiceTools = new Set([
   'devchain_worktrees_remove',
 ]);
 const agentRequiredTools = new Set([
+  'devchain_external_tasks_get',
   'devchain_vault_list',
   'devchain_vault_request',
   'devchain_worktrees_create',
@@ -185,9 +188,15 @@ function createStorage() {
 
 function createSessionsService(): NonNullable<McpBindingRuntime['sessionsService']> {
   return {
-    listActiveSessions: jest
-      .fn()
-      .mockResolvedValue([{ id: SESSION_ID, agentId: AGENT_ID, status: 'running', startedAt: '' }]),
+    listRunningSessionIdentities: jest.fn().mockReturnValue([
+      {
+        id: SESSION_ID,
+        agentId: AGENT_ID,
+        status: 'running',
+        startedAt: '',
+        inheritedSessionIds: [],
+      },
+    ]),
   } as unknown as NonNullable<McpBindingRuntime['sessionsService']>;
 }
 
@@ -264,9 +273,12 @@ describe('McpToolBindingRegistry guards', () => {
     sessionRows
       .filter(({ name }) => agentRequiredTools.has(name))
       .flatMap((row) =>
-        ['devchain_skills_set_enabled', 'devchain_vault_list', 'devchain_vault_request'].includes(
-          row.name,
-        )
+        [
+          'devchain_skills_set_enabled',
+          'devchain_vault_list',
+          'devchain_vault_request',
+          'devchain_external_tasks_get',
+        ].includes(row.name)
           ? [
               { ...row, kind: 'guest' },
               { ...row, kind: 'agent without agent' },

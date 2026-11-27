@@ -3,6 +3,7 @@ import { Inject, Injectable, Logger } from '@nestjs/common';
 import { getEventMetadata } from '../../events/services/events.service';
 import { EventLogService } from '../../events/services/event-log.service';
 import { AgentMessageDeliveryService } from '../../agent-message-delivery/agent-message-delivery.service';
+import { withoutDisabledRecipients } from '../../agent-message-delivery/delivery-outcome';
 import { STORAGE_SERVICE, type AgentStorage } from '../../storage/interfaces/storage.interface';
 import { TeamsService } from '../../teams/services/teams.service';
 import { renderTemplate } from '../../../common/template/handlebars-renderer';
@@ -184,7 +185,7 @@ export class ReviewCommentNotifierSubscriber {
       LEGACY_VARIABLES,
     );
 
-    const result = await this.messageDelivery.deliver(
+    const outcome = await this.messageDelivery.deliver(
       [agentId],
       {
         kind: 'pooled',
@@ -197,6 +198,11 @@ export class ReviewCommentNotifierSubscriber {
       },
       { submitKeys: ['Enter'] },
     );
+    const result = withoutDisabledRecipients(outcome);
+    if (result.results.length === 0) {
+      this.logger.debug({ agentId }, 'ReviewCommentNotifier: skipped, recipient agent is disabled');
+      return;
+    }
 
     const failed = result.results.find((recipientResult) => recipientResult.status === 'failed');
     if (failed) {

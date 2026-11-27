@@ -1,9 +1,16 @@
 import * as fs from 'node:fs';
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { DevinAdapter } from './devin.adapter';
+import { parseProfileOptions } from '../utils/profile-options';
 import type { ProviderAdapter } from './provider-adapter.interface';
-import { devinSessionStorePath, devinTranscriptPath } from '../../../common/devin-transcript-paths';
+import {
+  DEVIN_STORE_SESSIONS_DIR,
+  devinSessionStorePath,
+  devinTranscriptPath,
+} from '../../../common/devin-transcript-paths';
+import { SESSION_START_SOURCE_ENV } from './capabilities/hook.capability';
 
 jest.mock('node:os', () => {
   const actual = jest.requireActual<typeof import('node:os')>('node:os');
@@ -256,14 +263,197 @@ describe('DevinAdapter', () => {
     });
   });
 
+  // A temporary store exercises real writes and renames. The adapter returns the launch
+  // argv and environment directly, so the same fixture can check Restore parity.
+  describe('session forks', () => {
+    const projectId = 'project-1';
+    const providerSessionId = 'brave-otter';
+    const sourceRowId = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee';
+    const targetRowId = 'bbbbbbbb-bbbb-4ccc-8ddd-eeeeeeeeeeee';
+    const meta = '{ "id": "brave-otter", "title": "Original" }\n';
+    const log = '{"type":"message","text":"first turn"}\n';
+    const transcript = '{ "session_id": "brave-otter", "steps": [{"message":"first turn"}] }\n';
+    let home: string;
+    let sessionsDir: string;
+    let sourceDir: string;
+    let sourcePath: string;
+    let targetPath: string;
+
+    beforeEach(async () => {
+      home = await mkdtemp(path.join(os.tmpdir(), 'devin-fork-'));
+      homedirMock.mockReturnValue(home);
+      sessionsDir = path.join(devinSessionStorePath(home, projectId), DEVIN_STORE_SESSIONS_DIR);
+      sourceDir = path.join(sessionsDir, providerSessionId);
+      sourcePath = devinTranscriptPath(home, sourceRowId);
+      targetPath = devinTranscriptPath(home, targetRowId);
+      await mkdir(sourceDir, { recursive: true });
+      await writeFile(path.join(sourceDir, 'meta.json'), meta);
+      await writeFile(path.join(sourceDir, 'log.jsonl'), log);
+      await writeFile(sourcePath, transcript);
+    });
+
+    afterEach(async () => {
+      homedirMock.mockImplementation(realHomedir);
+      await rm(home, { recursive: true, force: true });
+    });
+
+    const copyInput = () => ({
+      projectId,
+      projectPath: '/test/project',
+      providerBinPath: 'devin',
+      sessionId: targetRowId,
+      providerSessionId,
+      transcriptPath: sourcePath,
+      env: { DEVCHAIN_SESSION_ID: targetRowId },
+      helperEnv: {},
+    });
+
+    it('saves a separate store and export with the new provider ID', async () => {
+      const saved = await adapter.createSavePoint(copyInput());
+      expect(saved.providerSessionId).toMatch(/^[a-z0-9][a-z0-9-]*$/);
+      expect(saved.providerSessionId).not.toBe(providerSessionId);
+      expect(saved.transcriptPath).toBe(targetPath);
+      const targetDir = path.join(sessionsDir, saved.providerSessionId);
+      expect(JSON.parse(await readFile(path.join(targetDir, 'meta.json'), 'utf8'))).toEqual({
+        ...JSON.parse(meta),
+        id: saved.providerSessionId,
+      });
+      expect(await readFile(path.join(targetDir, 'log.jsonl'), 'utf8')).toBe(log);
+      expect(JSON.parse(await readFile(targetPath, 'utf8'))).toEqual({
+        ...JSON.parse(transcript),
+        session_id: saved.providerSessionId,
+      });
+      expect(await readFile(path.join(sourceDir, 'meta.json'), 'utf8')).toBe(meta);
+      expect(await readFile(path.join(sourceDir, 'log.jsonl'), 'utf8')).toBe(log);
+      expect(await readFile(sourcePath, 'utf8')).toBe(transcript);
+    });
+
+    it.each([
+      { flags: '--prompt-file "startup notes.txt"', tail: '' },
+      { flags: '--prompt-file="startup notes.txt"', tail: '' },
+      { flags: '-p "read the project notes"', tail: '' },
+      { flags: '--print="read the project notes"', tail: '' },
+      { flags: '--print', tail: '' },
+      { flags: '-cp "read the notes"', tail: '', kept: ['-c'] },
+      { flags: '-cp="read the notes"', tail: '', kept: ['-c'] },
+      { flags: '-cp', tail: '', kept: ['-c'] },
+      { flags: '', tail: '-- read the project notes --model=prompt-text' },
+    ])('drops startup text from the fork profile ($flags $tail)', async ({ flags, tail, kept }) => {
+      const options = ['--model', 'swe-2-flash-medium', '--permission-mode', 'plan', '/workspace'];
+      const expected = [...(kept ?? []), ...options];
+      const input = {
+        ...copyInput(),
+        profileOptionArgs: [
+          ...parseProfileOptions(flags),
+          ...options,
+          ...parseProfileOptions(tail),
+        ],
+      };
+      const fork = await adapter.prepareForkLaunch(input);
+      expect(fork).toMatchObject({
+        ...adapter.buildLaunchArgs({
+          ...input,
+          mode: 'restore',
+          providerSessionId: fork.providerSessionId,
+          profileOptionArgs: expected,
+        }),
+        transcriptPath: targetPath,
+      });
+      expect(fork.argv).toEqual([
+        '--resume',
+        fork.providerSessionId,
+        '--export',
+        targetPath,
+        '--respect-workspace-trust',
+        'false',
+        ...expected,
+      ]);
+      expect(fork.env).toEqual({
+        DEVCHAIN_SESSION_ID: targetRowId,
+        DEVIN_SESSION_STORE: 'files',
+        DEVIN_SESSIONS_DIR: devinSessionStorePath(home, projectId),
+      });
+      expect(adapter.forkReadsSavePointTranscript).toBe(true);
+    });
+
+    // A rollback targets a row that owns an export already; it must survive until commit.
+    it.each([
+      { label: 'no export, then discard', prior: false, end: 'discard', exported: 'none' },
+      { label: 'an export, then discard', prior: true, end: 'discard', exported: 'prior' },
+      { label: 'an export, then commit', prior: true, end: 'commit', exported: 'copy' },
+      { label: 'an export, then an error', prior: true, end: 'error', exported: 'prior' },
+    ] as const)('protects the target export: $label', async ({ prior, end, exported }) => {
+      const priorId = 'calm-heron';
+      const priorExport = '{ "session_id": "calm-heron", "steps": [] }\n';
+      if (prior) {
+        await mkdir(path.join(sessionsDir, priorId));
+        await writeFile(path.join(sessionsDir, priorId, 'log.jsonl'), log);
+        await writeFile(targetPath, priorExport);
+      }
+      const input = { ...copyInput(), profileOptionArgs: [] };
+      let copyId: string | null = null;
+      if (end === 'error') {
+        jest.spyOn(adapter, 'buildLaunchArgs').mockImplementationOnce(() => {
+          throw new Error('launch failed');
+        });
+        await expect(adapter.prepareForkLaunch(input)).rejects.toThrow('launch failed');
+      } else {
+        const fork = await adapter.prepareForkLaunch(input);
+        copyId = fork.providerSessionId;
+        await (end === 'commit' ? fork.commitBoundTranscript : fork.discardUnboundTranscript)?.();
+      }
+
+      const stores = [
+        providerSessionId,
+        ...(prior ? [priorId] : []),
+        ...(copyId && end === 'commit' ? [copyId] : []),
+      ];
+      expect((await readdir(sessionsDir)).sort()).toEqual(stores.sort());
+      if (prior) {
+        expect(await readdir(path.join(sessionsDir, priorId))).toEqual(['log.jsonl']);
+        expect(await readFile(path.join(sessionsDir, priorId, 'log.jsonl'), 'utf8')).toBe(log);
+      }
+      const exportName = path.basename(targetPath);
+      const leftovers = (await readdir(path.dirname(targetPath))).filter((name) =>
+        name.startsWith(`${exportName}.`),
+      );
+      expect(leftovers).toEqual([]);
+      if (exported === 'none') {
+        await expect(readFile(targetPath)).rejects.toMatchObject({ code: 'ENOENT' });
+      } else if (exported === 'prior') {
+        expect(await readFile(targetPath, 'utf8')).toBe(priorExport);
+      } else {
+        expect(JSON.parse(await readFile(targetPath, 'utf8'))).toMatchObject({
+          session_id: copyId,
+        });
+      }
+    });
+
+    it('removes the copied store and temporary export if export publication fails', async () => {
+      await mkdir(targetPath);
+      await expect(adapter.createSavePoint(copyInput())).rejects.toThrow();
+
+      expect(await readdir(sessionsDir)).toEqual([providerSessionId]);
+      expect(await readdir(path.dirname(targetPath))).toEqual(
+        expect.arrayContaining([path.basename(sourcePath), path.basename(targetPath), 'stores']),
+      );
+      expect(await readdir(path.dirname(targetPath))).toHaveLength(3);
+    });
+  });
+
   describe('HookCapability', () => {
-    it('builds the DEVCHAIN_* env incl. DEVCHAIN_HOOK_PROVIDER=devin', () => {
+    // The adapter owns the hook environment and exposes it before launch.
+    it.each([
+      { context: 'new or restore', sessionStartSource: undefined },
+      { context: 'fork', sessionStartSource: 'fork' },
+    ] as const)('builds the hook environment for $context', ({ sessionStartSource }) => {
       const env = adapter.buildHookEnv({
         apiUrl: 'http://127.0.0.1:3000',
         projectId: 'p',
         agentId: 'a',
         sessionId: 's',
         tmuxSessionName: 't',
+        sessionStartSource,
       });
       expect(env).toEqual({
         DEVCHAIN_API_URL: 'http://127.0.0.1:3000',
@@ -272,9 +462,11 @@ describe('DevinAdapter', () => {
         DEVCHAIN_SESSION_ID: 's',
         DEVCHAIN_TMUX_SESSION_NAME: 't',
         DEVCHAIN_HOOK_PROVIDER: 'devin',
+        ...(sessionStartSource && { [SESSION_START_SOURCE_ENV]: sessionStartSource }),
       });
       expect(adapter.hooksEnabled).toBe(true);
       expect(adapter.hooksProvideTranscriptPath).toBe(false);
+      expect(adapter.managedHookEnvKeys).toContain(SESSION_START_SOURCE_ENV);
     });
   });
 });

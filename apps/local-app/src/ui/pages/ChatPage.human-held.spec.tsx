@@ -59,6 +59,7 @@ jest.mock('@/ui/components/chat/InlineTerminalPanel', () => ({
   InlineTerminalPanel: () => null,
 }));
 jest.mock('@/ui/terminal-windows', () => ({
+  useLowerTerminalWindows: jest.fn(),
   useTerminalWindowManager: () => jest.fn(),
   useTerminalWindows: () => ({ windows: [], closeWindow: jest.fn(), focusedWindowId: null }),
   TerminalWindowsProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,

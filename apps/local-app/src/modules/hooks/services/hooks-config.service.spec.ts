@@ -290,7 +290,8 @@ describe('HooksConfigService', () => {
       {
         curlDelaySec = 0,
         fakeNsDate = false,
-      }: { curlDelaySec?: number; fakeNsDate?: boolean } = {},
+        sessionStartSource,
+      }: { curlDelaySec?: number; fakeNsDate?: boolean; sessionStartSource?: 'fork' } = {},
     ): Promise<{ payload: Record<string, unknown>; elapsedMs: number } | null> {
       if (!toolsAvailable) return null;
 
@@ -336,6 +337,7 @@ esac
           DEVCHAIN_PROJECT_ID: '11111111-1111-1111-1111-111111111111',
           DEVCHAIN_AGENT_ID: '22222222-2222-2222-2222-222222222222',
           DEVCHAIN_SESSION_ID: '33333333-3333-3333-3333-333333333333',
+          DEVCHAIN_SESSION_START_SOURCE: sessionStartSource,
         },
       });
 
@@ -353,6 +355,25 @@ esac
       }
       throw new Error('Relay POST did not capture its payload');
     }
+
+    it.each([
+      { source: 'resume', sessionStartSource: 'fork', expected: 'fork' },
+      { source: 'resume', sessionStartSource: undefined, expected: 'resume' },
+      { source: 'clear', sessionStartSource: 'fork', expected: 'clear' },
+      { source: 'compact', sessionStartSource: 'fork', expected: 'compact' },
+    ] as const)(
+      'relays SessionStart $source with override $sessionStartSource as $expected',
+      async ({ source, sessionStartSource, expected }) => {
+        await service.ensureHooksConfig(tempDir);
+
+        const result = await runRelayTimed(
+          { hook_event_name: 'SessionStart', session_id: 'claude-session-1', source },
+          { sessionStartSource },
+        );
+        if (result === null) return;
+        expect(result.payload).toMatchObject({ hookEventName: 'SessionStart', source: expected });
+      },
+    );
 
     it('extracts toolName, toolInput (as object), and toolUseId from a PreToolUse hook', async () => {
       await service.ensureHooksConfig(tempDir);
@@ -397,9 +418,11 @@ esac
       // source omitted for non-SessionStart variants (kept strict-clean)
       expect('source' in payload).toBe(false);
       expect(payload.projectId).toBe('11111111-1111-1111-1111-111111111111');
+      expect(Math.abs((payload.firedAtMs as number) - Date.now())).toBeLessThan(60_000);
+      expect(HookEventSchema.safeParse(payload).success).toBe(true);
     });
 
-    it('omits tool fields for a SessionStart hook (backward compatible)', async () => {
+    it('omits tool fields and stamps the hook time for a SessionStart hook', async () => {
       await service.ensureHooksConfig(tempDir);
 
       const payload = await runRelay({
@@ -415,7 +438,7 @@ esac
       expect('toolName' in payload).toBe(false);
       expect('toolInput' in payload).toBe(false);
       expect('toolUseId' in payload).toBe(false);
-      expect(payload).not.toHaveProperty('firedAtMs');
+      expect(Math.abs((payload.firedAtMs as number) - Date.now())).toBeLessThan(60_000);
       expect(HookEventSchema.safeParse(payload).success).toBe(true);
     });
 

@@ -84,7 +84,15 @@ export interface EnqueueOptions {
    * provider keeps treating the pasted text as untrusted.
    */
   outsideText?: boolean;
+  /**
+   * The agent's disable fence, read before the caller resolved a session. When it no longer
+   * matches, the agent was disabled since then and the message is refused, even after Enable.
+   */
+  admissionFence?: number;
 }
+
+/** Enqueue and recipient error for an agent that is disabled. */
+export const AGENT_DISABLED_DELIVERY_ERROR = 'AGENT_DISABLED';
 
 export interface EnqueueResult {
   status: 'queued' | 'delivered' | 'failed' | 'unconfirmed';

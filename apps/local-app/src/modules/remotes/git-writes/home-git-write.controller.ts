@@ -20,7 +20,11 @@ import { HomeGitWriteService, type HomeGitProject } from './home-git-write.servi
 const LOOPBACK_ONLY = 'Home Git writes require a loopback connection';
 const ProjectQuerySchema = z.object({ path: z.string().min(1).startsWith('/') });
 const AcquireSchema = z
-  .object({ projectId: HostProjectIdSchema, pid: z.number().int().positive() })
+  .object({
+    projectId: HostProjectIdSchema,
+    pid: z.number().int().positive(),
+    expectedRemoteId: HostProjectIdSchema.optional(),
+  })
   .strict();
 
 /** The supervisor protocol for home Git writes; see docs/git-coordinator.md. */
@@ -49,8 +53,9 @@ export class HomeGitWriteController {
     @Body() body: unknown,
   ): Promise<{ writeId: string }> {
     assertLoopback(request, LOOPBACK_ONLY);
-    const { projectId, pid } = AcquireSchema.parse(body);
+    const { projectId, pid, expectedRemoteId } = AcquireSchema.parse(body);
     // The supervisor holds this request open; a closed connection before the answer means it died.
-    return this.writes.acquire(projectId, pid, requestAbortSignal(request, reply));
+    const signal = requestAbortSignal(request, reply);
+    return this.writes.acquire(projectId, pid, signal, expectedRemoteId);
   }
 }

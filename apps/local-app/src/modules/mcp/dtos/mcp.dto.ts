@@ -1,4 +1,8 @@
 import { z } from 'zod';
+import {
+  INTEGRATION_PROVIDER_IDS,
+  type IntegrationProvider,
+} from '../../storage/models/domain.models';
 import { SkillSlugSchema, SkillsRequiredInputSchema } from '../../skills/dtos/skill.dto';
 import type { SyncResult } from '../../skills/services/skill-sync.types';
 
@@ -168,11 +172,59 @@ export const ListAssignedEpicsTasksParamsSchema = z
 
 export type ListAssignedEpicsTasksParams = z.infer<typeof ListAssignedEpicsTasksParamsSchema>;
 
+// A remote ClickUp/Jira task named by the agent: task URL, id or key.
+export const ExternalTaskRefInputSchema = z
+  .object({
+    ref: z.string().trim().min(1).max(2048),
+    provider: z.enum(INTEGRATION_PROVIDER_IDS).optional(),
+  })
+  .strict();
+
+export type ExternalTaskRefInput = z.infer<typeof ExternalTaskRefInputSchema>;
+
+// devchain_external_tasks_get
+export const ExternalTasksGetParamsSchema = z
+  .object({
+    sessionId: z.string().min(8),
+    ...ExternalTaskRefInputSchema.shape,
+  })
+  .strict();
+
+export type ExternalTasksGetParams = z.infer<typeof ExternalTasksGetParamsSchema>;
+
+interface ExternalTaskStatusSummary {
+  name: string;
+  category: string;
+}
+
+export interface ExternalTaskGetResponse {
+  provider: IntegrationProvider;
+  remoteKey: string;
+  remoteId: string;
+  title: string;
+  description: string | null;
+  descriptionTruncated: boolean;
+  status: ExternalTaskStatusSummary;
+  webUrl: string;
+  location: { scopeKey: string; workAreaId: string; workAreaName: string };
+  subtasks: Array<{
+    remoteId: string;
+    remoteKey: string;
+    title: string;
+    status: ExternalTaskStatusSummary;
+    webUrl: string | null;
+  }>;
+  subtasksTruncated: boolean;
+  /** Epic in this project already linked to the task, or null. */
+  linkedEpicId: string | null;
+}
+
 // devchain_create_epic
 export const CreateEpicParamsSchema = z
   .object({
     sessionId: z.string().min(8), // Session ID (full UUID or 8+ char prefix)
-    title: z.string().min(1),
+    // Optional only together with externalTask; defaults to the remote task title.
+    title: z.string().min(1).optional(),
     description: z.string().optional(),
     statusName: z.string().min(1).optional(),
     tags: z.array(z.string()).optional(),
@@ -181,11 +233,16 @@ export const CreateEpicParamsSchema = z
     skillsRequired: SkillsRequiredInputSchema.optional(),
     relation: EpicRelationInputSchema.optional(),
     relations: z.array(EpicRelationInputSchema).min(1).max(20).optional(),
+    externalTask: ExternalTaskRefInputSchema.optional(),
   })
   .strict()
   .refine((data) => !(data.relation && data.relations), {
     message: 'Cannot specify both relation and relations',
     path: ['relation'],
+  })
+  .refine((data) => data.title !== undefined || data.externalTask !== undefined, {
+    message: 'title is required unless externalTask is given',
+    path: ['title'],
   });
 
 export type CreateEpicParams = z.infer<typeof CreateEpicParamsSchema>;
@@ -312,6 +369,9 @@ export const UpdateEpicParamsSchema = z
     addTags: z.array(z.string()).optional(),
     removeTags: z.array(z.string()).optional(),
     skillsRequired: SkillsRequiredInputSchema.optional(),
+    externalTask: z
+      .union([ExternalTaskRefInputSchema, z.object({ clear: z.literal(true) }).strict()])
+      .optional(),
   })
   .strict()
   .refine((data) => !(data.parentId && data.clearParent), {
@@ -797,6 +857,33 @@ export interface GetEpicByIdResponse {
     projectRootPath: string;
   }>;
   worktreeInstruction?: string;
+  /** Remote tasks linked to the epic, from local rows; omitted when there are none. */
+  externalLinks?: EpicExternalLinkSummary[];
+}
+
+export interface EpicExternalLinkSummary {
+  linkId: string;
+  provider: IntegrationProvider;
+  remoteKey: string;
+  title: string | null;
+  webUrl: string | null;
+  /** True for a link that managed subtask sync owns; only ordinary links can be cleared. */
+  managed: boolean;
+}
+
+/** The link a create or update wrote or removed. */
+export interface EpicExternalTaskChangeSummary {
+  change: 'set' | 'clear';
+  linkId: string;
+  provider: IntegrationProvider;
+  remoteKey: string;
+  /** Managed subtask links released without a vendor call; remote subtasks stay. */
+  releasedManagedLinkIds: string[];
+  /**
+   * On a VM: home releases the unlinked task's managed subtasks only when it syncs this
+   * unlink, so until then they may still change remotely.
+   */
+  release?: 'pending_home_sync';
 }
 
 const WorktreeNameSchema = z
@@ -872,6 +959,7 @@ export interface UpdateEpicResponse {
   appended?: { context: string };
   /** Length of the final description; present when edits or an append ran. */
   descriptionLength?: number;
+  externalTask?: EpicExternalTaskChangeSummary;
 }
 
 export interface DeleteEpicResponse {
@@ -1306,6 +1394,12 @@ export interface DevchainTeamMemberProjection {
   profileName: string | null;
   providerConfigId: string | null;
   providerConfigName: string | null;
+  /** The provider of the member's option, for example `claude` or `codex`. */
+  providerName: string | null;
+  /** The model that a session of the member launches with; null means the provider default. */
+  model: string | null;
+  /** The effort that a session of the member launches with; null when none applies. */
+  effort: string | null;
 }
 
 export interface DevchainTeamResponse {

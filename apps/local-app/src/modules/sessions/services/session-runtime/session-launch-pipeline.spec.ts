@@ -34,6 +34,7 @@ jest.mock('@devchain/shared', () => ({
 }));
 
 jest.mock('../../../providers/adapters/capabilities', () => ({
+  ...jest.requireActual('../../../providers/adapters/capabilities'),
   isAutoCompactCapable: jest.fn(() => false),
   isHookCapable: jest.fn(() => false),
   isProjectProvisioningCapable: jest.fn(() => false),
@@ -62,7 +63,7 @@ import { ShellForegroundError } from '../../../terminal/services/terminal-io/del
 import { vaultInstructionBlock } from '../../../vault/vault-instructions';
 
 const SHIPPED_INITIAL_PROMPT = readFileSync(
-  join(__dirname, '../../../../../templates-src/teams-dev/prompts/010-initialize-agent.md'),
+  join(__dirname, '../../../../../templates-src/teams-dev/prompts/011-initialize-agent.md'),
   'utf8',
 );
 
@@ -100,6 +101,163 @@ describe('SessionLaunchPipeline', () => {
 
   afterEach(() => {
     jest.useRealTimers();
+  });
+
+  const savePointId = 'save-point';
+  const binding = { providerSessionId: 'child-native-id', transcriptPath: '/test/child.jsonl' };
+
+  function setupForkLaunch(forkReadsSavePointTranscript: boolean) {
+    const { pipeline, mocks } = createLaunchPipelineHarness();
+    const adapter = {
+      ...mocks.adapter,
+      createSavePoint: jest.fn(),
+      prepareForkLaunch: jest.fn(),
+      forkReadsSavePointTranscript,
+    };
+    mocks.savePoints.readableTranscript.mockResolvedValue('/test/validated-saved.jsonl');
+    mocks.savePoints.getForkSupport.mockResolvedValue({ adapter });
+    jest.spyOn(mocks.sessionRows, 'getSessionTreeRow').mockReturnValue({
+      id: savePointId,
+      agentId: launchDto.agentId,
+      agentName: null,
+      kind: 'save_point',
+      parentSessionId: null,
+      providerNameAtLaunch: 'test-provider',
+      providerSessionId: 'saved-native-id',
+      transcriptPath: '/test/saved.jsonl',
+      status: 'stopped',
+      startedAt: '2026-01-01T00:00:00Z',
+      endedAt: null,
+      lastActivityAt: null,
+      sizeBytes: null,
+      name: null,
+    });
+    const insert = jest
+      .spyOn(mocks.sessionRows, 'insertForkedSession')
+      .mockResolvedValue({ outcome: 'inserted' });
+    const bind = jest.spyOn(mocks.sessionRows, 'bindForkTranscript').mockResolvedValue(1);
+    mocks.storage.getInitialSessionPrompt.mockResolvedValue({ content: 'Project prompt' });
+    const { createPlan } = mocks.providerRuntimePreparation;
+    const commitBoundTranscript = jest.fn().mockResolvedValue(undefined);
+    const discardUnboundTranscript = jest.fn().mockResolvedValue(undefined);
+    createPlan.mockResolvedValue({
+      mode: 'fork',
+      fork: binding,
+      commitBoundTranscript,
+      discardUnboundTranscript,
+    });
+    const launchFork = async (admit: jest.Mock) => {
+      await pipeline.validateFork(launchDto, savePointId);
+      const provider = await pipeline.assertCurrentForkProvider(launchDto, savePointId);
+      return pipeline.launch(launchDto, { savePointId, admit, provider });
+    };
+    return {
+      mocks,
+      insert,
+      bind,
+      createPlan,
+      commitBoundTranscript,
+      discardUnboundTranscript,
+      launchFork,
+    };
+  }
+
+  it.each([
+    ['an ID-based fork keeps the stored path unchecked', false, '/test/saved.jsonl'],
+    ['a copying fork uses the validated path', true, '/test/validated-saved.jsonl'],
+  ])(
+    'binds the child before publication and skips the initial prompt handshake: %s',
+    async (_name, forkReadsSavePointTranscript, forkTranscriptPath) => {
+      const {
+        mocks,
+        insert,
+        bind,
+        createPlan,
+        commitBoundTranscript,
+        discardUnboundTranscript,
+        launchFork,
+      } = setupForkLaunch(forkReadsSavePointTranscript);
+      const admit = jest.fn();
+      const launched: SessionDetailDto = await launchFork(admit);
+
+      expect(insert).toHaveBeenCalledWith(
+        expect.objectContaining({ sessionId: launched.id, parentSessionId: savePointId, admit }),
+      );
+      expect(createPlan).toHaveBeenCalledWith(
+        expect.objectContaining({
+          mode: 'fork',
+          savePoint: expect.objectContaining({
+            providerSessionId: 'saved-native-id',
+            transcriptPath: forkTranscriptPath,
+          }),
+          sessionId: launched.id,
+        }),
+      );
+      expect(mocks.savePoints.readableTranscript).toHaveBeenCalledTimes(
+        forkReadsSavePointTranscript ? 2 : 0,
+      );
+      expect(bind).toHaveBeenCalledWith(
+        expect.objectContaining({ ...binding, sessionId: launched.id, admit }),
+      );
+      const { publish } = mocks.eventsService;
+      const startedIndex = publish.mock.calls.findIndex(([event]) => event === 'session.started');
+      expect(insert.mock.invocationCallOrder[0]).toBeLessThan(
+        createPlan.mock.invocationCallOrder[0],
+      );
+      expect(createPlan.mock.invocationCallOrder[0]).toBeLessThan(bind.mock.invocationCallOrder[0]);
+      expect(commitBoundTranscript).toHaveBeenCalledTimes(1);
+      expect(bind.mock.invocationCallOrder[0]).toBeLessThan(
+        commitBoundTranscript.mock.invocationCallOrder[0],
+      );
+      expect(discardUnboundTranscript).not.toHaveBeenCalled();
+      expect(bind.mock.invocationCallOrder[0]).toBeLessThan(
+        publish.mock.invocationCallOrder[startedIndex],
+      );
+      const { typeCommand, waitForOutput, deliver, deliverImmediate } = mocks.terminalIO;
+      const { afterCommand } = mocks.preparedProviderRuntime;
+      expect(typeCommand).toHaveBeenCalledWith(
+        { name: launched.tmuxSessionId },
+        mocks.preparedProviderRuntime.typedArgs,
+      );
+      expect(afterCommand).toHaveBeenCalledTimes(1);
+      expect(typeCommand.mock.invocationCallOrder[0]).toBeLessThan(
+        afterCommand.mock.invocationCallOrder[0],
+      );
+      expect(waitForOutput).not.toHaveBeenCalled();
+      expect(deliver).not.toHaveBeenCalled();
+      expect(deliverImmediate).not.toHaveBeenCalled();
+      expect(mocks.storage.getInitialSessionPrompt).not.toHaveBeenCalled();
+      expect(publish.mock.calls.map(([event]) => event)).toEqual([
+        'session.starting',
+        'session.started',
+        'session.transcript.discovered',
+        'session.presence.changed',
+      ]);
+      expect(mocks.eventsService.publish).toHaveBeenCalledWith(
+        'session.started',
+        expect.objectContaining({ sessionId: launched.id }),
+      );
+      expect(mocks.eventsService.publish).toHaveBeenCalledWith(
+        'session.transcript.discovered',
+        expect.objectContaining({
+          ...binding,
+          sessionId: launched.id,
+        }),
+      );
+    },
+  );
+
+  // Pipeline unit layer: the bind outcome decides which plan callback runs, and a mocked row store
+  // can fail the bind without a database.
+  it('discards and does not commit the fork copy when the bind fails', async () => {
+    const { bind, commitBoundTranscript, discardUnboundTranscript, launchFork } =
+      setupForkLaunch(false);
+    bind.mockResolvedValue(0);
+
+    await expect(launchFork(jest.fn())).rejects.toThrow();
+
+    expect(discardUnboundTranscript).toHaveBeenCalledTimes(1);
+    expect(commitBoundTranscript).not.toHaveBeenCalled();
   });
 
   // Pipeline coverage keeps artifact orchestration and Claude filesystem cleanup real to catch orphan leaks.
@@ -984,6 +1142,31 @@ describe('SessionLaunchPipeline', () => {
       // No MCP drift (preflight mcpStatus pass): the full ensureMcp must not run.
       expect(mocks.mcpEnsureService.ensureMcp).not.toHaveBeenCalled();
     });
+
+    // A restart calls this before it stops the running session; the launch after the stop
+    // provisions. A pre-check that provisioned would write the trust twice, and also for a refusal.
+    it.each([
+      { name: 'passes', overall: 'pass' as const, refused: false },
+      { name: 'fails', overall: 'fail' as const, refused: true },
+    ])(
+      'verifyAgentProvider provisions no project trust when preflight $name',
+      async ({ overall, refused }) => {
+        const { pipeline, mocks } = createLaunchPipelineHarness();
+        mockIsProjectProvisioningCapable.mockReturnValue(true);
+        mocks.preflightService.runChecks.mockResolvedValue({
+          overall,
+          checks: [{ name: 'binary', status: overall, message: 'checked' }],
+          providers: [],
+        });
+
+        const verified = pipeline.verifyAgentProvider(launchDto.agentId, launchDto.projectId);
+
+        if (refused) await expect(verified).rejects.toThrow('Preflight checks failed');
+        else await expect(verified).resolves.toBeUndefined();
+        expect(mocks.preflightService.runChecks).toHaveBeenCalledTimes(1);
+        expect(mocks.mcpEnsureService.ensureProjectProvisioning).not.toHaveBeenCalled();
+      },
+    );
 
     it('completes provisioning before runtime planning and before the provider command is typed', async () => {
       const { pipeline, mocks } = createLaunchPipelineHarness();

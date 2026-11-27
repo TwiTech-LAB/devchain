@@ -1,9 +1,11 @@
 import { delimiter } from 'node:path';
+import { ValidationError } from '../../../../common/errors/error-types';
 import { processIdsEnv } from '../../../../common/process-ids-env';
 import { sessionIdentityEnv, type SessionIdentity } from '../../../../common/session-identity-env';
 import type {
   ProviderAdapter,
   LaunchInitialPromptBehavior,
+  BuildLaunchArgsResult,
 } from '../../../providers/adapters/provider-adapter.interface';
 import {
   isAutoCompactCapable,
@@ -12,6 +14,7 @@ import {
   type HookEnvContext,
   type AutoCompactProviderState,
 } from '../../../providers/adapters/capabilities';
+import { HOOK_ENV_KEYS } from '../../../providers/adapters/capabilities/hook.capability';
 import {
   parseProfileOptions,
   ProfileOptionsError,
@@ -19,6 +22,7 @@ import {
   extractModelFromArgs,
 } from '../../../providers/utils/profile-options';
 import { buildSessionCommand, EnvBuilderError } from '../../../providers/utils/env-builder';
+import { rejectedLaunchEnv } from '../../../providers/utils/launch-env-rules';
 import {
   CONTEXT_WINDOW_ENV_KEY,
   parseContextWindowEnv,
@@ -28,7 +32,7 @@ import {
 export { ProfileOptionsError, EnvBuilderError };
 
 export interface LaunchConfigInput {
-  mode: 'new' | 'restore';
+  mode: 'new' | 'restore' | 'fork';
   providerSessionId?: string;
   /** The devchain `sessions.id`, for both modes; see {@link BuildLaunchArgsInput.sessionId}. */
   sessionId?: string;
@@ -70,7 +74,7 @@ export interface LaunchConfigInput {
    * default post-launch paste path and when no initial prompt is configured.
    */
   initialPrompt?: string;
-  /** `<bin> --version` output; set for adapters with `requiresCliVersion`. */
+  /** `<bin> --version` output; see `requiresCliVersion` and `optionalCliVersion`. */
   cliVersion?: string;
 }
 
@@ -88,7 +92,43 @@ export interface LaunchConfig {
   promptHandshake?: LaunchInitialPromptBehavior;
 }
 
-export function resolve(input: LaunchConfigInput): LaunchConfig {
+interface LaunchOptions {
+  profileOptionArgs: string[];
+  env: Record<string, string> | null;
+  pathPrependDirs: string[];
+  contextWindowOverride: ModelBoundContextWindow | null;
+}
+
+export function resolve(input: LaunchConfigInput, forkArgs?: BuildLaunchArgsResult): LaunchConfig {
+  const options = resolveLaunchOptions(input);
+  if (forkArgs) {
+    // Managed provider options are global CLI flags. Prepending them preserves the
+    // prepared fork command and avoids creating a second provider conversation.
+    return finalizeLaunchConfig(input, options, {
+      argv: [...(input.providerOptionArgs ?? []), ...forkArgs.argv],
+      env: forkArgs.env && { ...forkArgs.env, ...input.runtimeEnv },
+    });
+  }
+  if (input.mode === 'fork') {
+    throw new ValidationError('A fork launch requires the prepared fork arguments');
+  }
+  const launchArgs = input.adapter.buildLaunchArgs({
+    mode: input.mode,
+    providerSessionId: input.providerSessionId,
+    sessionId: input.sessionId,
+    projectId: input.projectId,
+    profileOptionArgs: options.profileOptionArgs,
+    initialPrompt: input.initialPrompt,
+    env: options.env,
+    ...((input.adapter.requiresCliVersion || input.cliVersion !== undefined) && {
+      cliVersion: input.cliVersion,
+      providerBinPath: input.providerBinPath,
+    }),
+  });
+  return finalizeLaunchConfig(input, options, launchArgs);
+}
+
+export function resolveLaunchOptions(input: LaunchConfigInput): LaunchOptions {
   let optionArgs = parseProfileOptions(input.profileOptions);
 
   if (input.modelOverride) {
@@ -109,28 +149,11 @@ export function resolve(input: LaunchConfigInput): LaunchConfig {
         }
       : null;
 
-  // Reject any provider-forbidden env var (e.g. Copilot's COPILOT_HOME, R4)
-  // BEFORE the process starts — these pass launch but break read-time invariants.
-  const rejectEnv = input.adapter.launchRejectEnv;
-  if (rejectEnv?.length) {
-    for (const key of rejectEnv) {
-      if (key in providerEnv || key in configEnv) {
-        throw new EnvBuilderError(
-          `${key} is not supported for the ${input.adapter.providerName} provider — ` +
-            `remove it from the provider/config environment. devchain reads this ` +
-            `provider's session store from a fixed home-relative path, so relocating ` +
-            `it would make launched sessions unreadable.`,
-        );
-      }
-    }
-  }
-
-  let env: Record<string, string> | null = null;
-
   const mergedBaseEnv = { ...providerEnv, ...configEnv };
-  if (Object.keys(mergedBaseEnv).length > 0) {
-    env = mergedBaseEnv;
-  }
+  const rejection = rejectedLaunchEnv(input.adapter, mergedBaseEnv);
+  if (rejection) throw new EnvBuilderError(rejection);
+
+  let env = Object.keys(mergedBaseEnv).length > 0 ? mergedBaseEnv : null;
 
   if (isHookCapable(input.adapter) && input.hookContext) {
     const hookEnv = input.adapter.buildHookEnv(input.hookContext);
@@ -190,22 +213,48 @@ export function resolve(input: LaunchConfigInput): LaunchConfig {
     env = { ...(env ?? {}), ...idsEnv };
   }
 
-  const finalOptionArgs = [...(input.providerOptionArgs ?? []), ...optionArgs];
-  const launchArgs = input.adapter.buildLaunchArgs({
-    mode: input.mode,
-    providerSessionId: input.providerSessionId,
-    sessionId: input.sessionId,
-    projectId: input.projectId,
-    profileOptionArgs: finalOptionArgs,
-    initialPrompt: input.initialPrompt,
+  return {
+    profileOptionArgs: [...(input.providerOptionArgs ?? []), ...optionArgs],
     env,
-    ...(input.adapter.requiresCliVersion && {
-      cliVersion: input.cliVersion,
-      providerBinPath: input.providerBinPath,
-    }),
-  });
+    pathPrependDirs,
+    contextWindowOverride,
+  };
+}
+
+export function buildForkHelperEnv(
+  adapter: ProviderAdapter,
+  configuredEnv: Readonly<Record<string, string>>,
+): Record<string, string> {
+  const overrides = { ...configuredEnv, ...adapter.launchEnv };
+  const rejection = rejectedLaunchEnv(adapter, overrides);
+  if (rejection) throw new ValidationError(rejection);
+
+  const env: Record<string, string> = {};
+  for (const [key, value] of Object.entries(process.env)) {
+    if (value !== undefined) env[key] = value;
+  }
+  Object.assign(env, overrides);
+  const managedHookEnvKeys = isHookCapable(adapter) ? adapter.managedHookEnvKeys : undefined;
+  for (const key of [
+    ...(adapter.launchUnsetEnv ?? []),
+    ...(managedHookEnvKeys ?? []),
+    CONTEXT_WINDOW_ENV_KEY,
+    ...HOOK_ENV_KEYS,
+  ]) {
+    delete env[key];
+  }
+  const inheritedRejection = rejectedLaunchEnv(adapter, env);
+  if (inheritedRejection) throw new ValidationError(inheritedRejection);
+  return env;
+}
+
+export function finalizeLaunchConfig(
+  input: LaunchConfigInput,
+  options: LaunchOptions,
+  launchArgs: BuildLaunchArgsResult,
+): LaunchConfig {
   const { argv } = launchArgs;
-  if (launchArgs.env !== undefined) env = launchArgs.env;
+  let env = launchArgs.env ?? options.env;
   if (input.sessionIdentity) {
     env = { ...(env ?? {}), ...sessionIdentityEnv(input.sessionIdentity) };
   }
@@ -213,16 +262,35 @@ export function resolve(input: LaunchConfigInput): LaunchConfig {
   // Providers declare any env vars that must be cleared from their launch
   // environment via `launchUnsetEnv` (e.g. Claude unsets $TMUX/$TMUX_PANE to
   // avoid its degraded multiplexer renderer). Kept provider-agnostic here.
-  const unsetEnv = [...new Set([...(input.adapter.launchUnsetEnv ?? []), CONTEXT_WINDOW_ENV_KEY])];
+  const unsetEnv = new Set([...(input.adapter.launchUnsetEnv ?? []), CONTEXT_WINDOW_ENV_KEY]);
 
-  const commandArgs = buildSessionCommand(env, input.providerBinPath, argv, unsetEnv);
+  // A managed hook key comes only from `buildHookEnv`; when it omits the key, the
+  // launch clears any inherited value.
+  if (isHookCapable(input.adapter) && input.adapter.managedHookEnvKeys?.length) {
+    const hookEnv: Record<string, string | undefined> = input.hookContext
+      ? input.adapter.buildHookEnv(input.hookContext)
+      : {};
+    const finalEnv = { ...env };
+    for (const key of input.adapter.managedHookEnvKeys) {
+      const value = hookEnv[key];
+      if (value === undefined) {
+        delete finalEnv[key];
+        unsetEnv.add(key);
+      } else {
+        finalEnv[key] = value;
+      }
+    }
+    env = Object.keys(finalEnv).length > 0 ? finalEnv : null;
+  }
+
+  const commandArgs = buildSessionCommand(env, input.providerBinPath, argv, [...unsetEnv]);
 
   return {
     argv,
     commandArgs,
     env,
-    pathPrependDirs,
-    contextWindowOverride,
+    pathPrependDirs: options.pathPrependDirs,
+    contextWindowOverride: options.contextWindowOverride,
     promptHandshake: input.adapter.launchInitialPromptBehavior,
   };
 }

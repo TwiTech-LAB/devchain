@@ -132,6 +132,30 @@ describe('PtyService.startStreaming', () => {
     );
   });
 
+  it('ignores data and exit from a stopped PTY after the session streams again', async () => {
+    const stopped = makePtyProcess();
+    const current = makePtyProcess();
+    ptyMod.spawn.mockReturnValueOnce(stopped).mockReturnValueOnce(current);
+    const { service, outputHandler, terminalActivity } = createService({
+      needsLfNormalize: false,
+    });
+
+    await service.startStreaming('sid-restart', 'tmux-restart');
+    service.stopStreaming('sid-restart');
+    await service.startStreaming('sid-restart', 'tmux-restart');
+    (terminalActivity.clearSession as jest.Mock).mockClear();
+
+    (stopped.onData.mock.calls[0][0] as (data: string) => void)('late');
+    (stopped.onExit.mock.calls[0][0] as (event: { exitCode: number }) => void)({ exitCode: 0 });
+
+    expect(outputHandler).not.toHaveBeenCalled();
+    expect(terminalActivity.clearSession).not.toHaveBeenCalled();
+    expect(service.isStreaming('sid-restart')).toBe(true);
+
+    (current.onData.mock.calls[0][0] as (data: string) => void)('fresh');
+    expect(outputHandler).toHaveBeenCalledWith('sid-restart', 'fresh');
+  });
+
   it('is idempotent — second call for same sessionId is a no-op', async () => {
     const { service } = createService();
 

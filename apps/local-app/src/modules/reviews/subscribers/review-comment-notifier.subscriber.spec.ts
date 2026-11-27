@@ -169,6 +169,23 @@ describe('ReviewCommentNotifierSubscriber', () => {
     expect(eventLogService.recordHandledOk).not.toHaveBeenCalled();
   });
 
+  it('skips a disabled target agent without an error log or a handler failure', async () => {
+    deliverMock.mockResolvedValue({
+      status: 'failed',
+      results: [{ agentId: 'agent-1', status: 'failed', error: 'AGENT_DISABLED' }],
+    });
+    const errorSpy = jest.spyOn(
+      (subscriber as unknown as { logger: { error: (...args: unknown[]) => void } }).logger,
+      'error',
+    );
+
+    await expect(subscriber.handleReviewCommentCreated(basePayload)).resolves.toBeUndefined();
+
+    expect(errorSpy).not.toHaveBeenCalled();
+    expect(eventLogService.recordHandledFail).not.toHaveBeenCalled();
+    errorSpy.mockRestore();
+  });
+
   it.each([{ targetAgentIds: [] }, { targetAgentIds: undefined }])(
     'skips target list $targetAgentIds',
     async ({ targetAgentIds }) => {

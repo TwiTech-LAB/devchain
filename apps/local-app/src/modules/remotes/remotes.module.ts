@@ -21,6 +21,10 @@ import { SkillsModule } from '../skills/skills.module';
 import { SettingsModule } from '../settings/settings.module';
 import { HostSkillSettingsController } from './host/host-skill-settings.controller';
 import { HostVaultController } from './host/host-vault.controller';
+import { HostIntegrationsController } from './host/host-integrations.controller';
+import { RemoteIntegrationPushService } from './services/remote-integration-push.service';
+import { RemoteLinkWriterService } from './services/remote-link-writer.service';
+import { IntegrationVmCacheModule } from '../external-integrations/vm-cache/integration-vm-cache.module';
 import { VaultVmCacheModule } from '../vault/vault-vm-cache.module';
 import { HostSkillSettingsService } from './host/host-skill-settings.service';
 import { GitModule } from '../git/git.module';
@@ -32,6 +36,8 @@ import { ManagedExclusionsRemovalStore } from './sync/managed-exclusions-removal
 import { FileSyncFailuresService } from './sync/file-sync-failures.service';
 import { FileSyncPatternPreviewService } from './sync/file-sync-pattern-preview.service';
 import { ProjectFileSyncController } from './sync/project-file-sync.controller';
+import { FileSyncStatusController } from './sync/file-sync-status.controller';
+import { FileSyncStatusService } from './sync/file-sync-status.service';
 import { DockerArchiveJournal } from '../core/controllers/docker-archive-journal';
 import { HostDockerRecoveryService } from './host/host-docker-recovery.service';
 import { HostDockerController } from './host/host-docker.controller';
@@ -67,6 +73,8 @@ import { REMOTE_MIRROR_SYNC_PORT } from './ports/remote-mirror-sync.port';
 import { REMOTE_VAULT_DELIVERY_PORT } from './ports/remote-vault-delivery.port';
 import { ProjectReplicaBuilder } from './replica/project-replica.builder';
 import { ProjectReplicaApplier } from './replica/project-replica.applier';
+import { ManagedProjectionLock } from '../external-integrations/subscribers/managed-projection-lock';
+import { ManagedProjectionLockModule } from '../external-integrations/subscribers/managed-projection-lock.module';
 import { HostController } from './host/host.controller';
 import { HostUpdateController } from './host/host-update.controller';
 import { HostHelperModule } from './host/host-helper.module';
@@ -143,6 +151,7 @@ import {
   DEFAULT_HOME_GIT_WRITE_TIMINGS,
 } from './git-writes/home-git-write.service';
 import { HomeGitWriteStore } from './git-writes/home-git-write.store';
+import { HomeGitRecoveryService } from './git-writes/home-git-recovery.service';
 import { HomeGitTransitions } from './git-writes/home-git-transitions';
 import {
   HomeGitHandoverService,
@@ -173,19 +182,23 @@ import {
     ProviderAdaptersModule,
     VmProvidersModule,
     VaultVmCacheModule,
+    IntegrationVmCacheModule,
     VaultModule,
+    ManagedProjectionLockModule,
   ],
   controllers: [
     HomeGitWriteController,
     ConnectChoicesController,
     SharedFoldersController,
     ProjectFileSyncController,
+    FileSyncStatusController,
     RemoteApiKeyController,
     HostProviderCliSettingsController,
     HostProviderUsageSettingsController,
     HostProviderSettingsController,
     HostSkillSettingsController,
     HostVaultController,
+    HostIntegrationsController,
     RemotesController,
     RemoteProbeController,
     RemoteOperationsController,
@@ -211,6 +224,7 @@ import {
     },
     HomeGitWriteService,
     HomeGitWriteStore,
+    HomeGitRecoveryService,
     { provide: HomeGitTransitions, useClass: HomeGitHandoverService },
     { provide: HOME_GIT_HANDOVER_TIMINGS, useValue: DEFAULT_HOME_GIT_HANDOVER_TIMINGS },
     { provide: HOME_GIT_WRITE_TIMINGS, useValue: DEFAULT_HOME_GIT_WRITE_TIMINGS },
@@ -228,6 +242,8 @@ import {
     HostProviderSettingsService,
     RemoteProviderSettingsService,
     RemoteVaultPushService,
+    RemoteIntegrationPushService,
+    RemoteLinkWriterService,
     HostSkillSettingsService,
     RemotesService,
     RemoteProbeService,
@@ -258,6 +274,7 @@ import {
     ProjectSessionsStopper,
     RemoteLiveSyncService,
     RemoteFileSyncService,
+    FileSyncStatusService,
     GitOwnerStore,
     FileSyncSuggestionsService,
     ManagedExclusionsCheckService,
@@ -308,17 +325,20 @@ import {
       useFactory: (
         storage: ConstructorParameters<typeof ProjectReplicaApplier>[0],
         events: EventsService,
-      ) => new ProjectReplicaApplier(storage, events),
-      inject: [STORAGE_SERVICE, EventsService],
+        projectionLock: ManagedProjectionLock,
+      ) => new ProjectReplicaApplier(storage, events, projectionLock),
+      inject: [STORAGE_SERVICE, EventsService, ManagedProjectionLock],
     },
   ],
   exports: [
+    HomeGitRecoveryService,
     DockerArchiveJournal,
     DockerPlanService,
     REMOTE_HEALTH_PORT,
     REMOTE_MIRROR_SYNC_PORT,
     REMOTE_VAULT_DELIVERY_PORT,
     RemoteHostClient,
+    RemoteLinkWriterService,
     ProjectReplicaBuilder,
     ProjectReplicaApplier,
   ],

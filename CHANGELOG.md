@@ -2,6 +2,16 @@
 
 Release notes for each published `devchain-cli` version, newest first. The `changelog` field in `package.json` keeps the newest 10 versions for the CLI update notice.
 
+## 0.29.0 — 2026-11-27
+
+- https://devchain.cc/releases/0.29.0/
+- Sessions: save points, roll back to a save point, and fork a session
+- Sessions: agents of one role share one session history
+- Dev Template: a Code Review team with Peer Reviewers
+- Projects: UI improvements, a more compact Review setup page, and import into a project that runs on a VM
+- Chat: the transcript reads in one scroll
+- Mobile app 1.15.0: change an agent's model, disable and enable agents, and copy messages
+
 ## 0.28.0 — 2026-11-21
 
 - Projects: one Review page to create, import or upgrade a project, and an upgrade keeps your current agents and teams

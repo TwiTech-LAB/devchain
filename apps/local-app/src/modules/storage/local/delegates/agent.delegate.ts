@@ -1,5 +1,7 @@
 import type {
+  AgentReadOptions,
   AgentStorage,
+  AgentUpdateResult,
   DeleteAgentOptions,
   ListOptions,
   ListResult,
@@ -12,6 +14,7 @@ import type {
   UpdateAgent,
 } from '../../models/domain.models';
 import {
+  AgentDisabledError,
   ConflictError,
   NotFoundError,
   ValidationError,
@@ -19,6 +22,7 @@ import {
 import { eq as eqSync } from 'drizzle-orm';
 import { createLogger } from '../../../../common/logging/logger';
 import { agents as agentsTable } from '../../db/schema';
+import { resolveFamilyAgentIds } from '../../sessions/session-row.store';
 import { BaseStorageDelegate, type StorageDelegateContext } from './base-storage.delegate';
 
 const logger = createLogger('AgentStorageDelegate');
@@ -50,6 +54,7 @@ export class AgentStorageDelegate extends BaseStorageDelegate implements AgentSt
       providerConfigId: data.providerConfigId,
       modelOverride: data.modelOverride ?? null,
       effortOverride: data.effortOverride ?? null,
+      disabled: false,
       createdAt: now,
       updatedAt: now,
     };
@@ -104,16 +109,33 @@ export class AgentStorageDelegate extends BaseStorageDelegate implements AgentSt
     return this.mapAgentRow(row);
   }
 
-  async listAgents(projectId: string, options: ListOptions = {}): Promise<ListResult<Agent>> {
+  isAgentDisabled(id: string): boolean {
+    const row = this.db
+      .select({ disabled: agentsTable.disabled })
+      .from(agentsTable)
+      .where(eqSync(agentsTable.id, id))
+      .get();
+    return row?.disabled ?? false;
+  }
+
+  async listAgents(
+    projectId: string,
+    options: ListOptions & AgentReadOptions = {},
+  ): Promise<ListResult<Agent>> {
     const { agents } = await import('../../db/schema');
-    const { eq } = await import('drizzle-orm');
+    const { and, eq } = await import('drizzle-orm');
     const limit = options.limit || 100;
     const offset = options.offset || 0;
 
     const items = await this.db
       .select()
       .from(agents)
-      .where(eq(agents.projectId, projectId))
+      .where(
+        and(
+          eq(agents.projectId, projectId),
+          options.excludeDisabled ? eq(agents.disabled, false) : undefined,
+        ),
+      )
       .limit(limit)
       .offset(offset);
 
@@ -145,6 +167,7 @@ export class AgentStorageDelegate extends BaseStorageDelegate implements AgentSt
   async getAgentByName(
     projectId: string,
     name: string,
+    options: AgentReadOptions = {},
   ): Promise<Agent & { profile?: AgentProfile }> {
     const { agents } = await import('../../db/schema');
     const { and, eq, sql } = await import('drizzle-orm');
@@ -154,7 +177,13 @@ export class AgentStorageDelegate extends BaseStorageDelegate implements AgentSt
     const result = await this.db
       .select()
       .from(agents)
-      .where(and(eq(agents.projectId, projectId), sql`lower(${agents.name}) = ${normalized}`))
+      .where(
+        and(
+          eq(agents.projectId, projectId),
+          sql`lower(${agents.name}) = ${normalized}`,
+          options.excludeDisabled ? eq(agents.disabled, false) : undefined,
+        ),
+      )
       .limit(1);
 
     const record = result[0];
@@ -169,6 +198,10 @@ export class AgentStorageDelegate extends BaseStorageDelegate implements AgentSt
   }
 
   async updateAgent(id: string, data: UpdateAgent): Promise<Agent> {
+    return (await this.updateAgentReportingWrites(id, data)).agent;
+  }
+
+  async updateAgentReportingWrites(id: string, data: UpdateAgent): Promise<AgentUpdateResult> {
     const { agents } = await import('../../db/schema');
     const { and, eq } = await import('drizzle-orm');
     const now = new Date().toISOString();
@@ -212,13 +245,19 @@ export class AgentStorageDelegate extends BaseStorageDelegate implements AgentSt
         if (!target) {
           throw new NotFoundError('Agent', id);
         }
+        if (target.disabled) {
+          throw new AgentDisabledError(target);
+        }
 
         const projectId = target.projectId;
-        this.db
+        const displacedOwnerIds = this.db
           .update(agents)
           .set({ isProjectOwner: false, updatedAt: now })
           .where(and(eq(agents.projectId, projectId), eq(agents.isProjectOwner, true)))
-          .run();
+          .returning({ id: agents.id })
+          .all()
+          .map((row) => row.id)
+          .filter((ownerId) => ownerId !== id);
 
         const result = this.db
           .update(agents)
@@ -233,7 +272,7 @@ export class AgentStorageDelegate extends BaseStorageDelegate implements AgentSt
         if (!updated) {
           throw new NotFoundError('Agent', id);
         }
-        return this.mapAgentRow(updated);
+        return { agent: this.mapAgentRow(updated), writtenAgentIds: [id, ...displacedOwnerIds] };
       });
     }
 
@@ -244,25 +283,30 @@ export class AgentStorageDelegate extends BaseStorageDelegate implements AgentSt
       .set({ ...updatePayload, updatedAt: now })
       .where(eq(agents.id, id));
 
-    return this.dependencies.getAgent(id);
+    return { agent: await this.dependencies.getAgent(id), writtenAgentIds: [id] };
   }
 
   async deleteAgent(id: string, options: DeleteAgentOptions = {}): Promise<void> {
     const { agents, sessions, teamMembers, teams } = await import('../../db/schema');
-    const { eq, inArray, sql } = await import('drizzle-orm');
+    const { and, eq, inArray, sql } = await import('drizzle-orm');
 
     this.txRunner.runImmediate(() => {
-      if (options.protectProjectOwner || options.protectTeamLead) {
+      if (options.protectProjectOwner || options.protectTeamLead || options.protectDisabled) {
         const target = this.db
           .select({
             projectId: agents.projectId,
             isProjectOwner: agents.isProjectOwner,
             name: agents.name,
+            disabled: agents.disabled,
           })
           .from(agents)
           .where(eq(agents.id, id))
           .limit(1)
           .get();
+
+        if (options.protectDisabled && target?.disabled) {
+          throw new AgentDisabledError({ id, name: target.name });
+        }
 
         if (options.protectProjectOwner && target?.isProjectOwner) {
           throw new ConflictError(`Cannot delete "${target.name}" — they are the Project Owner`, {
@@ -337,7 +381,18 @@ export class AgentStorageDelegate extends BaseStorageDelegate implements AgentSt
         (s) => s.status === 'stopped' || s.status === 'failed',
       );
 
-      if (completedSessions.length > 0) {
+      const heir = completedSessions.length > 0 ? this.findSessionHeir(id) : null;
+      if (heir) {
+        logger.info(
+          { agentId: id, heirAgentId: heir, count: completedSessions.length },
+          'Moving completed sessions of the agent to a family member',
+        );
+        this.db
+          .update(sessions)
+          .set({ agentId: heir, updatedAt: new Date().toISOString() })
+          .where(and(eq(sessions.agentId, id), inArray(sessions.status, ['stopped', 'failed'])))
+          .run();
+      } else if (completedSessions.length > 0) {
         logger.info(
           { agentId: id, count: completedSessions.length },
           'Auto-deleting completed sessions for agent',
@@ -352,11 +407,106 @@ export class AgentStorageDelegate extends BaseStorageDelegate implements AgentSt
       logger.info(
         {
           agentId: id,
-          deletedSessions: completedSessions.length,
+          deletedSessions: heir ? 0 : completedSessions.length,
+          movedSessions: heir ? completedSessions.length : 0,
           disbandedTeams: uniqueTeamIdsToDisband.length,
         },
         'Deleted agent',
       );
+    });
+  }
+
+  /** The family member that keeps a deleted agent's sessions: enabled first, then name, then id. */
+  private findSessionHeir(agentId: string): string | null {
+    const members = resolveFamilyAgentIds(this.rawClient, agentId).filter((id) => id !== agentId);
+    if (members.length === 0) return null;
+    const heir = this.rawClient
+      .prepare<{ members: string }, { id: string }>(
+        `SELECT id FROM agents WHERE id IN (SELECT value FROM json_each(@members))
+         ORDER BY disabled, LOWER(name), id LIMIT 1`,
+      )
+      .get({ members: JSON.stringify(members) });
+    return heir?.id ?? null;
+  }
+
+  async disableAgent(id: string): Promise<{ agent: Agent; changed: boolean }> {
+    const { agents, teamMembers, teams } = await import('../../db/schema');
+    const { eq } = await import('drizzle-orm');
+
+    return this.txRunner.runImmediateQueued(() => {
+      const target = this.db.select().from(agents).where(eq(agents.id, id)).limit(1).get();
+      if (!target) {
+        throw new NotFoundError('Agent', id);
+      }
+      // Eligibility guards the enabled-to-disabled step only; a repeat keeps the flag as is.
+      if (target.disabled) {
+        return { agent: this.mapAgentRow(target), changed: false };
+      }
+
+      if (target.isProjectOwner) {
+        throw new ConflictError(`Cannot disable "${target.name}" — they are the Project Owner`, {
+          code: 'AGENT_IS_PROJECT_OWNER',
+          agentId: id,
+          projectId: target.projectId,
+        });
+      }
+
+      const ledTeam = this.db
+        .select({ id: teams.id, name: teams.name })
+        .from(teams)
+        .where(eq(teams.teamLeadAgentId, id))
+        .limit(1)
+        .get();
+      if (ledTeam) {
+        throw new ConflictError(
+          `Cannot disable "${target.name}" — they are the lead of team "${ledTeam.name}"`,
+          {
+            code: 'AGENT_IS_TEAM_LEAD',
+            agentId: id,
+            projectId: target.projectId,
+            teamId: ledTeam.id,
+            teamName: ledTeam.name,
+          },
+        );
+      }
+
+      const membership = this.db
+        .select({ teamId: teamMembers.teamId })
+        .from(teamMembers)
+        .where(eq(teamMembers.agentId, id))
+        .limit(1)
+        .get();
+      if (!membership) {
+        throw new ConflictError(`Cannot disable "${target.name}" — they are not in a team`, {
+          code: 'AGENT_NOT_IN_TEAM',
+          agentId: id,
+          projectId: target.projectId,
+        });
+      }
+
+      const updatedAt = new Date().toISOString();
+      this.db.update(agents).set({ disabled: true, updatedAt }).where(eq(agents.id, id)).run();
+      logger.info({ agentId: id, projectId: target.projectId }, 'Disabled agent');
+      return { agent: this.mapAgentRow({ ...target, disabled: true, updatedAt }), changed: true };
+    });
+  }
+
+  async enableAgent(id: string): Promise<Agent> {
+    const { agents } = await import('../../db/schema');
+    const { eq } = await import('drizzle-orm');
+
+    return this.txRunner.runImmediateQueued(() => {
+      const target = this.db.select().from(agents).where(eq(agents.id, id)).limit(1).get();
+      if (!target) {
+        throw new NotFoundError('Agent', id);
+      }
+      if (!target.disabled) {
+        return this.mapAgentRow(target);
+      }
+      const updatedAt = new Date().toISOString();
+      this.db.update(agents).set({ disabled: false, updatedAt }).where(eq(agents.id, id)).run();
+      logger.info({ agentId: id, projectId: target.projectId }, 'Enabled agent');
+      return this.mapAgentRow({ ...target, disabled: false, updatedAt });
     });
   }
 
@@ -370,6 +520,7 @@ export class AgentStorageDelegate extends BaseStorageDelegate implements AgentSt
     effortOverride?: string | null;
     name: string;
     description: string | null;
+    disabled: boolean;
     createdAt: string;
     updatedAt: string;
   }): Agent {
@@ -383,6 +534,7 @@ export class AgentStorageDelegate extends BaseStorageDelegate implements AgentSt
       effortOverride: row.effortOverride ?? null,
       name: row.name,
       description: row.description,
+      disabled: row.disabled,
       createdAt: row.createdAt,
       updatedAt: row.updatedAt,
     };

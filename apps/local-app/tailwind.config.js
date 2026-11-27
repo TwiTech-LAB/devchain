@@ -98,6 +98,12 @@ module.exports = {
           from: { height: 'var(--radix-accordion-content-height)' },
           to: { height: 0 },
         },
+        // One slow blink for activity indicators; the phone uses the same 4 s
+        // (ACTIVITY_PULSE_MS in the mobile app's agent-status-dot.ts).
+        'activity-pulse': {
+          '0%, 100%': { opacity: '1' },
+          '50%': { opacity: '0.35' },
+        },
         'busy-halo': {
           '0%, 100%': {
             borderColor: 'hsl(var(--primary) / 0.45)',
@@ -112,6 +118,7 @@ module.exports = {
       animation: {
         'accordion-down': 'accordion-down 0.2s ease-out',
         'accordion-up': 'accordion-up 0.2s ease-out',
+        'activity-pulse': 'activity-pulse 4s ease-in-out infinite',
         'busy-halo': 'busy-halo 5s ease-in-out infinite',
       },
     },

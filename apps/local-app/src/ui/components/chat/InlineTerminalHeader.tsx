@@ -24,7 +24,7 @@ import {
   type ChipVisibleItems,
   type InlineSessionSummaryChipProps,
 } from '@/ui/components/session-reader/InlineSessionSummaryChip';
-import { renameSession, type ActiveSession } from '@/ui/lib/sessions';
+import { agentSessionTreeKeyPrefix, renameSession, type ActiveSession } from '@/ui/lib/sessions';
 import { formatEpicTimeMinutes, MIN_VISIBLE_AGENT_TIME_BUFFER_MINUTES } from '@/ui/lib/epic-time';
 import { chatQueryKeys } from '@/ui/hooks/useChatQueries';
 import { useToast } from '@/ui/hooks/use-toast';
@@ -388,6 +388,8 @@ function SessionNameChip({
 
     try {
       await renameSession(sessionId, projectId, newName, apiFetch);
+      // The session switcher reads the name from the tree cache, not from active sessions.
+      void queryClient.invalidateQueries({ queryKey: agentSessionTreeKeyPrefix });
     } catch {
       queryClient.setQueryData(cacheKey, previous);
       toast({ variant: 'destructive', description: 'Failed to rename session.' });

@@ -1,11 +1,19 @@
 import { RemoteApiKeyService } from '../auth/remote-api-key.service';
 import { z } from 'zod';
-import { HostVaultStatusSchema, ProviderCliRuntimeReportSchema } from '@devchain/shared';
+import {
+  HostIntegrationsStatusSchema,
+  HostVaultStatusSchema,
+  ProviderCliRuntimeReportSchema,
+} from '@devchain/shared';
 import { ProviderCliVersionsService } from '../../providers/services/provider-cli-versions.service';
 import { RemoteProviderCliSettingsService } from './remote-provider-cli-settings.service';
 import { RemoteProviderUsageSettingsService } from './remote-provider-usage-settings.service';
 import { RemoteProviderSettingsService } from './remote-provider-settings.service';
 import { RemoteVaultPushService } from './remote-vault-push.service';
+import {
+  RemoteIntegrationPushService,
+  type VmIntegrationsReport,
+} from './remote-integration-push.service';
 import {
   RemoteSkillSettingsService,
   type SkillSettingsPollCycle,
@@ -50,6 +58,13 @@ const STATS_HISTORY_LIMIT = 60;
 
 const API_KEY_REJECTED_ERROR = 'API key rejected';
 
+/** A missing `integrations` field and one this build cannot read are different answers. */
+function integrationsReport(value: unknown): VmIntegrationsReport {
+  if (value === undefined) return { kind: 'absent' };
+  const parsed = HostIntegrationsStatusSchema.safeParse(value);
+  return parsed.success ? { kind: 'status', status: parsed.data } : { kind: 'unreadable' };
+}
+
 class HostApiKeyRejectedError extends Error {}
 
 const OFFLINE_DEFAULT_STATE: RemoteHealthState = {
@@ -77,6 +92,7 @@ interface RuntimeResponse {
   uidConflict?: unknown;
   providerEnvOverrides?: unknown;
   vault?: unknown;
+  integrations?: unknown;
 }
 
 @Injectable()
@@ -108,10 +124,12 @@ export class RemoteHealthService implements RemoteHealthPort, OnModuleInit, OnMo
     private readonly sharedVm: RemoteSharedVmService,
     private readonly notices: HomeSharedVmNoticesService,
     private readonly vaultPush: RemoteVaultPushService,
+    private readonly integrationPush: RemoteIntegrationPushService,
   ) {}
 
   onModuleInit(): void {
     this.vaultPush.useHealth((remoteId) => this.getState(remoteId));
+    this.integrationPush.useHealth((remoteId) => this.getState(remoteId));
     this.unregisterCliCheck = this.cliVersions.registerRemoteCheck(async () => {
       const { items } = await this.storage.listRemotes({ limit: 500 });
       await Promise.all(
@@ -259,6 +277,9 @@ export class RemoteHealthService implements RemoteHealthPort, OnModuleInit, OnMo
       const versionMatches = version !== null && version === getAppVersion();
       // A null stats response means the host refused this PC's API key.
       const apiKeyRejected = stats === null;
+      const integrations = integrationsReport(runtime.integrations);
+      // Before the commit: a link write that sees the VM online also sees what it reported.
+      this.integrationPush.noteReport(remoteId, integrations);
       this.commit(remoteId, {
         online: true,
         apiKeyRejected,
@@ -310,6 +331,11 @@ export class RemoteHealthService implements RemoteHealthPort, OnModuleInit, OnMo
           HostVaultStatusSchema.safeParse(runtime.vault).data,
         );
       }
+      // Revocations must reach a VM cache also while the versions differ.
+      void this.integrationPush.pushIfChanged(
+        remoteId,
+        integrations.kind === 'status' ? integrations.status : undefined,
+      );
     } catch (error) {
       if (this.pollVersions.get(remoteId) !== pollVersion) return;
       const failures = (this.consecutiveFailures.get(remoteId) ?? 0) + 1;

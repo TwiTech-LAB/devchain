@@ -7,7 +7,12 @@
  */
 
 import * as fs from 'node:fs/promises';
-import type { UnifiedSession, UnifiedMetrics, UnifiedMessage } from '../dtos/unified-session.types';
+import type {
+  UnifiedSession,
+  UnifiedMetrics,
+  UnifiedMessage,
+  UnifiedToolResult,
+} from '../dtos/unified-session.types';
 import type { TranscriptTurnState } from '../../events/signals/session-turn-signals';
 
 /**
@@ -363,6 +368,18 @@ export interface SessionReaderAdapter {
    * @param sourceRef - Resolved source reference
    */
   getFreshnessToken?(sourceRef: SessionSourceRef): Promise<unknown>;
+
+  /**
+   * Read one tool result from the source without the parse-time output cap.
+   *
+   * Required for adapters whose parse caps tool output (`isTruncated` with the original
+   * `fullLength`); the parsed session keeps the capped value. Returns null when the source
+   * no longer holds the result.
+   */
+  readFullToolResult?(
+    sourceRef: SessionSourceRef,
+    toolCallId: string,
+  ): Promise<UnifiedToolResult | null>;
 
   /**
    * Extract candidate-discovery metadata from raw transcript content (file head).

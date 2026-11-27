@@ -1,15 +1,20 @@
 import { ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useSelectedProject } from '../hooks/useProjectSelection';
 import { useProjectActivityReporter } from '../hooks/useProjectActivityReporter';
 import { preloadReviewsPage } from '../pages/ReviewsPage.lazy';
 import { VaultRequestModal } from '../pages/vault/VaultRequestModal';
 import { Button } from './ui/button';
 import { WorkspaceSwitcher } from './WorkspaceSwitcher';
+import { GithubStarPrompt } from './GithubStarPrompt';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select';
 import { Breadcrumbs, ToastHost, EpicSearchInput, type BreadcrumbItem } from './shared';
-import { TerminalDock, OPEN_TERMINAL_DOCK_EVENT } from './terminal-dock';
+import {
+  TerminalDock,
+  OPEN_TERMINAL_DOCK_EVENT,
+  TERMINAL_SESSIONS_QUERY_KEY,
+} from './terminal-dock';
 import {
   TerminalWindowsProvider,
   TerminalWindowsLayer,
@@ -35,6 +40,7 @@ import { useEpicTimeScopeSync } from '../hooks/useEpicTimeScopeSync';
 import { useUnsignedDeviceNotice } from '../hooks/useUnsignedDeviceNotice';
 import { CloudStatusIndicator } from './cloud/CloudStatusIndicator';
 import { RemoteMetricsStrip } from './remote-metrics/RemoteMetricsStrip';
+import { RemoteSyncIndicator } from './remote-metrics/RemoteSyncIndicator';
 import { useOptionalBackend } from '../lib/backend-context';
 import { cn } from '../lib/utils';
 import { TONE_CLASSES } from '../lib/status-tone';
@@ -42,6 +48,7 @@ import { fetchPreflightChecks } from '../lib/preflight';
 import { HOME_BACKEND, apiFetch } from '../lib/api-transport';
 import { healthQueries } from '../lib/health';
 import { fetchActiveSessions, type ActiveSession } from '../lib/sessions';
+import { isRollbackHeld, onRollbackHoldReleased } from '../lib/rollback-holds';
 import type { WsEnvelope } from '../lib/socket';
 import {
   Menu,
@@ -286,16 +293,10 @@ function LayoutShell({
   runtimeInfo: import('@/ui/lib/runtime').RuntimeInfo | undefined;
 }) {
   const fetchFn = useFetchFactory();
+  const queryClient = useQueryClient();
   const location = useLocation();
   const navigate = useNavigate();
   const activeRemote = useOptionalBackend()?.activeRemote ?? null;
-  // A remote project's dock shows the VM metrics and a compact Cloud icon instead of the email.
-  const remoteDockSlot = activeRemote && (
-    <>
-      <RemoteMetricsStrip remoteId={activeRemote.id} remoteName={activeRemote.name} />
-      {cloudUiEnabled && <CloudStatusIndicator compact />}
-    </>
-  );
   const {
     workspaces = [],
     selectedWorkspaceId,
@@ -308,6 +309,17 @@ function LayoutShell({
     selectedProject,
     setSelectedProjectId,
   } = useSelectedProject();
+  // A remote project's dock shows the VM metrics, the file sync status and a compact Cloud
+  // icon instead of the email.
+  const remoteDockSlot = activeRemote && (
+    <>
+      <RemoteMetricsStrip remoteId={activeRemote.id} remoteName={activeRemote.name} />
+      {selectedProjectId && (
+        <RemoteSyncIndicator projectId={selectedProjectId} cloudUiEnabled={cloudUiEnabled} />
+      )}
+      {cloudUiEnabled && <CloudStatusIndicator compact />}
+    </>
+  );
   useEpicRelationsSync(selectedWorkspaceId);
   useEpicTimeScopeSync(selectedWorkspaceId);
   useRuntimeSync();
@@ -881,17 +893,64 @@ function LayoutShell({
     setSelectedProjectId(projectId);
   };
 
+  /** Sessions whose rollback hold ended and whose fresh list is not applied yet, with counts. */
+  const reconcilingSessionIdsRef = useRef(new Map<string, number>());
   const handleDockSessionsChange = useCallback(
     (sessionsList: ActiveSession[]) => {
       setDockSessions(sessionsList);
       const sessionIds = new Set(sessionsList.map((session) => session.id));
       terminalWindows.forEach((window) => {
-        if (window.sessionId && !sessionIds.has(window.sessionId)) {
+        if (
+          window.sessionId &&
+          !sessionIds.has(window.sessionId) &&
+          !isRollbackHeld(window.sessionId) &&
+          !reconcilingSessionIdsRef.current.has(window.sessionId)
+        ) {
           closeWindow(window.id);
         }
       });
     },
     [closeWindow, terminalWindows],
+  );
+
+  // A rollback hold hides only the lists that arrived during it, so its end gets a fresh list.
+  // Until that list is applied, a cached list from the stopped state must not close the window.
+  // `fetchQuery` also runs while the dock query is disabled (collapsed dock).
+  const handleDockSessionsChangeRef = useRef(handleDockSessionsChange);
+  handleDockSessionsChangeRef.current = handleDockSessionsChange;
+  const dockScopeRef = useRef({ projectId: selectedProjectId, fetchFn });
+  dockScopeRef.current = { projectId: selectedProjectId, fetchFn };
+  useEffect(
+    () =>
+      onRollbackHoldReleased((sessionId) => {
+        const reconciling = reconcilingSessionIdsRef.current;
+        reconciling.set(sessionId, (reconciling.get(sessionId) ?? 0) + 1);
+        const endReconcile = () => {
+          const count = (reconciling.get(sessionId) ?? 1) - 1;
+          if (count > 0) reconciling.set(sessionId, count);
+          else reconciling.delete(sessionId);
+        };
+        const queryKey = [...TERMINAL_SESSIONS_QUERY_KEY, selectedProjectId ?? 'all'] as const;
+        void (async () => {
+          let sessions: ActiveSession[];
+          try {
+            // A poll sent while the row was stopped must not land after this list.
+            await queryClient.cancelQueries({ queryKey });
+            sessions = await queryClient.fetchQuery({
+              queryKey,
+              queryFn: () => fetchActiveSessions(selectedProjectId ?? undefined, fetchFn),
+              staleTime: 0,
+            });
+          } finally {
+            endReconcile();
+          }
+          // A list of the project or backend that the user left must not close current windows.
+          const scope = dockScopeRef.current;
+          if (scope.projectId !== selectedProjectId || scope.fetchFn !== fetchFn) return;
+          handleDockSessionsChangeRef.current(sessions);
+        })().catch(() => undefined);
+      }),
+    [fetchFn, queryClient, selectedProjectId],
   );
 
   const handleDockSessionTerminated = useCallback(
@@ -960,6 +1019,7 @@ function LayoutShell({
   return (
     <ToastHost>
       <VaultRequestModal />
+      <GithubStarPrompt />
       <div
         className={cn(
           'flex h-screen overflow-hidden bg-canvas',

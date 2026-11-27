@@ -125,6 +125,33 @@ describe('ai-group-enhancer utilities', () => {
         text: 'latest live result',
         timestamp: new Date('2026-01-01T10:00:04.000Z'),
         stepId: 'tool-result-latest',
+        toolCallId: 'tc-2',
+        isTruncated: undefined,
+        fullLength: undefined,
+      });
+    });
+
+    it('carries the full-result fetch metadata of a truncated tool_result', () => {
+      const steps: UnifiedSemanticStep[] = [
+        makeStep({
+          id: 'tool-result-cut',
+          type: 'tool_result',
+          content: {
+            toolCallId: 'tc-cut',
+            toolResultContent: 'prefix',
+            isError: false,
+            isTruncated: true,
+            fullLength: 4096,
+          },
+        }),
+      ];
+
+      expect(findLastOutput(steps)).toMatchObject({
+        type: 'tool_result',
+        stepId: 'tool-result-cut',
+        toolCallId: 'tc-cut',
+        isTruncated: true,
+        fullLength: 4096,
       });
     });
 

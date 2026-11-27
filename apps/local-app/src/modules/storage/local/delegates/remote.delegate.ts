@@ -24,6 +24,8 @@ import type {
 } from '../../models/domain.models';
 import { isSqliteUniqueConstraint, normalizeListOptions } from '../helpers/storage-helpers';
 import { BaseStorageDelegate, type StorageDelegateContext } from './base-storage.delegate';
+import { forgetLinkReleases } from '../helpers/pending-link-releases';
+import { forgetVmLinkOwner, markVmLinkOwner, readVmLinkOwner } from '../helpers/vm-link-owners';
 import type { IntegrationCredentialCipher } from '../integration-credential-cipher';
 import {
   migrateStoredSecrets,
@@ -433,6 +435,32 @@ export class RemoteStorageDelegate extends BaseStorageDelegate implements Remote
     });
   }
 
+  async markVmLinkOwners(
+    bindings: readonly Pick<RemoteProjectBinding, 'projectId' | 'remoteId' | 'createdAt'>[],
+  ): Promise<string[]> {
+    return this.txRunner.runImmediateQueuedOrJoin(() => {
+      const marked: string[] = [];
+      for (const expected of bindings) {
+        const binding = this.getBindingSync(expected.projectId);
+        if (
+          binding?.state !== 'remote' ||
+          binding.remoteId !== expected.remoteId ||
+          binding.createdAt !== expected.createdAt
+        ) {
+          continue;
+        }
+        markVmLinkOwner(this.rawClient, binding.projectId, binding);
+        marked.push(binding.projectId);
+      }
+      return marked;
+    });
+  }
+
+  async getVmLinkOwnerSince(projectId: string): Promise<string | null> {
+    const binding = this.getBindingSync(projectId);
+    return binding ? readVmLinkOwner(this.rawClient, projectId, binding) : null;
+  }
+
   async deleteRemoteProjectBinding(projectId: string): Promise<RemoteProjectBinding | null> {
     return this.txRunner.runImmediateQueuedOrJoin(() => {
       const current = this.getBindingSync(projectId);
@@ -440,6 +468,12 @@ export class RemoteStorageDelegate extends BaseStorageDelegate implements Remote
         this.rawClient
           .prepare('DELETE FROM remote_project_bindings WHERE project_id = ?')
           .run(projectId);
+        // Home owns the project again: no VM can send these receipts any more.
+        this.rawClient
+          .prepare('DELETE FROM external_link_receipts WHERE project_id = ?')
+          .run(projectId);
+        forgetVmLinkOwner(this.rawClient, projectId);
+        forgetLinkReleases(this.rawClient, projectId);
         logger.info({ projectId, remoteId: current.remoteId }, 'Deleted remote binding');
       }
       return current;

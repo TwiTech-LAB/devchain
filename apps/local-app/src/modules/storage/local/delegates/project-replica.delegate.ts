@@ -18,7 +18,11 @@ import {
   type ProjectReplicaTables,
   type ProjectReplicaV1,
 } from '@devchain/shared';
-import { ConflictError, ReplicaApplyError } from '../../../../common/errors/error-types';
+import {
+  ConflictError,
+  ProjectionLockCoverageError,
+  ReplicaApplyError,
+} from '../../../../common/errors/error-types';
 import { createLogger } from '../../../../common/logging/logger';
 import { applyHomeProviderRow, listInstanceProjectIds } from '../helpers/provider-settings-apply';
 import type { PreparedEvent } from '../../../events/services/durable-event-registry.service';
@@ -33,6 +37,21 @@ export interface ProjectReplicaStorageDelegateDependencies {
 }
 
 type Row = Record<string, unknown>;
+interface HomeLinkRow {
+  project_id: string;
+  epic_id: string;
+  source_snapshot: string;
+  connection_id: string | null;
+  provider: string;
+  remote_scope_key: string;
+  remote_task_id: string;
+}
+/** An external_task_links row, by what deleting it needs. */
+interface LinkRef {
+  id: string;
+  epic_id: string;
+  project_id: string;
+}
 /** Live-tier tables are always present; the others depend on the scope. */
 type Tables = ProjectReplicaLiveTables &
   Partial<Omit<ProjectReplicaTables, keyof ProjectReplicaLiveTables>>;
@@ -116,11 +135,14 @@ class ReplicaApplyRun {
   private readonly statements = new Map<string, Database.Statement>();
   private readonly providerIdMap = new Map<string, string>();
   private readonly changedEpicIds = new Set<string>();
+  private readonly linkChangedEpicIds = new Set<string>();
   private readonly skippedUnknownSkillCountByProject = new Map<string, number>();
   private readonly resolvedTagIds = new Set<string>();
   private readonly idSets: ProjectReplicaIdSets | undefined;
   private readonly keepInstanceConfig: boolean;
   private readonly frozenAt: string | undefined;
+  private readonly lockedProjectionIds: ReadonlySet<string> | undefined;
+  private readonly releasedProjectionIds = new Set<string>();
 
   constructor(
     private readonly db: Database.Database,
@@ -131,6 +153,7 @@ class ReplicaApplyRun {
     this.idSets = options.idSets;
     this.keepInstanceConfig = options.keepInstanceConfig === true;
     this.frozenAt = options.frozenAt;
+    this.lockedProjectionIds = options.lockedProjectionIds && new Set(options.lockedProjectionIds);
     this.tables = replica.tables;
     this.projectIds = replica.tables.projects.map((project) => project.id);
     this.full = mode === 'full';
@@ -173,6 +196,7 @@ class ReplicaApplyRun {
     if (t.project_provider_plugin_overrides)
       this.applyProjectPluginOverrides(t.project_provider_plugin_overrides);
     this.applyEpics();
+    this.applyExternalLinks();
     this.applyEpicTags();
     this.upsertAll('epic_comments', t.epic_comments, (row) => this.changedEpicIds.add(row.epic_id));
     this.applyRelations();
@@ -190,9 +214,18 @@ class ReplicaApplyRun {
     ]);
 
     const deletedEpicIds = this.deleteMissing();
+    this.assertReleasesLocked();
     const epicProject = new Map(t.epics.map((epic) => [epic.id, epic.project_id]));
+    const linkChangedEpics = this.inIdsAll<{ id: string; project_id: string }>(
+      'SELECT id, project_id FROM epics WHERE id IN',
+      [...this.linkChangedEpicIds],
+    );
     return this.projectIds.map((projectId) => {
       return {
+        linkChangedEpicIds: linkChangedEpics
+          .filter((row) => row.project_id === projectId)
+          .map((row) => row.id)
+          .sort(),
         projectId,
         changedEpicIds: [...this.changedEpicIds]
           .filter((id) => epicProject.get(id) === projectId)
@@ -764,6 +797,322 @@ class ReplicaApplyRun {
     );
   }
 
+  /**
+   * A claimed VM's ordinary links, which it owns once home seeded them. Home owns the
+   * managed projections: the VM never holds them, so its receipts and its link table say
+   * which ones to release, without a vendor call. Recognition links change only through
+   * those releases. Absent tables (an older or unseeded VM) leave every link as it is.
+   * Every row touched belongs to the row's own payload project: a reference that points
+   * into another project is skipped, never followed.
+   */
+  private applyExternalLinks(): void {
+    const links = this.tables.external_task_links;
+    const receipts = this.tables.external_link_receipts;
+    if (!links || !receipts) return;
+    for (const row of links) this.assertInPayload('external_task_links', row);
+    for (const row of receipts) this.assertInPayload('external_link_receipts', row);
+    let skipped = 0;
+    const incoming = new Map(links.map((link) => [link.id, link]));
+
+    // 1. Receipts first, in the VM's commit order, each once: a release must still find
+    // its projections, also of an epic the VM deleted since. A release also removes the
+    // link it names, which an incremental pull cannot tell from a deleted epic's link.
+    for (const receipt of [...receipts].sort((a, b) => a.seq - b.seq || a.id.localeCompare(b.id))) {
+      const project = receipt.project_id;
+      const marker = this.get<{ project_id: string }>(
+        'SELECT project_id FROM external_link_receipts WHERE id = ?',
+        receipt.id,
+      );
+      if (marker?.project_id === project) continue;
+      const link = this.get<HomeLinkRow>(
+        `SELECT project_id, epic_id, source_snapshot, connection_id, provider, remote_scope_key,
+                remote_task_id
+         FROM external_task_links WHERE id = ?`,
+        receipt.link_id,
+      );
+      // A receipt names an ordinary link: a recognition link changes only with its projection.
+      if (
+        marker ||
+        !this.epicInProjectOrGone(receipt.epic_id, project) ||
+        (link &&
+          (link.project_id !== project ||
+            link.epic_id !== receipt.epic_id ||
+            parseJsonObject(link.source_snapshot)?.managedProjectionId != null))
+      ) {
+        skipped += 1;
+        continue;
+      }
+      if (receipt.kind === 'set') {
+        this.releaseProjections(project, 'epic_id_snapshot = ?', receipt.epic_id);
+        if (link) this.rebindLink(receipt, link, incoming.get(receipt.link_id));
+      } else if (link && !incoming.has(receipt.link_id)) {
+        this.releaseOrdinaryLink({
+          id: receipt.link_id,
+          epic_id: link.epic_id,
+          project_id: project,
+        });
+      } else {
+        this.releaseChildProjections(project, receipt.link_id, receipt.epic_id);
+      }
+      this.linkChangedEpicIds.add(receipt.epic_id);
+      this.upsertAll('external_link_receipts', [receipt]);
+    }
+    // A receipt the VM no longer sends was acknowledged and deleted there, so it never
+    // comes back. The rest stay until then, or until the binding goes: a retried detach
+    // pull can send them again.
+    this.deleteNotIn(
+      'external_link_receipts',
+      'SELECT id FROM external_link_receipts WHERE project_id IN',
+      new Set(receipts.map((receipt) => receipt.id)),
+    );
+
+    // 2. An ordinary link the VM no longer has, on an epic known to stay, was unlinked.
+    const staysEpic = this.epicSurvives();
+    for (const link of this.inProjectsAll<LinkRef>(
+      `SELECT id, epic_id, project_id FROM external_task_links
+       WHERE json_extract(source_snapshot, '$.managedProjectionId') IS NULL AND project_id IN`,
+    )) {
+      if (incoming.has(link.id) || !staysEpic(link.epic_id)) continue;
+      this.releaseOrdinaryLink(link);
+    }
+
+    for (const link of links) {
+      const project = link.project_id;
+      const existing = this.get<{ epic_id: string; source_snapshot: string }>(
+        'SELECT epic_id, source_snapshot FROM external_task_links WHERE id = ?',
+        link.id,
+      );
+      if (
+        this.get<{ project_id: string }>('SELECT project_id FROM epics WHERE id = ?', link.epic_id)
+          ?.project_id !== project ||
+        (existing &&
+          (existing.epic_id !== link.epic_id ||
+            parseJsonObject(existing.source_snapshot)?.managedProjectionId != null))
+      ) {
+        skipped += 1;
+        continue;
+      }
+      // 3. The owner's link wins its remote task.
+      for (const taken of this.all<LinkRef & { source_snapshot: string }>(
+        `SELECT id, epic_id, project_id, source_snapshot FROM external_task_links
+         WHERE project_id = ? AND provider = ? AND remote_scope_key = ? AND remote_task_id = ?
+           AND id != ?`,
+        project,
+        link.provider,
+        link.remote_scope_key,
+        link.remote_task_id,
+        link.id,
+      )) {
+        const projectionId = parseJsonObject(taken.source_snapshot)?.managedProjectionId;
+        if (typeof projectionId === 'string') {
+          this.releaseProjections(project, 'id = ?', projectionId);
+          this.deleteLink(taken.id);
+          this.linkChangedEpicIds.add(taken.epic_id);
+        } else if (staysEpic(taken.epic_id)) {
+          this.releaseOrdinaryLink(taken);
+        } else {
+          // An epic an incremental pull omits was deleted, or kept without a change: a
+          // VM unlink changes the epic and writes a receipt. So its children keep their
+          // projections, which managed sync deletes once the full pull removes the tree.
+          this.deleteLink(taken.id);
+        }
+      }
+      // 4. `connection_id` is home's: set once, on insert, to a connection of the project.
+      const { connection_id, ...rest } = link;
+      const connectionId =
+        connection_id &&
+        this.get(
+          'SELECT 1 FROM integration_connections WHERE id = ? AND project_id = ?',
+          connection_id,
+          project,
+        )
+          ? connection_id
+          : null;
+      this.upsertAll('external_task_links', [
+        existing ? rest : { ...rest, connection_id: connectionId },
+      ]);
+      if (!existing) this.linkChangedEpicIds.add(link.epic_id);
+    }
+    if (skipped > 0) {
+      logger.warn(
+        { projectIds: this.projectIds, skipped },
+        'Skipped VM link rows that reference another project',
+      );
+    }
+  }
+
+  /**
+   * A set receipt for a link home already has is a rebind: a VM set either gives a
+   * detached link a connection and keeps its id, or inserts a link with a new id. The
+   * link takes the VM link's current connection only when that is home's connection
+   * of the same project and provider and home's link is detached, so a stale receipt
+   * binds nothing. The receipt's epic is link-changed, so managed sync reconciles its
+   * children on the bound connection.
+   */
+  private rebindLink(
+    receipt: ProjectReplicaRow<'external_link_receipts'>,
+    link: HomeLinkRow,
+    vmLink: ProjectReplicaRow<'external_task_links'> | undefined,
+  ): void {
+    const connectionId = vmLink?.connection_id;
+    if (
+      !connectionId ||
+      vmLink.epic_id !== link.epic_id ||
+      vmLink.provider !== link.provider ||
+      vmLink.remote_scope_key !== link.remote_scope_key ||
+      vmLink.remote_task_id !== link.remote_task_id ||
+      link.provider !== receipt.provider ||
+      link.remote_scope_key !== receipt.remote_scope_key ||
+      link.remote_task_id !== receipt.remote_task_id ||
+      (link.connection_id !== null &&
+        this.get('SELECT 1 FROM integration_connections WHERE id = ?', link.connection_id)) ||
+      !this.get(
+        'SELECT 1 FROM integration_connections WHERE id = ? AND project_id = ? AND provider = ?',
+        connectionId,
+        receipt.project_id,
+        receipt.provider,
+      )
+    ) {
+      return;
+    }
+    this.write('external_task_links', receipt.link_id, () =>
+      this.run(
+        'UPDATE external_task_links SET connection_id = ? WHERE id = ?',
+        connectionId,
+        receipt.link_id,
+      ),
+    );
+  }
+
+  /** Deletes an ordinary link with the managed projections it is the parent source of. */
+  private releaseOrdinaryLink(link: LinkRef): void {
+    this.releaseChildProjections(link.project_id, link.id, link.epic_id);
+    this.deleteLink(link.id);
+    this.linkChangedEpicIds.add(link.epic_id);
+  }
+
+  /** Releases the managed projections whose parent source is link `linkId` of `epicId`. */
+  private releaseChildProjections(projectId: string, linkId: string, epicId: string): void {
+    this.releaseProjections(
+      projectId,
+      'parent_source_link_id_snapshot = ? AND parent_epic_id_snapshot = ?',
+      linkId,
+      epicId,
+    );
+  }
+
+  private deleteLink(id: string): void {
+    this.write('external_task_links', id, () =>
+      this.run('DELETE FROM external_task_links WHERE id = ?', id),
+    );
+  }
+
+  /**
+   * Forgets managed projections of `projectId` and their recognition links; remote
+   * subtasks stay. Projection rows carry no project: one belongs to the project when its
+   * child epic, parent epic, connection and recognition link, as far as they still
+   * exist, are all in it, and at least one does.
+   */
+  private releaseProjections(projectId: string, where: string, ...params: string[]): void {
+    for (const row of this.all<{
+      id: string;
+      epic_id_snapshot: string;
+      parent_epic_id_snapshot: string;
+      connection_id_snapshot: string;
+      provider: string;
+      remote_scope_key: string;
+      remote_task_id: string | null;
+    }>(
+      `SELECT id, epic_id_snapshot, parent_epic_id_snapshot, connection_id_snapshot, provider,
+              remote_scope_key, remote_task_id
+       FROM external_managed_subtask_links WHERE ${where}`,
+      ...params,
+    )) {
+      const recognition = row.remote_task_id
+        ? this.all<{ project_id: string }>(
+            `SELECT project_id FROM external_task_links
+             WHERE epic_id = ? AND provider = ? AND remote_scope_key = ? AND remote_task_id = ?
+               AND json_extract(source_snapshot, '$.managedProjectionId') IS NOT NULL`,
+            row.epic_id_snapshot,
+            row.provider,
+            row.remote_scope_key,
+            row.remote_task_id,
+          )
+        : [];
+      const owners = [
+        this.get<{ project_id: string }>(
+          'SELECT project_id FROM epics WHERE id = ?',
+          row.epic_id_snapshot,
+        ),
+        this.get<{ project_id: string }>(
+          'SELECT project_id FROM epics WHERE id = ?',
+          row.parent_epic_id_snapshot,
+        ),
+        this.get<{ project_id: string | null }>(
+          'SELECT project_id FROM integration_connections WHERE id = ?',
+          row.connection_id_snapshot,
+        ),
+        ...recognition,
+      ].flatMap((owner) => (owner ? [owner.project_id] : []));
+      if (owners.length === 0 || owners.some((owner) => owner !== projectId)) continue;
+      if (row.remote_task_id) {
+        this.write('external_task_links', row.id, () =>
+          this.run(
+            `DELETE FROM external_task_links
+             WHERE epic_id = ? AND provider = ? AND remote_scope_key = ? AND remote_task_id = ?
+               AND project_id = ?
+               AND json_extract(source_snapshot, '$.managedProjectionId') IS NOT NULL`,
+            row.epic_id_snapshot,
+            row.provider,
+            row.remote_scope_key,
+            row.remote_task_id,
+            projectId,
+          ),
+        );
+      }
+      this.write('external_managed_subtask_links', row.id, () =>
+        this.run('DELETE FROM external_managed_subtask_links WHERE id = ?', row.id),
+      );
+      this.releasedProjectionIds.add(row.id);
+    }
+  }
+
+  /** Throwing rolls the whole apply back, so nothing it released is committed unlocked. */
+  private assertReleasesLocked(): void {
+    const locked = this.lockedProjectionIds;
+    if (!locked) return;
+    const unlocked = [...this.releasedProjectionIds].filter((id) => !locked.has(id));
+    if (unlocked.length > 0) throw new ProjectionLockCoverageError(unlocked.sort());
+  }
+
+  private epicInProjectOrGone(epicId: string, projectId: string): boolean {
+    const epic = this.get<{ project_id: string }>(
+      'SELECT project_id FROM epics WHERE id = ?',
+      epicId,
+    );
+    return !epic || epic.project_id === projectId;
+  }
+
+  /**
+   * Whether the host still has the epic: the payload in full mode, the host's ID set on a
+   * full pull. An incremental pull omits deleted and unchanged epics alike, so only an
+   * epic in its payload is known to stay; a deleted one keeps its link and projections
+   * until the full pull that deletes it.
+   */
+  private epicSurvives(): (epicId: string) => boolean {
+    const keep = new Set([
+      ...(!this.full && this.idSets ? this.idSets.epics : []),
+      ...this.tables.epics.map((epic) => epic.id),
+    ]);
+    return (epicId) => keep.has(epicId);
+  }
+
+  private assertInPayload(table: string, row: { id: string; project_id: string }): void {
+    if (!this.projectIds.includes(row.project_id)) {
+      throw new ReplicaApplyError(table, row.id, 'row of a project not in payload');
+    }
+  }
+
   /** Epic tags travel by name; each payload epic's tag set is complete. */
   private applyEpicTags(): void {
     const payloadTags = this.tables.tags;
@@ -882,9 +1231,18 @@ class ReplicaApplyRun {
    */
   private applySessions(sessions: ProjectReplicaTables['sessions']): void {
     const payloadProjects = this.projectIds.map(() => '?').join(', ');
+    const sessionIds = new Set(sessions.map(({ id }) => id));
     this.upsertAll(
       'sessions',
-      sessions.map((session) => {
+      parentsFirst(sessions, 'parent_session_id').map((session) => {
+        const parentId = session.parent_session_id;
+        if (
+          parentId &&
+          !sessionIds.has(parentId) &&
+          !this.get('SELECT 1 FROM sessions WHERE id = ?', parentId)
+        ) {
+          session = { ...session, parent_session_id: null };
+        }
         if (session.epic_id) {
           return this.get('SELECT 1 FROM epics WHERE id = ?', session.epic_id)
             ? session

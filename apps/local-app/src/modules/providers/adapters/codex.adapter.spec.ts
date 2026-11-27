@@ -1,5 +1,10 @@
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'fs/promises';
+import os from 'node:os';
+import { dirname, join, resolve } from 'path';
 import { CodexAdapter } from './codex.adapter';
+import type { CodexAppServerRequest } from '../services/codex-app-server.client';
 import { ensureCodexProjectTrusted } from '../utils/codex-config';
+import { parseProfileOptions } from '../utils/profile-options';
 
 jest.mock('../utils/codex-config', () => ({
   ensureCodexProjectTrusted: jest.fn(),
@@ -11,9 +16,11 @@ const mockEnsureCodexProjectTrusted = ensureCodexProjectTrusted as jest.MockedFu
 
 describe('CodexAdapter', () => {
   let adapter: CodexAdapter;
+  const requestFork = jest.fn<Promise<unknown>, [CodexAppServerRequest]>();
 
   beforeEach(() => {
-    adapter = new CodexAdapter();
+    requestFork.mockReset();
+    adapter = new CodexAdapter({ request: requestFork });
     mockEnsureCodexProjectTrusted.mockReset();
   });
 
@@ -351,6 +358,215 @@ describe('CodexAdapter', () => {
         'tui.alternate_screen="never"',
         'sess-1',
       ]);
+    });
+  });
+
+  describe('SessionForkCapability', () => {
+    const source = {
+      providerSessionId: 'parent-thread',
+      transcriptPath: resolve('parent.jsonl'),
+      projectId: 'project-id',
+      projectPath: resolve('project'),
+      providerBinPath: resolve('bin', 'codex'),
+      sessionId: 'save-point-row-id',
+      env: { DEVCHAIN_SESSION_ID: 'session-id' },
+      helperEnv: { CODEX_HOME: resolve('profile', 'codex-home') },
+    };
+
+    // Unit coverage verifies the JSON-RPC and launch contracts with a fake app-server reply.
+    it('makes a silent save with the configured binary and returns the forked thread and path', async () => {
+      const path = resolve('saved.jsonl');
+      requestFork.mockResolvedValue({ thread: { id: 'save-point-thread', path } });
+
+      await expect(adapter.createSavePoint(source)).resolves.toEqual({
+        providerSessionId: 'save-point-thread',
+        transcriptPath: path,
+        discardUnboundTranscript: expect.any(Function),
+      });
+      expect(requestFork).toHaveBeenCalledWith({
+        argv: [source.providerBinPath, '-c', 'check_for_update_on_startup=false', 'app-server'],
+        env: source.helperEnv,
+        method: 'thread/fork',
+        params: { threadId: source.providerSessionId, excludeTurns: true },
+        timeoutMs: expect.any(Number),
+        maxOutputBytes: expect.any(Number),
+      });
+    });
+
+    it.each([
+      '--image one.png two.png -- "read the project notes"',
+      '"read the project notes" -i one.png',
+      '--image=one.png,two.png',
+    ])('forks with the child thread ID last and drops %s', async (prompt) => {
+      const path = resolve('child.jsonl');
+      requestFork.mockResolvedValue({ thread: { id: 'child-thread', path } });
+
+      await expect(
+        adapter.prepareForkLaunch({
+          ...source,
+          providerSessionId: 'save-point-thread',
+          transcriptPath: resolve('saved.jsonl'),
+          sessionId: 'devchain-row-id',
+          profileOptionArgs: parseProfileOptions(
+            `--profile work --sandbox=read-only -c model_reasoning_effort=high -m o3 ${prompt}`,
+          ),
+        }),
+      ).resolves.toEqual({
+        argv: [
+          'resume',
+          '--profile',
+          'work',
+          '--sandbox=read-only',
+          '-c',
+          'model_reasoning_effort=high',
+          '-m',
+          'o3',
+          '-c',
+          'check_for_update_on_startup=false',
+          '-c',
+          'tui.alternate_screen="never"',
+          'child-thread',
+        ],
+        providerSessionId: 'child-thread',
+        transcriptPath: path,
+        discardUnboundTranscript: expect.any(Function),
+      });
+      expect(requestFork).toHaveBeenCalledWith(
+        expect.objectContaining({
+          method: 'thread/fork',
+          params: { threadId: 'save-point-thread', excludeTurns: true },
+        }),
+      );
+    });
+
+    it.each([
+      { label: 'no thread', reply: {}, error: 'returned no thread' },
+      {
+        label: 'no persisted path',
+        reply: { thread: { id: 'child-thread', path: null } },
+        error: 'returned an invalid ID or rollout path',
+      },
+      {
+        label: 'the source ID',
+        reply: { thread: { id: source.providerSessionId, path: source.transcriptPath } },
+        error: 'returned an invalid ID or rollout path',
+      },
+    ])('rejects a reply with $label', async ({ reply, error }) => {
+      requestFork.mockResolvedValue(reply);
+      await expect(adapter.createSavePoint(source)).rejects.toThrow(error);
+    });
+
+    // Real files under a temporary home show which rollouts a discard may remove.
+    describe('discarding a forked rollout that DevChain did not store', () => {
+      const threadId = '0199a213-81c0-7800-8aa1-bbab2a035a53';
+      const sourceThread = '0199a213-81c0-7800-8aa1-bbab2a035a52';
+      const rolloutName = (id: string) => `rollout-2026-11-26T10-00-00-${id}.jsonl`;
+      const rollout = (id: string) =>
+        JSON.stringify({ type: 'session_meta', payload: { id, cwd: '/project' } }) + '\n';
+      let home: string;
+      let day: string;
+      let sourceRollout: string;
+
+      beforeEach(async () => {
+        home = await mkdtemp(join(os.tmpdir(), 'codex-discard-'));
+        jest.spyOn(os, 'homedir').mockReturnValue(home);
+        day = join(home, '.codex', 'sessions', '2026', '11', '26');
+        await mkdir(day, { recursive: true });
+        sourceRollout = join(day, rolloutName(sourceThread));
+        await writeFile(sourceRollout, rollout(sourceThread));
+      });
+
+      afterEach(async () => {
+        jest.restoreAllMocks();
+        await rm(home, { recursive: true, force: true });
+      });
+
+      async function fork(path: string, id = threadId) {
+        requestFork.mockResolvedValue({ thread: { id, path } });
+        return adapter.createSavePoint({
+          ...source,
+          providerSessionId: sourceThread,
+          transcriptPath: sourceRollout,
+        });
+      }
+      const exists = (path: string) =>
+        readFile(path).then(
+          () => true,
+          () => false,
+        );
+
+      it('removes the forked rollout of the save point and of the fork launch, and keeps the source', async () => {
+        const saved = join(day, rolloutName(threadId));
+        await writeFile(saved, rollout(threadId));
+
+        await (
+          await fork(saved)
+        ).discardUnboundTranscript!();
+        expect(await exists(saved)).toBe(false);
+
+        await writeFile(saved, rollout(threadId));
+        requestFork.mockResolvedValue({ thread: { id: threadId, path: saved } });
+        const launch = await adapter.prepareForkLaunch({
+          ...source,
+          providerSessionId: sourceThread,
+          transcriptPath: sourceRollout,
+          profileOptionArgs: [],
+        });
+        await launch.discardUnboundTranscript!();
+        expect(await exists(saved)).toBe(false);
+        expect(await readFile(sourceRollout, 'utf8')).toBe(rollout(sourceThread));
+        // A copy that is already gone needs no removal.
+        await expect(launch.discardUnboundTranscript!()).resolves.toBeUndefined();
+      });
+
+      it.each([
+        {
+          label: 'a rollout outside the Codex root',
+          place: async () => {
+            const outside = join(home, 'elsewhere', rolloutName(threadId));
+            await mkdir(dirname(outside), { recursive: true });
+            await writeFile(outside, rollout(threadId));
+            return outside;
+          },
+        },
+        {
+          label: 'a link inside the root to a file outside it',
+          place: async () => {
+            const outside = join(home, 'secret.jsonl');
+            await writeFile(outside, rollout(threadId));
+            const link = join(day, rolloutName(threadId));
+            await symlink(outside, link);
+            return outside;
+          },
+          returned: () => join(day, rolloutName(threadId)),
+        },
+        {
+          label: 'a rollout whose header names another thread',
+          place: async () => {
+            const path = join(day, rolloutName(threadId));
+            await writeFile(path, rollout(sourceThread));
+            return path;
+          },
+        },
+        {
+          label: 'a rollout whose file name names another thread',
+          place: async () => {
+            const path = join(day, rolloutName('0199a213-81c0-7800-8aa1-bbab2a035a59'));
+            await writeFile(path, rollout(threadId));
+            return path;
+          },
+        },
+        { label: 'the source rollout', place: async () => sourceRollout },
+      ])('refuses to remove $label', async ({ place, returned }) => {
+        const kept = await place();
+        const copy = await fork(returned?.() ?? kept);
+
+        await expect(copy.discardUnboundTranscript!()).rejects.toThrow(
+          'Codex rollout was not discarded',
+        );
+        expect(await exists(kept)).toBe(true);
+        expect(await readFile(sourceRollout, 'utf8')).toBe(rollout(sourceThread));
+      });
     });
   });
 

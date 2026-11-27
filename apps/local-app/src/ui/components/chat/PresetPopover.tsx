@@ -72,7 +72,7 @@ export function PresetPopover({
           </TooltipContent>
         </Tooltip>
       </TooltipProvider>
-      <PopoverContent className="w-56 p-1" align="end" onClick={(e) => e.stopPropagation()}>
+      <PopoverContent className="w-56 p-1" align="start" onClick={(e) => e.stopPropagation()}>
         <div className="px-2 py-1.5 text-xs font-medium text-muted-foreground">Presets</div>
         {presets.length === 0 ? (
           <div className="px-2 py-3 text-center text-xs text-muted-foreground">

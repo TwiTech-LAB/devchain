@@ -79,11 +79,6 @@ describe('HookEventSchema (discriminated union)', () => {
         HookEventSchema.safeParse({ ...userPromptSubmit, hookEventName: 'Stop' }).success,
       ).toBe(true);
     });
-
-    it('rejects a hook time on the other variants (strict)', () => {
-      expect(HookEventSchema.safeParse({ ...sessionStart, firedAtMs: 1 }).success).toBe(false);
-      expect(HookEventSchema.safeParse({ ...preToolUse, firedAtMs: 1 }).success).toBe(false);
-    });
   });
 
   describe('PreToolUse', () => {

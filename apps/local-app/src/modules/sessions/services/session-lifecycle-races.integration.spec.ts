@@ -62,6 +62,7 @@ describe('session lifecycle race serialization', () => {
   let sessionsService: SessionsService;
   let sessionRuntime: SessionRuntime;
   let facade: SessionLifecycleFacade;
+  let disableAgent: () => void;
   let createGate: Deferred | null;
   let nowMs: number;
   let liveTmux: Set<string>;
@@ -190,6 +191,7 @@ describe('session lifecycle race serialization', () => {
       listProfileProviderConfigsByProfile: jest.fn().mockResolvedValue([config]),
       listAgents: jest.fn().mockResolvedValue({ items: [agent], total: 1, limit: 100, offset: 0 }),
     };
+    disableAgent = () => storage.getAgent.mockResolvedValue({ ...agent, disabled: true });
     const adapter = {
       providerName: 'test-provider',
       buildLaunchArgs: jest
@@ -265,6 +267,7 @@ describe('session lifecycle race serialization', () => {
       providerRuntimePreparation as never,
       new SessionRowStore(db),
       createVaultLaunchMock() as never,
+      { isTeamMember: jest.fn().mockResolvedValue(false) } as never,
     );
     const restorePipeline = new SessionRestorePipeline(
       db,
@@ -280,11 +283,10 @@ describe('session lifecycle race serialization', () => {
       preflightService as never,
       mcpEnsureService as never,
       new SessionRowStore(db),
-    );
-    sessionRuntime = new SessionRuntime(
-      launchPipeline,
-      restorePipeline,
-      createProjectWriteGateStub() as never,
+      // Plain restore does not use the rollback collaborators.
+      {} as never,
+      {} as never,
+      {} as never,
     );
     sessionsService = new SessionsService(
       db,
@@ -303,10 +305,22 @@ describe('session lifecycle race serialization', () => {
       { listRemoteOwnedProjectIds: () => [] } as never,
       new SessionRowStore(db),
     );
+    sessionRuntime = new SessionRuntime(
+      launchPipeline,
+      restorePipeline,
+      createProjectWriteGateStub() as never,
+      sessionsService,
+      coordinator,
+    );
     facade = new SessionLifecycleFacade(
       sessionRuntime,
       sessionsService,
       createProjectWriteGateStub() as never,
+      coordinator,
+      {
+        advanceDisableFence: jest.fn(),
+        discardPooledMessages: jest.fn().mockResolvedValue(0),
+      } as never,
     );
     seedAgentFixtures();
   });
@@ -470,6 +484,61 @@ describe('session lifecycle race serialization', () => {
     expect(eventNames.indexOf('session.started')).toBeLessThan(
       eventNames.indexOf('session.stopped'),
     );
+  });
+
+  describe('disabled agent', () => {
+    it('stops a launch that passed its agent check before Disable read the session', async () => {
+      const gate = deferred();
+      createGate = gate;
+      const launch = sessionRuntime.launch({ agentId: AGENT_ID, projectId: PROJECT_ID });
+      await waitFor(() => terminalIO.createEmptySession.mock.calls.length === 1);
+      disableAgent();
+
+      const stop = facade.stopDisabledAgent(AGENT_ID, TEST_TERMINATION);
+      gate.resolve();
+      const launched = await launch;
+      await stop;
+
+      expect(readRows()).toEqual([expect.objectContaining({ id: launched.id, status: 'stopped' })]);
+      expect(liveTmux.size).toBe(0);
+    });
+
+    it('fails a launch after Disable with AGENT_DISABLED and starts nothing', async () => {
+      disableAgent();
+
+      await expect(
+        sessionRuntime.launch({ agentId: AGENT_ID, projectId: PROJECT_ID }),
+      ).rejects.toMatchObject({ code: 'AGENT_DISABLED' });
+      expect(readRows()).toEqual([]);
+      expect(terminalIO.createEmptySession).not.toHaveBeenCalled();
+    });
+
+    it('fails a launch for a disabled agent that still has a live session', async () => {
+      const first = await sessionRuntime.launch({ agentId: AGENT_ID, projectId: PROJECT_ID });
+      disableAgent();
+
+      await expect(
+        sessionRuntime.launch({ agentId: AGENT_ID, projectId: PROJECT_ID }),
+      ).rejects.toMatchObject({ code: 'AGENT_DISABLED' });
+      expect(readRows()).toEqual([expect.objectContaining({ id: first.id, status: 'running' })]);
+      expect(terminalIO.createEmptySession).toHaveBeenCalledTimes(1);
+    });
+
+    it('fails a restore with AGENT_DISABLED when Disable lands while restore waits for the lock', async () => {
+      seedRestorableSession();
+      const held = deferred();
+      const holder = coordinator.withAgentLock(AGENT_ID, () => held.promise);
+      const restore = sessionRuntime.restore(RESTORE_SESSION_ID, PROJECT_ID);
+      // Restore passes its pre-lock check, then queues behind the held lock.
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      disableAgent();
+      held.resolve();
+      await holder;
+
+      await expect(restore).rejects.toMatchObject({ code: 'AGENT_DISABLED' });
+      expect(readRows()).toEqual([expect.objectContaining({ status: 'stopped' })]);
+      expect(terminalIO.createEmptySession).not.toHaveBeenCalled();
+    });
   });
 
   it('queues every termination artifact cleanup behind a held restore lock', async () => {

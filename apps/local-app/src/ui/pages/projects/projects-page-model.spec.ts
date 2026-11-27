@@ -313,7 +313,7 @@ describe('projects-page-model', () => {
     expect(row.actionsButtonId).toBe('project-actions-beta');
   });
 
-  it('locks delete, move and import but not the upgrade on a connected project', () => {
+  it('locks delete and move but not the upgrade or import on a connected project', () => {
     const owned = projects[0];
     const model = build({
       data: { items: [owned] },
@@ -332,6 +332,7 @@ describe('projects-page-model', () => {
     });
     expect(row.moveTargets).toEqual([]);
     expect(row.upgradeLock).toBeNull();
+    expect(row.importLock).toBeNull();
     row.upgrade?.();
     expect(actions.upgradeProject).toHaveBeenCalledWith(owned, '2.0.0');
     model.requestProjectMove(owned.id, 'default');
@@ -339,7 +340,7 @@ describe('projects-page-model', () => {
   });
 
   it.each(['attaching', 'detaching', 'failed'] as const)(
-    'keeps the upgrade locked with the current message while the binding is %s',
+    'keeps the upgrade and import locked with the current message while the binding is %s',
     (state) => {
       const owned = projects[0];
       const owner = { projectId: owned.id, remoteId: 'remote-1', remoteName: 'vm-1', state };
@@ -348,15 +349,20 @@ describe('projects-page-model', () => {
       const [row] = model.content.groups[1]!.rows;
       expect(row.upgrade).toBeUndefined();
       expect(row.upgradeLock).toEqual({ message: describeRemoteLock(owner) });
+      expect(row.importLock).toEqual({ message: describeRemoteLock(owner) });
+      expect(row.remoteLock).toEqual({ message: describeRemoteLock(owner) });
+      expect(row.moveTargets).toEqual([]);
     },
   );
 
-  it('keeps the upgrade locked until the remote bindings have loaded', () => {
+  it('keeps the upgrade and import of a home project locked until the remote bindings have loaded', () => {
     const model = build({ data: { items: [projects[0]] }, remoteOwnersLoaded: false });
     if (model.content.kind !== 'ready') throw new Error('expected ready');
     const [row] = model.content.groups[1]!.rows;
     expect(row.upgrade).toBeUndefined();
     expect(row.upgradeLock).toEqual({ message: 'Checking remote connections…' });
+    expect(row.importLock).toEqual({ message: 'Checking remote connections…' });
+    expect(row.remoteLock).toBeNull();
   });
 
   it('describes each remote-owned state', () => {

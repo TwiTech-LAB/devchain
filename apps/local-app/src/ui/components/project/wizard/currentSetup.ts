@@ -1,4 +1,5 @@
 import type {
+  PreservationAgentRow,
   PreservationOption,
   PreservationReview,
   PreserveTeamSetup,
@@ -24,22 +25,53 @@ export function currentSetupRemovals(
     .filter((name) => !targetNames.has(agentKey(name)));
 }
 
-/** The plan's agent rows by team (the lead first, each agent once), then the agents in no team. */
-export function preservedAgentGroups(plan: PreservationReview) {
-  const rowsByKey = new Map(plan.agents.map((agent) => [agentKey(agent.name), agent]));
+/**
+ * The trimmed description of the first entry with this name, matched as the server matches names;
+ * null when it is missing or blank.
+ */
+function describe(
+  entries: { name: string; description?: string | null }[] | undefined,
+  name: string,
+): string | null {
+  return entries?.find((entry) => eqName(entry.name, name))?.description?.trim() || null;
+}
+
+/**
+ * The plan's agent rows by team (the lead first, each agent once), then the agents in no team.
+ * A team's `lead` is the name of its lead's row, or null when the plan has no row for the lead.
+ * Descriptions are the ones the import gives: a kept agent or retained team keeps its current
+ * description, and only a new agent or added team takes the template's.
+ */
+export function preservedAgentGroups(
+  plan: PreservationReview,
+  current: ExportData | null,
+  template: ExportData,
+) {
+  const agentDescription = (agent: PreservationAgentRow) =>
+    agent.status === 'new'
+      ? describe(template.agents, agent.name)
+      : describe(current?.agents, agent.name);
+  const rows = plan.agents.map((agent) => ({ ...agent, description: agentDescription(agent) }));
+  const rowsByKey = new Map(rows.map((row) => [agentKey(row.name), row]));
   const teams = plan.teams.map(
-    ({ name, permissionsChanged, teamLeadAgentName, memberAgentNames }) => {
+    ({ name, retained, permissionsChanged, teamLeadAgentName, memberAgentNames }) => {
       const keys = new Set(
         [teamLeadAgentName, ...memberAgentNames]
           .filter((agentName): agentName is string => agentName !== null)
           .map(agentKey),
       );
       const agents = [...keys].flatMap((key) => rowsByKey.get(key) ?? []);
-      return { name, permissionsChanged, agents };
+      const lead = teamLeadAgentName
+        ? (rowsByKey.get(agentKey(teamLeadAgentName))?.name ?? null)
+        : null;
+      const description = retained
+        ? describe(current?.teams, name)
+        : describe(template.teams, name);
+      return { name, description, permissionsChanged, lead, agents };
     },
   );
   const inTeam = new Set(teams.flatMap(({ agents }) => agents.map(({ name }) => agentKey(name))));
-  return { teams, independent: plan.agents.filter(({ name }) => !inTeam.has(agentKey(name))) };
+  return { teams, independent: rows.filter(({ name }) => !inTeam.has(agentKey(name))) };
 }
 
 /**
@@ -62,6 +94,14 @@ export function automaticOptionChanges(
 
 export type PreservationAddition = { teamName: string; agentName?: string };
 
+/** The new teams that the request adds: the user's list, or the planner's selection before the first edit. */
+export function addedTeamNames(choices: PreserveTeamSetup, plan: PreservationReview): string[] {
+  return (
+    choices.addTeams ??
+    plan.additions.teams.filter(({ selected }) => selected).map(({ name }) => name)
+  );
+}
+
 function teamAgentNames(team: PreservationReview['additions']['teams'][number]): string[] {
   return [...team.memberAgentNames, ...(team.teamLeadAgentName ? [team.teamLeadAgentName] : [])];
 }
@@ -73,7 +113,7 @@ export function updatePreservationAdditions(
   selected: boolean,
 ): PreserveTeamSetup {
   const { teamName, agentName } = addition;
-  const addTeams = choices.addTeams ?? [];
+  const addTeams = addedTeamNames(choices, plan);
   const addMembers = choices.addMembers ?? [];
   const next = agentName
     ? {
@@ -98,7 +138,7 @@ export function updatePreservationAdditions(
     ...plan.agents.filter(({ status }) => status !== 'new').map(({ name }) => agentKey(name)),
     ...(next.addMembers ?? []).map((entry) => agentKey(entry.agentName)),
     ...plan.additions.teams
-      .filter((team) => next.addTeams?.includes(team.name))
+      .filter((team) => addedTeamNames(next, plan).includes(team.name))
       .flatMap((team) => teamAgentNames(team).map(agentKey)),
   ]);
   return {

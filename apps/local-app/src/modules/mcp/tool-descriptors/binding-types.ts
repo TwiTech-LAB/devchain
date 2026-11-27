@@ -15,9 +15,11 @@ import type {
   AgentStorage,
   EpicStorage,
   GuestStorage,
+  IntegrationStorage,
   ProfileProviderConfigStorage,
   ProjectStorage,
   PromptStorage,
+  ProviderStorage,
   RecordStorage,
   ReviewStorage,
   StatusStorage,
@@ -30,6 +32,8 @@ import type { WorktreesService } from '../../worktrees/worktrees.service';
 import type { VaultDiscoveryService } from '../../vault/vault-discovery.service';
 import type { VaultRequestService } from '../../vault-requests/vault-request.service';
 import type { InstructionsResolver } from '../services/instructions-resolver';
+import type { ExternalTaskReferenceResolver } from '../../external-integrations/resolution/external-task-reference.resolver';
+import type { ExternalTaskAdmission } from '../services/external-task-admission';
 
 export type ContextualMcpToolHandler<TContext> = (
   context: TContext,
@@ -43,7 +47,9 @@ export interface McpBindingRuntime {
     AgentStorage &
     EpicStorage &
     GuestStorage &
+    Pick<IntegrationStorage, 'listExternalTaskLinksForEpic'> &
     ProfileProviderConfigStorage &
+    Pick<ProviderStorage, 'getProvider'> &
     ProjectStorage &
     PromptStorage &
     RecordStorage &
@@ -67,6 +73,8 @@ export interface McpBindingRuntime {
   readonly worktreesService?: WorktreesService;
   readonly vaultDiscoveryService?: VaultDiscoveryService;
   readonly vaultRequestService?: VaultRequestService;
+  readonly externalTaskResolver?: ExternalTaskReferenceResolver;
+  readonly externalTaskAdmission?: ExternalTaskAdmission;
   readonly instructionsResolver: InstructionsResolver;
   readonly defaultInlineMaxBytes: number;
   readonly resolveSessionContext: (sessionId: string) => Promise<McpResponse>;

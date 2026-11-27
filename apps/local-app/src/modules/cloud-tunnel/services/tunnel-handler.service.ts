@@ -132,6 +132,9 @@ export class TunnelHandlerService {
       'chat.createTeamAgent': (p) => this.mobileChat.createTeamAgent(p),
       'chat.createIndependentAgent': (p) => this.mobileChat.createIndependentAgent(p),
       'chat.deleteAgent': (p) => this.mobileChat.deleteAgent(p),
+      'chat.setAgentDisabled': (p) => this.mobileChat.setAgentDisabled(p),
+      'chat.getAgentOverrides': (p) => this.mobileChat.getAgentOverrides(p),
+      'chat.setAgentOverrides': (p) => this.mobileChat.setAgentOverrides(p),
       'chat.getTranscriptSummary': (p) => this.mobileChat.getTranscriptSummary(p),
       'chat.getTranscriptChunks': async (p) =>
         serializeRpcTranscriptChunks(await this.mobileChat.getTranscriptChunks(p)),

@@ -3,7 +3,10 @@ import * as fsp from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { buildChunks } from '../builders/chunk-builder';
-import { ClaudeSessionReaderAdapter } from './claude-session-reader.adapter';
+import {
+  ClaudeSessionReaderAdapter,
+  encodeClaudeProjectPath,
+} from './claude-session-reader.adapter';
 import type { PricingServiceInterface } from '../services/pricing.interface';
 
 const homeDir = os.homedir();
@@ -171,28 +174,25 @@ describe('ClaudeSessionReaderAdapter', () => {
     });
   });
 
-  describe('encodeProjectPath', () => {
-    const encode = (projectRoot: string): string =>
-      (adapter as unknown as { encodeProjectPath: (p: string) => string }).encodeProjectPath(
-        projectRoot,
-      );
-
+  describe('encodeClaudeProjectPath', () => {
     it('replaces every character outside letters and digits, like Claude Code', () => {
-      expect(encode('/home/ngsupb/repos/rbac2.0')).toBe('-home-ngsupb-repos-rbac2-0');
-      expect(encode('/home/ngsupb/repos/devchain_motion')).toBe(
+      expect(encodeClaudeProjectPath('/home/ngsupb/repos/rbac2.0')).toBe(
+        '-home-ngsupb-repos-rbac2-0',
+      );
+      expect(encodeClaudeProjectPath('/home/ngsupb/repos/devchain_motion')).toBe(
         '-home-ngsupb-repos-devchain-motion',
       );
-      expect(encode('/home/ngsupb/repos/my projects/sundermarch v2')).toBe(
+      expect(encodeClaudeProjectPath('/home/ngsupb/repos/my projects/sundermarch v2')).toBe(
         '-home-ngsupb-repos-my-projects-sundermarch-v2',
       );
-      expect(encode('/home/ngsupb/repos/twitech/devchain')).toBe(
+      expect(encodeClaudeProjectPath('/home/ngsupb/repos/twitech/devchain')).toBe(
         '-home-ngsupb-repos-twitech-devchain',
       );
     });
 
     it('truncates a name over 200 characters and appends the base-36 path hash', () => {
       const projectRoot = `/home/ngsupb/repos/${'deep.workspace/'.repeat(15)}rbac2.0`;
-      const encoded = encode(projectRoot);
+      const encoded = encodeClaudeProjectPath(projectRoot);
 
       expect(encoded).toBe(
         '-home-ngsupb-repos-deep-workspace-deep-workspace-deep-workspace-deep-workspace-deep-workspace-deep-workspace-deep-workspace-deep-workspace-deep-workspace-deep-workspace-deep-workspace-deep-workspace-d-8ujvg5',

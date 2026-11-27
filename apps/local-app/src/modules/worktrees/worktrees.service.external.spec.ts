@@ -276,12 +276,15 @@ describe('WorktreesService real Git lanes', () => {
       createMcpToolBindingRegistryFixture(storage, {
         worktreesService: service,
         sessionsService: {
-          listActiveSessions: async () => [
+          listRunningSessionIdentities: (): ReturnType<
+            SessionsService['listRunningSessionIdentities']
+          > => [
             {
               id: sessionId,
               agentId: leadId,
               status: 'running',
               startedAt: new Date().toISOString(),
+              inheritedSessionIds: [],
             },
           ],
         } as SessionsService,
@@ -529,12 +532,15 @@ describe('WorktreesService real Git lanes', () => {
           useValue: createMcpToolBindingRegistryFixture(storage as StorageService, {
             worktreesService: service,
             sessionsService: {
-              listActiveSessions: async () => [
+              listRunningSessionIdentities: (): ReturnType<
+                SessionsService['listRunningSessionIdentities']
+              > => [
                 {
                   id: sessionId,
                   agentId: leadId,
                   status: 'running',
                   startedAt: new Date().toISOString(),
+                  inheritedSessionIds: [],
                 },
               ],
             } as SessionsService,

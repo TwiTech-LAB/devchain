@@ -714,6 +714,71 @@ describe('TerminalGateway session lifecycle registry policy', () => {
       normalizeCapturedLineEndings: true,
     });
   });
+
+  it('tells views attached before a restart on the same ID to subscribe again, and only those views', async () => {
+    const { gateway, registry } = createGateway({ autoCreateRegistrySessions: false });
+    const sessionId = 'rollback-session';
+    const rooms = new Map<string, Set<Socket>>();
+    (gateway.server as unknown as { to: unknown }).to = (room: string) => ({
+      emit: (event: string, envelope: unknown) =>
+        rooms.get(room)?.forEach((socket) => socket.emit(event, envelope)),
+    });
+    const connect = (id: string) => {
+      const socket = createMockSocket(id);
+      (socket.join as jest.Mock).mockImplementation((room: string) => {
+        rooms.set(room, (rooms.get(room) ?? new Set()).add(socket));
+      });
+      gateway.handleConnection(socket);
+      return socket;
+    };
+    const received = (socket: Socket) =>
+      (socket.emit as jest.Mock).mock.calls
+        .filter(([event]) => event === 'message')
+        .map(([, envelope]) => envelope as ReturnType<typeof createEnvelope>);
+
+    registry.create(sessionId, `tmux_${sessionId}`);
+    const early = connect('early');
+    await gateway.handleSubscribe(early, { sessionId });
+
+    // The restart replaces the registry entry; the new entry has no subscribers.
+    registry.dispose(sessionId);
+    registry.create(sessionId, `tmux_${sessionId}`);
+    (early.emit as jest.Mock).mockClear();
+    gateway.broadcastTerminalData(sessionId, 'lost');
+    expect(received(early)).toEqual([]);
+
+    gateway.handleSessionRestored({
+      sessionId,
+      epicId: null,
+      agentId: 'agent-1',
+      tmuxSessionName: `tmux_${sessionId}`,
+      providerName: 'claude',
+    });
+    const late = connect('late');
+    await gateway.handleSubscribe(late, { sessionId });
+
+    const stateChanges = (socket: Socket) =>
+      received(socket).filter((envelope) => envelope.type === 'state_change');
+    expect(stateChanges(early)).toEqual([
+      expect.objectContaining({
+        topic: `session/${sessionId}`,
+        type: 'state_change',
+        payload: { sessionId, status: 'restarted' },
+      }),
+    ]);
+    expect(stateChanges(late)).toEqual([]);
+
+    await gateway.handleSubscribe(early, { sessionId });
+    (early.emit as jest.Mock).mockClear();
+    gateway.broadcastTerminalData(sessionId, 'after restart');
+    expect(received(early)).toEqual([
+      expect.objectContaining({
+        topic: `terminal/${sessionId}`,
+        type: 'data',
+        payload: expect.objectContaining({ data: 'after restart' }),
+      }),
+    ]);
+  });
 });
 
 describe('TerminalGateway.handleSubscribe', () => {
@@ -3753,7 +3818,7 @@ describe('TerminalGateway.handleTheme', () => {
       autoCreateRegistrySessions: false,
     });
     registry.create('redraw-sess', 'tmux_redraw-sess');
-    // Alt-screen providers (agy/opencode/copilot) keep the redraw jiggle — state intent
+    // Alt-screen providers (opencode/copilot) keep the redraw jiggle — state intent
     // explicitly so the assertion can't pass vacuously under the non-alt-screen default.
     setUsesAlternateScreen(sessionTerminalRuntime, true);
     const client = createMockSocket('client-redraw');

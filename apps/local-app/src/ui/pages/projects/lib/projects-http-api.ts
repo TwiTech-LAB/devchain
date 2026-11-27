@@ -226,7 +226,10 @@ export class ProjectsHttpApi implements ProjectsPageApi {
     }
   }
 
-  async loadSetupPreview(request: SetupPreviewRequest): Promise<SetupPreviewResponse> {
+  async loadSetupPreview(
+    request: SetupPreviewRequest,
+    backend: BackendId = HOME_BACKEND,
+  ): Promise<SetupPreviewResponse> {
     const response = await apiFetch(
       '/api/projects/setup-preview',
       {
@@ -234,7 +237,7 @@ export class ProjectsHttpApi implements ProjectsPageApi {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(request),
       },
-      { backend: HOME_BACKEND },
+      { backend },
     );
     if (!response.ok) {
       const error = await response
@@ -243,6 +246,19 @@ export class ProjectsHttpApi implements ProjectsPageApi {
       throw new Error(error.message || 'Failed to load template preview');
     }
     return response.json() as Promise<SetupPreviewResponse>;
+  }
+
+  async readHomeTemplateContent(
+    slug: string,
+    version?: string | null,
+  ): Promise<Record<string, unknown>> {
+    const path = version
+      ? `/api/templates/${encodeURIComponent(slug)}/versions/${encodeURIComponent(version)}`
+      : `/api/templates/${encodeURIComponent(slug)}`;
+    const response = await apiFetch(path, undefined, { backend: HOME_BACKEND });
+    if (!response.ok) throw new Error(await serverFailureMessage(response));
+    const body = (await response.json()) as { content: Record<string, unknown> };
+    return body.content;
   }
 
   async loadUpgradePreview(
@@ -295,8 +311,16 @@ export class ProjectsHttpApi implements ProjectsPageApi {
     );
   }
 
-  commitImport(projectId: string, input: Record<string, unknown>): Promise<ImportProjectResponse> {
-    return postConfiguredReplace(`/api/projects/${encodeURIComponent(projectId)}/import`, input);
+  commitImport(
+    projectId: string,
+    input: Record<string, unknown>,
+    backend?: BackendId,
+  ): Promise<ImportProjectResponse> {
+    return postConfiguredReplace(
+      `/api/projects/${encodeURIComponent(projectId)}/import`,
+      input,
+      backend,
+    );
   }
 
   commitUpgrade(

@@ -4,11 +4,18 @@ import {
   HOST_LIFECYCLE_KINDS,
   isOpenShareOperation,
 } from '@/modules/remotes/operations/remote-operation.types';
+import { FILE_SYNC_STATUS_UNREADABLE } from '@/modules/remotes/sync/file-sync-status.dto';
 import { isStuckFileSyncProblem } from '@/modules/remotes/sync/remote-file-sync.dto';
-import type { RemoteNoticeDto, RemoteOperationDto } from './lib/remote-vm-contracts';
+import type {
+  FileSyncStatusScope,
+  PendingCount,
+  RemoteNoticeDto,
+  RemoteOperationDto,
+} from './lib/remote-vm-contracts';
 import type { RemoteProjectBindingRow } from '@/ui/lib/backend-provider';
 import type { StatusTone } from '@/ui/lib/status-tone';
 import { providerName } from './login-choices';
+import { SYNC_VERDICT_LABELS, SYNC_VERDICT_TONES } from './file-sync-display';
 
 /**
  * The state of every VM and project on the Remote VMs page. Pure: the page
@@ -34,6 +41,10 @@ export interface StatusInput {
   newestProjectOperations?: ReadonlyMap<string, RemoteOperationDto>;
   /** When this page last sent Power on, per VM, in epoch ms. */
   poweredOnAt?: ReadonlyMap<string, number>;
+  /** The measured file sync status of each project on a VM, by project id. */
+  syncScopes?: ReadonlyMap<string, FileSyncStatusScope>;
+  /** The last read of the measured status failed, so `syncScopes` is an old answer. */
+  syncReadFailed?: boolean;
   now?: number;
   formatTime?: (iso: string) => string;
 }
@@ -48,6 +59,8 @@ export interface StatusContext {
   readonly projectNames: ReadonlyMap<string, string>;
   readonly newestProjectOperations: ReadonlyMap<string, RemoteOperationDto>;
   readonly poweredOnAt: ReadonlyMap<string, number>;
+  readonly syncScopes: ReadonlyMap<string, FileSyncStatusScope>;
+  readonly syncReadFailed: boolean;
   readonly now: number;
   readonly formatTime: (iso: string) => string;
 }
@@ -70,6 +83,8 @@ export function createStatusContext(input: StatusInput): StatusContext {
     projectNames: input.projectNames ?? new Map(),
     newestProjectOperations: input.newestProjectOperations ?? new Map(),
     poweredOnAt: input.poweredOnAt ?? new Map(),
+    syncScopes: input.syncScopes ?? new Map(),
+    syncReadFailed: input.syncReadFailed ?? false,
     now: input.now ?? Date.now(),
     formatTime: input.formatTime ?? ((iso) => new Date(iso).toLocaleString()),
   };
@@ -524,18 +539,65 @@ export function colonFingerprint(fingerprint: string): string {
   return fingerprint.match(/.{2}/g)?.join(':') ?? fingerprint;
 }
 
-/** The note and tone of a project on a VM: the first problem, else "Files in sync". */
+/** "N to the VM, M from the VM", leaving out a direction with nothing pending or unknown. */
+function pendingDirections(scope: FileSyncStatusScope): string {
+  const part = (pending: PendingCount | null, direction: string) =>
+    pending && pending.items > 0 ? [`${pending.items} ${direction}`] : [];
+  return [...part(scope.toVm, 'to the VM'), ...part(scope.fromVm, 'from the VM')].join(', ');
+}
+
+/**
+ * The note and tone of the measured file sync status; no scope means no answer yet.
+ * After a failed read the kept scope is an old answer, so the note names the failure.
+ */
+function measuredSyncNote(
+  scope: FileSyncStatusScope | undefined,
+  readFailed: boolean,
+): [string, StatusTone] {
+  if (readFailed) return [FILE_SYNC_STATUS_UNREADABLE, 'warn'];
+  if (!scope) return ['Checking file sync…', 'neutral'];
+  return [measuredSyncText(scope), SYNC_VERDICT_TONES[scope.verdict]];
+}
+
+/** The text of a measured file sync status, the same in the project rows and the File sync tab. */
+export function measuredSyncText(scope: FileSyncStatusScope): string {
+  switch (scope.verdict) {
+    case 'in-sync':
+      return 'Files in sync';
+    case 'syncing':
+    case 'waiting': {
+      const label = SYNC_VERDICT_LABELS[scope.verdict];
+      const pending = pendingDirections(scope);
+      return pending ? `${label}: ${pending}` : label;
+    }
+    case 'busy':
+      return scope.reason ?? 'File sync is busy.';
+    case 'unknown':
+    case 'disconnected':
+    case 'problem':
+      return scope.reason ?? 'File sync needs attention.';
+  }
+}
+
+/**
+ * The note and tone of a project on a VM: the first problem, else the measured status.
+ * The VM checks rank before the cached upkeep warning because upkeep does not run while
+ * the VM is offline, rejects the API key or runs another version, so the warning is old.
+ */
 function remoteProjectNote(
   binding: RemoteProjectBindingRow,
   remote: RemoteListItemDto | undefined,
   vm: string,
+  scope: FileSyncStatusScope | undefined,
+  syncReadFailed: boolean,
 ): [string, StatusTone] {
   if (binding.syncError) return [`Sync failed: ${binding.syncError}`, 'error'];
-  if (binding.fileSyncWarning) return [binding.fileSyncWarning, 'warn'];
   if (remote?.apiKeyRejected) return ['API key rejected', 'error'];
   if (!remote?.online) return ['VM offline', 'warn'];
   if (!remote.versionMatches) return [`Blocked until ${vm} is updated`, 'warn'];
-  return ['Files in sync', 'ok'];
+  if (binding.fileSyncWarning) return [binding.fileSyncWarning, 'warn'];
+  // The summary polls apart from the bindings, so after a rebind it can still describe the old VM.
+  return measuredSyncNote(scope?.remoteId === binding.remoteId ? scope : undefined, syncReadFailed);
 }
 
 /** The cleanup error a cancelled Connect recorded, when it recorded one. */
@@ -632,7 +694,13 @@ export function projectStatus(projectId: string, ctx: StatusContext): ProjectSta
 
   if (binding?.state === 'remote') {
     const vm = remoteName(ctx, binding.remoteId);
-    const [note, tone] = remoteProjectNote(binding, ctx.remotesById.get(binding.remoteId), vm);
+    const [note, tone] = remoteProjectNote(
+      binding,
+      ctx.remotesById.get(binding.remoteId),
+      vm,
+      ctx.syncScopes.get(projectId),
+      ctx.syncReadFailed,
+    );
     return {
       state: 'remote',
       label: `On ${vm}`,
@@ -886,6 +954,16 @@ export function attentionItems(
       action: canFixFileSync(binding)
         ? { kind: 'fix-file-sync', label: 'Fix', projectId: binding.projectId }
         : null,
+    });
+  }
+
+  for (const binding of ctx.bindingByProject.values()) {
+    if (!binding.gitRecoveryWarning) continue;
+    items.push({
+      key: `git-recovery:${binding.projectId}`,
+      tone: 'warn',
+      text: sentence(`${projectName(ctx, binding.projectId)}: ${binding.gitRecoveryWarning}`),
+      action: null,
     });
   }
 

@@ -16,6 +16,7 @@ const AGENTS: AgentOrGuest[] = [
     name: 'Alpha',
     type: 'agent',
     isProjectOwner: false,
+    disabled: false,
   },
   {
     profileId: null,
@@ -25,6 +26,7 @@ const AGENTS: AgentOrGuest[] = [
     name: 'Zulu',
     type: 'agent',
     isProjectOwner: true,
+    disabled: false,
   },
 ];
 const PRESENCE: AgentPresenceMap = {
@@ -92,6 +94,7 @@ describe('useAgentConsoleUiState', () => {
         name: 'Zulu',
         type: 'agent',
         isProjectOwner: false,
+        disabled: false,
       },
       {
         profileId: null,
@@ -101,6 +104,7 @@ describe('useAgentConsoleUiState', () => {
         name: 'Alpha',
         type: 'agent',
         isProjectOwner: false,
+        disabled: false,
       },
       {
         profileId: null,
@@ -110,6 +114,7 @@ describe('useAgentConsoleUiState', () => {
         name: 'Alpha',
         type: 'agent',
         isProjectOwner: false,
+        disabled: false,
       },
     ];
     const { result } = renderHook(() => useSubject({ agents }), {
@@ -130,6 +135,7 @@ describe('useAgentConsoleUiState', () => {
         name: 'Next',
         type: 'agent',
         isProjectOwner: false,
+        disabled: false,
       },
       {
         profileId: null,
@@ -139,6 +145,7 @@ describe('useAgentConsoleUiState', () => {
         name: 'Other',
         type: 'agent',
         isProjectOwner: false,
+        disabled: false,
       },
     ];
     const { result, rerender } = renderHook(
@@ -166,6 +173,50 @@ describe('useAgentConsoleUiState', () => {
 
     await waitFor(() => expect(result.current.state.selectedAgentId).toBeNull());
     expect(result.current.search).toBe('');
+  });
+
+  it('clears a selection that becomes disabled and keeps it clear until the user selects', async () => {
+    const { result, rerender } = renderHook((props: SubjectOptions) => useSubject(props), {
+      wrapper: buildWrapper('/chat?agent=agent-1'),
+      initialProps: {} as SubjectOptions,
+    });
+    expect(result.current.state.selectedAgentId).toBe('agent-1');
+    expect(result.current.state.showInlineTerminal).toBe(true);
+
+    const disabledRoster = AGENTS.map((a) => (a.id === 'agent-1' ? { ...a, disabled: true } : a));
+    rerender({ agents: disabledRoster });
+    // No terminal content for the disabled agent, also before the URL clears.
+    expect(result.current.state.selectedAgent).toBeNull();
+    expect(result.current.state.showInlineTerminal).toBe(false);
+    await waitFor(() => expect(result.current.state.selectedAgentId).toBeNull());
+
+    // agent-2 is enabled and online; later roster and presence updates must not select it.
+    rerender({ agents: [...disabledRoster], agentPresence: { ...PRESENCE } });
+    await act(async () => {});
+    expect(result.current.state.selectedAgentId).toBeNull();
+    expect(result.current.state.showInlineTerminal).toBe(false);
+    expect(result.current.search).toBe('');
+
+    act(() => result.current.state.handleSelectAgent('agent-2'));
+    await waitFor(() => expect(result.current.state.selectedAgentId).toBe('agent-2'));
+    expect(result.current.state.showInlineTerminal).toBe(true);
+  });
+
+  it('falls back to the first enabled agent when the selected agent is deleted', async () => {
+    const { result, rerender } = renderHook((props: SubjectOptions) => useSubject(props), {
+      wrapper: buildWrapper('/chat?agent=agent-1'),
+      initialProps: {} as SubjectOptions,
+    });
+    rerender({ agents: AGENTS.filter((a) => a.id !== 'agent-1') });
+    await waitFor(() => expect(result.current.state.selectedAgentId).toBe('agent-2'));
+  });
+
+  it('clears the selection when every agent is disabled', async () => {
+    const agents = AGENTS.map((a) => ({ ...a, disabled: true }));
+    const { result } = renderHook(() => useSubject({ agents }), {
+      wrapper: buildWrapper('/chat?agent=agent-1'),
+    });
+    await waitFor(() => expect(result.current.state.selectedAgentId).toBeNull());
   });
 
   it('keys terminal session state by the selected agent and follows presence changes', async () => {

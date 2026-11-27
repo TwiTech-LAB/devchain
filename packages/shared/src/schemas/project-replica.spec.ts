@@ -4,7 +4,12 @@
  * payloads is the cheapest reliable layer for accepted and rejected shapes.
  */
 
-import { ProjectReplicaV1Schema, ReplicaProviderSettingsRowSchema } from './project-replica';
+import {
+  ProjectReplicaV1Schema,
+  ReplicaAgentRowSchema,
+  ReplicaProviderSettingsRowSchema,
+  ReplicaSessionRowSchema,
+} from './project-replica';
 
 const now = '2026-09-22T10:00:00.000Z';
 
@@ -426,5 +431,121 @@ describe('provider env wire contract', () => {
         false,
       );
     }
+  });
+});
+
+describe('agent disabled wire contract', () => {
+  const agent = {
+    id: 'agent-1',
+    project_id: 'project-1',
+    is_project_owner: 0,
+    profile_id: 'profile-1',
+    provider_config_id: 'config-1',
+    model_override: null,
+    effort_override: null,
+    name: 'Coder',
+    description: null,
+    created_at: now,
+    updated_at: now,
+  };
+
+  it.each([
+    ['without the column (older sender)', {}],
+    ['with the column', { disabled: 1 }],
+  ])('accepts an agent row %s', (_name, extra) => {
+    expect(ReplicaAgentRowSchema.safeParse({ ...agent, ...extra }).success).toBe(true);
+  });
+});
+
+describe('session inherited ids wire contract', () => {
+  const fullId = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
+  const session = {
+    id: 'session-1',
+    parent_session_id: null,
+    kind: 'session',
+    epic_id: null,
+    agent_id: 'agent-1',
+    tmux_session_id: null,
+    status: 'stopped',
+    started_at: now,
+    ended_at: null,
+    last_activity_at: null,
+    activity_state: null,
+    busy_since: null,
+    transcript_path: null,
+    name: null,
+    provider_session_id: null,
+    provider_name_at_launch: null,
+    size_bytes: null,
+    created_at: now,
+    updated_at: now,
+  };
+
+  it.each<[string, string | null, boolean]>([
+    ['null', null, true],
+    ['an array of full ids', JSON.stringify([fullId(0), fullId(1)]), true],
+    ['an array with a short id', JSON.stringify([fullId(0), 'session-1']), false],
+    ['malformed JSON', '["session-0"', false],
+    ['a JSON object', '{}', false],
+  ])('parses %s', (_name, inherited_session_ids, accepted) => {
+    expect(ReplicaSessionRowSchema.safeParse({ ...session, inherited_session_ids }).success).toBe(
+      accepted,
+    );
+  });
+});
+
+describe('VM link tables', () => {
+  const link = {
+    id: 'link-1',
+    epic_id: 'epic-1',
+    project_id: project.id,
+    connection_id: null,
+    provider: 'jira',
+    remote_scope_key: 'site',
+    remote_task_id: 'J-1',
+    source_snapshot: '{"remoteKey":"J-1"}',
+    created_at: 'T',
+    updated_at: 'T',
+  };
+  const receipt = {
+    id: 'r-1',
+    seq: 1,
+    kind: 'release',
+    project_id: project.id,
+    epic_id: 'epic-1',
+    link_id: 'link-1',
+    provider: 'jira',
+    remote_scope_key: 'site',
+    remote_task_id: 'J-1',
+    created_at: 'T',
+  };
+  const live = (tables: Record<string, unknown>) =>
+    ProjectReplicaV1Schema.safeParse({
+      ...envelope,
+      scope: 'live',
+      tables: { ...liveTables, ...tables },
+    }).success;
+
+  it('accepts both tables together, or neither from an older or unseeded VM', () => {
+    expect(live({ external_task_links: [link], external_link_receipts: [receipt] })).toBe(true);
+    expect(live({})).toBe(true);
+  });
+
+  it.each([
+    ['links without receipts', { external_task_links: [link] }],
+    ['receipts without links', { external_link_receipts: [receipt] }],
+    [
+      'a managed recognition link',
+      {
+        external_task_links: [{ ...link, source_snapshot: '{"managedProjectionId":"p-1"}' }],
+        external_link_receipts: [],
+      },
+    ],
+    [
+      'a snapshot that is not a JSON object',
+      { external_task_links: [{ ...link, source_snapshot: '[]' }], external_link_receipts: [] },
+    ],
+  ])('rejects %s', (_label, tables) => {
+    expect(live(tables)).toBe(false);
   });
 });

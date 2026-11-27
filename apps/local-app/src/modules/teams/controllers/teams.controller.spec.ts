@@ -35,6 +35,7 @@ function makeAgent(id: string): Agent {
     id,
     projectId: PROJECT_ID,
     isProjectOwner: false,
+    disabled: false,
     profileId: 'profile-1',
     providerConfigId: 'config-1',
     modelOverride: null,

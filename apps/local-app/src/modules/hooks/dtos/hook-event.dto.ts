@@ -64,6 +64,15 @@ const claudeMetaFields = {
   transcriptPath: z.string().max(1000).optional(),
 } as const;
 
+/**
+ * When the provider fired the hook, stamped by the relay (epoch ms). The relays post turn hooks
+ * without waiting, so two may arrive out of order; the stamp keeps them ordered. The stamp also
+ * identifies a hook from a runtime that a rollback replaced (`HooksService.fenceRuntime`).
+ */
+const firedAtFields = {
+  firedAtMs: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).optional(),
+} as const;
+
 export const SessionStartHookSchema = z
   .object({
     hookEventName: z.literal('SessionStart'),
@@ -73,24 +82,17 @@ export const SessionStartHookSchema = z
      * Devin: "startup" | "resume".
      */
     source: z.string().min(1),
+    ...firedAtFields,
     ...claudeMetaFields,
     ...claudeSessionIdOptional,
     ...baseInjectedFields,
   })
   .strict();
 
-/**
- * When the provider fired a turn hook, stamped by the relay (epoch ms). The relays post these
- * hooks without waiting, so two may arrive out of order; the stamp keeps them ordered.
- */
-const turnHookFields = {
-  firedAtMs: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).optional(),
-} as const;
-
 export const UserPromptSubmitHookSchema = z
   .object({
     hookEventName: z.literal('UserPromptSubmit'),
-    ...turnHookFields,
+    ...firedAtFields,
     ...claudeMetaFields,
     ...claudeSessionIdOptional,
     ...baseInjectedFields,
@@ -102,7 +104,7 @@ export const StopHookSchema = z
     hookEventName: z.literal('Stop'),
     /** Why the turn ended (e.g. Copilot "end_turn"). Optional — providers may omit it. */
     stopReason: z.string().min(1).optional(),
-    ...turnHookFields,
+    ...firedAtFields,
     ...claudeMetaFields,
     ...claudeSessionIdOptional,
     ...baseInjectedFields,
@@ -118,6 +120,7 @@ export const PreToolUseHookSchema = z
     toolInput: z.record(z.unknown()),
     /** Claude tool-use id correlating Pre/Post for the same call. */
     toolUseId: z.string().min(1),
+    ...firedAtFields,
     ...claudeMetaFields,
     ...claudeSessionIdRequired,
     ...baseInjectedFields,
@@ -132,6 +135,7 @@ export const PostToolUseHookSchema = z
     toolUseId: z.string().min(1),
     /** Tool response — string or object; relay size-caps large values. */
     toolResponse: z.union([z.string(), z.record(z.unknown())]).optional(),
+    ...firedAtFields,
     ...claudeMetaFields,
     ...claudeSessionIdRequired,
     ...baseInjectedFields,

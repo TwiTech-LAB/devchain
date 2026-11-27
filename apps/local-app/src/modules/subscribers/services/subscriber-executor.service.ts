@@ -31,6 +31,7 @@ import { renderTemplate } from '../../../common/template/handlebars-renderer';
 import { buildPromptRenderContext } from '../../../common/template/prompt-render-context';
 import { TeamsService } from '../../teams/services/teams.service';
 import { ProjectWriteGate } from '../../storage/write-gate/project-write-gate';
+import { HooksService } from '../../hooks/services/hooks.service';
 
 /**
  * Summary result of scheduling subscribers for an event (not execution).
@@ -106,7 +107,14 @@ export class SubscriberExecutorService implements OnModuleInit, OnModuleDestroy 
     private readonly teamsService: TeamsService,
     private readonly moduleRef: ModuleRef,
     private readonly gate: ProjectWriteGate,
+    private readonly hooks: HooksService,
   ) {}
+
+  /** True for an event that a hook of a runtime replaced by a rollback produced. */
+  private firedByReplacedRuntime(payload: SubscribableEventPayload): boolean {
+    const firedAtMs = typeof payload.firedAtMs === 'number' ? payload.firedAtMs : undefined;
+    return this.hooks.firedBeforeFence(payload.sessionId, firedAtMs);
+  }
 
   private getSessionRuntime(): SessionRuntime {
     if (!this.sessionRuntimeRef) {
@@ -963,7 +971,23 @@ export class SubscriberExecutorService implements OnModuleInit, OnModuleDestroy 
       logger: this.logger,
     };
 
-    // 7. Execute the action
+    // 7. Execute the action. A task can wait for its delay across a rollback, so the hook fence
+    // is checked here, with nothing awaited before the action starts.
+    if (this.firedByReplacedRuntime(payload)) {
+      this.logger.debug(
+        { subscriberId: subscriber.id, sessionId },
+        'Event came from a hook of a replaced runtime, skipping execution',
+      );
+      return {
+        subscriberId: subscriber.id,
+        subscriberName: subscriber.name,
+        actionType: subscriber.actionType,
+        success: false,
+        durationMs: Date.now() - startTime,
+        skipped: true,
+        skipReason: 'superseded_runtime',
+      };
+    }
     let actionResult;
     try {
       actionResult = await action.execute(context, resolvedInputs);
@@ -995,23 +1019,31 @@ export class SubscriberExecutorService implements OnModuleInit, OnModuleDestroy 
       );
       await new Promise((resolve) => setTimeout(resolve, 1000));
 
-      try {
-        const retryResult = await action.execute(context, resolvedInputs);
-
-        if (!retryResult.success) {
-          this.logger.warn(
-            { subscriberId: subscriber.id, error: retryResult.error },
-            'Retry also failed',
-          );
-        } else {
-          this.logger.debug({ subscriberId: subscriber.id }, 'Retry succeeded');
-          actionResult = retryResult; // Use retry result if successful
-        }
-      } catch (retryError) {
-        this.logger.error(
-          { subscriberId: subscriber.id, error: String(retryError) },
-          'Retry threw an error',
+      // A rollback can set the hook fence during the delay.
+      if (this.firedByReplacedRuntime(payload)) {
+        this.logger.debug(
+          { subscriberId: subscriber.id, sessionId },
+          'Event came from a hook of a replaced runtime, skipping retry',
         );
+      } else {
+        try {
+          const retryResult = await action.execute(context, resolvedInputs);
+
+          if (!retryResult.success) {
+            this.logger.warn(
+              { subscriberId: subscriber.id, error: retryResult.error },
+              'Retry also failed',
+            );
+          } else {
+            this.logger.debug({ subscriberId: subscriber.id }, 'Retry succeeded');
+            actionResult = retryResult; // Use retry result if successful
+          }
+        } catch (retryError) {
+          this.logger.error(
+            { subscriberId: subscriber.id, error: String(retryError) },
+            'Retry threw an error',
+          );
+        }
       }
     }
 

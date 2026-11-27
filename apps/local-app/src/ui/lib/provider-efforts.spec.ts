@@ -1,11 +1,13 @@
 import { QueryClient, QueryObserver } from '@tanstack/react-query';
 import {
+  launchModelOf,
   providerEffortQueries,
   providerEffortQueryKeys,
   selectProviderEffortNames,
   selectProviderEffortOptions,
   type ProviderEffortsResponse,
 } from './provider-efforts';
+import { providerModelQueryKeys } from './provider-model-query-keys';
 
 const catalog: ProviderEffortsResponse = {
   efforts: ['low', ' high ', ' '].map((name, index) => ({
@@ -25,7 +27,7 @@ describe('provider efforts resource', () => {
   it('loads through Preset options and serves wizard names while retaining raw management row IDs', async () => {
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     const fetchFn = jest.fn(async () => ({ ok: true, json: async () => catalog }) as Response);
-    const options = providerEffortQueries.catalog(fetchFn, 'provider/one');
+    const options = providerEffortQueries.catalog(fetchFn, 'provider/one', 'home');
     const preset = new QueryObserver(queryClient, {
       ...options,
       staleTime: 5 * 60 * 1000,
@@ -72,7 +74,7 @@ describe('provider efforts resource', () => {
             json: async () => ({ message: 'Provider not found' }),
           }) as Response,
       );
-      const options = providerEffortQueries.catalog(fetchFn, 'provider/one');
+      const options = providerEffortQueries.catalog(fetchFn, 'provider/one', 'home');
       try {
         if (existing) queryClient.setQueryData(options.queryKey, existing);
         await expect(queryClient.fetchQuery({ ...options, staleTime: 0 })).rejects.toMatchObject({
@@ -93,18 +95,48 @@ describe('provider efforts resource', () => {
     },
   );
 
-  it('invalidates every provider catalog with the shared root', async () => {
+  it('keys each catalog by backend and invalidates every backend with the shared roots', async () => {
     const queryClient = new QueryClient();
-    const keys = ['provider/one', 'provider-two'].map(providerEffortQueryKeys.catalog);
+    const effortKeys = [
+      providerEffortQueryKeys.catalog('provider/one', 'home'),
+      providerEffortQueryKeys.catalog('provider/one', 'remote-1'),
+      providerEffortQueryKeys.catalog('provider-two', 'home'),
+    ];
+    const modelKeys = [
+      providerModelQueryKeys.main('provider/one', 'home'),
+      providerModelQueryKeys.main('provider/one', 'remote-1'),
+    ];
     try {
-      keys.forEach((key) => queryClient.setQueryData(key, catalog));
+      expect(effortKeys[1]).toEqual(['provider-efforts', 'provider/one', 'remote-1']);
+      expect(modelKeys[1]).toEqual(['provider-models', 'main', 'provider/one', 'remote-1']);
+      [...effortKeys, ...modelKeys].forEach((key) => queryClient.setQueryData(key, catalog));
       await queryClient.invalidateQueries({ queryKey: providerEffortQueryKeys.all });
-      expect(keys.map((key) => queryClient.getQueryState(key)?.isInvalidated)).toEqual([
-        true,
-        true,
-      ]);
+      await queryClient.invalidateQueries({ queryKey: providerModelQueryKeys.all });
+      expect(
+        [...effortKeys, ...modelKeys].map((key) => queryClient.getQueryState(key)?.isInvalidated),
+      ).toEqual([true, true, true, true, true]);
     } finally {
       queryClient.clear();
     }
+  });
+});
+
+describe('launchModelOf', () => {
+  it.each([
+    [
+      'the agent override first',
+      'a/agent',
+      { model: 'a/config', options: '--model a/raw' },
+      'a/agent',
+    ],
+    ['the config model next', null, { model: 'a/config', options: '--model a/raw' }, 'a/config'],
+    ['the raw --model last', null, { model: null, options: '--yolo --model a/raw' }, 'a/raw'],
+    ['the raw -m= form', undefined, { options: '-m=a/raw' }, 'a/raw'],
+    ['null for unparsable options', null, { model: null, options: '--model "a/raw' }, null],
+    ['null for an empty --model=', null, { model: null, options: '--model=' }, null],
+    ['null with no source', null, { model: null, options: '--yolo' }, null],
+    ['null with no config', null, undefined, null],
+  ])('returns %s', (_case, override, config, expected) => {
+    expect(launchModelOf(override, config)).toBe(expected);
   });
 });

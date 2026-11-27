@@ -22,6 +22,7 @@ import type {
   VaultUseFamilyApproval,
 } from '../../models/domain.models';
 import { BaseStorageDelegate, type StorageDelegateContext } from './base-storage.delegate';
+import { familyKey } from '../../sessions/session-row.store';
 
 const logger = createLogger('VaultEntryStorageDelegate');
 
@@ -62,10 +63,6 @@ function familyMatched(alias: 'a' | 'g'): string {
  */
 const ACCESS_COVERS_FAMILY = '(a.family_slug IS NULL OR a.family_slug = @familySlug)';
 
-function normalizedFamily(familySlug: string | null): string | null {
-  return familySlug?.trim().toLowerCase() || null;
-}
-
 /** A profile of the row's project has the row's (normalized) family slug. */
 function profileHasFamily(alias: 'a' | 'g' | 'u'): string {
   return `EXISTS (
@@ -76,7 +73,7 @@ function profileHasFamily(alias: 'a' | 'g' | 'u'): string {
 
 /** An approval always names one family: an agent without a family is never approved by family. */
 function requireApprovalFamily(familySlug: string): string {
-  const slug = normalizedFamily(familySlug);
+  const slug = familyKey(familySlug);
   if (!slug) {
     throw new ValidationError('A family approval needs a family.', {
       code: 'VAULT_APPROVAL_FAMILY_INVALID',
@@ -340,7 +337,7 @@ export class VaultEntryStorageDelegate extends BaseStorageDelegate implements Va
            SUM(CASE WHEN ${ACCESS_COVERS_FAMILY} THEN 1 ELSE 0 END) AS covering
          FROM vault_family_access a WHERE a.project_id = @projectId`,
       )
-      .get({ projectId, familySlug: normalizedFamily(familySlug) }) as {
+      .get({ projectId, familySlug: familyKey(familySlug) }) as {
       total: number;
       covering: number | null;
     };
@@ -400,7 +397,7 @@ export class VaultEntryStorageDelegate extends BaseStorageDelegate implements Va
            )
          ORDER BY e.name, e.project_id IS NULL`,
       )
-      .all({ projectId, familySlug: normalizedFamily(familySlug) }) as Array<SnapshotEntryRow>;
+      .all({ projectId, familySlug: familyKey(familySlug) }) as Array<SnapshotEntryRow>;
     const byName = new Map<string, VaultResolvedEntry>();
     // Rows come project-owned first within each name, so the first row per name wins.
     for (const row of rows) {

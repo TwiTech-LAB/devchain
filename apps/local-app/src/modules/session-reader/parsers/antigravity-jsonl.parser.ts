@@ -87,6 +87,8 @@ export interface AntigravityParseOptions {
   maxMessages?: number;
   includeToolCalls?: boolean;
   maxToolOutputChars?: number;
+  /** Tool call whose output is kept whole; every other output keeps `maxToolOutputChars`. */
+  fullOutputToolCallId?: string;
   /** Reserved for cost calculation once P1-4 supplies token usage. */
   pricingService?: PricingServiceInterface;
 }
@@ -247,6 +249,7 @@ export function parseAntigravitySteps(
             messages,
             pendingToolCalls,
             maxToolOutputChars,
+            options?.fullOutputToolCallId,
             nextId,
             parentOf,
             ts,
@@ -325,18 +328,19 @@ function foldToolResult(
   messages: UnifiedMessage[],
   pendingToolCalls: Array<{ messageIndex: number; toolCallId: string }>,
   maxToolOutputChars: number,
+  fullOutputToolCallId: string | undefined,
   nextId: () => string,
   parentOf: () => string | null,
   ts: Date,
 ): void {
   const isError = step.status === 'ERROR' || step.status === 'FAILED';
-  const {
-    content: outContent,
-    isTruncated,
-    fullLength,
-  } = capOutput(step.content ?? '', maxToolOutputChars);
-
   const pending = pendingToolCalls.shift();
+  const maxChars =
+    pending && pending.toolCallId === fullOutputToolCallId
+      ? Number.POSITIVE_INFINITY
+      : maxToolOutputChars;
+  const { content: outContent, isTruncated, fullLength } = capOutput(step.content ?? '', maxChars);
+
   if (pending) {
     const owner = messages[pending.messageIndex];
     const block: UnifiedContentBlock = {

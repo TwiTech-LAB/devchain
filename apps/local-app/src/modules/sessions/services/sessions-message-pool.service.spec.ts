@@ -40,7 +40,7 @@ describe('SessionsMessagePoolService', () => {
   let mockSettings: jest.Mocked<
     Pick<SettingsService, 'getMessagePoolConfig' | 'getMessagePoolConfigForProject'>
   >;
-  let mockStorage: jest.Mocked<Pick<StorageService, 'getAgent'>>;
+  let mockStorage: jest.Mocked<Pick<StorageService, 'getAgent' | 'isAgentDisabled'>>;
   let mockActivityStream: jest.Mocked<MessageActivityStreamService>;
   let mockProviderAdapterFactory: jest.Mocked<
     Pick<ProviderAdapterFactory, 'getRuntimePromptBehaviorForAgent'>
@@ -126,6 +126,7 @@ describe('SessionsMessagePoolService', () => {
     };
 
     mockStorage = {
+      isAgentDisabled: jest.fn().mockReturnValue(false),
       getAgent: jest.fn().mockResolvedValue(createMockAgent()),
     };
 

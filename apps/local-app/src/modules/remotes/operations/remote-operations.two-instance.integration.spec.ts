@@ -261,6 +261,7 @@ describe('remote operations between two instances', () => {
         'docker_create_host',
         'bind_remote',
         'vault_push',
+        'integrations_push',
         'thaw_host',
         'thaw_lanes',
         'start_live_sync',

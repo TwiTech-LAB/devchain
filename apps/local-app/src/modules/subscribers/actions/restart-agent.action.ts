@@ -74,7 +74,9 @@ export const restartAgentAction: ActionDefinition = {
       if (inputAgentName && inputAgentName.trim()) {
         // Resolve agentName to agentId within the project
         try {
-          const agent = await storage.getAgentByName(projectId, inputAgentName.trim());
+          const agent = await storage.getAgentByName(projectId, inputAgentName.trim(), {
+            excludeDisabled: true,
+          });
           resolvedAgentId = agent.id;
           resolvedAgentProjectId = agent.projectId;
           resolvedBy = 'agentName';
@@ -122,6 +124,9 @@ export const restartAgentAction: ActionDefinition = {
       }
 
       // 4. Perform restart
+      // Refuse before the terminate so a refused launch never leaves the agent stopped.
+      await sessionRuntime.verifyAgentProvider(resolvedAgentId, projectId);
+
       // Terminate and launch each acquire the per-agent lock internally and in
       // sequence. Never wrap restart in an outer/composite lock: the coordinator
       // is non-reentrant.
@@ -139,10 +144,11 @@ export const restartAgentAction: ActionDefinition = {
           { sessionId: existingSession.id, agentId: resolvedAgentId },
           'Terminating existing session before restart',
         );
-        await sessionsService.terminateSession(existingSession.id, {
-          source: 'subscriber',
-          reason: 'restart',
-        });
+        await sessionsService.terminateSession(
+          existingSession.id,
+          { source: 'subscriber', reason: 'restart' },
+          { expectedAgentId: resolvedAgentId },
+        );
       }
 
       // Launch new independent session (no epicId)

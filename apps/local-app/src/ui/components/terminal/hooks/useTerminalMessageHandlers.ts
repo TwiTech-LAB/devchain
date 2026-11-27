@@ -4,6 +4,7 @@ import type { FitAddon } from '@xterm/addon-fit';
 import type { Socket } from 'socket.io-client';
 import { type WsEnvelope } from '@/ui/lib/socket';
 import { termLog } from '@/ui/lib/debug';
+import { bumpTerminalAttachRevision } from '@/ui/lib/terminal-attach-revision';
 import { DEFAULT_TERMINAL_SCROLLBACK } from '@/common/constants/terminal';
 import { resolveTerminalSocket } from '../socket';
 import { useTerminalWritePump } from './useTerminalWritePump';
@@ -31,7 +32,7 @@ interface BufferedFrame {
 
 interface SessionStatePayload {
   sessionId: string;
-  status: 'started' | 'ended' | 'crashed' | 'timeout';
+  status: 'started' | 'ended' | 'crashed' | 'timeout' | 'restarted';
   message?: string;
 }
 
@@ -566,6 +567,10 @@ export function useTerminalMessageHandlers(
       const handleSessionStateChange: Handler<SessionStatePayload> = safe(
         'session_state_change',
         (statePayload) => {
+          if (statePayload.status === 'restarted') {
+            bumpTerminalAttachRevision(sessionId);
+            return;
+          }
           if (statePayload.status === 'crashed' || statePayload.status === 'ended') {
             queueOrWrite(
               `\r\n\u001b[31m[Session ${statePayload.status}: ${

@@ -2296,7 +2296,7 @@ describe('ProvidersPage - CLI versions section and managed Binary Path', () => {
     renderWithQuery(<ProvidersPage />);
     const path = '/home/user/.local/share/devchain/provider-clis/bin/claude';
     if (managed) {
-      await screen.findByText('Managed by DevChain');
+      await screen.findByText('Auto-update');
       expect(screen.queryByText(path)).not.toBeInTheDocument();
     } else expect(await screen.findByText(path)).toBeInTheDocument();
   });
@@ -2406,7 +2406,7 @@ describe('ProvidersPage - CLI versions section and managed Binary Path', () => {
     hangOverviewRefetchAfterFirstLoad();
     renderWithQuery(<ProvidersPage />);
 
-    await waitFor(() => expect(screen.getByText('Managed by DevChain')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText('Auto-update')).toBeInTheDocument());
     await saveCustomBinaryPathViaOwnInstallDialog();
     await openTab('CLI versions');
 
@@ -2435,7 +2435,7 @@ describe('ProvidersPage - CLI versions section and managed Binary Path', () => {
     );
     renderWithQuery(<ProvidersPage />);
 
-    await waitFor(() => expect(screen.getByText('Managed by DevChain')).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText('Auto-update')).toBeInTheDocument());
     await saveCustomBinaryPathViaOwnInstallDialog();
     await openTab('CLI versions');
 

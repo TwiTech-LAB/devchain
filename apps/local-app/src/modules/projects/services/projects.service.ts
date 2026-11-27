@@ -167,7 +167,12 @@ export class ProjectsService {
   ) {}
 
   private get presetDeps() {
-    return { storage: this.storage, settings: this.settings, teamsService: this.teamsService };
+    return {
+      storage: this.storage,
+      settings: this.settings,
+      teamsService: this.teamsService,
+      eventsService: this.eventsService,
+    };
   }
 
   /** The create and import pipelines apply a stored preset through this one entry. */
@@ -217,7 +222,7 @@ export class ProjectsService {
       computeNextRunAt: getNextRunAt,
       applyPreset: this.applyPresetInPipeline,
       applyAgentConfigs: (projectId, agentConfigs, nameMaps) =>
-        applyAgentConfigs(projectId, agentConfigs, { storage: this.storage }, nameMaps),
+        applyAgentConfigs(projectId, agentConfigs, this.presetDeps, nameMaps),
     });
 
     if (result?.success && result.project && !('providerMappingRequired' in result)) {
@@ -298,7 +303,7 @@ export class ProjectsService {
         ),
       getImportErrorMessage,
       applyAgentConfigs: (projectId, agentConfigs, nameMaps) =>
-        applyAgentConfigs(projectId, agentConfigs, { storage: this.storage }, nameMaps),
+        applyAgentConfigs(projectId, agentConfigs, this.presetDeps, nameMaps),
       applyPreset: this.applyPresetInPipeline,
       teamsService: this.teamsService,
       scheduledEpicsRefresh: this.scheduledEpicRunnerRefresh,

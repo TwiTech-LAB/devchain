@@ -1,3 +1,4 @@
+import { storageCredentialSource } from '../connections/integration-credential-source';
 import type { JiraIntegrationCredentials } from '../../storage/models/domain.models';
 import type { StorageService } from '../../storage/interfaces/storage.interface';
 import { JiraProviderError } from '../errors/external-provider.errors';
@@ -309,6 +310,7 @@ describe('Jira My Work capability', () => {
     const service = new ExternalMyWorkService(
       storage as unknown as StorageService,
       new ExternalTaskProviderRegistry([provider]),
+      storageCredentialSource(storage as unknown as StorageService),
     );
 
     await expect(

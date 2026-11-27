@@ -394,6 +394,7 @@ describe('tool-descriptors', () => {
       ],
       projects: ['devchain_projects_list'],
       vault: ['devchain_vault_list', 'devchain_vault_request'],
+      externalTask: ['devchain_external_tasks_get'],
       team: [
         'devchain_teams_list',
         'devchain_teams_members_list',

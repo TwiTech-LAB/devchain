@@ -2,6 +2,7 @@ import { RemoteApiKeyManagementService } from '../auth/remote-api-key-management
 import { RemoteApiKeyService } from '../auth/remote-api-key.service';
 import { RemoteFileSyncService } from '../sync/remote-file-sync.service';
 import { RemoteLiveSyncService } from '../sync/remote-live-sync.service';
+import { HomeGitRecoveryService } from '../git-writes/home-git-recovery.service';
 import { Test, TestingModule } from '@nestjs/testing';
 import { ZodError } from 'zod';
 import { NotFoundError } from '../../../common/errors/error-types';
@@ -165,6 +166,7 @@ describe('RemotesController', () => {
         },
         { provide: RemoteFileSyncService, useValue: files },
         { provide: RemoteLiveSyncService, useValue: liveSync },
+        { provide: HomeGitRecoveryService, useValue: { bindingWarnings: () => new Map() } },
         { provide: STORAGE_SERVICE, useValue: storage },
         { provide: REMOTE_HEALTH_PORT, useValue: remoteHealth },
         { provide: RemoteHostClient, useValue: hostClient },

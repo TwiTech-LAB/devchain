@@ -1,9 +1,10 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
-import { cp, mkdir, stat } from 'node:fs/promises';
+import { cp, lstat, mkdir, mkdtemp, rename, rm, writeFile } from 'node:fs/promises';
 import { hostname } from 'node:os';
-import { dirname, join } from 'node:path';
+import { join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
+import { AppError } from '../../../common/errors/error-types';
 import { createLogger } from '../../../common/logging/logger';
 import { FILE_SYNC_PATHS, type FileSyncPaths } from '../../file-sync/file-sync-paths';
 import { gitIgnores } from '../../file-sync/file-sync.dto';
@@ -17,16 +18,25 @@ import { GitService } from '../../git/services/git.service';
 import { ProcessExecutor } from '../../terminal/services/process-executor/process-executor.port';
 import { GitCoordinatorIndexService } from '../git-coordinator/git-coordinator-index.service';
 import type { GitCoordinatorRecord, GitFence } from '../git-coordinator/git-coordinator.dto';
-import { internalGitEnv, missingObjects, refsDigest } from '../git-coordinator/git-checkpoint';
+import {
+  exportIndexSnapshot,
+  internalGitEnv,
+  missingObjects,
+  refsDigest,
+  unsupportedRefStorage,
+} from '../git-coordinator/git-checkpoint';
 import { DEFAULT_GIT_COORDINATOR_TIMINGS } from '../git-coordinator/git-coordinator.service';
 import { GitOwnerStore } from '../git-owner.store';
 import { RemoteHostClient } from '../operations/remote-host.client';
 import { RemoteLiveSyncService } from '../sync/remote-live-sync.service';
 import { hostErrorCode } from '../transport/host-transport';
 import { waitForChangeBarrier } from './change-barrier';
+import { RECOVERY_MARKER, gitBackupRoot } from './home-git-recovery-refs';
 import {
   HomeGitTransitions,
   gitReclaimPending,
+  isHomeGitSuperseded,
+  type HomeGitStepDownContext,
   type HomeGitTransitionContext,
 } from './home-git-transitions';
 
@@ -72,7 +82,7 @@ export class HomeGitHandoverService extends HomeGitTransitions {
     await this.live.runExclusive(context.projectId, () => this.runHandover(context));
   }
 
-  async stepDown(context: HomeGitTransitionContext): Promise<void> {
+  async stepDown(context: HomeGitStepDownContext): Promise<void> {
     await this.live.runExclusive(context.projectId, () => this.runStepDown(context));
   }
 
@@ -80,46 +90,60 @@ export class HomeGitHandoverService extends HomeGitTransitions {
     const { projectId, remoteId, signal, writeId } = context;
     if (!writeId) throw new Error('A Git handover needs the home write it is for');
     const steps = new StepTimer('handover', projectId);
-    const lease = new LeaseRenewal(this.host, remoteId, projectId, this.timings.renewMs);
+    const reclaimed = new AbortController();
+    const lease = new LeaseRenewal(this.host, remoteId, projectId, this.timings.renewMs, reclaimed);
+    const beforeFlip = AbortSignal.any([signal, reclaimed.signal]);
     let record = context.record;
+    let handoverId = record.transition?.id;
     let rereads = 0;
     try {
       for (;;) {
+        reclaimed.signal.throwIfAborted();
+        if (handoverId && record.supersededHandovers?.includes(handoverId))
+          throw homeGitSuperseded();
         const transition = record.transition;
+        if (transition?.kind === 'handover') handoverId = transition.id;
         if (transition?.kind === 'handover' && record.homeWrites[writeId] !== undefined)
           context.published?.(record);
         if (transition && transition.kind !== 'handover') throw gitReclaimPending();
-        if (!transition && record.owner === 'home') break;
+        if (!transition) {
+          lease.stop();
+          if (record.owner === 'home') break;
+        }
         const fence: GitFence = {
           expectedGeneration: record.generation,
           transitionId: transition?.id ?? null,
         };
+        if (transition) lease.keep(fence);
         try {
           if (!transition) {
-            signal.throwIfAborted();
+            beforeFlip.throwIfAborted();
+            const id = randomUUID();
+            context.started?.(id);
+            handoverId = id;
             record = await steps.run('begin', () =>
               this.host.handoverBegin(remoteId, projectId, {
                 ...fence,
-                id: randomUUID(),
+                id,
                 homeName: hostname(),
               }),
             );
           } else if (transition.phase === 'draining') {
-            lease.keep(fence);
             if (!transition.sequences) {
               record = await steps.run('drain', () =>
-                this.drain(remoteId, projectId, fence, signal),
+                this.drain(remoteId, projectId, fence, beforeFlip),
               );
               continue;
             }
             const sequences = transition.sequences;
-            await steps.run('barrier', () => this.barrier(remoteId, projectId, sequences));
+            await steps.run('barrier', () =>
+              this.barrier(remoteId, projectId, sequences, reclaimed.signal),
+            );
             // The last moment a lost supervisor can still abort: after this, finish forward.
-            signal.throwIfAborted();
+            beforeFlip.throwIfAborted();
             record = await steps.run('vm-receiving', () =>
               this.host.handoverPhase(remoteId, projectId, { ...fence, phase: 'vm-receiving' }),
             );
-            lease.stop();
           } else if (transition.phase === 'vm-receiving') {
             record = await steps.run('home-sending', () =>
               this.host.handoverPhase(remoteId, projectId, { ...fence, phase: 'home-sending' }),
@@ -140,7 +164,9 @@ export class HomeGitHandoverService extends HomeGitTransitions {
               }),
             );
           } else {
-            await steps.run('home-finish', () => this.finish(remoteId, projectId, transition.id));
+            await steps.run('home-finish', () =>
+              this.finish(remoteId, projectId, fence, transition.id),
+            );
             record = await steps.run('complete', () =>
               this.host.handoverComplete(remoteId, projectId, fence),
             );
@@ -155,8 +181,10 @@ export class HomeGitHandoverService extends HomeGitTransitions {
       steps.done();
     } catch (error) {
       lease.stop();
-      await this.abortBeforeFlip(remoteId, projectId, record);
-      throw error;
+      const failure: unknown = reclaimed.signal.aborted ? reclaimed.signal.reason : error;
+      if (isHomeGitSuperseded(failure)) context.superseded?.();
+      else await this.abortBeforeFlip(remoteId, projectId, record);
+      throw failure;
     }
   }
 
@@ -187,18 +215,21 @@ export class HomeGitHandoverService extends HomeGitTransitions {
     remoteId: string,
     projectId: string,
     sequences: Record<string, number>,
+    signal: AbortSignal,
   ): Promise<void> {
     const self = this.files.device().deviceId;
     const gitId = projectFolderId(projectId, 'git');
     return waitForChangeBarrier({
       sequences,
-      needed: (folderId, sequence) =>
-        this.host.syncRemoteNeedThrough(remoteId, folderId, self, sequence),
+      needed: (folderId, sequence) => {
+        signal.throwIfAborted();
+        return this.host.syncRemoteNeedThrough(remoteId, folderId, self, sequence);
+      },
       receiver: (folderId) => this.files.status(folderId, undefined, { allErrors: true }),
       revert: { folderId: gitId, send: () => this.files.revertLocalChanges(gitId) },
       timeoutMs: this.timings.barrierMs,
       pollMs: this.timings.barrierPollMs,
-      sleep,
+      sleep: (ms) => sleep(ms, undefined, { signal }),
     });
   }
 
@@ -206,14 +237,26 @@ export class HomeGitHandoverService extends HomeGitTransitions {
    * The PC side after the VM published home ownership: guard off, VM worktree branches
    * protected, then the VM's index installed so staged entries move with Git.
    */
-  private async finish(remoteId: string, projectId: string, handoverId: string): Promise<void> {
+  private async finish(
+    remoteId: string,
+    projectId: string,
+    fence: GitFence,
+    handoverId: string,
+  ): Promise<void> {
+    const record = await this.host.gitCoordinatorStatus(remoteId, projectId);
+    if (record.supersededHandovers?.includes(handoverId)) throw homeGitSuperseded();
+    if (record.generation !== fence.expectedGeneration || record.transition?.id !== handoverId)
+      throw gitReclaimPending();
     const removed = await this.guard.remove(projectId, {
       refreshIndex: false,
       failOnReadError: true,
     });
     if (removed.warning) throw new Error(removed.warning);
-    const { worktreeBranches } = await this.host.gitCoordinatorStatus(remoteId, projectId);
-    const unprotected = await this.guard.protectBranches(projectId, remoteId, worktreeBranches);
+    const unprotected = await this.guard.protectBranches(
+      projectId,
+      remoteId,
+      record.worktreeBranches,
+    );
     if (unprotected) logger.warn({ projectId }, unprotected);
     const root = await this.files.folderPath(projectId);
     await this.indexes.save(
@@ -257,15 +300,36 @@ export class HomeGitHandoverService extends HomeGitTransitions {
     }
   }
 
-  private async runStepDown({ projectId, remoteId, record }: HomeGitTransitionContext) {
+  private async runStepDown({
+    projectId,
+    remoteId,
+    record,
+    preserveSuperseded,
+    startedAt = Date.now(),
+    settled,
+    signal,
+  }: HomeGitStepDownContext) {
     const steps = new StepTimer('step-down', projectId);
     const gitId = projectFolderId(projectId, 'git');
     const guardWarning = await steps.run('guard', () => this.guard.install(projectId, remoteId));
     if (guardWarning) logger.warn({ projectId }, guardWarning);
     const root = await this.files.folderPath(projectId);
     const digest = await refsDigest(this.executor, root);
-    if (digest !== record.checkpoint?.refsDigest) {
-      const backup = await steps.run('backup', () => this.backup(projectId, root));
+    const backups = gitBackupRoot(this.paths, projectId);
+    const backup = join(backups, new Date(startedAt).toISOString().replace(/[:.]/g, '-'));
+    // A retry can start after the VM has already replaced the backed-up refs and index.
+    const saved = await exists(join(backup, RECOVERY_MARKER));
+    const needsBackup = saved || preserveSuperseded || digest !== record.checkpoint?.refsDigest;
+    if (needsBackup) {
+      if (!saved)
+        await steps.run('backup', () =>
+          this.backup(backups, backup, root, {
+            projectId,
+            remoteId,
+            pcName: hostname(),
+            createdAt: startedAt,
+          }),
+        );
       logger.warn(
         { projectId, backup },
         'Git on this PC changed after its last confirmed write; its refs and objects were backed up before the VM copy replaces them',
@@ -278,45 +342,98 @@ export class HomeGitHandoverService extends HomeGitTransitions {
         paused: false,
       }),
     );
+    const override = () =>
+      this.host.syncOverride(remoteId, gitId, {
+        expectedGeneration: record.generation,
+        transitionId: null,
+      });
+    if (needsBackup) {
+      // Revert cannot remove changes this PC already advertised while it was send-only.
+      await steps.run('override', override);
+    }
     const self = this.files.device().deviceId;
+    let lastOverrideAt = Date.now();
     await steps.run('settle', () =>
       this.files.waitForComplete(gitId, {
-        sender: () => this.host.syncStatus(remoteId, gitId, self),
+        sender: async () => {
+          const status = await this.host.syncStatus(remoteId, gitId, self);
+          // The VM may learn about this PC's last send-only files after the first Override.
+          if (
+            needsBackup &&
+            status.state === 'idle' &&
+            status.needTotalItems > 0 &&
+            Date.now() - lastOverrideAt >= this.timings.retryMs
+          ) {
+            signal.throwIfAborted();
+            lastOverrideAt = Date.now();
+            await override();
+          }
+          return status;
+        },
         receiver: async () => {
           const status = await this.files.status(gitId);
           if (status.receiveOnlyChangedFiles > 0) {
             const source = await this.host.syncStatus(remoteId, gitId, self);
-            if (senderTransferred(source, status)) await this.files.revertLocalChanges(gitId);
+            if (source.needTotalItems === 0 && senderTransferred(source, status))
+              await this.files.revertLocalChanges(gitId);
           }
           return status;
         },
         requireNoReceiveOnlyChanges: true,
         timeoutMs: this.timings.settleMs,
         pollIntervalMs: this.timings.barrierPollMs,
+        signal,
         sides: { sender: 'the VM', receiver: 'this PC' },
       }),
     );
     await steps.run('index', () => this.git.refreshIndexFromHead(projectId, root));
+    settled?.();
     this.owners.remember(projectId, record);
     steps.done();
   }
 
-  /** Copies HEAD, refs, packed-refs and objects under `~/.devchain/backups/git/`. */
-  private async backup(projectId: string, root: string): Promise<string> {
-    const target = join(
-      dirname(this.paths.syncthingHome()),
-      'backups',
-      'git',
-      projectId,
-      new Date().toISOString().replace(/[:.]/g, '-'),
-    );
-    await mkdir(target, { recursive: true, mode: 0o700 });
-    for (const name of ['HEAD', 'packed-refs', 'refs', 'objects']) {
-      const source = join(root, '.git', name);
-      if (await exists(source)) await cp(source, join(target, name), { recursive: true });
+  private async backup(
+    backups: string,
+    target: string,
+    root: string,
+    recovery: { projectId: string; remoteId: string; pcName: string; createdAt: number },
+  ): Promise<void> {
+    const storage = await unsupportedRefStorage(this.executor, root);
+    if (storage !== undefined)
+      throw new Error(`Git backup does not support ref storage ${JSON.stringify(storage)}`);
+    await mkdir(backups, { recursive: true, mode: 0o700 });
+    const staging = await mkdtemp(join(backups, '.backup-'));
+    try {
+      for (const name of [
+        'HEAD',
+        'packed-refs',
+        'refs',
+        'reftable',
+        'objects',
+        'config',
+        'shallow',
+      ]) {
+        const source = join(root, '.git', name);
+        // Git reads legacy symbolic-link refs relative to the repository, even when unborn.
+        if (await exists(source))
+          await cp(source, join(staging, name), { recursive: true, verbatimSymlinks: true });
+      }
+      const index = await exportIndexSnapshot(this.executor, root);
+      await writeFile(join(staging, 'index'), index, { mode: 0o600 });
+      await writeFile(
+        join(staging, RECOVERY_MARKER),
+        JSON.stringify({ ...recovery, state: 'pending' }),
+        { mode: 0o600 },
+      );
+      await rename(staging, target);
+    } finally {
+      await rm(staging, { recursive: true, force: true });
     }
-    return target;
   }
+}
+
+function homeGitSuperseded(): AppError {
+  return new AppError('The VM took Git back from this PC', 'GIT_HOME_WRITE_SUPERSEDED', 409);
 }
 
 /** Debug timings per step and in total. */
@@ -348,7 +465,7 @@ class StepTimer {
   }
 }
 
-/** Renews the VM's pre-flip lease while home waits; a renewal failure lets the lease run out. */
+/** Keeps the VM's handover lease alive until home finishes the move. */
 class LeaseRenewal {
   private timer?: NodeJS.Timeout;
   private fence?: GitFence;
@@ -358,9 +475,10 @@ class LeaseRenewal {
     private readonly remoteId: string,
     private readonly projectId: string,
     private readonly everyMs: number,
+    private readonly reclaimed: AbortController,
   ) {}
 
-  /** A new transition after a reread restarts the renewals with its own id. */
+  /** Publishing and rereading the VM record can change the fence while the handover runs. */
   keep(fence: GitFence): void {
     if (
       this.timer &&
@@ -372,6 +490,10 @@ class LeaseRenewal {
     this.fence = fence;
     this.timer = setInterval(() => {
       this.host.handoverRenew(this.remoteId, this.projectId, fence).catch((error: unknown) => {
+        if (isHomeGitSuperseded(error)) {
+          if (this.fence === fence) this.reclaimed.abort(error);
+          return;
+        }
         logger.warn({ error, projectId: this.projectId }, 'Git handover lease renewal failed');
       });
     }, this.everyMs);
@@ -387,7 +509,7 @@ class LeaseRenewal {
 
 async function exists(path: string): Promise<boolean> {
   try {
-    await stat(path);
+    await lstat(path);
     return true;
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;

@@ -1,6 +1,7 @@
 import { ImportContext } from '../import-context';
 import type { CodecApplyRuntime } from '../template-section-codec';
-import { agentsCodec } from './agents.codec';
+import { agentsCodec, buildExportAgents } from './agents.codec';
+import { createMockAgent } from '../../../../../test/factories/agent';
 
 // The codec boundary can reproduce a missing persisted option with another option still available.
 it('refuses to substitute an option for a preserved agent when the planned option cannot be bound', async () => {
@@ -38,4 +39,13 @@ it('refuses to substitute an option for a preserved agent when the planned optio
     ),
   ).rejects.toThrow('No provider config available for agent Worker');
   expect(createAgent).not.toHaveBeenCalled();
+});
+
+// The disabled state is a temporary user setting and must not travel in templates.
+it('exports a disabled agent without the disabled field', () => {
+  const agent = createMockAgent({ disabled: true });
+
+  const [exported] = buildExportAgents({ items: [agent] }, new Map());
+
+  expect(exported).not.toHaveProperty('disabled');
 });

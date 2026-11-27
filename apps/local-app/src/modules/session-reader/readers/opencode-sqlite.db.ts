@@ -12,7 +12,11 @@
 import Database from 'better-sqlite3';
 import { NotFoundError, ValidationError } from '../../../common/errors/error-types';
 import { createLogger } from '../../../common/logging/logger';
-import type { UnifiedMetrics, UnifiedSession } from '../dtos/unified-session.types';
+import type {
+  UnifiedMetrics,
+  UnifiedSession,
+  UnifiedToolResult,
+} from '../dtos/unified-session.types';
 import type { PricingServiceInterface } from '../services/pricing.interface';
 
 type DatabaseInstance = Database.Database;
@@ -114,6 +118,12 @@ export interface OpencodeCandidateQuery {
 export interface OpencodeTranscriptReader {
   readSession(dbPath: string, providerSessionId: string): OpencodeSessionRead;
   readSummary(dbPath: string, providerSessionId: string): OpencodeSummaryRead;
+  /** One tool result without the output cap; null when the session no longer holds it. */
+  readToolResult(
+    dbPath: string,
+    providerSessionId: string,
+    toolCallId: string,
+  ): UnifiedToolResult | null;
   getFreshness(dbPath: string, providerSessionId: string): OpencodeFreshness;
   findSessionCandidates(dbPath: string, params: OpencodeCandidateQuery): OpencodeSessionCandidate[];
 }

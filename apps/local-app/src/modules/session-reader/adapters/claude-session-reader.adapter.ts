@@ -2,6 +2,8 @@ import { Inject, Injectable, Logger } from '@nestjs/common';
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import * as os from 'node:os';
+import { createInterface } from 'node:readline';
+import type { Readable } from 'node:stream';
 import type {
   SessionReaderAdapter,
   SessionDiscoveryContext,
@@ -19,13 +21,81 @@ import {
   type ClaudeContinuationState,
 } from '../parsers/claude-turn-evidence';
 import { PRICING_SERVICE, type PricingServiceInterface } from '../services/pricing.interface';
+import { PROVIDER_TRANSCRIPT_SOURCE_KINDS } from '../services/transcript-path-validator.service';
 import { isSyncthingMarker } from '../../../common/constants/syncthing-markers';
+import { isRecord } from '../../providers/adapters/plugin-catalog.utils';
 
 const CLAUDE_ROOT = '.claude/projects/';
+
+/** Claude Code shortens workspace directories over 200 characters with a hash of the original path. */
+export function encodeClaudeProjectPath(projectRoot: string): string {
+  const encoded = projectRoot.replace(/[^a-zA-Z0-9]/g, '-');
+  if (encoded.length <= 200) return encoded;
+  let hash = 0;
+  for (let index = 0; index < projectRoot.length; index += 1) {
+    hash = ((hash << 5) - hash + projectRoot.charCodeAt(index)) | 0;
+  }
+  return `${encoded.slice(0, 200)}-${Math.abs(hash).toString(36)}`;
+}
+
+/** Claude's notice in a tool result whose full output it saved to a companion file. */
+const PERSISTED_OUTPUT_NOTICE = /^\s*<persisted-output>\n[^\n]*\bsaved to: ([^\n]+)/;
+/**
+ * Claude's error for an MCP result over the token limit. The match needs the full error prefix:
+ * ordinary tool output can also say "Output has been saved to". The sentence ends with a period.
+ */
+const OVERSIZED_RESULT_NOTICE =
+  /^\s*Error: result \([^)\n]*\) exceeds maximum allowed tokens\. Output has been saved to ([^\n]+?)\.?(?:\n|$)/;
+
+/** A tool result's content is one string or a list of text parts. */
+function toolResultTexts(content: unknown): string[] {
+  if (typeof content === 'string') return [content];
+  if (!Array.isArray(content)) return [];
+  return content.flatMap((part) =>
+    isRecord(part) && typeof part.text === 'string' ? [part.text] : [],
+  );
+}
+
+/**
+ * Yields each companion file path that a transcript names. Claude records a saved tool output
+ * in the structured `toolUseResult.persistedOutputPath` (Bash), and as a notice in the
+ * `tool_result` text when `toolUseResult` is a list or a string. The caller validates each path.
+ */
+export async function* readClaudeToolResultPaths(stream: Readable): AsyncGenerator<string> {
+  const lines = createInterface({ input: stream, crlfDelay: Infinity });
+  for await (const line of lines) {
+    if (!line.includes('"persistedOutputPath"') && !line.includes('saved to')) continue;
+    let record: unknown;
+    try {
+      record = JSON.parse(line);
+    } catch (error) {
+      if (!(error instanceof SyntaxError)) throw error;
+      continue;
+    }
+    if (!isRecord(record) || record.type !== 'user') continue;
+
+    const paths = new Set<string>();
+    const structured = isRecord(record.toolUseResult)
+      ? record.toolUseResult.persistedOutputPath
+      : undefined;
+    if (typeof structured === 'string') paths.add(structured);
+    const content = isRecord(record.message) ? record.message.content : undefined;
+    for (const block of Array.isArray(content) ? content : []) {
+      if (!isRecord(block) || block.type !== 'tool_result') continue;
+      for (const text of toolResultTexts(block.content)) {
+        const target =
+          PERSISTED_OUTPUT_NOTICE.exec(text)?.[1] ?? OVERSIZED_RESULT_NOTICE.exec(text)?.[1];
+        if (target) paths.add(target.trim());
+      }
+    }
+    yield* paths;
+  }
+}
 
 @Injectable()
 export class ClaudeSessionReaderAdapter implements SessionReaderAdapter {
   readonly providerName = 'claude';
+  readonly sourceKind = PROVIDER_TRANSCRIPT_SOURCE_KINDS[this.providerName];
   readonly incrementalMode = 'delta' as const;
   readonly allowedRoots: string[];
   private readonly logger = new Logger(ClaudeSessionReaderAdapter.name);
@@ -58,7 +128,7 @@ export class ClaudeSessionReaderAdapter implements SessionReaderAdapter {
     }
 
     // Fallback: encode project path and scan directory
-    const encodedDir = this.encodeProjectPath(context.projectRoot);
+    const encodedDir = encodeClaudeProjectPath(context.projectRoot);
     const scanDir = path.join(this.homeDir, CLAUDE_ROOT, encodedDir);
 
     try {
@@ -161,7 +231,7 @@ export class ClaudeSessionReaderAdapter implements SessionReaderAdapter {
    * Get filesystem paths to watch for session changes.
    */
   getWatchPaths(projectRoot: string): string[] {
-    const encodedDir = this.encodeProjectPath(projectRoot);
+    const encodedDir = encodeClaudeProjectPath(projectRoot);
     return [path.join(this.homeDir, CLAUDE_ROOT, encodedDir)];
   }
 
@@ -234,23 +304,6 @@ export class ClaudeSessionReaderAdapter implements SessionReaderAdapter {
   // ---------------------------------------------------------------------------
   // Private helpers
   // ---------------------------------------------------------------------------
-
-  /**
-   * Encode project root path to Claude Code's directory naming scheme: every
-   * character outside [a-zA-Z0-9] becomes "-", and a result over 200 characters
-   * is truncated with a base-36 hash of the ORIGINAL path appended (Claude Code
-   * 2.1.280). Matching Claude exactly is what makes fallback discovery and the
-   * watcher look in the folder Claude actually writes.
-   */
-  private encodeProjectPath(projectRoot: string): string {
-    const encoded = projectRoot.replace(/[^a-zA-Z0-9]/g, '-');
-    if (encoded.length <= 200) return encoded;
-    let hash = 0;
-    for (let index = 0; index < projectRoot.length; index += 1) {
-      hash = ((hash << 5) - hash + projectRoot.charCodeAt(index)) | 0;
-    }
-    return `${encoded.slice(0, 200)}-${Math.abs(hash).toString(36)}`;
-  }
 
   private async statFile(filePath: string): Promise<SessionFileInfo | null> {
     try {

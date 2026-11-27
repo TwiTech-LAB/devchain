@@ -52,6 +52,7 @@ export interface RemoteProjectBindingRow {
   fileSyncWarning?: string;
   fileSyncProblem?: FileSyncProblem | null;
   fileSyncFailed?: FileSyncFailedCounts;
+  gitRecoveryWarning?: string;
 }
 
 export function toBindingMap(rows: readonly RemoteProjectBindingRow[] | undefined) {

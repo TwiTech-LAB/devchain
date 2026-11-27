@@ -681,6 +681,7 @@ it('excludes every start-empty bind on both peers before resetting, preserving h
     {} as never,
     git,
     { get: () => 'vm', fence: () => ({ expectedGeneration: 0, transitionId: null }) } as never,
+    {} as never,
   );
   const prepare = host.dockerPrepareBinds.bind(host);
   const prepareBinds = jest

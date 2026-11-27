@@ -9,7 +9,14 @@ import { SessionApiError } from '@/ui/lib/sessions';
  * `docs/ui-session-lifecycle-matrix.md`.
  */
 
-export type LifecycleAction = 'launching' | 'restarting' | 'terminating';
+export type LifecycleAction =
+  | 'launching'
+  | 'restarting'
+  | 'terminating'
+  | 'restoring'
+  | 'saving'
+  | 'forking'
+  | 'rollingBack';
 
 // ============================================
 // SessionApiError classification
@@ -42,12 +49,46 @@ export function getMcpProviderDetails(error: unknown): {
  * restore rows of the lifecycle matrix.
  */
 export function restoreConflictTitle(error: unknown): string {
+  // A 403, unlike the conflicts below.
+  if (error instanceof SessionApiError && error.hasCode('SESSION_FAMILY_MISMATCH')) {
+    return "Session is outside this agent's family";
+  }
+  // Validation failures, unlike the conflicts below.
+  if (error instanceof SessionApiError && error.hasCode('CONFIG_NOT_FOUND')) {
+    return 'Provider config not found';
+  }
+  if (error instanceof SessionApiError && error.hasCode('CONFIG_PROFILE_MISMATCH')) {
+    return "Provider config is outside this agent's profile";
+  }
   if (error instanceof SessionApiError && error.status === 409) {
+    if (error.hasCode('SESSION_RUNNING_ON_OTHER_AGENT'))
+      return 'Session is running on another agent';
+    if (error.hasCode('SESSION_LINEAGE_RUNNING')) return 'A related session is running';
     if (error.hasCode('PROVIDER_MISMATCH')) return 'Provider mismatch';
+    if (error.hasCode('SWITCH_CONFIG_PROVIDER_MISMATCH')) return 'Provider config changed';
     if (error.hasCode('NO_PROVIDER_SESSION_ID')) return 'Cannot restore';
     if (error.hasCode('INVALID_SESSION_STATE')) return 'Invalid session state';
+    if (error.hasCode('SAVE_POINT_NOT_RESTORABLE')) return 'Cannot restore a save point';
+    if (error.hasCode('RUNNING_SESSION_CHANGED')) return 'Running session changed';
   }
   return 'Restore failed';
+}
+
+export function savePointConflictTitle(error: unknown, fallback: string): string {
+  if (error instanceof SessionApiError && error.status === 409) {
+    if (error.hasCode('SESSION_NOT_RUNNING')) return 'Session is no longer running';
+    if (error.hasCode('SESSION_BUSY')) return 'Agent is busy';
+    if (error.hasCode('NO_PROVIDER_SESSION_ID')) return 'Session transcript unavailable';
+    if (error.hasCode('INVALID_SESSION_STATE')) return 'Invalid session state';
+    if (error.hasCode('PROVIDER_MISMATCH')) return 'Provider mismatch';
+    if (error.hasCode('SAVE_POINTS_UNSUPPORTED_PROVIDER')) return 'Save points unavailable';
+    if (error.hasCode('SAVE_POINTS_TEAM_MEMBER')) return 'Save points unavailable for team members';
+    if (error.hasCode('RUNNING_SESSION_CHANGED')) return 'Running session changed';
+    if (error.hasCode('SAVE_POINT_NOT_OF_SESSION')) {
+      return 'Save point does not belong to this session';
+    }
+  }
+  return fallback;
 }
 
 // ============================================

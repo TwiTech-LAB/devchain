@@ -1,3 +1,4 @@
+import { storageCredentialSource } from '../connections/integration-credential-source';
 import type { StorageService } from '../../storage/interfaces/storage.interface';
 import type { JiraIntegrationCredentials } from '../../storage/models/domain.models';
 import { JiraProviderError } from '../errors/external-provider.errors';
@@ -697,6 +698,7 @@ describe('Jira task detail and workflow actions', () => {
     const service = new ExternalMyWorkService(
       storage as unknown as StorageService,
       new ExternalTaskProviderRegistry([provider]),
+      storageCredentialSource(storage as unknown as StorageService),
     );
 
     await expect(service.getTaskDetail('project-1', 'jira', 'ENG-1')).resolves.toEqual(

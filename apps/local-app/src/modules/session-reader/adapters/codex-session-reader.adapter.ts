@@ -2,6 +2,8 @@ import { Inject, Injectable, Logger } from '@nestjs/common';
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import * as os from 'node:os';
+import { createInterface } from 'node:readline';
+import type { Readable } from 'node:stream';
 import type {
   SessionReaderAdapter,
   SessionDiscoveryContext,
@@ -15,10 +17,62 @@ import type { UnifiedMetrics, UnifiedSession } from '../dtos/unified-session.typ
 import type { TranscriptTurnState } from '../../events/signals/session-turn-signals';
 import { parseCodexJsonl, type TokenSnapshot } from '../parsers/codex-jsonl.parser';
 import { PRICING_SERVICE, type PricingServiceInterface } from '../services/pricing.interface';
+import { PROVIDER_TRANSCRIPT_SOURCE_KINDS } from '../services/transcript-path-validator.service';
 import { isSyncthingMarker } from '../../../common/constants/syncthing-markers';
 
 const CODEX_ROOT = '.codex/sessions/';
 const PROVIDER_SESSION_ID_HEAD_BYTES = 8 * 1024;
+const THREAD_ID = '[\\da-f]{8}-[\\da-f]{4}-[\\da-f]{4}-[\\da-f]{4}-[\\da-f]{12}';
+const threadIdPattern = new RegExp(`^${THREAD_ID}$`, 'i');
+const rolloutPattern = new RegExp(`rollout-\\d{4}-\\d{2}-\\d{2}T[\\d-]+-(${THREAD_ID})$`, 'i');
+
+type CodexSessionMeta = {
+  id?: unknown;
+  timestamp?: unknown;
+  cwd?: unknown;
+  history_base?: { thread_id?: unknown } | null;
+};
+
+function parseCodexMetaLine(line: string): CodexSessionMeta | undefined {
+  try {
+    const entry = JSON.parse(line) as { type?: unknown; payload?: CodexSessionMeta } | null;
+    if (entry?.type === 'session_meta') return entry.payload;
+  } catch {
+    return undefined;
+  }
+}
+
+export function codexRolloutSessionId(filePath: string): string | null {
+  return rolloutPattern.exec(path.basename(filePath, '.jsonl'))?.[1] ?? null;
+}
+
+export interface CodexRolloutHeader {
+  providerSessionId?: string;
+  workspacePath?: string;
+  /** Null when the rollout declares a history base without a valid thread ID. */
+  historyBaseId?: string | null;
+}
+
+export async function readCodexRolloutHeader(
+  stream: Readable,
+): Promise<CodexRolloutHeader | undefined> {
+  const lines = createInterface({ input: stream, crlfDelay: Infinity });
+  for await (const line of lines) {
+    const meta = parseCodexMetaLine(line);
+    if (!meta) return undefined;
+    const base = meta.history_base;
+    return {
+      providerSessionId: typeof meta.id === 'string' ? meta.id.toLowerCase() : undefined,
+      workspacePath: typeof meta.cwd === 'string' ? meta.cwd : undefined,
+      historyBaseId:
+        base == null
+          ? undefined
+          : typeof base.thread_id === 'string' && threadIdPattern.test(base.thread_id)
+            ? base.thread_id.toLowerCase()
+            : null,
+    };
+  }
+}
 
 export interface CodexFileMetadata {
   providerSessionId: string | null;
@@ -38,32 +92,15 @@ function parseCodexSessionMeta(content: string): TranscriptCandidateMetadata {
     return {};
   }
 
-  try {
-    const entry = JSON.parse(content.slice(0, firstNewline)) as {
-      type?: unknown;
-      payload?: {
-        id?: unknown;
-        timestamp?: unknown;
-        cwd?: unknown;
-      };
-    };
-    if (entry.type !== 'session_meta') {
-      return {};
-    }
+  const meta = parseCodexMetaLine(content.slice(0, firstNewline));
+  if (!meta) return {};
+  const { id, timestamp, cwd } = meta;
 
-    const id = entry.payload?.id;
-    const timestamp = entry.payload?.timestamp;
-    const cwd = entry.payload?.cwd;
-
-    return {
-      providerSessionId: typeof id === 'string' && id.trim().length > 0 ? id : undefined,
-      timestamp:
-        typeof timestamp === 'string' && timestamp.trim().length > 0 ? timestamp : undefined,
-      workspacePath: typeof cwd === 'string' && cwd.trim().length > 0 ? cwd : undefined,
-    };
-  } catch {
-    return {};
-  }
+  return {
+    providerSessionId: typeof id === 'string' && id.trim().length > 0 ? id : undefined,
+    timestamp: typeof timestamp === 'string' && timestamp.trim().length > 0 ? timestamp : undefined,
+    workspacePath: typeof cwd === 'string' && cwd.trim().length > 0 ? cwd : undefined,
+  };
 }
 
 /**
@@ -84,6 +121,7 @@ export function extractCodexMetadataFromContent(content: string): CodexFileMetad
 @Injectable()
 export class CodexSessionReaderAdapter implements SessionReaderAdapter {
   readonly providerName = 'codex';
+  readonly sourceKind = PROVIDER_TRANSCRIPT_SOURCE_KINDS[this.providerName];
   readonly incrementalMode = 'delta' as const;
   readonly reportsContextWindow = true as const;
   readonly allowedRoots: string[];
@@ -113,7 +151,7 @@ export class CodexSessionReaderAdapter implements SessionReaderAdapter {
       if (info) {
         const providerSessionId =
           (await this.extractProviderSessionIdFromFile(info.filePath)) ??
-          this.extractSessionId(info.filePath);
+          codexRolloutSessionId(info.filePath);
         if (providerSessionId) {
           info.providerSessionId = providerSessionId;
         }
@@ -238,7 +276,7 @@ export class CodexSessionReaderAdapter implements SessionReaderAdapter {
     // Use session ID from file or extract from filename. Keep basename as a final
     // display-safe fallback for malformed legacy files whose parser produced no id.
     const id =
-      result.sessionId ?? this.extractSessionId(filePath) ?? path.basename(filePath, '.jsonl');
+      result.sessionId ?? codexRolloutSessionId(filePath) ?? path.basename(filePath, '.jsonl');
 
     return {
       id,
@@ -321,19 +359,6 @@ export class CodexSessionReaderAdapter implements SessionReaderAdapter {
   // ---------------------------------------------------------------------------
 
   /**
-   * Extract session ID from Codex rollout filename.
-   * Format: rollout-YYYY-MM-DDThh-mm-ss-<UUID>.jsonl
-   */
-  private extractSessionId(filePath: string): string | null {
-    const baseName = path.basename(filePath, '.jsonl');
-    // Try to extract UUID portion after the timestamp
-    const match = baseName.match(
-      /rollout-\d{4}-\d{2}-\d{2}T[\d-]+-([\da-f]{8}-[\da-f]{4}-[\da-f]{4}-[\da-f]{4}-[\da-f]{12})$/i,
-    );
-    return match?.[1] ?? null;
-  }
-
-  /**
    * Recursively scan date-organized directories (YYYY/MM/DD) for rollout JSONL files.
    */
   private async scanDateDirectories(
@@ -355,7 +380,7 @@ export class CodexSessionReaderAdapter implements SessionReaderAdapter {
           const info = await this.statFile(fullPath);
           if (info) {
             const providerSessionId =
-              this.extractSessionId(fullPath) ??
+              codexRolloutSessionId(fullPath) ??
               (await this.extractProviderSessionIdFromFile(fullPath));
             if (providerSessionId) {
               info.providerSessionId = providerSessionId;

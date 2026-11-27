@@ -119,7 +119,9 @@ export const deleteAgentAction: ActionDefinition = {
 
       if (agentName) {
         resolvedBy = 'agentName';
-        const target = await storage.getAgentByName(projectId, agentName);
+        const target = await storage.getAgentByName(projectId, agentName, {
+          excludeDisabled: true,
+        });
         if (target.projectId !== projectId) {
           return failedResult(
             { resolvedBy, matched: [], deleted: [], failed: [] },
@@ -199,10 +201,11 @@ export const deleteAgentAction: ActionDefinition = {
 
         for (const session of targetSessions) {
           try {
-            await sessionsService.terminateSession(session.id, {
-              source: 'subscriber',
-              reason: 'agent-deletion',
-            });
+            await sessionsService.terminateSession(
+              session.id,
+              { source: 'subscriber', reason: 'agent-deletion' },
+              { expectedAgentId: target.id },
+            );
           } catch (error) {
             terminationErrors.push(`session ${session.id}: ${getErrorMessage(error)}`);
           }

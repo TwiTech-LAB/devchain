@@ -15,6 +15,8 @@ import type { DeliveryRecipientResolver } from './ports/delivery-recipient-resol
 import type { DeliveryFormatter } from './ports/delivery-formatter';
 import type { DeliveryMessage, DeliveryPolicy } from './dtos/delivery.types';
 import type { EventsService } from '../events/services/events.service';
+import { AgentDisabledError } from '../../common/errors/error-types';
+import { SessionLaunchError } from '../session-terminal-runtime/dtos/active-session-info.dto';
 
 function buildService() {
   const resolver: jest.Mocked<DeliveryRecipientResolver> = {
@@ -36,9 +38,11 @@ function buildService() {
       .fn()
       .mockImplementation((msg: DeliveryMessage) => `[formatted:${msg.kind}] ${msg.body}`),
   };
-  const messageEnqueue: jest.Mocked<Pick<MessageEnqueueService, 'enqueue'>> = {
-    enqueue: jest.fn().mockResolvedValue([{ agentId: 'agent-1', status: 'queued', poolSize: 1 }]),
-  };
+  const messageEnqueue: jest.Mocked<Pick<MessageEnqueueService, 'enqueue' | 'getAdmissionFence'>> =
+    {
+      getAdmissionFence: jest.fn().mockReturnValue(0),
+      enqueue: jest.fn().mockResolvedValue([{ agentId: 'agent-1', status: 'queued', poolSize: 1 }]),
+    };
   const guestDelivery: jest.Mocked<Pick<GuestDeliveryService, 'deliverToGuest'>> = {
     deliverToGuest: jest.fn().mockResolvedValue({ delivered: true }),
   };
@@ -58,6 +62,9 @@ function buildService() {
   const eventsService = {
     publish: jest.fn().mockResolvedValue('event-1'),
   };
+  const storage = {
+    isAgentDisabled: jest.fn().mockReturnValue(false),
+  };
   const service = new AgentMessageDeliveryService(
     resolver,
     launcher as unknown as SessionLauncherFacade,
@@ -66,10 +73,12 @@ function buildService() {
     guestDelivery as unknown as GuestDeliveryService,
     activeSessionLookup as unknown as ActiveSessionLookup,
     eventsService as unknown as EventsService,
+    storage,
   );
 
   return {
     service,
+    storage,
     resolver,
     launcher,
     formatter,
@@ -177,6 +186,55 @@ describe('AgentMessageDeliveryService', () => {
         expect(launcher.ensureActiveSession).toHaveBeenCalledWith('agent-1', 'project-1');
         expect(activeSessionLookup.getActiveSession).not.toHaveBeenCalled();
       });
+    });
+
+    it.each([
+      { policy: {}, name: 'auto-launch' },
+      { policy: { requireActiveSession: true }, name: 'deliver-only' },
+    ])(
+      'fails with AGENT_DISABLED for a disabled agent and never launches or enqueues ($name)',
+      async ({ policy }) => {
+        const { service, storage, launcher, activeSessionLookup, messageEnqueue } = buildService();
+        storage.isAgentDisabled.mockReturnValue(true);
+
+        const outcome = await service.deliver(
+          ['agent-1'],
+          { kind: 'pooled', body: 'hi', source: 'test', projectId: 'project-1', senderName: 'S' },
+          policy,
+        );
+
+        expect(outcome).toEqual({
+          status: 'failed',
+          results: [{ agentId: 'agent-1', status: 'failed', error: 'AGENT_DISABLED' }],
+        });
+        expect(launcher.ensureActiveSession).not.toHaveBeenCalled();
+        expect(activeSessionLookup.getActiveSession).not.toHaveBeenCalled();
+        expect(messageEnqueue.enqueue).not.toHaveBeenCalled();
+      },
+    );
+
+    it('returns AGENT_DISABLED when a launch after the first check finds the agent disabled', async () => {
+      const { service, launcher, messageEnqueue } = buildService();
+      launcher.ensureActiveSession.mockRejectedValue(
+        new SessionLaunchError({
+          agentId: 'agent-1',
+          projectId: 'project-1',
+          cause: new AgentDisabledError({ id: 'agent-1', name: 'Coder' }),
+        }),
+      );
+
+      const outcome = await service.deliver(['agent-1'], {
+        kind: 'pooled',
+        body: 'hi',
+        source: 'test',
+        projectId: 'project-1',
+        senderName: 'S',
+      });
+
+      expect(outcome.results).toEqual([
+        { agentId: 'agent-1', status: 'failed', error: 'AGENT_DISABLED' },
+      ]);
+      expect(messageEnqueue.enqueue).not.toHaveBeenCalled();
     });
 
     it('returns delivered status for empty recipient list', async () => {

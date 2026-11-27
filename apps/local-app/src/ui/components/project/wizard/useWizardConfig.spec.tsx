@@ -2,13 +2,15 @@ import { renderHook } from '@testing-library/react';
 import type { Dispatch, SetStateAction } from 'react';
 import { buildProviderSummary } from '@/modules/projects/helpers/profile-mapping.helpers';
 import { teamsDevSetupPreview } from '../../../../../test/helpers/teams-dev-setup-preview';
-import { agentKey, buildAgentOverrides } from './agentPlan';
+import { agentKey, buildAgentOverrides, type TemplateProviderConfig } from './agentPlan';
 import { installedProviderNames } from './providerSelection';
+import { configPickPatch, type ProviderCatalogs } from './useProviderCatalogs';
 import {
   buildConfigEmission,
   initialWizardConfigState,
   useWizardConfigHandlers,
   wizardConfigStateFor,
+  type WizardConfigHandlers,
   type WizardConfigState,
 } from './useWizardConfig';
 import type { SetupPreviewResponse } from '@/ui/pages/projects/lib/project-contracts';
@@ -155,6 +157,11 @@ describe('teams-dev setup with installed providers', () => {
       const templateCoder = buildersTeam(preview.payload).profileSelections!.find(
         ({ profileName }) => profileName === 'Coder',
       )!;
+      // The Coder fallback is the first Coder option on the installed provider. Its name need not
+      // be the provider name: a provider can have one option per worker tier.
+      const coderFallback = preview.payload
+        .profiles!.find(({ name }) => name === 'Coder')!
+        .providerConfigs!.find(({ providerName }) => providerName === provider)!.name;
 
       expect(
         buildAgentOverrides(
@@ -179,14 +186,14 @@ describe('teams-dev setup with installed providers', () => {
       );
 
       const builders = state.teamStates.get('Builders')!;
-      const coder = { profileKey: 'Coder', mode: 'subset', configKeys: [provider] };
+      const coder = { profileKey: 'Coder', mode: 'subset', configKeys: [coderFallback] };
       expect(builders.selections).toEqual([coder]);
       expect(builders.templateSelections).toEqual([coder]);
       expect(builders.fallbacks).toEqual([
         {
           profileName: 'Coder',
           fromConfigNames: templateCoder.configNames,
-          configName: provider,
+          configName: coderFallback,
         },
       ]);
 
@@ -209,7 +216,7 @@ describe('teams-dev setup with installed providers', () => {
           teamName: 'Builders',
           allowTeamLeadCreateAgents: true,
           profileNames: ['Coder'],
-          profileSelections: [{ profileName: 'Coder', configNames: [provider] }],
+          profileSelections: [{ profileName: 'Coder', configNames: [coderFallback] }],
         },
       ]);
     },
@@ -247,7 +254,7 @@ describe('useWizardConfigHandlers', () => {
   function runHandler(
     preview: SetupPreviewResponse,
     seeded: WizardConfigState,
-    invoke: (handlers: ReturnType<typeof useWizardConfigHandlers>) => void,
+    invoke: (handlers: WizardConfigHandlers) => void,
   ): WizardConfigState {
     let produced: WizardConfigState | null = seeded;
     const setState: Dispatch<SetStateAction<WizardConfigState | null>> = (action) => {
@@ -293,6 +300,78 @@ describe('useWizardConfigHandlers', () => {
       templateSelections: [selection],
     });
   });
+
+  it('starts without manual edits', () => {
+    expect(initialWizardConfigState(makePreview()).hasManualEdits).toBe(false);
+  });
+
+  it.each([
+    [
+      'an agent row edit',
+      (h: WizardConfigHandlers) => h.onAgentRowChange('Captain', { modelOverride: 'm' }),
+      true,
+    ],
+    [
+      'a team row edit',
+      (h: WizardConfigHandlers) =>
+        h.onTeamStateChange('Squad', { selections: [{ profileKey: 'Coder', mode: 'remove' }] }),
+      false,
+    ],
+  ])('%s sets hasManualEdits', (_case, edit, setsPresetModified) => {
+    const preview = makePreview();
+    const seeded = initialWizardConfigState(preview);
+
+    const next = runHandler(preview, seeded, edit);
+
+    expect(next.hasManualEdits).toBe(true);
+    expect(next.agentPresetModified).toBe(setsPresetModified);
+  });
+
+  it.each([
+    ['provider change', (h: WizardConfigHandlers) => h.onSelectedProvidersChange(['claude'])],
+    ['setup apply', (h: WizardConfigHandlers) => h.onApplyPreset('AllClaude')],
+  ])('a %s clears hasManualEdits', (_case, act) => {
+    const preview = makePreview();
+    const next = runHandler(preview, initialWizardConfigState(preview), (h) => {
+      h.onAgentRowChange('Captain', { modelOverride: 'm' });
+      act(h);
+    });
+
+    expect(next.hasManualEdits).toBe(false);
+  });
+
+  // The two cases give Solo different configs, so a reset that ignored the applied setup fails.
+  it.each([
+    ['an active setup', 'MixedCodex', 'claude-cfg', 'codex-cfg'],
+    ['no setup', null, 'codex-cfg', 'claude-cfg'],
+  ])(
+    'reset with %s restores the rows and clears the edit flags',
+    (_case, applied, editedConfig, restoredConfig) => {
+      const preview = makePreview();
+      const build = () =>
+        wizardConfigStateFor(preview, ['claude', 'codex'], {
+          presetName: applied,
+          useSuggestedPreset: false,
+        });
+      const pristine = build();
+
+      const next = runHandler(preview, build(), (h) => {
+        h.onAgentRowChange('Solo', { configName: editedConfig, modelOverride: 'manual' });
+        h.onTeamStateChange('Squad', { selections: [{ profileKey: 'Coder', mode: 'remove' }] });
+        h.onResetSetup();
+      });
+
+      expect(next.agentPresetName).toBe(applied);
+      expect(next.agentPresetModified).toBe(false);
+      expect(next.hasManualEdits).toBe(false);
+      expect(next.agentRows.solo).toMatchObject({
+        configName: restoredConfig,
+        modelOverride: null,
+      });
+      expect(next.agentRows).toEqual(pristine.agentRows);
+      expect(next.teamStates).toEqual(pristine.teamStates);
+    },
+  );
 
   it('ignores attempts to clear the provider selection', () => {
     const preview = makePreview();
@@ -441,6 +520,67 @@ describe('useWizardConfigHandlers', () => {
     const next = runHandler(preview, seeded, (h) => h.onApplyPreset(unavailableSetup.presetName));
 
     expect(next).toEqual(wizardConfigStateFor(preview, selected, { useSuggestedPreset: false }));
+  });
+
+  // The setup row builds a config pick with `configPickPatch`, and this reducer applies it. Only
+  // the two together show which override the wizard submits.
+  describe('config pick on a provider that needs a model for an effort', () => {
+    const preview = makePreview({
+      payload: {
+        profiles: [
+          {
+            id: 'profile-oc',
+            name: 'Coder',
+            provider: { name: 'opencode' },
+            providerConfigs: [
+              { name: 'oc-model', providerName: 'opencode', model: 'zed/sonnet', env: {} },
+              { name: 'oc-other', providerName: 'opencode', options: '-m zed/haiku', env: {} },
+              { name: 'oc-bare', providerName: 'opencode', options: '--auto', env: {} },
+            ],
+          },
+        ],
+        agents: [{ name: 'Coder', profileId: 'profile-oc', providerConfigName: 'oc-model' }],
+        teams: [],
+        presets: [],
+      } as unknown as SetupPreviewResponse['payload'],
+      providerSummary: [
+        { name: 'opencode', available: true, families: [], agentCount: 1 },
+      ] as unknown as SetupPreviewResponse['providerSummary'],
+      presetProviderCoverage: [],
+      localAvailability: { installedProviders: [{ id: 'oc-id', name: 'opencode' }] },
+    });
+    const catalogs: ProviderCatalogs = {
+      localModels: new Map([['opencode', ['zed/sonnet']]]),
+      localEfforts: new Map([
+        ['opencode', { efforts: ['high'], supportsEffort: true, requiresModelForEffort: true }],
+      ]),
+      templateModels: new Map(),
+      templateEfforts: new Map(),
+    };
+    const configs = preview.payload.profiles![0].providerConfigs as TemplateProviderConfig[];
+
+    function pickAfterEffort(configName: string) {
+      const picked = configs.find(({ name }) => name === configName)!;
+      const withEffort = runHandler(preview, initialWizardConfigState(preview), (h) =>
+        h.onAgentRowChange('Coder', { effortOverride: 'high' }),
+      );
+      const next = runHandler(preview, withEffort, (h) =>
+        h.onAgentRowChange('Coder', configPickPatch(catalogs, withEffort.agentRows.coder, picked)),
+      );
+      return buildConfigEmission(preview, next).agentOverrides;
+    }
+
+    it('drops the effort when the picked config leaves no model', () => {
+      expect(pickAfterEffort('oc-bare')).toEqual([
+        { agentName: 'Coder', providerConfigName: 'oc-bare' },
+      ]);
+    });
+
+    it('keeps the effort when the picked config has a raw --model', () => {
+      expect(pickAfterEffort('oc-other')).toEqual([
+        { agentName: 'Coder', providerConfigName: 'oc-other', effortOverride: 'high' },
+      ]);
+    });
   });
 });
 

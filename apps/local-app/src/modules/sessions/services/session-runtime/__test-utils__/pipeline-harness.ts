@@ -130,8 +130,9 @@ export function createSqliteMock() {
 
   const prepare = jest.fn().mockReturnValue(defaultStmt);
 
+  // `exec` runs the BEGIN and COMMIT of queued store transactions.
   const db = {
-    session: { client: { prepare } },
+    session: { client: { prepare, exec: jest.fn() } },
   };
 
   return { db, prepare, defaultStmt };
@@ -182,6 +183,7 @@ export function createLaunchPipelineHarness() {
 
   const providerAdapterFactory = {
     getAdapter: jest.fn().mockReturnValue(adapter),
+    isSupported: jest.fn().mockReturnValue(true),
   };
 
   const terminalIO = {
@@ -271,6 +273,12 @@ export function createLaunchPipelineHarness() {
     materialize: jest.fn().mockResolvedValue(preparedProviderRuntime),
   };
   const vaultLaunch = createVaultLaunchMock();
+  const savePoints = {
+    getForkSupport: jest.fn(),
+    isTeamMember: jest.fn().mockResolvedValue(false),
+    readableTranscript: jest.fn(async (transcriptPath: string) => transcriptPath),
+  };
+  const sessionRows = new SessionRowStore(sqliteMock.db as unknown as BetterSQLite3Database);
 
   // Build the pipeline via direct instantiation (bypass DI decorators)
   // Constructor order matches the @Injectable constructor parameter order.
@@ -284,7 +292,7 @@ export function createLaunchPipelineHarness() {
     runtimeContextCapture,
     claudeLaunchSettings,
     codexPluginProfiles,
-    new SessionRowStore(sqliteMock.db as unknown as BetterSQLite3Database),
+    sessionRows,
   );
   const pipeline = new SessionLaunchPipeline(
     sqliteMock.db, // @Inject(DB_CONNECTION)
@@ -303,8 +311,9 @@ export function createLaunchPipelineHarness() {
     teamsService, // TeamsService
     sessionTerminalRuntime, // SessionTerminalRuntimeService
     providerRuntimePreparation, // ProviderRuntimePreparationService
-    new SessionRowStore(sqliteMock.db as unknown as BetterSQLite3Database),
+    sessionRows,
     vaultLaunch, // VaultLaunchService
+    savePoints, // SessionSavePointsService
   );
 
   return {
@@ -333,6 +342,8 @@ export function createLaunchPipelineHarness() {
       providerRuntimePlan,
       preparedProviderRuntime,
       providerRuntimePreparation,
+      savePoints,
+      sessionRows,
     },
   };
 }
@@ -345,6 +356,7 @@ function createDefaultStreamServiceMock() {
     cancelScheduledClear: jest.fn().mockReturnValue(null),
     setClearExpiryHandler: jest.fn(),
     clearBuffer: jest.fn(),
+    retireReplay: jest.fn(),
     getSequenceEpoch: jest.fn(),
     getBufferStats: jest.fn(),
     initializeBuffer: jest.fn(),
@@ -353,6 +365,8 @@ function createDefaultStreamServiceMock() {
 
 interface StoppedSessionRow {
   id: string;
+  kind: 'session' | 'save_point';
+  parent_session_id: string | null;
   epic_id: string;
   agent_id: string;
   tmux_session_id: string | null;
@@ -386,6 +400,9 @@ export function createRestorePipelineHarness<
 
   const sessionCoordinator = {
     withAgentLock: jest.fn().mockImplementation((_id: string, fn: () => Promise<unknown>) => fn()),
+    withAgentLocks: jest
+      .fn()
+      .mockImplementation((_ids: string[], fn: () => Promise<unknown>) => fn()),
   };
 
   const providerAdapterFactory = {
@@ -457,6 +474,8 @@ export function createRestorePipelineHarness<
   // and a normal statement for INSERT/UPDATE.
   const stoppedSessionRow: StoppedSessionRow = {
     id: 'session-1',
+    kind: 'session',
+    parent_session_id: null,
     epic_id: 'epic-1',
     agent_id: 'agent-1',
     tmux_session_id: null,
@@ -470,9 +489,19 @@ export function createRestorePipelineHarness<
     updated_at: '2025-01-01T01:00:00Z',
   };
 
+  // A save point of the stopped session, for rollback.
+  const savePointRow: StoppedSessionRow = {
+    ...stoppedSessionRow,
+    id: 'save-point-1',
+    kind: 'save_point',
+    parent_session_id: stoppedSessionRow.id,
+    transcript_path: '/test/save-point.jsonl',
+    provider_session_id: 'save-point-native',
+  };
+
   const selectStmt = {
     run: jest.fn().mockReturnValue({ changes: 1 }),
-    get: jest.fn().mockReturnValue(stoppedSessionRow),
+    get: jest.fn((id: string) => (id === savePointRow.id ? savePointRow : stoppedSessionRow)),
     all: jest.fn().mockReturnValue([]),
   };
 
@@ -499,6 +528,32 @@ export function createRestorePipelineHarness<
     return updateStmt;
   });
 
+  const forkAdapter = {
+    ...adapter,
+    forkReadsSavePointTranscript: true,
+    createSavePoint: jest.fn().mockResolvedValue({
+      providerSessionId: 'record-native',
+      transcriptPath: '/test/record.jsonl',
+    }),
+    prepareForkLaunch: jest.fn(),
+  };
+  const launchPipeline = {
+    requireForkSupport: jest.fn().mockResolvedValue({
+      adapter: forkAdapter,
+      providerBinPath: '/usr/bin/test-provider',
+      helperEnv: {},
+    }),
+    readableForkSource: jest.fn(async (source: unknown) => source),
+    setupHooksConfig: jest.fn().mockResolvedValue(undefined),
+    verifyProvider: jest.fn().mockResolvedValue(undefined),
+  };
+  const savePoints = {
+    isTeamMember: jest.fn().mockResolvedValue(false),
+    readableTranscript: jest.fn(async (path: string) => path),
+  };
+  const sessionRows = new SessionRowStore(sqliteMock.db as unknown as BetterSQLite3Database);
+  const hooks = { fenceRuntime: jest.fn() };
+
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   const { SessionRestorePipeline } = require('../session-restore-pipeline.service');
   const pipeline = new SessionRestorePipeline(
@@ -514,7 +569,10 @@ export function createRestorePipelineHarness<
     providerRuntimePreparation, // ProviderRuntimePreparationService
     preflightService, // PreflightService
     mcpEnsureService, // ProviderMcpEnsureService
-    new SessionRowStore(sqliteMock.db as unknown as BetterSQLite3Database),
+    sessionRows,
+    launchPipeline, // SessionLaunchPipeline
+    savePoints, // SessionSavePointsService
+    hooks, // HooksService
   );
 
   /**
@@ -551,6 +609,7 @@ export function createRestorePipelineHarness<
   return {
     pipeline,
     stoppedSessionRow,
+    savePointRow,
     createTrackedPrepare,
     mocks: {
       sqliteMock,
@@ -571,6 +630,11 @@ export function createRestorePipelineHarness<
       providerRuntimePlan,
       preparedProviderRuntime,
       providerRuntimePreparation,
+      forkAdapter,
+      launchPipeline,
+      savePoints,
+      sessionRows,
+      hooks,
     },
   };
 }

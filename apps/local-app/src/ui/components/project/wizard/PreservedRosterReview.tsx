@@ -5,30 +5,33 @@ import { cn } from '@/ui/lib/utils';
 import { AgentOptionPicker } from './AgentSetupRow';
 import { agentKey } from './agentPlan';
 import {
+  addedTeamNames,
   automaticOptionChanges,
   preservedAgentGroups,
   updatePreservationAdditions,
   type PreservationAddition,
 } from './currentSetup';
 import { useCurrentSetup } from './KeepCurrentSetup';
-import {
-  ReviewSection,
-  ROSTER_SCROLL_CLASS,
-  RosterGroup,
-  SummaryLine,
-} from './SetupReviewSections';
+import { ROSTER_SCROLL_CLASS, RosterGroup, RosterRow, rosterRole, type RosterRole } from './Roster';
+import { ReviewSection, SummaryLine } from './SetupReviewSections';
+import { useSetupReview } from './SetupReviewContext';
 
-function PreservedAgentRow({ agent }: { agent: PreservationAgentRow }) {
+type PreservedAgent = PreservationAgentRow & { description: string | null };
+
+function PreservedAgentRow({ agent, role }: { agent: PreservedAgent; role?: RosterRole }) {
   const { onUpdateChoices } = useCurrentSetup();
   const agentNameKey = agentKey(agent.name);
   return (
-    <li className="flex flex-wrap items-center justify-between gap-2 py-2">
-      <div className="flex min-w-0 flex-wrap items-center gap-2">
-        <span className="min-w-0 break-words text-sm font-medium">{agent.name}</span>
-        {agent.status !== 'kept' && (
+    <RosterRow
+      name={agent.name}
+      role={role}
+      description={agent.description}
+      badge={
+        agent.status !== 'kept' && (
           <Badge variant="secondary">{agent.status === 'changed' ? 'Changed' : 'New'}</Badge>
-        )}
-      </div>
+        )
+      }
+    >
       <AgentOptionPicker
         agentName={agent.name}
         selected={
@@ -52,31 +55,40 @@ function PreservedAgentRow({ agent }: { agent: PreservationAgentRow }) {
           }))
         }
       />
-    </li>
+    </RosterRow>
   );
 }
 
 function PreservedAgentGroup({
   name,
+  description,
+  lead = null,
   agents,
   permissionsChanged,
 }: {
   name: string;
-  agents: PreservationAgentRow[];
+  description?: string | null;
+  /** The name of the lead's row in `agents`, or null when the block shows no lead row. */
+  lead?: string | null;
+  agents: PreservedAgent[];
   permissionsChanged?: boolean;
 }) {
   return (
     <RosterGroup
       title={name}
-      headingLevel={3}
       // An outline badge stays visible on the tinted header band.
       badge={permissionsChanged && <Badge variant="outline">Changed</Badge>}
-      description={permissionsChanged && 'Some allowed options are not in this template.'}
+      description={description}
+      note={permissionsChanged && 'Some allowed options are not in this template.'}
     >
       {agents.length > 0 && (
         <ul className="divide-y">
           {agents.map((agent) => (
-            <PreservedAgentRow key={agentKey(agent.name)} agent={agent} />
+            <PreservedAgentRow
+              key={agentKey(agent.name)}
+              agent={agent}
+              role={rosterRole(lead, agent.name)}
+            />
           ))}
         </ul>
       )}
@@ -99,7 +111,7 @@ export function OptionalAdditions() {
           <label key={team.name} className="flex items-start gap-2 rounded-md border p-2 text-sm">
             <Checkbox
               aria-label={`Add team ${team.name}`}
-              checked={current.choices.addTeams?.includes(team.name) ?? false}
+              checked={addedTeamNames(current.choices, plan).includes(team.name)}
               onCheckedChange={(value) => setAddition({ teamName: team.name }, value === true)}
             />
             <span>
@@ -133,26 +145,31 @@ export function OptionalAdditions() {
 }
 
 export function PreservedRosterReview() {
-  const { plan, choices } = useCurrentSetup();
+  const { plan, choices, currentExport } = useCurrentSetup();
+  const { preview } = useSetupReview();
   if (!plan) return null;
-  const { teams, independent } = preservedAgentGroups(plan);
+  const { teams, independent } = preservedAgentGroups(plan, currentExport, preview.payload);
 
   return (
     <>
       {(teams.length > 0 || independent.length > 0) && (
-        <div className={cn('space-y-4', ROSTER_SCROLL_CLASS)}>
-          {teams.map(({ name, permissionsChanged, agents }) => (
-            <PreservedAgentGroup
-              key={agentKey(name)}
-              name={name}
-              permissionsChanged={permissionsChanged}
-              agents={agents}
-            />
-          ))}
-          {independent.length > 0 && (
-            <PreservedAgentGroup name="Independent" agents={independent} />
-          )}
-        </div>
+        <ReviewSection title="Teams and agents">
+          <div className={cn('space-y-4', ROSTER_SCROLL_CLASS)}>
+            {teams.map(({ name, description, permissionsChanged, lead, agents }) => (
+              <PreservedAgentGroup
+                key={agentKey(name)}
+                name={name}
+                description={description}
+                lead={lead}
+                permissionsChanged={permissionsChanged}
+                agents={agents}
+              />
+            ))}
+            {independent.length > 0 && (
+              <PreservedAgentGroup name="Independent" agents={independent} />
+            )}
+          </div>
+        </ReviewSection>
       )}
       <SummaryLine label="Changed" items={automaticOptionChanges(plan, choices)} />
     </>

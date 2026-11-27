@@ -2,9 +2,10 @@ import type { ExclusionSuggestion } from '../../file-sync/sync-path-inspection.d
 import { hostname } from 'node:os';
 import type { GitOwner } from '../git-owner.store';
 import type { GitCoordinatorRecord } from '../git-coordinator/git-coordinator.dto';
-import { DEFAULT_FILE_SYNC_IGNORES } from '../../file-sync/file-sync.dto';
+import { DEFAULT_FILE_SYNC_IGNORES, TRANSIENT_SYNC_ERROR } from '../../file-sync/file-sync.dto';
 import { FakeFileSyncService } from '../../file-sync/testing/fake-file-sync.service';
 import { SyncthingRestError } from '../../file-sync/syncthing-rest.client';
+import { FileSyncStatusService } from './file-sync-status.service';
 import { RemoteFileSyncService } from './remote-file-sync.service';
 import type { RemoteOperation } from '../../storage/models/domain.models';
 import type { ProjectFileSyncFailures } from './remote-file-sync.dto';
@@ -850,32 +851,36 @@ describe('remote file maintenance', () => {
     expect(homePatch).not.toHaveBeenCalled();
   });
 
-  it('leaves a VM that reclaimed Git alone when this PC restarts with a stale cache', async () => {
-    const s = setup();
-    s.owner.value = 'home';
-    s.hostFiles.folders.set('git:p', {
-      type: 'sendonly',
-      paused: false,
-      peerDeviceId: 'peer',
-      ignores: [],
-    });
-    s.host.gitCoordinatorStatus.mockResolvedValue({
-      ...s.vmRecord(),
-      owner: 'vm',
-      generation: 1,
-      worktreeBranches: [],
-    });
-    await s.tick();
-    await s.tick();
-    expect(s.hostFiles.folders.get('git:p')).toMatchObject({ type: 'sendonly' });
-    expect(s.host.syncFolders).not.toHaveBeenCalledWith(
-      'r',
-      expect.objectContaining({ kind: 'git' }),
-      expect.anything(),
-    );
-    expect(s.ownerCache.remember).not.toHaveBeenCalled();
-    expect(s.service.warning('p')).toContain('The VM took Git back');
-  });
+  it.each(['home', 'vm'] as const)(
+    'leaves a VM that reclaimed Git alone when this PC restarts with a stale %s cache',
+    async (cached) => {
+      const s = setup();
+      s.owner.value = cached;
+      s.hostFiles.folders.set('git:p', {
+        type: 'sendonly',
+        paused: false,
+        peerDeviceId: 'peer',
+        ignores: [],
+      });
+      s.host.gitCoordinatorStatus.mockResolvedValue({
+        ...s.vmRecord(),
+        owner: 'vm',
+        generation: 1,
+        ...(cached === 'vm' && { forcedReclaim: { at: 1, fromGeneration: 0, homeName: 'PC' } }),
+        worktreeBranches: [],
+      });
+      await s.tick();
+      await s.tick();
+      expect(s.hostFiles.folders.get('git:p')).toMatchObject({ type: 'sendonly' });
+      expect(s.host.syncFolders).not.toHaveBeenCalledWith(
+        'r',
+        expect.objectContaining({ kind: 'git' }),
+        expect.anything(),
+      );
+      expect(s.ownerCache.remember).not.toHaveBeenCalled();
+      expect(s.service.warning('p')).toContain('The VM took Git back');
+    },
+  );
 
   it('moves the cached generation forward from a VM-owned record and fences VM calls with it', async () => {
     const s = setup();
@@ -1276,6 +1281,53 @@ describe('connected file sync checks', () => {
       expect(check).toHaveBeenCalledTimes(2);
     },
   );
+
+  it('reports the VM count of the check in the measured status and keeps it through an answer without a count', async () => {
+    const s = await ready(false);
+    const status = await s.hostFiles.status('code:p');
+    expect(status.errors).toBeUndefined();
+    // The real status service on this upkeep service: the response must agree with the warning.
+    const measured = new FileSyncStatusService(
+      s.files as never,
+      { getState: () => ({ running: true, version: 'v2.1.5', error: null }) } as never,
+      { list: async () => [{ projectId: 'p', ...s.binding }] } as never,
+      s.service,
+      { getState: () => s.health } as never,
+      s.storage as never,
+    );
+    const step = async (seconds: number, vm: typeof status | Error) => {
+      if (vm instanceof Error) s.host.syncStatus.mockRejectedValue(vm);
+      else s.host.syncStatus.mockResolvedValue(vm);
+      at(seconds);
+      await s.tick();
+      const [{ verdict, reason, failed }] = (await measured.status({ projectId: 'p' })).scopes;
+      return { vm: failed.vm, verdict, reason, warning: s.service.warning('p') };
+    };
+    const seven = '7 files on the VM fail to sync since 16:15.';
+    const mixed = [
+      { path: 'a', error: 'chmod a: operation not permitted' },
+      { path: 'b', error: TRANSIENT_SYNC_ERROR },
+      { path: 'c', error: TRANSIENT_SYNC_ERROR },
+    ];
+
+    expect(await step(0, status)).toMatchObject({ vm: null, verdict: 'in-sync', warning: null });
+    expect(await step(30, { ...status, errors: 7 })).toMatchObject({ vm: 0, warning: null });
+    expect(await step(150, { ...status, errors: 7, fileErrors: mixed })).toEqual({
+      vm: 7,
+      verdict: 'problem',
+      reason: seven,
+      warning: seven,
+    });
+    expect(s.service.failedCounts('p')).toEqual({ home: 0, vm: 7 });
+    const inspections = s.failures.failed.mock.calls.length;
+    // The answer has no count: the warning and its count clear, as before, and no repair starts.
+    expect(await step(180, status)).toMatchObject({ vm: 7, verdict: 'in-sync', warning: null });
+    expect(s.service.failedCounts('p')).toBeNull();
+    expect(s.failures.failed).toHaveBeenCalledTimes(inspections);
+    // A rejected read is no evidence of recovery either; only a real zero clears the count.
+    expect(await step(210, new Error('VM status unavailable'))).toMatchObject({ vm: 7 });
+    expect(await step(240, { ...status, errors: 0 })).toMatchObject({ vm: 0, warning: null });
+  });
 
   it('keeps upkeep and guard warnings independent, with check warnings first', async () => {
     const s = setup();

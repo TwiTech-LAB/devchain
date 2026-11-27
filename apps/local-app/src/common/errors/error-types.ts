@@ -56,6 +56,15 @@ export class StorageError extends AppError {
   }
 }
 
+/** The agent is disabled: it cannot run, receive messages or take a protected role. */
+export class AgentDisabledError extends AppError {
+  constructor(agent: { id: string; name: string }) {
+    super(`Agent ${agent.name} is disabled. Enable it first.`, 'AGENT_DISABLED', 409, {
+      agentId: agent.id,
+    });
+  }
+}
+
 /**
  * The Vault cannot encrypt or decrypt now because it is not set up or still
  * locked. Callers treat this as "not available now", never as absent or corrupt.
@@ -211,6 +220,17 @@ export class ReplicaApplyError extends AppError {
       table,
       rowId,
     });
+  }
+}
+
+/**
+ * A replica apply would release managed projections whose lock the caller does not
+ * hold; the apply has rolled back. Retry while holding `projectionIds` as well.
+ */
+export class ProjectionLockCoverageError extends Error {
+  constructor(public readonly projectionIds: string[]) {
+    super('Replica apply releases managed projections that are not locked');
+    this.name = 'ProjectionLockCoverageError';
   }
 }
 

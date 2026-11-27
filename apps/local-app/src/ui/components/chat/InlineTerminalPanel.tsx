@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, type MutableRefObject, type Ref } from 'react';
 import { Terminal as InlineTerminal, type TerminalHandle } from '@/ui/components/Terminal';
 import { Button } from '@/ui/components/ui/button';
+import { useTerminalAttachRevision } from '@/ui/lib/terminal-attach-revision';
 import { useTerminalWindows } from '@/ui/terminal-windows';
 import type { InlineTerminalTab } from './InlineTerminalHeader';
 
@@ -43,6 +44,7 @@ export function InlineTerminalPanel({
     [terminalRef],
   );
   const { closeWindow } = useTerminalWindows();
+  const attachRevision = useTerminalAttachRevision(sessionId);
   const targetWindowId = windowId ?? sessionId;
 
   // Auto-focus inline terminal when it is rendered as the active view
@@ -55,7 +57,7 @@ export function InlineTerminalPanel({
       return () => clearTimeout(t);
     }
     return;
-  }, [sessionId, isWindowOpen, activeTab]);
+  }, [sessionId, isWindowOpen, activeTab, attachRevision]);
 
   if (!sessionId) {
     return (
@@ -101,7 +103,7 @@ export function InlineTerminalPanel({
       >
         <InlineTerminal
           ref={setTerminalHandle}
-          key={sessionId}
+          key={`${sessionId}:${attachRevision}`}
           sessionId={sessionId}
           projectId={projectId}
           visible={activeTab === 'terminal'}

@@ -1,4 +1,10 @@
+import { mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from 'fs/promises';
+import os from 'os';
+import { join } from 'path';
+import { parse } from 'yaml';
 import { CopilotAdapter } from './copilot.adapter';
+import { parseProfileOptions } from '../utils/profile-options';
+import { SESSION_START_SOURCE_ENV } from './capabilities/hook.capability';
 
 import type { ProviderAdapter } from './provider-adapter.interface';
 
@@ -71,13 +77,15 @@ describe('CopilotAdapter', () => {
       expect(adapter.hooksProvideTranscriptPath).toBe(false);
     });
 
-    it('builds the DEVCHAIN_* hook env (same contract as Claude)', () => {
+    it.each([undefined, 'fork'] as const)('builds hook env for source %s', (sessionStartSource) => {
+      expect(adapter.managedHookEnvKeys).toContain(SESSION_START_SOURCE_ENV);
       const env = adapter.buildHookEnv({
         apiUrl: 'http://127.0.0.1:3000',
         projectId: 'proj-1',
         agentId: 'agent-1',
         sessionId: 'sess-1',
         tmuxSessionName: 'devchain-sess-1',
+        sessionStartSource,
       });
 
       expect(env).toEqual({
@@ -86,7 +94,209 @@ describe('CopilotAdapter', () => {
         DEVCHAIN_AGENT_ID: 'agent-1',
         DEVCHAIN_SESSION_ID: 'sess-1',
         DEVCHAIN_TMUX_SESSION_NAME: 'devchain-sess-1',
+        ...(sessionStartSource && { [SESSION_START_SOURCE_ENV]: sessionStartSource }),
       });
+    });
+  });
+
+  describe('SessionForkCapability', () => {
+    const parentId = '9f6b57af-936c-4a40-bdb9-c343503d114f';
+    const savePointId = '9d486da3-71a6-403e-986e-c9a0fbf8352b';
+    const childId = '07cff598-83e1-4ad9-8c6d-dfd89015c4ba';
+    let fakeHome: string;
+    let stateDir: string;
+    let parentDir: string;
+    let input: Parameters<CopilotAdapter['createSavePoint']>[0];
+
+    beforeEach(async () => {
+      fakeHome = await mkdtemp(join(os.tmpdir(), 'copilot-save-point-'));
+      jest.spyOn(os, 'homedir').mockReturnValue(fakeHome);
+      stateDir = join(fakeHome, '.copilot', 'session-state');
+      parentDir = join(stateDir, parentId);
+      await mkdir(parentDir, { recursive: true });
+      input = {
+        providerSessionId: parentId,
+        transcriptPath: join(parentDir, 'events.jsonl'),
+        sessionId: savePointId,
+        projectId: 'project',
+        projectPath: '/project',
+        providerBinPath: 'copilot',
+        env: null,
+        helperEnv: {},
+      };
+    });
+
+    afterEach(async () => {
+      jest.restoreAllMocks();
+      await rm(fakeHome, { recursive: true, force: true });
+    });
+
+    // Real temporary files exercise the copy and publish behavior without a CLI launch.
+    it('copies a save point with complete records and preserves the source files', async () => {
+      const records = (sessionId: string) =>
+        [
+          { type: 'session.start', data: { sessionId } },
+          { type: 'hook.start', data: { input: { sessionId } } },
+          {
+            type: 'session.usage_record',
+            data: { usage: { accounting: { sourceSessionId: sessionId } } },
+          },
+          { type: 'system.message', data: { session_id: sessionId, content: parentId } },
+          { type: 'user.message', data: { content: `Parent ID: ${parentId}` } },
+          {
+            type: 'tool.execution_start',
+            data: { toolName: 'devchain_get_agent_by_name', arguments: { sessionId: parentId } },
+          },
+        ]
+          .map((record) => JSON.stringify(record))
+          .join('\n') + '\n';
+      const partial = '{"type":"assistant.message"';
+      const workspace = `id: "${parentId}"\ncwd: /project\nname: Parent\n`;
+      await writeFile(input.transcriptPath, records(parentId) + partial);
+      await writeFile(join(parentDir, 'workspace.yaml'), workspace);
+      await mkdir(join(parentDir, 'files'));
+      await writeFile(join(parentDir, 'files', 'context.txt'), 'context');
+
+      const result = await adapter.createSavePoint(input);
+
+      const savedDir = join(stateDir, savePointId);
+      expect(result).toEqual({
+        providerSessionId: savePointId,
+        transcriptPath: join(savedDir, 'events.jsonl'),
+        discardUnboundTranscript: expect.any(Function),
+      });
+      await expect(readFile(result.transcriptPath, 'utf8')).resolves.toBe(records(savePointId));
+      expect(parse(await readFile(join(savedDir, 'workspace.yaml'), 'utf8'))).toEqual({
+        id: savePointId,
+        cwd: '/project',
+        name: 'Parent',
+      });
+      await expect(readFile(join(savedDir, 'files', 'context.txt'), 'utf8')).resolves.toBe(
+        'context',
+      );
+      await expect(readFile(input.transcriptPath, 'utf8')).resolves.toBe(
+        records(parentId) + partial,
+      );
+      await expect(readFile(join(parentDir, 'workspace.yaml'), 'utf8')).resolves.toBe(workspace);
+      await expect(readFile(join(parentDir, 'files', 'context.txt'), 'utf8')).resolves.toBe(
+        'context',
+      );
+
+      // Discarding an unstored copy removes its folder and keeps the source.
+      await result.discardUnboundTranscript!();
+      await expect(readFile(join(savedDir, 'workspace.yaml'))).rejects.toMatchObject({
+        code: 'ENOENT',
+      });
+      await expect(readFile(input.transcriptPath, 'utf8')).resolves.toBe(
+        records(parentId) + partial,
+      );
+    });
+
+    // The adapter output is the launch contract. A real transcript proves it points at the copy.
+    it.each([
+      ['-i "read the project notes"', ''],
+      ['--interactive="read the project notes"', ''],
+      ['-p"read the project notes"', ''],
+      ['--prompt "read the project notes"', ''],
+      ['-p "read the project notes" --attachment "screen shot.png"', ''],
+      ['--prompt="read the project notes" --attachment="screen shot.png"', ''],
+      ['-si "read the notes"', '-s'],
+      ['-sp "read the notes"', '-s'],
+      ['-si="read the notes"', '-s'],
+      ['-sp"read the notes"', '-s'],
+      ['-hsiprompt', '-hs'],
+      ['-sniprompt', '-sniprompt'],
+      ['-sZi "read the notes"', '-sZi "read the notes"'],
+    ])(
+      'filters %s from the child launch and can discard its unbound folder',
+      async (flags, kept) => {
+        await writeFile(
+          input.transcriptPath,
+          `{"type":"session.start","data":{"sessionId":"${parentId}"}}\n`,
+        );
+        await writeFile(join(parentDir, 'workspace.yaml'), `id: ${parentId}\n`);
+        const savePoint = await adapter.createSavePoint(input);
+        // The target row can own a session folder already, as for a rollback.
+        const childEvents = `{"type":"session.start","data":{"sessionId":"${childId}"}}\n`;
+        await mkdir(join(stateDir, childId));
+        await writeFile(join(stateDir, childId, 'events.jsonl'), childEvents);
+
+        const result = await adapter.prepareForkLaunch({
+          ...input,
+          ...savePoint,
+          sessionId: childId,
+          profileOptionArgs: parseProfileOptions(
+            `--model x ${flags} --reasoning-effort=high --allow-all-tools`,
+          ),
+        });
+
+        const copyId = result.providerSessionId;
+        expect(copyId).not.toBe(childId);
+        expect(result.argv).toEqual([
+          `--resume=${copyId}`,
+          '--model',
+          'x',
+          ...parseProfileOptions(kept),
+          '--reasoning-effort=high',
+          '--allow-all-tools',
+        ]);
+        expect(result.transcriptPath).toBe(join(stateDir, copyId, 'events.jsonl'));
+        await expect(readFile(result.transcriptPath, 'utf8')).resolves.toContain(copyId);
+        await expect(readFile(savePoint.transcriptPath, 'utf8')).resolves.toContain(savePointId);
+        await result.discardUnboundTranscript?.();
+        expect((await readdir(stateDir)).sort()).toEqual([parentId, savePointId, childId].sort());
+        await expect(readdir(join(stateDir, childId))).resolves.toEqual(['events.jsonl']);
+        await expect(readFile(join(stateDir, childId, 'events.jsonl'), 'utf8')).resolves.toBe(
+          childEvents,
+        );
+      },
+    );
+
+    // A filesystem error proves a failed copy cannot publish a partial session.
+    it('rejects a source with a missing transcript', async () => {
+      await writeFile(join(parentDir, 'workspace.yaml'), `id: ${parentId}\n`);
+      await expect(adapter.createSavePoint(input)).rejects.toMatchObject({ code: 'ENOENT' });
+      await expect(readdir(stateDir)).resolves.toEqual([parentId]);
+    });
+
+    // A real link tests whether the copied folder can still resolve mutable parent data.
+    it.each(['save point', 'fork'] as const)(
+      'rejects a companion symlink and removes the staging folder for a %s',
+      async (operation) => {
+        await writeFile(
+          input.transcriptPath,
+          `{"type":"session.start","data":{"sessionId":"${parentId}"}}\n`,
+        );
+        await writeFile(join(parentDir, 'workspace.yaml'), `id: ${parentId}\n`);
+        const parentFile = join(parentDir, 'mutable.txt');
+        const filesDir = join(parentDir, 'files');
+        await writeFile(parentFile, 'parent data');
+        await mkdir(filesDir);
+        await symlink(parentFile, join(filesDir, 'linked.txt'));
+
+        const copy =
+          operation === 'save point'
+            ? adapter.createSavePoint(input)
+            : adapter.prepareForkLaunch({ ...input, sessionId: childId, profileOptionArgs: [] });
+
+        await expect(copy).rejects.toThrow(
+          'Copilot session folders with symbolic links cannot be copied',
+        );
+        await expect(readdir(stateDir)).resolves.toEqual([parentId]);
+      },
+    );
+
+    // The filesystem must reject a rename over a populated directory and allow staging cleanup.
+    it('removes the temporary folder when the destination already exists', async () => {
+      await writeFile(
+        input.transcriptPath,
+        `{"type":"session.start","data":{"sessionId":"${parentId}"}}\n`,
+      );
+      await writeFile(join(parentDir, 'workspace.yaml'), `id: ${parentId}\n`);
+      await adapter.createSavePoint(input);
+
+      await expect(adapter.createSavePoint(input)).rejects.toThrow();
+      expect((await readdir(stateDir)).sort()).toEqual([parentId, savePointId].sort());
     });
   });
 
@@ -212,6 +422,30 @@ describe('CopilotAdapter', () => {
       });
       expect(argv).not.toContain('--session-id');
     });
+  });
+
+  // The adapter's argv is what both launch paths send to the CLI.
+  it.each(['new', 'restore'] as const)('keeps the profile prompt and attachment for %s', (mode) => {
+    const sessionId = 'sess-1';
+    const profileOptionArgs = parseProfileOptions(
+      '-p "read the project notes" --attachment "screen shot.png"',
+    );
+
+    const { argv } = adapter.buildLaunchArgs({
+      mode,
+      sessionId,
+      providerSessionId: sessionId,
+      profileOptionArgs,
+    });
+
+    const sessionArgs = mode === 'new' ? ['--session-id', sessionId] : [`--resume=${sessionId}`];
+    expect(argv).toEqual([
+      ...sessionArgs,
+      '-p',
+      'read the project notes',
+      '--attachment',
+      'screen shot.png',
+    ]);
   });
 
   describe('McpCliCapability — Copilot MCP CLI command shapes (R3)', () => {

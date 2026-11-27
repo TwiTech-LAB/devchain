@@ -9,6 +9,7 @@ import { getRawSqliteClient } from '../../storage/db/sqlite-raw';
 import { SessionRowStore } from '../../storage/sessions/session-row.store';
 import type { TranscriptBackfillOutcome } from '../../storage/sessions/session-transcript.types';
 import { EventsService } from '../../events/services/events.service';
+import { HooksService } from '../../hooks/services/hooks.service';
 import { TranscriptPathValidator } from './transcript-path-validator.service';
 import { SessionReaderAdapterFactory } from '../adapters/session-reader-adapter.factory';
 import {
@@ -112,6 +113,7 @@ export class TranscriptPersistenceListener {
       Pick<StorageService, 'getProvider'>,
     private readonly providerAdapterFactory: ProviderAdapterFactory,
     private readonly sessionRows: SessionRowStore,
+    private readonly hooks: HooksService,
   ) {
     this.sqlite = getRawSqliteClient(db);
   }
@@ -250,6 +252,16 @@ export class TranscriptPersistenceListener {
       return;
     }
 
+    // A rollback sets the fence before its commit, and nothing awaits between this check and the
+    // write. So a hook of the replaced runtime that was accepted before the fence either binds
+    // before the commit, which then replaces the binding, or stops here.
+    if (this.hooks.firedBeforeFence(sessionId, payload.firedAtMs)) {
+      this.logger.debug(
+        { sessionId, providerSessionId },
+        'SessionStart from a replaced runtime — skipping persistence',
+      );
+      return;
+    }
     const now = new Date().toISOString();
     const changes = this.sessionRows.bindTranscriptFromHook({
       sessionId,

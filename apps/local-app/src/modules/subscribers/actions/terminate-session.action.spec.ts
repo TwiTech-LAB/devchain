@@ -343,10 +343,14 @@ describe('TerminateSessionAction', () => {
       });
 
       expect(result.success).toBe(true);
-      expect(mockSessionsService.terminateSession).toHaveBeenCalledWith('session-123', {
-        source: 'subscriber',
-        reason: 'user-requested',
-      });
+      expect(mockSessionsService.terminateSession).toHaveBeenCalledWith(
+        'session-123',
+        {
+          source: 'subscriber',
+          reason: 'user-requested',
+        },
+        { expectedAgentId: undefined },
+      );
     });
 
     it('terminates a busy session when the input is unchecked', async () => {
@@ -369,15 +373,21 @@ describe('TerminateSessionAction', () => {
 
       const result = await terminateSessionAction.execute(mockContext, inputs);
 
-      expect(mockStorage.getAgentByName).toHaveBeenCalledWith('project-789', 'MyAgent');
+      expect(mockStorage.getAgentByName).toHaveBeenCalledWith('project-789', 'MyAgent', {
+        excludeDisabled: true,
+      });
       expect(mockSessionsService.getActiveSessionForAgent).toHaveBeenCalledWith(
         'resolved-agent-id',
       );
       expect(mockSessionsService.validateSessionInProject).not.toHaveBeenCalled();
-      expect(mockSessionsService.terminateSession).toHaveBeenCalledWith('named-session', {
-        source: 'subscriber',
-        reason: 'user-requested',
-      });
+      expect(mockSessionsService.terminateSession).toHaveBeenCalledWith(
+        'named-session',
+        {
+          source: 'subscriber',
+          reason: 'user-requested',
+        },
+        { expectedAgentId: 'resolved-agent-id' },
+      );
       expect(result.success).toBe(true);
       const data = result.data as TerminateSessionResultData;
       expect(data).toEqual({
@@ -393,7 +403,9 @@ describe('TerminateSessionAction', () => {
 
       await terminateSessionAction.execute(mockContext, inputs);
 
-      expect(mockStorage.getAgentByName).toHaveBeenCalledWith('project-789', 'MyAgent');
+      expect(mockStorage.getAgentByName).toHaveBeenCalledWith('project-789', 'MyAgent', {
+        excludeDisabled: true,
+      });
     });
 
     it('should prefer agentName over familySlug', async () => {
@@ -402,8 +414,26 @@ describe('TerminateSessionAction', () => {
         familySlug: 'engineering',
       });
 
-      expect(mockStorage.getAgentByName).toHaveBeenCalledWith('project-789', 'MyAgent');
+      expect(mockStorage.getAgentByName).toHaveBeenCalledWith('project-789', 'MyAgent', {
+        excludeDisabled: true,
+      });
       expect(mockStorage.listAgentProfiles).not.toHaveBeenCalled();
+    });
+
+    it('does not find a disabled agent by name', async () => {
+      mockStorage.getAgentByName.mockImplementation(
+        async (_projectId: string, _name: string, options?: { excludeDisabled?: boolean }) => {
+          if (options?.excludeDisabled) throw new Error('Agent not found');
+          return { id: 'parked-agent', name: 'Parked', projectId: 'project-789', disabled: true };
+        },
+      );
+
+      const result = await terminateSessionAction.execute(mockContext, { agentName: 'Parked' });
+
+      expect(result.success).toBe(false);
+      expect(result.error).toContain('Agent not found');
+      expect(result.error).not.toContain('no active session');
+      expect(mockSessionsService.terminateSession).not.toHaveBeenCalled();
     });
 
     it('should return a distinct error when the agent does not exist', async () => {
@@ -466,10 +496,14 @@ describe('TerminateSessionAction', () => {
       const result = await terminateSessionAction.execute(mockContext, inputs);
 
       expect(result.success).toBe(true);
-      expect(mockSessionsService.terminateSession).toHaveBeenCalledWith('owner-session', {
-        source: 'subscriber',
-        reason: 'user-requested',
-      });
+      expect(mockSessionsService.terminateSession).toHaveBeenCalledWith(
+        'owner-session',
+        {
+          source: 'subscriber',
+          reason: 'user-requested',
+        },
+        { expectedAgentId: 'owner-agent' },
+      );
       const data = result.data as TerminateSessionResultData;
       expect(data.resolvedAgentId).toBe('owner-agent');
     });
@@ -515,6 +549,7 @@ describe('TerminateSessionAction', () => {
       expect(mockStorage.listAgents).toHaveBeenCalledWith('project-789', {
         limit: 10_000,
         offset: 0,
+        excludeDisabled: true,
       });
       expect(mockSessionsService.listActiveSessions).toHaveBeenCalledTimes(1);
       expect(mockSessionsService.listActiveSessions).toHaveBeenCalledWith(
@@ -522,8 +557,16 @@ describe('TerminateSessionAction', () => {
         new Set(['agent-a', 'agent-b']),
       );
       expect(mockSessionsService.terminateSession.mock.calls).toEqual([
-        ['session-a', { source: 'subscriber', reason: 'user-requested' }],
-        ['session-b', { source: 'subscriber', reason: 'user-requested' }],
+        [
+          'session-a',
+          { source: 'subscriber', reason: 'user-requested' },
+          { expectedAgentId: 'agent-a' },
+        ],
+        [
+          'session-b',
+          { source: 'subscriber', reason: 'user-requested' },
+          { expectedAgentId: 'agent-b' },
+        ],
       ]);
       expect(result.success).toBe(true);
       expect(result.retryable).toBe(false);
@@ -611,10 +654,14 @@ describe('TerminateSessionAction', () => {
         'session-123',
         'project-789',
       );
-      expect(mockSessionsService.terminateSession).toHaveBeenCalledWith('session-123', {
-        source: 'subscriber',
-        reason: 'user-requested',
-      });
+      expect(mockSessionsService.terminateSession).toHaveBeenCalledWith(
+        'session-123',
+        {
+          source: 'subscriber',
+          reason: 'user-requested',
+        },
+        { expectedAgentId: undefined },
+      );
       expect(result.success).toBe(true);
       const data = result.data as TerminateSessionResultData;
       expect(data).toEqual({
@@ -688,10 +735,14 @@ describe('TerminateSessionAction', () => {
 
       const result = await terminateSessionAction.execute(mockContext, inputs);
 
-      expect(mockSessionsService.terminateSession).toHaveBeenCalledWith('session-123', {
-        source: 'subscriber',
-        reason: 'user-requested',
-      });
+      expect(mockSessionsService.terminateSession).toHaveBeenCalledWith(
+        'session-123',
+        {
+          source: 'subscriber',
+          reason: 'user-requested',
+        },
+        { expectedAgentId: undefined },
+      );
       expect(result.success).toBe(true);
       const data = result.data as TerminateSessionResultData;
       expect(data.previousStatus).toBe('stopped');

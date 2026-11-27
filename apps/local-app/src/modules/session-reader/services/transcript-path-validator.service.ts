@@ -35,6 +35,24 @@ export const PROVIDER_ROOTS: Record<string, string[]> = {
 
 export const TRANSCRIPT_PROVIDER_ROOTS = Symbol('TRANSCRIPT_PROVIDER_ROOTS');
 
+export const PROVIDER_TRANSCRIPT_SOURCE_KINDS = {
+  claude: 'file',
+  codex: 'file',
+  opencode: 'db',
+  agy: 'db',
+  copilot: 'file',
+  devin: 'file',
+} as const;
+
+export function getTranscriptSourceKind(providerName: string | null): 'file' | 'db' | undefined {
+  const provider = providerName?.toLowerCase();
+  if (provider && Object.hasOwn(PROVIDER_TRANSCRIPT_SOURCE_KINDS, provider)) {
+    return PROVIDER_TRANSCRIPT_SOURCE_KINDS[
+      provider as keyof typeof PROVIDER_TRANSCRIPT_SOURCE_KINDS
+    ];
+  }
+}
+
 /** Whether `target` is `root` or lies inside it; both must be absolute and normalized. */
 export function isWithin(root: string, target: string): boolean {
   return target === root || target.startsWith(root + path.sep);

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useAppSocket } from './useAppSocket';
-import { fetchTranscriptSummary } from '@/ui/lib/sessions';
+import { agentSessionTreeKeyPrefix, fetchTranscriptSummary } from '@/ui/lib/sessions';
 import type { WsEnvelope } from '@/ui/lib/socket';
 import { useFetchFactory } from '@/ui/hooks/useFetchFactory';
 import type {
@@ -252,4 +252,33 @@ export function useSessionTranscript(
     isLive,
     refetch,
   };
+}
+
+/**
+ * Reads the session tree again when the server reports the conversation binding of the live
+ * session: `discovered` or `providerSessionId.discovered` on the topic `session/<id>/transcript`.
+ * The session's node in the tree holds the binding. Controls that read it, such as the Fork of
+ * the live session, need a binding that came after the tree request started.
+ */
+export function useLiveSessionBindingRefresh(liveSessionId: string | null): void {
+  const queryClient = useQueryClient();
+
+  const handleMessage = useCallback(
+    (envelope: WsEnvelope) => {
+      if (!liveSessionId || envelope.topic !== `session/${liveSessionId}/transcript`) return;
+      if (envelope.type !== 'discovered' && envelope.type !== 'providerSessionId.discovered') {
+        return;
+      }
+      // An invalidation joins a first load that is still pending, and that response can be older
+      // than the binding. So the pending load is cancelled first, and the tree is read again.
+      void queryClient
+        .cancelQueries({ queryKey: agentSessionTreeKeyPrefix })
+        .then(() => queryClient.invalidateQueries({ queryKey: agentSessionTreeKeyPrefix }));
+    },
+    [liveSessionId, queryClient],
+  );
+
+  const handlers = useMemo(() => ({ message: handleMessage }), [handleMessage]);
+
+  useAppSocket(handlers, [liveSessionId]);
 }

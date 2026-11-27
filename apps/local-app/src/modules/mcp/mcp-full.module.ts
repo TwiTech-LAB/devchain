@@ -21,6 +21,8 @@ import { McpToolBindingRegistry } from './services/mcp-tool-binding.registry';
 import { WorktreesModule } from '../worktrees/worktrees.module';
 import { VaultModule } from '../vault/vault.module';
 import { VaultRequestsModule } from '../vault-requests/vault-requests.module';
+import { ExternalIntegrationsModule } from '../external-integrations/external-integrations.module';
+import { EXTERNAL_TASK_ADMISSION, externalTaskAdmission } from './services/external-task-admission';
 
 @Module({
   imports: [
@@ -39,9 +41,16 @@ import { VaultRequestsModule } from '../vault-requests/vault-requests.module';
     WorktreesModule,
     VaultModule,
     VaultRequestsModule,
+    ExternalIntegrationsModule,
   ],
   controllers: [McpHttpController, McpSdkController, McpTestController],
-  providers: [McpToolBindingRegistry, McpService, McpServerService, McpGateway],
+  providers: [
+    McpToolBindingRegistry,
+    McpService,
+    McpServerService,
+    McpGateway,
+    { provide: EXTERNAL_TASK_ADMISSION, useValue: () => externalTaskAdmission() },
+  ],
   exports: [McpService],
 })
 export class McpFullModule {}

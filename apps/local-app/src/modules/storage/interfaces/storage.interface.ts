@@ -3,6 +3,7 @@ import type {
   ProjectReplicaIdSets,
   ProjectReplicaRow,
   ProjectReplicaV1,
+  ReplicaExternalTaskLinkRow,
   ReplicaInstanceSettings,
 } from '@devchain/shared';
 import type { FeatureFlagConfig } from '../../../common/config/feature-flags';
@@ -99,6 +100,12 @@ import {
   ScheduledEpicRunStatus,
   CreateExternalTaskLink,
   ExternalTaskLink,
+  ExternalTaskLinkChangeResult,
+  ExternalTaskLinkInput,
+  ExternalTaskLinkWriteOptions,
+  ImportHostedExternalTask,
+  ImportHostedExternalTaskResult,
+  DeliveredIntegrationConnection,
   IntegrationConnection,
   IntegrationConnectionLookup,
   IntegrationCredentials,
@@ -232,6 +239,8 @@ export interface ListAssignedEpicsOptions {
    * Default: false (no filtering) to maintain backward compatibility.
    */
   excludeMcpHidden?: boolean;
+  /** A disabled agent's name resolves as not found. */
+  excludeDisabledAgent?: boolean;
 }
 
 export interface ListSubEpicsForParentsOptions {
@@ -364,6 +373,20 @@ export interface ProjectWorkspaceStorage {
   deleteProjectWorkspace(id: string, replacementId: string): Promise<DeleteProjectWorkspaceResult>;
 }
 
+/** Link state a push carries to a claimed VM besides its connections. */
+export interface DeliveredLinkSync {
+  /** Home's ordinary links per project; applied only to a project not seeded yet. */
+  seed?: ReadonlyArray<{ projectId: string; links: readonly ReplicaExternalTaskLinkRow[] }>;
+  /** Receipts home applied: deleted here. */
+  ackedReceiptIds?: readonly string[];
+}
+
+export interface DeliveredIntegrationsResult {
+  connections: DeliveredIntegrationConnection[];
+  /** Every project this VM holds that home has seeded, after the push. */
+  seededProjectIds: string[];
+}
+
 export interface ReadProjectReplicaSourceOptions {
   /** Prompts, teams, watchers, subscribers, schedules, settings, reviews, skill switches and env scopes. */
   includeConfiguration: boolean;
@@ -378,6 +401,11 @@ export interface ReadProjectReplicaSourceOptions {
   changedSince?: string;
   /** Adds the complete epic, comment and segment ID sets of the projects. */
   includeIdSets?: boolean;
+  /**
+   * A claimed VM's ordinary links and unacknowledged link receipts, whole; read only
+   * when home has seeded every requested project.
+   */
+  includeExternalLinks?: boolean;
 }
 
 /** A stored `provider_models` or `provider_efforts` row. */
@@ -468,6 +496,8 @@ export interface ProjectReplicaSource {
   sessions: ProjectReplicaRow<'sessions'>[];
   epic_time_session_watermarks: ProjectReplicaRow<'epic_time_session_watermarks'>[];
   idSets?: { epics: string[]; epic_comments: string[]; epic_time_segments: string[] };
+  external_task_links?: ProjectReplicaRow<'external_task_links'>[];
+  external_link_receipts?: ProjectReplicaRow<'external_link_receipts'>[];
 }
 
 /**
@@ -483,6 +513,8 @@ export interface ProjectReplicaApplySummary {
   /** Epics inserted or updated, including epics whose tags or comments changed. */
   changedEpicIds: string[];
   deletedEpicIds: string[];
+  /** Existing epics whose ordinary link the apply added, removed or replaced. */
+  linkChangedEpicIds: string[];
   /** Per-project rows skipped because their skill slug is not installed here. */
   skippedUnknownSkillCount: number;
 }
@@ -524,6 +556,11 @@ export interface ApplyProjectReplicaStorageOptions {
    * transaction, so a project created by the apply is never committed writable.
    */
   frozenAt?: string;
+  /**
+   * Managed projections whose lock the caller holds. When set, an apply that would
+   * release any other projection rolls back with `ProjectionLockCoverageError`.
+   */
+  lockedProjectionIds?: readonly string[];
 }
 
 export interface FrozenProject {
@@ -535,8 +572,15 @@ export interface ProjectHostStorage {
   /** `frozenAt` null thaws. Throws `NotFoundError` for an unknown project. */
   setProjectFrozen(projectId: string, frozenAt: string | null): Promise<void>;
   listFrozenProjects(): Promise<FrozenProject[]>;
-  /** Throws `ConflictError` (`PROJECT_NOT_FROZEN`) unless the project is frozen. */
-  releaseProject(projectId: string): Promise<void>;
+  /**
+   * Throws `ConflictError` (`PROJECT_NOT_FROZEN`) unless the project is frozen, and
+   * (`PROJECT_HAS_INTEGRATION_CONNECTIONS`) when it has a connection, unless
+   * `deleteIntegrationConnections` (a claimed VM, whose rows home delivered) is set.
+   */
+  releaseProject(
+    projectId: string,
+    options?: { deleteIntegrationConnections?: boolean },
+  ): Promise<void>;
   findEpicIdByIdempotencyKey(projectId: string, key: string): Promise<string | null>;
 }
 
@@ -571,8 +615,21 @@ export interface RemoteStorage {
     projectId: string,
     data: UpdateRemoteProjectBinding,
   ): Promise<RemoteProjectBinding>;
-  /** Returns the deleted row, or null when the project had no binding. */
+  /**
+   * Returns the deleted row, or null when the project had no binding. The project's VM
+   * link owner record goes with it.
+   */
   deleteRemoteProjectBinding(projectId: string): Promise<RemoteProjectBinding | null>;
+  /**
+   * Records that the VM of each given binding owns the project's ordinary links, only
+   * while that binding (same remote and creation time) is the project's current `remote`
+   * one; an earlier record stays. Returns the projects recorded or already recorded.
+   */
+  markVmLinkOwners(
+    bindings: readonly Pick<RemoteProjectBinding, 'projectId' | 'remoteId' | 'createdAt'>[],
+  ): Promise<string[]>;
+  /** When the VM of the project's current binding came to own its links, or null. */
+  getVmLinkOwnerSince(projectId: string): Promise<string | null>;
   /** 409 `REMOTE_OPERATION_IN_PROGRESS` while the project has a `running` or `failed` operation. */
   createRemoteOperation(data: CreateRemoteOperation): Promise<RemoteOperation>;
   getRemoteOperation(id: string): Promise<RemoteOperation>;
@@ -778,6 +835,7 @@ export interface EpicStorage {
     eventFactory?: (epic: Epic, workspaceId: string) => PreparedEvent | null,
   ): Promise<void>;
   listSubEpics(parentId: string, options?: ListOptions): Promise<ListResult<Epic>>;
+  listDirectChildEpicIds(parentId: string): Promise<string[]>;
   listParentChildren(
     parentId: string,
     options?: ListParentChildrenOptions,
@@ -1032,20 +1090,53 @@ export interface ProfileProviderConfigStorage {
   reorderProfileProviderConfigs(profileId: string, configIds: string[]): Promise<void>;
 }
 
+/** An agent update and the id of every agent row that it wrote. */
+export interface AgentUpdateResult {
+  agent: Agent;
+  /** The updated agent first, then a former project owner whose flag the update cleared. */
+  writtenAgentIds: string[];
+}
+
 export interface DeleteAgentOptions {
   protectProjectOwner?: boolean;
   protectTeamLead?: boolean;
+  /** Reject a disabled agent with AGENT_DISABLED. */
+  protectDisabled?: boolean;
+}
+
+/** Reads include disabled agents unless `excludeDisabled` is set. */
+export interface AgentReadOptions {
+  excludeDisabled?: boolean;
 }
 
 export interface AgentStorage {
   createAgent(data: CreateAgent): Promise<Agent>;
   getAgent(id: string): Promise<Agent>;
-  listAgents(projectId: string, options?: ListOptions): Promise<ListResult<Agent>>;
+  listAgents(
+    projectId: string,
+    options?: ListOptions & AgentReadOptions,
+  ): Promise<ListResult<Agent>>;
   /** Return the at-most-one designated owner for each requested project. */
   listProjectOwners(projectIds: string[]): Promise<Agent[]>;
-  getAgentByName(projectId: string, name: string): Promise<Agent & { profile?: AgentProfile }>;
+  getAgentByName(
+    projectId: string,
+    name: string,
+    options?: AgentReadOptions,
+  ): Promise<Agent & { profile?: AgentProfile }>;
   updateAgent(id: string, data: UpdateAgent): Promise<Agent>;
+  /** `updateAgent` that also reports every agent row the update wrote. */
+  updateAgentReportingWrites(id: string, data: UpdateAgent): Promise<AgentUpdateResult>;
   deleteAgent(id: string, options?: DeleteAgentOptions): Promise<void>;
+  /**
+   * Set the disabled flag. An enabled agent must be in a team, lead no team and not be the
+   * Project Owner (ConflictError codes AGENT_NOT_IN_TEAM, AGENT_IS_TEAM_LEAD,
+   * AGENT_IS_PROJECT_OWNER). `changed` is false when the agent was already disabled.
+   */
+  disableAgent(id: string): Promise<{ agent: Agent; changed: boolean }>;
+  /** Clear the disabled flag. No eligibility rules. */
+  enableAgent(id: string): Promise<Agent>;
+  /** Synchronous, for admission checks that must not yield. False for an unknown agent. */
+  isAgentDisabled(id: string): boolean;
 }
 
 export interface RecordStorage {
@@ -1193,6 +1284,21 @@ export interface IntegrationStorage {
     legacySourceConnectionId: string,
   ): Promise<IntegrationConnection[]>;
   listIntegrationConnections(projectId?: string): Promise<IntegrationConnection[]>;
+  /**
+   * Claimed VM only: makes the rows exactly `connections` (skipping projects this VM
+   * does not hold), with empty credentials and subtask sync off, and applies `links` in
+   * the same transaction. Emits no event.
+   */
+  replaceDeliveredIntegrationConnections(
+    connections: readonly DeliveredIntegrationConnection[],
+    links?: DeliveredLinkSync,
+  ): Promise<DeliveredIntegrationsResult>;
+  /** Claimed VM: the projects home seeded and the receipts it has not acknowledged. */
+  readExternalLinkSyncState(): Promise<{ seededProjectIds: string[]; pendingReceipts: number }>;
+  /** The project's ordinary links in replica row shape, for a VM seed. */
+  listOrdinaryExternalTaskLinkRows(projectId: string): Promise<ReplicaExternalTaskLinkRow[]>;
+  /** Ids of the VM link receipts this instance applied for these projects. */
+  listExternalLinkReceiptIds(projectIds: readonly string[]): Promise<string[]>;
   getIntegrationConnectionCredentials(
     identity: IntegrationConnectionLookup,
   ): Promise<IntegrationCredentials | null>;
@@ -1227,6 +1333,74 @@ export interface IntegrationStorage {
     eventFactory?: FactualEventFactory<IntegrationConnection, IntegrationConnection>,
   ): Promise<IntegrationConnection>;
   createExternalTaskLink(data: CreateExternalTaskLink): Promise<ExternalTaskLink>;
+  /**
+   * Writes the link row for an epic of a remote-owned project after the host
+   * created that epic. Home owns link rows, so this write skips the project
+   * write gate; use `createExternalTaskLink` for every other link.
+   */
+  createRemoteProjectExternalTaskLink(data: CreateExternalTaskLink): Promise<ExternalTaskLink>;
+  /**
+   * Gives the epic its one ordinary link, joining the caller's transaction
+   * when there is one. Rechecks the connection epoch, then refuses with
+   * `EPIC_ALREADY_LINKED` or `EXTERNAL_TASK_ALREADY_LINKED` (`details.epicId`).
+   * Releases the epic's own managed-subtask projections and their
+   * recognition links first: the explicit link wins. When the epic's link is
+   * to the same task and its connection is gone, it is rebound in place to
+   * the input connection instead (same id, `rebound: true`).
+   */
+  setEpicExternalTaskLink(
+    epicId: string,
+    link: ExternalTaskLinkInput,
+    eventFactory?: (link: ExternalTaskLink) => PreparedEvent | null,
+    options?: ExternalTaskLinkWriteOptions,
+  ): Promise<ExternalTaskLinkChangeResult>;
+  /**
+   * Deletes the epic's ordinary link (the exact `linkId` when given), joining
+   * the caller's transaction when there is one. Also deletes every managed
+   * projection whose parent source is that link, and their recognition
+   * links, and removes the epic's import idempotency key of that task. Remote subtasks stay;
+   * nothing here calls a vendor.
+   */
+  deleteExternalTaskLink(
+    epicId: string,
+    linkId: string | null,
+    eventFactory?: (link: ExternalTaskLink) => PreparedEvent | null,
+    options?: ExternalTaskLinkWriteOptions,
+  ): Promise<ExternalTaskLinkChangeResult>;
+  /**
+   * Refuses with `EXTERNAL_TASK_ESTIMATE_PENDING` when deleting the epic's ordinary link
+   * `linkId` would leave a remote task with a pending estimate and no link in its project:
+   * that link or a recognition link of a managed projection it parents. Changes nothing.
+   * Refuses a managed `linkId` with `EXTERNAL_TASK_LINK_MANAGED`.
+   * Returns the tasks of the links the deletion would remove.
+   */
+  assertExternalLinkReleaseAllowed(
+    epicId: string,
+    linkId: string,
+  ): Promise<ExternalEstimateLogIdentity[]>;
+  /**
+   * Home, one transaction, before each dispatch of an unlink to the VM:
+   * `assertExternalLinkReleaseAllowed`, then records the dispatch as an open attempt and
+   * returns its id (null when the epic no longer has the link). While an attempt of
+   * `linkId` is open and home's copy has the link, `prepareExternalEstimateLogOperation`
+   * refuses the tasks it removes with reason `external_task_unlink_pending`.
+   */
+  beginExternalLinkRelease(epicId: string, linkId: string): Promise<string | null>;
+  /**
+   * Closes `attempt` (when given: the VM answered it and changed nothing), and every
+   * attempt of `linkId` once home's copy has dropped the link. Other attempts stay open.
+   */
+  closeExternalLinkReleaseAttempt(linkId: string, attempt: string | null): Promise<void>;
+  /**
+   * Claimed VM, one transaction: the task's current link in the project wins
+   * (`created: false`); else an epic of an earlier import that never got its link (found
+   * by idempotency key), or a new epic, gets the link and its `set` receipt. An unlink
+   * clears the key, so it never brings back a deliberately unlinked epic.
+   */
+  importHostedExternalTask(
+    data: ImportHostedExternalTask,
+    epicCreatedEvent?: (epic: Epic) => PreparedEvent | null,
+  ): Promise<ImportHostedExternalTaskResult>;
   createEpicWithExternalTaskLink(
     data: CreateEpicWithExternalTaskLink,
     eventFactory?: (result: CreateEpicWithExternalTaskLinkResult) => PreparedEvent | null,
@@ -1261,6 +1435,13 @@ export interface IntegrationStorage {
   listExternalManagedSubtaskLinksForEpicSnapshot(
     epicIdSnapshot: string,
   ): Promise<ExternalManagedSubtaskLink[]>;
+  listExternalManagedSubtaskLinksByParentSourceLink(
+    parentSourceLinkId: string,
+  ): Promise<ExternalManagedSubtaskLink[]>;
+  /**
+   * Moving a confirmed row to another connection also moves its recognition
+   * link, in the same transaction.
+   */
   updateExternalManagedSubtaskLink(
     id: string,
     data: UpdateExternalManagedSubtaskLink,

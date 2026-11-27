@@ -524,8 +524,51 @@ const mobileChatAgentSchema = z
     sessionId: uuidSchema.optional(),
     activityState: z.enum(['idle', 'busy']).nullable().optional(),
     latestMessageCount: z.number().int().nonnegative().optional(),
+    pendingQuestion: z.boolean().optional(),
+    disabled: z.boolean().optional(),
+    isProjectOwner: z.boolean().optional(),
   })
   .passthrough();
+
+/** A non-empty override, or `null` to clear it. */
+const agentOverrideValueSchema = z.string().trim().min(1).nullable();
+
+const mobileChatAgentOverrideValuesSchema = z
+  .object({
+    agentId: uuidSchema,
+    providerConfigId: uuidSchema,
+    modelOverride: z.string().nullable(),
+    effortOverride: z.string().nullable(),
+  })
+  .passthrough();
+
+const mobileChatAgentOverridesSchema = mobileChatAgentOverrideValuesSchema.extend({
+  configs: z.array(
+    z
+      .object({
+        id: uuidSchema,
+        name: z.string(),
+        providerId: uuidSchema,
+        providerName: z.string().optional(),
+        model: z.string().nullable(),
+        // The `--model` of the config's raw options: launch uses it when `model` is null.
+        optionsModel: z.string().nullable().optional(),
+        effort: z.string().nullable(),
+      })
+      .passthrough(),
+  ),
+  providers: z.array(
+    z
+      .object({
+        providerId: uuidSchema,
+        models: z.array(z.string()),
+        efforts: z.array(z.string()),
+        supportsEffort: z.boolean(),
+        requiresModelForEffort: z.boolean(),
+      })
+      .passthrough(),
+  ),
+});
 
 const mobileChatTeamSchema = z
   .object({
@@ -708,6 +751,9 @@ const sessionHistoryItemSchema = z
     sizeBytes: z.number().int().nonnegative().nullable(),
     transcriptAvailable: z.boolean(),
     name: z.string().nullable(),
+    /** The owner; absent from a PC older than family lists, which lists only the viewing agent. */
+    agentId: uuidSchema.nullable().optional(),
+    agentName: z.string().nullable().optional(),
   })
   .passthrough();
 
@@ -897,13 +943,17 @@ const boardCatalog = {
 
 const chatReadCatalog = {
   'chat.listAgents': {
-    paramsSchema: z.object({ projectId: uuidSchema }).passthrough(),
+    paramsSchema: z
+      .object({ projectId: uuidSchema, includeDisabled: z.boolean().optional() })
+      .passthrough(),
     resultSchema: z.array(mobileChatAgentSchema),
     paramsMode: passthrough,
     cryptoMode: conditionalSeal,
   },
   'chat.listTeams': {
-    paramsSchema: z.object({ projectId: uuidSchema }).passthrough(),
+    paramsSchema: z
+      .object({ projectId: uuidSchema, includeDisabled: z.boolean().optional() })
+      .passthrough(),
     resultSchema: z.array(mobileChatTeamSchema),
     paramsMode: passthrough,
     cryptoMode: conditionalSeal,
@@ -967,6 +1017,34 @@ const chatReadCatalog = {
   'chat.deleteAgent': {
     paramsSchema: z.object({ projectId: uuidSchema, agentId: uuidSchema }).passthrough(),
     resultSchema: z.object({ deleted: z.literal(true) }).passthrough(),
+    paramsMode: passthrough,
+    cryptoMode: conditionalSeal,
+  },
+  'chat.setAgentDisabled': {
+    paramsSchema: z
+      .object({ projectId: uuidSchema, agentId: uuidSchema, disabled: z.boolean() })
+      .passthrough(),
+    resultSchema: z.object({ agentId: uuidSchema, disabled: z.boolean() }).passthrough(),
+    paramsMode: passthrough,
+    cryptoMode: conditionalSeal,
+  },
+  'chat.getAgentOverrides': {
+    paramsSchema: z.object({ projectId: uuidSchema, agentId: uuidSchema }).passthrough(),
+    resultSchema: mobileChatAgentOverridesSchema,
+    paramsMode: passthrough,
+    cryptoMode: conditionalSeal,
+  },
+  'chat.setAgentOverrides': {
+    paramsSchema: z
+      .object({
+        projectId: uuidSchema,
+        agentId: uuidSchema,
+        providerConfigId: uuidSchema,
+        modelOverride: agentOverrideValueSchema,
+        effortOverride: agentOverrideValueSchema,
+      })
+      .passthrough(),
+    resultSchema: mobileChatAgentOverrideValuesSchema,
     paramsMode: passthrough,
     cryptoMode: conditionalSeal,
   },
@@ -1064,7 +1142,16 @@ const chatActionCatalog = {
     cryptoMode: conditionalSeal,
   },
   'chat.restoreSession': {
-    paramsSchema: z.object({ sessionId: uuidSchema, projectId: uuidSchema }).passthrough(),
+    paramsSchema: z
+      .object({
+        sessionId: uuidSchema,
+        projectId: uuidSchema,
+        /** The family agent to restore into; omitted restores into the session's owner. */
+        targetAgentId: uuidSchema.optional(),
+        /** Restore a session of another provider by switching the target agent to this config. */
+        switchToProviderConfigId: uuidSchema.optional(),
+      })
+      .passthrough(),
     resultSchema: lifecycleStartResultSchema,
     paramsMode: passthrough,
     cryptoMode: conditionalSeal,
@@ -1100,6 +1187,8 @@ const chatActionCatalog = {
         projectId: uuidSchema,
         cursor: z.string().min(1).optional(),
         limit: z.number().int().min(1).max(100).optional(),
+        /** True lists the sessions of the agent's whole family; omitted lists the agent's own. */
+        family: z.boolean().optional(),
       })
       .passthrough(),
     resultSchema: sessionHistoryResponseSchema,
@@ -1362,6 +1451,9 @@ export const MOBILE_RPC_METHODS = [
   'chat.createTeamAgent',
   'chat.createIndependentAgent',
   'chat.deleteAgent',
+  'chat.setAgentDisabled',
+  'chat.getAgentOverrides',
+  'chat.setAgentOverrides',
   'chat.getTranscriptSummary',
   'chat.getTranscriptChunks',
   'chat.getTranscriptTail',

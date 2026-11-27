@@ -18,11 +18,13 @@ import { ProjectWriteGate } from '../../storage/write-gate/project-write-gate';
 import { WorktreesService } from '../../worktrees/worktrees.service';
 import { VaultDiscoveryService } from '../../vault/vault-discovery.service';
 import { VaultRequestService } from '../../vault-requests/vault-request.service';
+import { ExternalTaskReferenceResolver } from '../../external-integrations/resolution/external-task-reference.resolver';
 import { allMetadata } from '../tool-descriptors';
 import type { BoundMcpToolHandler, McpBindingRuntime } from '../tool-descriptors/binding-types';
 import { allBindingDefinitions } from '../tool-descriptors/runtime-bindings';
 import { InstructionsResolver } from './instructions-resolver';
 import { SessionContextResolver } from './utils/session-context-resolver';
+import { EXTERNAL_TASK_ADMISSION, type ExternalTaskAdmission } from './external-task-admission';
 
 export interface ResolvedMcpToolBinding {
   readonly paramsSchema: ZodSchema | null;
@@ -75,6 +77,10 @@ export class McpToolBindingRegistry {
     @Optional() worktreesService?: WorktreesService,
     @Optional() vaultDiscoveryService?: VaultDiscoveryService,
     @Optional() vaultRequestService?: VaultRequestService,
+    @Optional() externalTaskResolver?: ExternalTaskReferenceResolver,
+    @Optional()
+    @Inject(EXTERNAL_TASK_ADMISSION)
+    externalTaskAdmission?: ExternalTaskAdmission,
   ) {
     const instructionsResolver = new InstructionsResolver(storage);
     const sessionContextResolver = new SessionContextResolver(
@@ -102,6 +108,8 @@ export class McpToolBindingRegistry {
       worktreesService,
       vaultDiscoveryService,
       vaultRequestService,
+      externalTaskResolver,
+      externalTaskAdmission,
       instructionsResolver,
       defaultInlineMaxBytes: 64 * 1024,
       resolveSessionContext: (sessionId: string) => sessionContextResolver.resolve(sessionId),

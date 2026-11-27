@@ -19,8 +19,11 @@ import { ReplicaApplyError } from '../../../common/errors/error-types';
 import { remoteProjectSyncedEvent } from '../../events/catalog/remote.project.synced';
 import type { PreparedEvent } from '../../events/services/durable-event-registry.service';
 import { LocalStorageService } from '../../storage/local/local-storage.service';
+import { ManagedProjectionLock } from '../../external-integrations/subscribers/managed-projection-lock';
 import { ProjectReplicaApplier } from './project-replica.applier';
 import { ProjectReplicaBuilder } from './project-replica.builder';
+import { markLinkProjectsSeeded } from '../../storage/local/helpers/external-link-receipts';
+import { wholeTablesHash } from '../sync/remote-live-sync.service';
 import {
   INSTANCE_SETTING_KEYS,
   T,
@@ -134,8 +137,8 @@ describe('ProjectReplicaApplier (integration)', () => {
         emitted.push(event);
       },
     };
-    applier = new ProjectReplicaApplier(hostStorage, events);
-    homeApplier = new ProjectReplicaApplier(homeStorage, events);
+    applier = new ProjectReplicaApplier(hostStorage, events, new ManagedProjectionLock());
+    homeApplier = new ProjectReplicaApplier(homeStorage, events, new ManagedProjectionLock());
   });
 
   afterEach(() => {
@@ -737,6 +740,7 @@ describe('ProjectReplicaApplier (integration)', () => {
       projectId: 'A',
       changedEpicIds: [],
       deletedEpicIds: [],
+      linkChangedEpicIds: [],
       skippedUnknownSkillCount: 0,
     });
   });
@@ -814,6 +818,7 @@ describe('ProjectReplicaApplier (integration)', () => {
       remoteId: 'remote-1',
       changedEpicIds: [],
       deletedEpicIds: ['epic-2'],
+      linkChangedEpicIds: [],
       cursor: T,
     });
     expect(summary.deletedEpicIds).toEqual(['epic-2']);
@@ -1653,6 +1658,45 @@ describe('ProjectReplicaApplier (integration)', () => {
     });
   });
 
+  // The real SQLite foreign key checks both apply ordering and the missing-parent fallback.
+  it.each([
+    { name: 'preserves a link when the parent follows its child', present: true },
+    { name: 'clears a link when the parent is absent', present: false },
+  ])('$name', async ({ present }) => {
+    // The replica schema accepts only full 36-character session ids in this list.
+    const inheritedSessionIds = JSON.stringify(['00000000-0000-4000-8000-000000000001']);
+    homeSeed.insert('sessions', {
+      id: 'save-point',
+      parent_session_id: 'session-1',
+      inherited_session_ids: inheritedSessionIds,
+      agent_id: 'agent-1',
+      kind: 'save_point',
+      status: 'stopped',
+      started_at: T,
+      provider_session_id: 'saved-conversation',
+      transcript_path: '/tmp/saved-conversation.jsonl',
+      provider_name_at_launch: 'claude',
+      ...stamps,
+    });
+    const replica = await build('attach');
+    expect(replica.tables.sessions.map(({ id }) => id)).toEqual(['save-point', 'session-1']);
+    if (!present) {
+      replica.tables.sessions[0].parent_session_id = 'missing-parent';
+    }
+
+    await applier.apply(replica, { mode: 'full', remoteId: null, cursor: null });
+
+    expect(
+      host
+        .prepare('SELECT kind, parent_session_id, inherited_session_ids FROM sessions WHERE id = ?')
+        .get('save-point'),
+    ).toEqual({
+      kind: 'save_point',
+      parent_session_id: present ? 'session-1' : null,
+      inherited_session_ids: inheritedSessionIds,
+    });
+  });
+
   it('lets a disconnect clear a session epic that lives inside the project', async () => {
     await applier.apply(await build('attach'), { mode: 'full', remoteId: null, cursor: null });
     host.exec(`UPDATE sessions SET epic_id = NULL WHERE id = 'session-1'`);
@@ -1665,6 +1709,452 @@ describe('ProjectReplicaApplier (integration)', () => {
 
     expect(home.prepare('SELECT epic_id FROM sessions WHERE id = ?').get('session-1')).toEqual({
       epic_id: null,
+    });
+  });
+  // `home` plays the claimed VM that owns the links and `host` the home mirror of the project.
+  describe('VM link tables', () => {
+    const vm = () => home;
+    const mirror = () => host;
+    const vmSeed = () => homeSeed;
+    const mirrorSeed = () => hostSeed;
+
+    beforeEach(async () => {
+      homeSeed.seedEpic('epic-3', 'A', { parent_id: 'epic-1' });
+      homeSeed.seedEpic('epic-p', 'A');
+      homeSeed.seedEpic('epic-c', 'A', { parent_id: 'epic-p' });
+      await applier.apply(await build('attach'), { mode: 'full', remoteId: null, cursor: null });
+      markLinkProjectsSeeded(vm(), ['A']);
+    });
+
+    const snapshot = (managedProjectionId?: string) =>
+      JSON.stringify(managedProjectionId ? { managedProjectionId } : { remoteKey: 'K' });
+    const ordinary = (
+      id: string,
+      epicId: string,
+      task: string,
+      connectionId: string | null = null,
+      projectId = 'A',
+    ) => ({
+      id,
+      epic_id: epicId,
+      project_id: projectId,
+      connection_id: connectionId,
+      provider: 'jira',
+      remote_scope_key: 'site',
+      remote_task_id: task,
+      source_snapshot: snapshot(),
+      ...stamps,
+    });
+    const receipt = (
+      id: string,
+      seq: number,
+      kind: 'set' | 'release',
+      epicId: string,
+      linkId: string,
+      task: string,
+    ) => ({
+      id,
+      seq,
+      kind,
+      project_id: 'A',
+      epic_id: epicId,
+      link_id: linkId,
+      provider: 'jira',
+      remote_scope_key: 'site',
+      remote_task_id: task,
+      created_at: T,
+    });
+    /**
+     * A home-owned managed projection of `epicId` under `parentLinkId`, with its recognition
+     * link; the parent epic and project are the mirrored epic's unless given.
+     */
+    function project(
+      id: string,
+      epicId: string,
+      parentLinkId: string,
+      task: string,
+      options: { parentEpicId?: string; projectId?: string; connectionId?: string } = {},
+    ): void {
+      const epic = mirror()
+        .prepare('SELECT parent_id, project_id FROM epics WHERE id = ?')
+        .get(epicId) as { parent_id: string | null; project_id: string } | undefined;
+      const projectId = options.projectId ?? epic?.project_id ?? 'A';
+      mirrorSeed().insert('external_managed_subtask_links', {
+        id,
+        epic_id: epic ? epicId : null,
+        epic_id_snapshot: epicId,
+        parent_epic_id_snapshot: options.parentEpicId ?? epic?.parent_id ?? 'epic-1',
+        parent_source_link_id_snapshot: parentLinkId,
+        connection_id_snapshot: options.connectionId ?? 'conn-home',
+        provider: 'jira',
+        remote_scope_key: 'site',
+        work_area_remote_id: 'area',
+        parent_remote_task_id: 'P-1',
+        connection_generation: 1,
+        sync_setting_revision: 1,
+        ownership_token: 'token',
+        remote_task_id: task,
+        desired_version: 1,
+        desired_fingerprint: 'fp',
+        ...stamps,
+      });
+      if (!epic) return;
+      mirrorSeed().insert('external_task_links', {
+        ...ordinary(`rec-${id}`, epicId, task, null, projectId),
+        source_snapshot: snapshot(id),
+      });
+    }
+    const connection = (
+      seeder: ReturnType<typeof replicaSeeder>,
+      id: string,
+      projectId = 'A',
+      provider = 'jira',
+    ) =>
+      seeder.insert('integration_connections', {
+        id,
+        project_id: projectId,
+        provider,
+        credential_ciphertext: '',
+        ...stamps,
+      });
+    const links = (db: Database.Database) =>
+      db.prepare('SELECT id, epic_id, connection_id FROM external_task_links ORDER BY id').all();
+    const projections = () =>
+      (
+        mirror()
+          .prepare('SELECT id FROM external_managed_subtask_links ORDER BY id')
+          .all() as Array<{ id: string }>
+      ).map((row) => row.id);
+    const receiptIds = () =>
+      (
+        mirror().prepare('SELECT id FROM external_link_receipts ORDER BY seq').all() as Array<{
+          id: string;
+        }>
+      ).map((row) => row.id);
+
+    async function pull(scope: 'live' | 'attach' | 'detach' = 'live') {
+      const result = await homeBuilder.build({
+        projectIds: ['A'],
+        scope,
+        includeExternalLinks: true,
+      });
+      if (!result.ok) throw new Error(JSON.stringify(result.errors));
+      const [summary] = await applier.apply(result.replica, {
+        mode: scope === 'live' ? 'live' : 'full',
+        remoteId: 'remote-1',
+        cursor: T,
+        keepInstanceConfig: true,
+      });
+      return { replica: result.replica, summary };
+    }
+    it('leaves the mirror links untouched when the VM sends no link tables', async () => {
+      mirrorSeed().insert('external_task_links', ordinary('link-p', 'epic-1', 'P-1'));
+      project('proj-2', 'epic-2', 'link-p', 'S-2');
+      vm().prepare('DELETE FROM settings').run();
+
+      const { replica, summary } = await pull();
+
+      expect(replica.tables.external_task_links).toBeUndefined();
+      expect(replica.tables.external_link_receipts).toBeUndefined();
+      expect(links(mirror())).toHaveLength(2);
+      expect(projections()).toEqual(['proj-2']);
+      expect(summary.linkChangedEpicIds).toEqual([]);
+    });
+
+    it('replays each receipt once, in seq order, releasing only the projections it names', async () => {
+      mirrorSeed().insert('external_task_links', ordinary('link-p', 'epic-1', 'P-1'));
+      project('proj-2', 'epic-2', 'link-p', 'S-2');
+      project('proj-3', 'epic-3', 'link-other', 'S-3');
+      // The VM unlinked the parent, then linked the child to a task of its own.
+      vmSeed().insert(
+        'external_link_receipts',
+        receipt('r-2', 2, 'set', 'epic-3', 'link-c', 'C-1'),
+      );
+      vmSeed().insert(
+        'external_link_receipts',
+        receipt('r-1', 1, 'release', 'epic-1', 'link-p', 'P-1'),
+      );
+      vmSeed().insert('external_task_links', ordinary('link-c', 'epic-3', 'C-1'));
+
+      const first = await pull();
+      // Home's sync projects epic-2 again before the VM learns of the ack.
+      project('proj-4', 'epic-2', 'link-other', 'S-4');
+      const second = await pull();
+
+      expect(first.summary.linkChangedEpicIds).toEqual(['epic-1', 'epic-3']);
+      expect(second.summary.linkChangedEpicIds).toEqual([]);
+      expect(projections()).toEqual(['proj-4']);
+      expect(links(mirror())).toEqual([
+        { id: 'link-c', epic_id: 'epic-3', connection_id: null },
+        { id: 'rec-proj-4', epic_id: 'epic-2', connection_id: null },
+      ]);
+      expect(receiptIds()).toEqual(['r-1', 'r-2']);
+      expect(await hostStorage.listExternalLinkReceiptIds(['A'])).toEqual(['r-1', 'r-2']);
+      expect(syncedEvents(host).at(-2)?.payload).toMatchObject({
+        linkChangedEpicIds: ['epic-1', 'epic-3'],
+      });
+    });
+
+    it('releases the children of a link the VM unlinked and then deleted with its epic', async () => {
+      mirrorSeed().insert('external_task_links', ordinary('link-p', 'epic-p', 'P-1'));
+      project('proj-c', 'epic-c', 'link-p', 'S-c');
+      vmSeed().insert(
+        'external_link_receipts',
+        receipt('r-1', 1, 'release', 'epic-p', 'link-p', 'P-1'),
+      );
+      vm().prepare("DELETE FROM epics WHERE id = 'epic-p'").run();
+
+      // Recovery: the full copy deletes the epic, after the receipt released its children.
+      const { summary } = await pull('attach');
+
+      expect(summary.deletedEpicIds).toEqual(['epic-p']);
+      expect(projections()).toEqual([]);
+      expect(links(mirror())).toEqual([]);
+      expect(summary.linkChangedEpicIds).toEqual([]);
+    });
+
+    it('releases an ordinary link the VM no longer has on an epic that stays', async () => {
+      mirrorSeed().insert('external_task_links', ordinary('link-p', 'epic-1', 'P-1'));
+      project('proj-2', 'epic-2', 'link-p', 'S-2');
+
+      const { summary } = await pull();
+
+      expect(links(mirror())).toEqual([]);
+      expect(projections()).toEqual([]);
+      expect(summary.linkChangedEpicIds).toEqual(['epic-1']);
+    });
+
+    it('applies a task relinked to another epic between pulls, and the owner wins a managed task', async () => {
+      mirrorSeed().insert('external_task_links', ordinary('link-x', 'epic-1', 'T-1'));
+      // Its parent source is no ordinary link here: only the collision can release it.
+      project('proj-2', 'epic-2', 'link-elsewhere', 'S-2');
+      // Without receipts: the identity rule alone has to clear both collisions.
+      vmSeed().insert('external_task_links', ordinary('link-y', 'epic-2', 'T-1'));
+      vmSeed().insert('external_task_links', ordinary('link-s', 'epic-3', 'S-2'));
+
+      await pull();
+
+      expect(links(mirror())).toEqual([
+        { id: 'link-s', epic_id: 'epic-3', connection_id: null },
+        { id: 'link-y', epic_id: 'epic-2', connection_id: null },
+      ]);
+      expect(projections()).toEqual([]);
+    });
+
+    it('relinks a task whose old epic the same pull deletes', async () => {
+      mirrorSeed().insert('external_task_links', ordinary('link-x', 'epic-p', 'T-1'));
+      project('proj-c', 'epic-c', 'link-x', 'S-c');
+      vm().prepare("DELETE FROM epics WHERE id = 'epic-p'").run();
+      vmSeed().insert('external_task_links', ordinary('link-y', 'epic-c', 'T-1'));
+      // The child's own link stops its projection; the deleted parent's link releases nothing.
+      vmSeed().insert(
+        'external_link_receipts',
+        receipt('r-1', 1, 'set', 'epic-c', 'link-y', 'T-1'),
+      );
+
+      const { summary } = await pull('attach');
+
+      expect(summary.deletedEpicIds).toEqual(['epic-p']);
+      expect(links(mirror())).toEqual([{ id: 'link-y', epic_id: 'epic-c', connection_id: null }]);
+      expect(projections()).toEqual([]);
+    });
+
+    it("sets home's connection on insert or on a rebind to it, never on update, and brings links home on detach", async () => {
+      const bReplica = await homeBuilder.build({ projectIds: ['B'], scope: 'attach' });
+      if (!bReplica.ok) throw new Error(JSON.stringify(bReplica.errors));
+      await applier.apply(bReplica.replica, { mode: 'full', remoteId: null, cursor: null });
+      connection(mirrorSeed(), 'conn-home');
+      connection(mirrorSeed(), 'conn-other', 'B');
+      connection(vmSeed(), 'conn-home');
+      connection(vmSeed(), 'conn-vm-only', 'A', 'clickup');
+      connection(vmSeed(), 'conn-other', 'B');
+      vmSeed().insert('external_task_links', ordinary('link-a', 'epic-1', 'A-1', 'conn-home'));
+      vmSeed().insert('external_task_links', ordinary('link-b', 'epic-2', 'B-1', 'conn-vm-only'));
+      vmSeed().insert(
+        'external_link_receipts',
+        receipt('r-1', 1, 'set', 'epic-1', 'link-a', 'A-1'),
+      );
+      // Detached links the VM rebound: to home's connection, to a connection of another
+      // project, and to one home no longer has.
+      for (const [seq, id, epicId, task, connectionId, provider] of [
+        [2, 'link-c', 'epic-3', 'C-1', 'conn-home', 'jira'],
+        [3, 'link-d', 'epic-p', 'D-1', 'conn-other', 'jira'],
+        [4, 'link-e', 'epic-c', 'E-1', 'conn-vm-only', 'clickup'],
+      ] as const) {
+        mirrorSeed().insert('external_task_links', { ...ordinary(id, epicId, task), provider });
+        vmSeed().insert('external_task_links', {
+          ...ordinary(id, epicId, task, connectionId),
+          provider,
+        });
+        vmSeed().insert('external_link_receipts', {
+          ...receipt(`r-${seq}`, seq, 'set', epicId, id, task),
+          provider,
+        });
+      }
+
+      const { summary } = await pull();
+      expect(summary.linkChangedEpicIds).toEqual([
+        'epic-1',
+        'epic-2',
+        'epic-3',
+        'epic-c',
+        'epic-p',
+      ]);
+      vm()
+        .prepare(
+          `UPDATE external_task_links SET connection_id = 'conn-other', source_snapshot = ?, updated_at = ?
+           WHERE id = 'link-a'`,
+        )
+        .run(JSON.stringify({ remoteKey: 'A-1 renamed' }), '2026-09-23T10:00:00.000Z');
+      await pull();
+      const afterUpdate = mirror()
+        .prepare(
+          "SELECT connection_id, source_snapshot FROM external_task_links WHERE id = 'link-a'",
+        )
+        .get();
+      await pull('detach');
+
+      expect(afterUpdate).toEqual({
+        connection_id: 'conn-home',
+        source_snapshot: JSON.stringify({ remoteKey: 'A-1 renamed' }),
+      });
+      expect(links(mirror())).toEqual([
+        { id: 'link-a', epic_id: 'epic-1', connection_id: 'conn-home' },
+        { id: 'link-b', epic_id: 'epic-2', connection_id: null },
+        { id: 'link-c', epic_id: 'epic-3', connection_id: 'conn-home' },
+        { id: 'link-d', epic_id: 'epic-p', connection_id: null },
+        { id: 'link-e', epic_id: 'epic-c', connection_id: null },
+      ]);
+      expect(receiptIds()).toEqual(['r-1', 'r-2', 'r-3', 'r-4']);
+    });
+
+    it('keeps the receipt markers through a retried detach pull, until the binding goes', async () => {
+      mirrorSeed().insert('external_task_links', ordinary('link-p', 'epic-1', 'P-1'));
+      vmSeed().insert('external_task_links', ordinary('link-p', 'epic-1', 'P-1'));
+      project('proj-2', 'epic-2', 'link-p', 'S-2');
+      // The VM linked epic-2 to a task of its own, then unlinked it again.
+      vmSeed().insert(
+        'external_link_receipts',
+        receipt('r-1', 1, 'set', 'epic-2', 'link-e', 'E-1'),
+      );
+      vmSeed().insert(
+        'external_link_receipts',
+        receipt('r-2', 2, 'release', 'epic-2', 'link-e', 'E-1'),
+      );
+      await pull('detach');
+      expect(projections()).toEqual([]);
+      // Home projects the unlinked sub-epic again before the detach finishes.
+      project('proj-new', 'epic-2', 'link-p', 'S-new');
+
+      await pull('detach');
+
+      expect(projections()).toEqual(['proj-new']);
+      expect(receiptIds()).toEqual(['r-1', 'r-2']);
+      mirror().exec(`
+        INSERT INTO remotes (id, name, base_url, kind, created_at, updated_at)
+          VALUES ('remote-1', 'VM', 'https://vm.example:3000', 'address', '${T}', '${T}');
+        INSERT INTO remote_project_bindings (project_id, remote_id, state, created_at, updated_at)
+          VALUES ('A', 'remote-1', 'detaching', '${T}', '${T}');
+      `);
+      await hostStorage.deleteRemoteProjectBinding('A');
+      expect(receiptIds()).toEqual([]);
+    });
+
+    it("never follows a reference into another project's links or projections", async () => {
+      const bReplica = await homeBuilder.build({ projectIds: ['B'], scope: 'attach' });
+      if (!bReplica.ok) throw new Error(JSON.stringify(bReplica.errors));
+      await applier.apply(bReplica.replica, { mode: 'full', remoteId: null, cursor: null });
+      mirrorSeed().seedEpic('epic-b2', 'B', { parent_id: 'epic-b' });
+      connection(mirrorSeed(), 'conn-b', 'B');
+      mirrorSeed().insert(
+        'external_task_links',
+        ordinary('link-b', 'epic-b', 'B-1', 'conn-b', 'B'),
+      );
+      project('proj-b', 'epic-b2', 'link-b', 'S-b', { connectionId: 'conn-b' });
+      // The child is gone: only its parent and connection still place it in project B.
+      project('proj-b-gone', 'epic-b-gone', 'link-b', 'S-b-gone', {
+        parentEpicId: 'epic-b',
+        connectionId: 'conn-b',
+      });
+      // Under a link already gone here, whose snapshot puts it on epic-1, not epic-3.
+      project('proj-a3', 'epic-3', 'link-gone', 'S-a3');
+      const bRows = () =>
+        mirror()
+          .prepare(
+            `SELECT id, epic_id, project_id, connection_id, remote_task_id FROM external_task_links
+             WHERE project_id = 'B' ORDER BY id`,
+          )
+          .all();
+      const bBefore = bRows();
+      connection(vmSeed(), 'conn-b', 'B');
+      // Rows of project A whose references point into project B.
+      vmSeed().insert('external_task_links', ordinary('link-x', 'epic-b', 'X-1'));
+      vmSeed().insert('external_task_links', ordinary('link-b', 'epic-1', 'B-1'));
+      vmSeed().insert('external_task_links', ordinary('link-ok', 'epic-2', 'OK-1', 'conn-b'));
+      for (const [id, kind, epicId, linkId] of [
+        ['r-1', 'set', 'epic-b2', 'link-x'],
+        ['r-2', 'set', 'epic-b-gone', 'link-x'],
+        ['r-3', 'release', 'epic-b', 'link-b'],
+        ['r-4', 'release', 'epic-1', 'link-b'],
+        ['r-5', 'release', 'epic-3', 'link-gone'],
+        // Same project, but it names home's recognition link of a managed projection.
+        ['r-6', 'release', 'epic-3', 'rec-proj-a3'],
+      ] as const) {
+        vmSeed().insert(
+          'external_link_receipts',
+          receipt(id, Number(id.slice(2)), kind, epicId, linkId, 'T-1'),
+        );
+      }
+
+      await pull();
+
+      expect(bRows()).toEqual(bBefore);
+      expect(projections()).toEqual(['proj-a3', 'proj-b', 'proj-b-gone']);
+      expect(links(mirror()).filter((row) => (row as { id: string }).id !== 'link-b')).toEqual([
+        { id: 'link-ok', epic_id: 'epic-2', connection_id: null },
+        { id: 'rec-proj-a3', epic_id: 'epic-3', connection_id: null },
+        { id: 'rec-proj-b', epic_id: 'epic-b2', connection_id: null },
+      ]);
+      // r-2 and r-5 match nothing they may release; r-6 names a recognition link, and the
+      // others point into B: those are skipped.
+      expect(receiptIds()).toEqual(['r-2', 'r-5']);
+    });
+
+    it('forgets a receipt once the VM stops sending it, and never replays it', async () => {
+      mirrorSeed().insert('external_task_links', ordinary('link-p', 'epic-1', 'P-1'));
+      vmSeed().insert(
+        'external_link_receipts',
+        receipt('r-1', 1, 'release', 'epic-1', 'link-p', 'P-1'),
+      );
+      await pull();
+      expect(receiptIds()).toEqual(['r-1']);
+
+      vm().prepare('DELETE FROM external_link_receipts').run();
+      await pull();
+
+      expect(receiptIds()).toEqual([]);
+    });
+
+    it('changes the whole-table hash on a link or receipt change', async () => {
+      const hashOf = async () => {
+        const result = await homeBuilder.build({
+          projectIds: ['A'],
+          scope: 'live',
+          changedSince: '9999-12-31T00:00:00.000Z',
+          includeExternalLinks: true,
+        });
+        if (!result.ok) throw new Error('build failed');
+        return wholeTablesHash({ cursor: T, replica: result.replica });
+      };
+      const before = await hashOf();
+      vmSeed().insert('external_task_links', ordinary('link-a', 'epic-1', 'A-1'));
+      const withLink = await hashOf();
+      vmSeed().insert(
+        'external_link_receipts',
+        receipt('r-1', 1, 'set', 'epic-1', 'link-a', 'A-1'),
+      );
+
+      expect(new Set([before, withLink, await hashOf()]).size).toBe(3);
     });
   });
 });

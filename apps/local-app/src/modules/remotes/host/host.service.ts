@@ -7,6 +7,7 @@ import {
   type ProjectReplicaPreflightError,
 } from '@devchain/shared';
 import {
+  ConflictError,
   NotFoundError,
   ReplicaPreflightError,
   ValidationError,
@@ -15,9 +16,16 @@ import { createLogger } from '../../../common/logging/logger';
 import { SettingsService } from '../../settings/services/settings.service';
 import {
   STORAGE_SERVICE,
+  type EpicStorage,
   type FrozenProject,
+  type IntegrationStorage,
   type ProjectHostStorage,
+  type StatusStorage,
+  type ProjectStorage,
 } from '../../storage/interfaces/storage.interface';
+import { EventsService } from '../../events/services/events.service';
+import type { PreparedEvent } from '../../events/services/durable-event-registry.service';
+import type { HostExternalTaskImport, HostExternalTaskImportResult } from '../contract/host-routes';
 import { ProjectSessionsStopper } from '../services/project-sessions-stopper.service';
 import { ProjectReplicaApplier } from '../replica/project-replica.applier';
 import {
@@ -28,6 +36,7 @@ import { ProjectFreezeService } from './project-freeze.service';
 import { GitCoordinatorService } from '../git-coordinator/git-coordinator.service';
 import { HostSkillSettingsService } from './host-skill-settings.service';
 import type { HostChangesQuery } from './host.dto';
+import { IntegrationVmCacheService } from '../../external-integrations/vm-cache/integration-vm-cache.service';
 import {
   ProjectTimeSettler,
   type ProjectTimeSettlement,
@@ -41,6 +50,12 @@ const logger = createLogger('HostService');
  */
 export const CHANGES_OVERLAP_MS = 5_000;
 
+type HostStorage = ProjectHostStorage &
+  Pick<IntegrationStorage, 'importHostedExternalTask' | 'deleteExternalTaskLink'> &
+  Pick<EpicStorage, 'getEpic' | 'updateEpic'> &
+  Pick<ProjectStorage, 'runInTransaction'> &
+  Pick<StatusStorage, 'getStatus'>;
+
 /** The routes a home instance calls on the instance hosting its project. */
 @Injectable()
 export class HostService {
@@ -48,12 +63,14 @@ export class HostService {
     private readonly builder: ProjectReplicaBuilder,
     private readonly applier: ProjectReplicaApplier,
     private readonly freeze: ProjectFreezeService,
-    @Inject(STORAGE_SERVICE) private readonly storage: ProjectHostStorage,
+    @Inject(STORAGE_SERVICE) private readonly storage: HostStorage,
     private readonly sessionsStopper: ProjectSessionsStopper,
     private readonly timeSettler: ProjectTimeSettler,
     private readonly skillSettings: HostSkillSettingsService,
     private readonly settings: SettingsService,
     private readonly gitCoordinator: GitCoordinatorService,
+    private readonly integrationCache: IntegrationVmCacheService,
+    private readonly events: EventsService,
   ) {}
 
   async importProject(
@@ -68,6 +85,11 @@ export class HostService {
       });
     }
     const projectId = replica.tables.projects[0].id;
+    // A VM takes ordinary links only from home's seed, which marks the project seeded,
+    // and from its own writes, which leave receipts. Home's attach replicas carry no
+    // link tables; one that does (a VM's own export) must not write links here.
+    delete replica.tables.external_task_links;
+    delete replica.tables.external_link_receipts;
     // The project is frozen in memory before the apply starts and in its row by
     // the apply's own commit: only an explicit thaw admits host writes. The
     // cursor is read before the apply, so no host write can precede it.
@@ -99,7 +121,11 @@ export class HostService {
     projectId: string,
     scope: S,
   ): Promise<ProjectReplicaOfScope<S>> {
-    const result = await this.builder.build({ projectIds: [projectId], scope });
+    const result = await this.builder.build({
+      projectIds: [projectId],
+      scope,
+      includeExternalLinks: true,
+    });
     return unwrap(result).replica;
   }
 
@@ -114,6 +140,8 @@ export class HostService {
         scope: 'live',
         changedSince,
         includeIdSets: query.full,
+        // Whole on every pull: a link change moves no epic past `since`.
+        includeExternalLinks: true,
       }),
     );
     return {
@@ -140,7 +168,13 @@ export class HostService {
   }
 
   async releaseProject(projectId: string): Promise<void> {
-    await this.storage.releaseProject(projectId);
+    // A claimed VM's connection rows are home's delivery, not its own: they go with the
+    // project, and so do their cached credentials.
+    if (this.integrationCache.isClaimedHost()) {
+      await this.integrationCache.releaseProject(projectId);
+    } else {
+      await this.storage.releaseProject(projectId);
+    }
     this.freeze.forget(projectId);
     await this.gitCoordinator.forget(projectId);
   }
@@ -151,6 +185,97 @@ export class HostService {
       throw new NotFoundError('Epic with idempotency key', key);
     }
     return { epicId };
+  }
+
+  /**
+   * Creates the task's epic and link in one transaction, or returns the task's
+   * existing link in the project; a retry with the same key reuses its epic.
+   */
+  async importExternalTask(
+    projectId: string,
+    body: HostExternalTaskImport,
+  ): Promise<HostExternalTaskImportResult> {
+    this.assertClaimedHost();
+    const status = await this.storage.getStatus(body.epic.statusId);
+    if (status.projectId !== projectId) throw new NotFoundError('Status', body.epic.statusId);
+    let prepared: PreparedEvent | null = null;
+    const result = await this.storage.importHostedExternalTask(
+      {
+        idempotencyKey: body.idempotencyKey,
+        epic: {
+          projectId,
+          statusId: body.epic.statusId,
+          title: body.epic.title,
+          description: body.epic.description,
+          parentId: null,
+          agentId: null,
+          tags: [],
+          data: { idempotencyKey: body.idempotencyKey },
+        },
+        link: body.link,
+      },
+      (epic) => {
+        prepared = this.events.prepareCommitted('epic.created', {
+          epicId: epic.id,
+          projectId: epic.projectId,
+          title: epic.title,
+          epicTitle: epic.title,
+          statusId: epic.statusId,
+          agentId: null,
+          parentId: null,
+          actor: null,
+          statusName: status.label || undefined,
+        });
+        return prepared;
+      },
+    );
+    if (prepared) this.events.emitCommitted(prepared);
+    return { epicId: result.epicId, linkId: result.link.id, created: result.created };
+  }
+
+  /**
+   * Removes the epic's ordinary link with exactly `linkId`, writes its release receipt and
+   * advances the epic's version, in one transaction: a refused unlink changes nothing.
+   */
+  async unlinkExternalTask(projectId: string, epicId: string, linkId: string): Promise<void> {
+    this.assertClaimedHost();
+    let prepared: PreparedEvent | null = null;
+    await this.storage.runInTransaction(async () => {
+      const epic = await this.storage.getEpic(epicId);
+      if (epic.projectId !== projectId) throw new NotFoundError('Epic', epicId);
+      const { link } = await this.storage.deleteExternalTaskLink(epicId, linkId, undefined, {
+        vmHosted: true,
+      });
+      const remoteKey = link.sourceSnapshot.remoteKey;
+      await this.storage.updateEpic(epicId, {}, epic.version, (current) => {
+        prepared = this.events.prepareCommitted('epic.updated', {
+          epicId: current.id,
+          projectId: current.projectId,
+          parentId: current.parentId ?? null,
+          version: current.version,
+          epicTitle: current.title,
+          actor: null,
+          changes: {
+            externalTask: {
+              previous: link.id,
+              current: null,
+              ...(typeof remoteKey === 'string' && remoteKey ? { previousKey: remoteKey } : {}),
+            },
+          },
+        });
+        return prepared;
+      });
+    });
+    if (prepared) this.events.emitCommitted(prepared);
+  }
+
+  /** Only a claimed VM keeps the receipts that carry its link writes home. */
+  private assertClaimedHost(): void {
+    if (!this.integrationCache.isClaimedHost()) {
+      throw new ConflictError('This instance is not a claimed VM host.', {
+        code: 'HOST_NOT_CLAIMED',
+      });
+    }
   }
 }
 

@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import type { UsageWindow } from '@devchain/shared';
+import { compareVersions, parseVersion } from '../../providers/adapters/agy-cli-version';
 import { applyProviderCliNoUpdate } from '../../providers/adapters/provider-cli-policy';
 import { ProviderCliVersionProbe } from '../../providers/services/provider-cli-version-probe.service';
 import { ProcessExecutor } from '../../terminal/services/process-executor/process-executor.port';
@@ -116,16 +117,4 @@ function mapGroups(data: JsonObject): UsageWindow[] | null {
     });
   });
   return windows.length > 0 ? windows : null;
-}
-
-function parseVersion(text: string): [number, number, number] | null {
-  const match = /(\d+)\.(\d+)\.(\d+)/.exec(text);
-  return match ? [Number(match[1]), Number(match[2]), Number(match[3])] : null;
-}
-
-function compareVersions(a: readonly number[], b: readonly number[]): number {
-  for (let i = 0; i < 3; i += 1) {
-    if (a[i] !== b[i]) return a[i] - b[i];
-  }
-  return 0;
 }

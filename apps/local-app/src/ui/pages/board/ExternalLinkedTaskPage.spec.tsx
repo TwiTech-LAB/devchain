@@ -94,6 +94,8 @@ function connection(connected: boolean): IntegrationConnectionState {
 
 function source(overrides: Partial<ExternalTaskSourceSummary> = {}): ExternalTaskSourceSummary {
   return {
+    id: 'link-1',
+    managed: false,
     provider: 'jira',
     remoteTaskId: 'ENG-1',
     remoteKey: 'ENG-1',

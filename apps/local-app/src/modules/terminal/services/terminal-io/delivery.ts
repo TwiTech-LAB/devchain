@@ -546,6 +546,14 @@ export async function pasteDraftImage(
   return 'unconfirmed';
 }
 
+/** `DeliveryOptions.firstMutationGuard` refused the first write; the pane is unchanged. */
+export class DeliveryRefusedError extends Error {
+  constructor(readonly sessionName: string) {
+    super(`Delivery refused before the first write to session "${sessionName}"`);
+    this.name = 'DeliveryRefusedError';
+  }
+}
+
 export class PasteNotConfirmedError extends Error {
   constructor(
     readonly sessionName: string,
@@ -600,6 +608,38 @@ async function captureConfirmationBaseline(
   return { output: result.ok ? result.output : undefined };
 }
 
+/**
+ * Does every await that a guarded delivery needs before its first pane write. The caller runs
+ * the guard right after this resolves and then writes with no await in between. With
+ * `baselineAfterPreKeys` and pre-keys, the first write is a pre-key and `pasteAndSubmit` reads
+ * the confirmation baseline after them, as an unguarded delivery does.
+ */
+async function prepareGuardedFirstWrite(
+  executor: ProcessExecutor,
+  target: SessionTarget,
+  text: string,
+  options: {
+    bracketed: boolean;
+    confirm: boolean;
+    preKeys?: readonly string[];
+    baselineAfterPreKeys: boolean;
+  },
+  foregroundCheck?: ForegroundCheck,
+): Promise<{ preparedBuffer: PreparedBuffer; confirmationBaseline?: ConfirmationBaseline }> {
+  const confirmationBaseline =
+    options.confirm && !(options.baselineAfterPreKeys && options.preKeys?.length)
+      ? await captureConfirmationBaseline(executor, target)
+      : undefined;
+  const preparedBuffer = await prepareBuffer(executor, target, text, options.bracketed);
+  try {
+    await foregroundCheck?.();
+  } catch (error) {
+    await deleteBuffer(executor, preparedBuffer.name);
+    throw error;
+  }
+  return { preparedBuffer, confirmationBaseline };
+}
+
 function deliverWithFirstMutationGuard(
   executor: ProcessExecutor,
   gap: SendGap,
@@ -619,6 +659,7 @@ function deliverWithFirstMutationGuard(
   firstMutationGuard: () => boolean,
   foregroundCheck?: ForegroundCheck,
   submitGuard?: SubmitGuard,
+  baselineAfterPreKeys?: boolean,
 ): Promise<GuardedDeliveryResult>;
 async function deliverWithFirstMutationGuard(
   executor: ProcessExecutor,
@@ -629,6 +670,7 @@ async function deliverWithFirstMutationGuard(
   firstMutationGuard: (() => boolean) | undefined,
   foregroundCheck?: ForegroundCheck,
   submitGuard?: SubmitGuard,
+  baselineAfterPreKeys = false,
 ): Promise<GuardedDeliveryResult> {
   const maxAttempts = options.maxAttempts ?? DEFAULT_MAX_ATTEMPTS;
   const submitKeys = options.submitKeys ?? ['Enter'];
@@ -648,16 +690,13 @@ async function deliverWithFirstMutationGuard(
     let confirmationBaseline: ConfirmationBaseline | undefined;
     let preparedBuffer: PreparedBuffer | undefined;
     if (attempt === 0 && firstMutationGuard) {
-      if (confirm) {
-        confirmationBaseline = await captureConfirmationBaseline(executor, target);
-      }
-      preparedBuffer = await prepareBuffer(executor, target, textWithNonce, bracketed);
-      try {
-        await foregroundCheck?.();
-      } catch (error) {
-        await deleteBuffer(executor, preparedBuffer.name);
-        throw error;
-      }
+      ({ preparedBuffer, confirmationBaseline } = await prepareGuardedFirstWrite(
+        executor,
+        target,
+        textWithNonce,
+        { bracketed, confirm, preKeys: options.preKeys, baselineAfterPreKeys },
+        foregroundCheck,
+      ));
       if (!firstMutationGuard()) {
         await deleteBuffer(executor, preparedBuffer.name);
         return { deferred: 'human_draft' };
@@ -724,16 +763,31 @@ export async function deliver(
   foregroundCheck?: ForegroundCheck,
   submitGuard?: SubmitGuard,
 ): Promise<DeliveryResult> {
-  return deliverWithFirstMutationGuard(
+  if (!options.firstMutationGuard) {
+    return deliverWithFirstMutationGuard(
+      executor,
+      gap,
+      target,
+      text,
+      options,
+      undefined,
+      foregroundCheck,
+      submitGuard,
+    );
+  }
+  const result = await deliverWithFirstMutationGuard(
     executor,
     gap,
     target,
     text,
     options,
-    undefined,
+    options.firstMutationGuard,
     foregroundCheck,
     submitGuard,
+    true,
   );
+  if ('deferred' in result) throw new DeliveryRefusedError(target.name);
+  return result;
 }
 
 export async function deliverGuarded(
@@ -775,6 +829,21 @@ export async function deliverImmediate(
   const nonce = generateDeliveryNonce();
   const textWithNonce = confirm ? `${text}\n[MsgId:${nonce}]` : text;
 
+  let prepared: Awaited<ReturnType<typeof prepareGuardedFirstWrite>> | undefined;
+  if (options.firstMutationGuard) {
+    prepared = await prepareGuardedFirstWrite(
+      executor,
+      target,
+      textWithNonce,
+      { bracketed, confirm, preKeys: options.preKeys, baselineAfterPreKeys: true },
+      foregroundCheck,
+    );
+    if (!options.firstMutationGuard()) {
+      await deleteBuffer(executor, prepared.preparedBuffer.name);
+      throw new DeliveryRefusedError(target.name);
+    }
+  }
+
   const result = await pasteAndSubmit(
     executor,
     target,
@@ -790,6 +859,10 @@ export async function deliverImmediate(
       confirmTimeoutMs,
       followNote: options.followNote,
       inputPromptMarker: options.inputPromptMarker,
+      preparedBuffer: prepared?.preparedBuffer,
+      confirmationBaseline: prepared?.confirmationBaseline,
+      // The guard above already ran the foreground check for the first write.
+      firstWriteChecked: prepared !== undefined,
     },
     foregroundCheck,
     submitGuard,

@@ -93,6 +93,7 @@ function buildChain(followNoteEnabled = true) {
       getMessagePoolConfigForProject: jest.fn().mockReturnValue(poolConfig),
     } as unknown as SettingsService,
     {
+      isAgentDisabled: jest.fn().mockReturnValue(false),
       getAgent: jest.fn().mockResolvedValue({ id: AGENT_ID, name: 'Coder', projectId: PROJECT_ID }),
     } as unknown as StorageService,
     {
@@ -128,6 +129,7 @@ function buildChain(followNoteEnabled = true) {
       getActiveSession: jest.fn().mockResolvedValue({ ...activeSession, projectId: PROJECT_ID }),
     } as unknown as ActiveSessionLookup,
     { publish: jest.fn() } as unknown as EventsService,
+    { isAgentDisabled: jest.fn().mockReturnValue(false) } as never,
   );
 
   return { executor, pool, amd };

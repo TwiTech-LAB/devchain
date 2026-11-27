@@ -7,6 +7,7 @@
  * only effect is on provider storage — so it carries no ordering dependencies.
  */
 import { createLogger } from '../../../../common/logging/logger';
+import { groupNamesByProvider } from '../../../providers/utils/catalog-names';
 import type { ImportContext } from '../import-context';
 import type {
   CodecApplyResult,
@@ -33,13 +34,9 @@ export async function buildProviderModels(
     return [] as Array<{ providerName: string; models: string[] }>;
   }
 
-  const allModels = await storage.listProviderModelsByProviderIds(providerIds);
-  const modelsByProviderId = new Map<string, string[]>();
-  for (const model of allModels) {
-    const models = modelsByProviderId.get(model.providerId) ?? [];
-    models.push(model.name);
-    modelsByProviderId.set(model.providerId, models);
-  }
+  const modelsByProviderId = groupNamesByProvider(
+    await storage.listProviderModelsByProviderIds(providerIds),
+  );
 
   const result: Array<{ providerName: string; models: string[] }> = [];
   for (const [providerId, provider] of providersMap.entries()) {

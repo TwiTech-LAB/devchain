@@ -27,7 +27,7 @@ import { TerminalDeliveryModule } from '../terminal/terminal-delivery.module';
 describe('AgentMessageDeliveryModule bootstrap', () => {
   let moduleRef: TestingModule;
   let sessionLauncher: jest.Mocked<Pick<SessionLauncherFacade, 'ensureActiveSession'>>;
-  let messageEnqueue: jest.Mocked<Pick<MessageEnqueueService, 'enqueue'>>;
+  let messageEnqueue: jest.Mocked<Pick<MessageEnqueueService, 'enqueue' | 'getAdmissionFence'>>;
   let guestDelivery: jest.Mocked<Pick<GuestDeliveryService, 'deliverToGuest'>>;
 
   beforeEach(async () => {
@@ -43,6 +43,7 @@ describe('AgentMessageDeliveryModule bootstrap', () => {
       }),
     };
     messageEnqueue = {
+      getAdmissionFence: jest.fn().mockReturnValue(0),
       enqueue: jest.fn().mockResolvedValue([{ agentId: 'agent-1', status: 'queued' }]),
     };
     guestDelivery = {

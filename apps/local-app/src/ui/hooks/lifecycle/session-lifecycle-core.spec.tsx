@@ -59,6 +59,24 @@ describe('SessionApiError classification', () => {
       expect(restoreConflictTitle(apiError(409, 'INVALID_SESSION_STATE'))).toBe(
         'Invalid session state',
       );
+      expect(restoreConflictTitle(apiError(409, 'SESSION_RUNNING_ON_OTHER_AGENT'))).toBe(
+        'Session is running on another agent',
+      );
+      expect(restoreConflictTitle(apiError(409, 'SESSION_LINEAGE_RUNNING'))).toBe(
+        'A related session is running',
+      );
+      expect(restoreConflictTitle(apiError(403, 'SESSION_FAMILY_MISMATCH'))).toBe(
+        "Session is outside this agent's family",
+      );
+      expect(restoreConflictTitle(apiError(409, 'SWITCH_CONFIG_PROVIDER_MISMATCH'))).toBe(
+        'Provider config changed',
+      );
+      expect(restoreConflictTitle(apiError(400, 'CONFIG_NOT_FOUND'))).toBe(
+        'Provider config not found',
+      );
+      expect(restoreConflictTitle(apiError(400, 'CONFIG_PROFILE_MISMATCH'))).toBe(
+        "Provider config is outside this agent's profile",
+      );
       expect(restoreConflictTitle(apiError(409, 'SOMETHING_ELSE'))).toBe('Restore failed');
       expect(restoreConflictTitle(apiError(500, 'PROVIDER_MISMATCH'))).toBe('Restore failed');
       expect(restoreConflictTitle(new Error('x'))).toBe('Restore failed');

@@ -57,6 +57,9 @@ export const dockerSyncStateQueryKey = (projectId: string, remoteId: string) =>
   [HOME_BACKEND, 'docker-sync-state', projectId, remoteId] as const;
 export const fileSyncStatusQueryKey = (projectId: string) =>
   [HOME_BACKEND, 'file-sync', projectId, 'status'] as const;
+// Outside REMOTES_QUERY_PREFIX: the reads poll, and a remotes event must not add a read of every one.
+export const syncStatusQueryKey = (projectId: string | null, details: boolean) =>
+  [HOME_BACKEND, 'sync-status', projectId, details] as const;
 export const disconnectAllChecksQueryKey = (remoteId: string, projectId: string, force: boolean) =>
   [HOME_BACKEND, 'disconnect-all-checks', remoteId, projectId, force] as const;
 export const sharedFoldersQueryKey = (remoteId: string) =>

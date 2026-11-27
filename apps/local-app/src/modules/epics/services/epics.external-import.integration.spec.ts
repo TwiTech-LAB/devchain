@@ -13,6 +13,7 @@ import { TransactionRunner } from '../../storage/db/transaction-runner';
 import type { CreateEpicWithExternalTaskLink } from '../../storage/models/domain.models';
 import { IntegrationCredentialCipher } from '../../storage/local/integration-credential-cipher';
 import { LocalStorageService } from '../../storage/local/local-storage.service';
+import { ManagedProjectionLock } from '../../external-integrations/subscribers/managed-projection-lock';
 import { EpicsService } from './epics.service';
 import { createProjectWriteGateStub } from '../../storage/write-gate/testing/project-write-gate.stub';
 
@@ -52,6 +53,9 @@ describe('EpicsService external task import', () => {
       createProjectWriteGateStub() as never,
       {} as never,
       { pullNow: jest.fn() } as never,
+      new ManagedProjectionLock(),
+      { isClaimedHost: () => false },
+      { write: jest.fn() },
     );
 
     const project = await storage.createProject({
@@ -222,6 +226,7 @@ describe('EpicsService external task import', () => {
       expect(eventsService.publish).toHaveBeenCalledTimes(1);
       expect(eventsService.publish).toHaveBeenCalledWith('epic.time.scope.invalidated', {
         workspaceId,
+        externalLinks: true,
       });
       expect(eventsService.emitCommitted).toHaveBeenCalledTimes(1);
     });
@@ -289,6 +294,7 @@ describe('EpicsService external task import', () => {
     expect(eventsService.publish).toHaveBeenCalledTimes(1);
     expect(eventsService.publish).toHaveBeenCalledWith('epic.time.scope.invalidated', {
       workspaceId,
+      externalLinks: true,
     });
     expect(eventsService.emitCommitted).toHaveBeenCalledTimes(1);
     expect(sqlite.prepare('PRAGMA foreign_key_check').all()).toEqual([]);
@@ -543,6 +549,7 @@ describe('EpicsService external task import', () => {
     for (let i = 0; i < 2; i += 1) {
       expect(eventsService.publish).toHaveBeenNthCalledWith(i + 1, 'epic.time.scope.invalidated', {
         workspaceId,
+        externalLinks: true,
       });
     }
     expect(eventsService.emitCommitted).toHaveBeenCalledTimes(1);

@@ -1,4 +1,4 @@
-import { getProviderCliNoUpdateOptions } from './provider-cli-policy';
+import { getProviderCliNoUpdateOptions, opencodeV2CommandArgs } from './provider-cli-policy';
 import { Injectable } from '@nestjs/common';
 import { OPENCODE_TRAITS } from './opencode.traits';
 import type {
@@ -10,20 +10,36 @@ import type {
   TerminalOutputBehavior,
 } from './provider-adapter.interface';
 import type { EffortCapability } from './capabilities';
-import { ValidationError } from '../../../common/errors/error-types';
-import { assertSupportedOpencodeVersion } from './opencode-cli-version';
+import type {
+  CreateSessionSavePointInput,
+  PrepareSessionForkLaunchInput,
+  ProviderSessionTranscript,
+  SessionSavePointCopy,
+  SessionForkCapability,
+  SessionForkLaunchResult,
+} from './capabilities/session-fork.capability';
+import { IOError, ValidationError } from '../../../common/errors/error-types';
+import { ChildProcessExecutor } from '../../terminal/services/process-executor/child-process-executor';
+import { ProcessExecutor } from '../../terminal/services/process-executor/process-executor.port';
+import { assertSupportedOpencodeVersion, isOpencodeV2 } from './opencode-cli-version';
 import { mergeOpencodeConfigContent } from './opencode-config-content';
 import { buildOpencodeLaunchArgsV1 } from './opencode-launch.v1';
 import { buildOpencodeLaunchArgsV2 } from './opencode-launch.v2';
+import { isRecord } from './plugin-catalog.utils';
+import { stripFlag } from '../utils/profile-options';
+
+const FORK_TIMEOUT_MS = 60_000;
+const FORK_MAX_OUTPUT_BYTES = 1024 * 1024;
 
 @Injectable()
-export class OpencodeAdapter implements ProviderAdapter, EffortCapability {
+export class OpencodeAdapter implements ProviderAdapter, EffortCapability, SessionForkCapability {
   readonly providerName = 'opencode';
   readonly traits = OPENCODE_TRAITS;
   readonly launchEnv = getProviderCliNoUpdateOptions(this.providerName).env;
   readonly mcpMode = 'project_config' as const;
   readonly configFileName = 'opencode.json';
   readonly requiresCliVersion = true as const;
+  readonly supportsForkForVersion = isOpencodeV2;
 
   // OpenCode effort is NOT a CLI flag — it is per-model JSON config
   // (`provider.<pid>.models.<mid>.options.reasoningEffort`), so the effective
@@ -48,6 +64,8 @@ export class OpencodeAdapter implements ProviderAdapter, EffortCapability {
   readonly transcriptDiscoveryStrategy = 'all' as const;
   readonly providerSessionIdRequiredForRestore = true;
 
+  constructor(private readonly executor: ProcessExecutor = new ChildProcessExecutor()) {}
+
   addMcpServer(_options: AddMcpServerOptions): string[] {
     // OpenCode MCP is managed via opencode.json config file, not CLI.
     // Return version check as safe no-op fallback.
@@ -71,6 +89,107 @@ export class OpencodeAdapter implements ProviderAdapter, EffortCapability {
       input.providerBinPath ?? this.providerName,
     );
     return major === 2 ? buildOpencodeLaunchArgsV2(input) : buildOpencodeLaunchArgsV1(input);
+  }
+
+  async createSavePoint(input: CreateSessionSavePointInput): Promise<SessionSavePointCopy> {
+    const copy = await this.forkSession(input);
+    return {
+      ...copy,
+      discardUnboundTranscript: () => this.deleteSession(input, copy.providerSessionId),
+    };
+  }
+
+  private async forkSession({
+    providerSessionId,
+    transcriptPath,
+    projectPath,
+    providerBinPath,
+    cliVersion,
+    helperEnv,
+  }: CreateSessionSavePointInput): Promise<ProviderSessionTranscript> {
+    if (!cliVersion || !this.supportsForkForVersion(cliVersion)) {
+      throw new ValidationError('OpenCode save points and forks require OpenCode 2.');
+    }
+    const result = await this.runHelper({ providerBinPath, projectPath, helperEnv }, [
+      'api',
+      'session.fork',
+      '--param',
+      `sessionID=${providerSessionId}`,
+      '--header',
+      // A raw non-ASCII path is not a valid header value. OpenCode decodes this header.
+      `x-opencode-directory:${encodeURIComponent(projectPath)}`,
+      '-d',
+      '{}',
+    ]);
+    const reply = parseForkOutput(result.stdout);
+    if (!result.success || result.truncated) {
+      if (isRecord(reply) && reply.kind === 'empty_session') {
+        throw new ValidationError('OpenCode cannot save or fork a session with no messages.');
+      }
+      throw new IOError('OpenCode could not copy the session.', { timedOut: result.timedOut });
+    }
+    const childId = isRecord(reply) && isRecord(reply.data) ? reply.data.id : undefined;
+    if (
+      typeof childId !== 'string' ||
+      !/^ses_[A-Za-z0-9]+$/.test(childId) ||
+      childId === providerSessionId
+    ) {
+      throw new IOError('OpenCode returned an invalid fork session ID.');
+    }
+    return { providerSessionId: childId, transcriptPath };
+  }
+
+  async prepareForkLaunch(input: PrepareSessionForkLaunchInput): Promise<SessionForkLaunchResult> {
+    const child = await this.forkSession(input);
+    const discardUnboundTranscript = () => this.deleteSession(input, child.providerSessionId);
+    const separator = input.profileOptionArgs.indexOf('--');
+    const options =
+      separator === -1 ? input.profileOptionArgs : input.profileOptionArgs.slice(0, separator);
+    let launch: BuildLaunchArgsResult;
+    try {
+      launch = this.buildLaunchArgs({
+        mode: 'restore',
+        providerSessionId: child.providerSessionId,
+        sessionId: input.sessionId,
+        projectId: input.projectId,
+        profileOptionArgs: [
+          ...stripFlag(options, '--prompt'),
+          ...input.profileOptionArgs.slice(options.length),
+        ],
+        env: input.env,
+        cliVersion: input.cliVersion,
+        providerBinPath: input.providerBinPath,
+      });
+    } catch (error) {
+      await discardUnboundTranscript().catch(() => undefined);
+      throw error;
+    }
+    return { ...child, ...launch, discardUnboundTranscript };
+  }
+
+  /** Deletes a copy that no DevChain row owns. The v2 API has no delete operation. */
+  private async deleteSession(input: CreateSessionSavePointInput, sessionId: string) {
+    const result = await this.runHelper(input, ['session', 'delete', sessionId]);
+    if (!result.success) {
+      throw new IOError('OpenCode could not delete the unbound fork.', {
+        timedOut: result.timedOut,
+      });
+    }
+  }
+
+  /** Runs an OpenCode 2 helper command in the project with the helper environment. */
+  private runHelper(
+    input: Pick<CreateSessionSavePointInput, 'providerBinPath' | 'projectPath' | 'helperEnv'>,
+    args: string[],
+  ) {
+    return this.executor.run({
+      argv: opencodeV2CommandArgs([input.providerBinPath, ...args]),
+      cwd: input.projectPath,
+      env: getProviderCliNoUpdateOptions(this.providerName, input.helperEnv).env,
+      mode: 'pipe',
+      timeout: FORK_TIMEOUT_MS,
+      outputLimits: { maxBytes: FORK_MAX_OUTPUT_BYTES },
+    });
   }
 
   /**
@@ -157,5 +276,13 @@ export class OpencodeAdapter implements ProviderAdapter, EffortCapability {
         url: options.endpoint,
       },
     };
+  }
+}
+
+function parseForkOutput(stdout: string): unknown {
+  try {
+    return JSON.parse(stdout);
+  } catch {
+    return null;
   }
 }

@@ -31,6 +31,14 @@ import { MAX_RUNTIME_CONTEXT_WINDOW_TOKENS } from '../../runtime-context-capture
 
 const logger = createLogger('PreflightService');
 
+/** A provider to check, with the profiles, configs and agents of the project that use it. */
+interface ProviderInfo {
+  provider: Provider;
+  profiles: AgentProfile[];
+  configs: ProfileProviderConfig[];
+  agentNames: string[];
+}
+
 export interface PreflightCheck {
   name: string;
   status: 'pass' | 'fail' | 'warn';
@@ -72,6 +80,11 @@ export interface PreflightResult {
   timestamp: string;
 }
 
+/** The explicit test-mode bypass: preflight then passes without checking anything. */
+export function isPreflightSkipped(): boolean {
+  return process.env.SKIP_PREFLIGHT === '1';
+}
+
 /**
  * PreflightService
  * Performs system checks before allowing session start
@@ -97,26 +110,10 @@ export class PreflightService {
    * - Batch-loads all provider configs by IDs
    * - Batch-loads all providers by IDs
    */
-  private async collectProviderInfoFromAgents(projectId: string | null | undefined): Promise<
-    Map<
-      string,
-      {
-        provider: Provider;
-        profiles: AgentProfile[];
-        configs: ProfileProviderConfig[];
-        agentNames: string[];
-      }
-    >
-  > {
-    const providerMap = new Map<
-      string,
-      {
-        provider: Provider;
-        profiles: AgentProfile[];
-        configs: ProfileProviderConfig[];
-        agentNames: string[];
-      }
-    >();
+  private async collectProviderInfoFromAgents(
+    projectId: string | null | undefined,
+  ): Promise<Map<string, ProviderInfo>> {
+    const providerMap = new Map<string, ProviderInfo>();
 
     // If no projectId, fall back to validating all providers
     // Note: Profile-provider relationship now determined via profile_provider_configs
@@ -211,26 +208,10 @@ export class PreflightService {
    * registered provider without cross-project config leakage from
    * listAllProfileProviderConfigs().
    */
-  private async collectAllProvidersForProject(projectId?: string | null): Promise<
-    Map<
-      string,
-      {
-        provider: Provider;
-        profiles: AgentProfile[];
-        configs: ProfileProviderConfig[];
-        agentNames: string[];
-      }
-    >
-  > {
-    const providerMap = new Map<
-      string,
-      {
-        provider: Provider;
-        profiles: AgentProfile[];
-        configs: ProfileProviderConfig[];
-        agentNames: string[];
-      }
-    >();
+  private async collectAllProvidersForProject(
+    projectId?: string | null,
+  ): Promise<Map<string, ProviderInfo>> {
+    const providerMap = new Map<string, ProviderInfo>();
 
     const providersResult = await this.storage.listProviders();
 
@@ -276,13 +257,22 @@ export class PreflightService {
   }
 
   /**
-   * Run all preflight checks
+   * Run all preflight checks. `providerIds` are checked as well when no project agent uses them
+   * now; ENABLED_PROVIDERS still filters them. With `onlyRequestedProviders`, only `providerIds`
+   * are checked, with no tmux or `.devchain` check, so `overall` covers them alone; their checks
+   * are the same as in a full run. `providerEnvs` gives, by provider id, the environment that
+   * provider's MCP registrations are listed in; a provider without one is listed in `process.env`.
    */
   async runChecks(
     projectPath?: string,
-    opts?: { includeAllProviders?: boolean },
+    opts?: {
+      includeAllProviders?: boolean;
+      providerIds?: readonly string[];
+      onlyRequestedProviders?: boolean;
+      providerEnvs?: Readonly<Record<string, Readonly<Record<string, string>>>>;
+    },
   ): Promise<PreflightResult> {
-    if (process.env.SKIP_PREFLIGHT === '1') {
+    if (isPreflightSkipped()) {
       return {
         overall: 'pass',
         checks: [
@@ -304,9 +294,10 @@ export class PreflightService {
     const providerChecks: ProviderCheck[] = [];
 
     const includeAllProviders = opts?.includeAllProviders === true;
+    const requestedOnly = opts?.onlyRequestedProviders === true;
 
     // Check tmux (skipped when includeAllProviders — not needed for Providers page)
-    if (!includeAllProviders) {
+    if (!includeAllProviders && !requestedOnly) {
       checks.push(await this.checkTmux());
     }
 
@@ -329,6 +320,13 @@ export class PreflightService {
       const providerInfoMap = includeAllProviders
         ? await this.collectAllProvidersForProject(scopedProjectId)
         : await this.collectProviderInfoFromAgents(scopedProjectId);
+      await this.addRequestedProviders(providerInfoMap, opts?.providerIds ?? []);
+      if (requestedOnly) {
+        const requested = new Set(opts?.providerIds);
+        for (const id of [...providerInfoMap.keys()]) {
+          if (!requested.has(id)) providerInfoMap.delete(id);
+        }
+      }
       const enabledProviders = this.getEnabledProvidersFilter();
       logger.debug(
         { providerCount: providerInfoMap.size, enabledProviders: enabledProviders ?? 'all' },
@@ -349,6 +347,7 @@ export class PreflightService {
               info.configs,
               info.agentNames,
               projectPath,
+              opts?.providerEnvs?.[info.provider.id],
             ),
           ),
         );
@@ -398,15 +397,31 @@ export class PreflightService {
             );
             continue;
           }
-          providerChecks.push(
-            await this.checkProviderWithConfig(
-              info.provider,
-              info.profiles,
-              info.configs,
-              info.agentNames,
-              projectPath,
-            ),
-          );
+          // One provider's failure must not drop the checks of the providers after it. The failed
+          // provider gets no check, as when the whole collection fails.
+          try {
+            providerChecks.push(
+              await this.checkProviderWithConfig(
+                info.provider,
+                info.profiles,
+                info.configs,
+                info.agentNames,
+                projectPath,
+                opts?.providerEnvs?.[info.provider.id],
+              ),
+            );
+          } catch (error) {
+            logger.error(
+              { error, providerId: info.provider.id },
+              'Provider check failed during preflight',
+            );
+            checks.push({
+              name: 'providers',
+              status: 'warn',
+              message: `Failed to check provider ${info.provider.name}`,
+              details: error instanceof Error ? error.message : 'Unknown error',
+            });
+          }
         }
       }
     } catch (error) {
@@ -420,7 +435,7 @@ export class PreflightService {
     }
 
     // Check project .devchain/ write access (skipped in includeAllProviders mode)
-    if (!includeAllProviders && projectPath) {
+    if (!includeAllProviders && !requestedOnly && projectPath) {
       checks.push(await this.checkDevchainAccess(projectPath));
     }
 
@@ -446,6 +461,17 @@ export class PreflightService {
     return result;
   }
 
+  private async addRequestedProviders(
+    providerInfoMap: Map<string, ProviderInfo>,
+    providerIds: readonly string[],
+  ): Promise<void> {
+    const missing = [...new Set(providerIds)].filter((id) => !providerInfoMap.has(id));
+    if (missing.length === 0) return;
+    for (const provider of await this.storage.listProvidersByIds(missing)) {
+      providerInfoMap.set(provider.id, { provider, profiles: [], configs: [], agentNames: [] });
+    }
+  }
+
   private getEnabledProvidersFilter(): Set<string> | null {
     const raw = process.env.ENABLED_PROVIDERS;
     if (raw === undefined) {
@@ -462,6 +488,7 @@ export class PreflightService {
   private async evaluateMcpStatus(
     provider: Provider,
     projectPath?: string,
+    mcpEnv?: Readonly<Record<string, string>>,
   ): Promise<{
     mcpStatus: 'pass' | 'fail' | 'warn';
     mcpMessage?: string;
@@ -492,6 +519,7 @@ export class PreflightService {
 
     const listResult = await this.mcpRegistration.listRegistrations(provider, {
       cwd: projectPath,
+      env: mcpEnv,
     });
     if (!listResult.success) {
       return {
@@ -517,7 +545,11 @@ export class PreflightService {
       return {
         mcpStatus: 'warn',
         mcpMessage: `MCP endpoint mismatch for alias '${expectedAlias}'.`,
-        mcpDetails: `Expected: ${expectedEndpoint}, Found: ${devchainEntry.endpoint}. Run Configure MCP or use ensure endpoint to fix.`,
+        // A registration read in a session environment can carry that environment's values.
+        mcpDetails:
+          mcpEnv === undefined
+            ? `Expected: ${expectedEndpoint}, Found: ${devchainEntry.endpoint}. Run Configure MCP or use ensure endpoint to fix.`
+            : `Expected: ${expectedEndpoint}. Run Configure MCP or use ensure endpoint to fix.`,
       };
     }
 
@@ -633,6 +665,7 @@ export class PreflightService {
     provider: Provider,
     profiles: AgentProfile[],
     projectPath?: string,
+    env?: Readonly<Record<string, string>>,
   ): Promise<ProviderCheck> {
     let binaryStatus: 'pass' | 'fail' | 'warn' = 'warn';
     let binaryMessage = `${provider.name} binary not configured`;
@@ -672,6 +705,7 @@ export class PreflightService {
     const { mcpStatus, mcpMessage, mcpDetails } = await this.evaluateMcpStatus(
       provider,
       projectPath,
+      env,
     );
 
     // Best-effort, NON-BLOCKING auth probe (S1): a logged-out hint becomes a
@@ -728,9 +762,10 @@ export class PreflightService {
     configs: ProfileProviderConfig[],
     agentNames: string[],
     projectPath?: string,
+    env?: Readonly<Record<string, string>>,
   ): Promise<ProviderCheck> {
     // Get base provider check
-    const baseCheck = await this.checkProvider(provider, profiles, projectPath);
+    const baseCheck = await this.checkProvider(provider, profiles, projectPath, env);
 
     // Validate provider-level env vars
     let providerEnvStatus: 'pass' | 'fail' | 'warn' = 'pass';

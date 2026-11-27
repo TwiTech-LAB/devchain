@@ -1,4 +1,5 @@
 import type { ActionContext } from './action.interface';
+import { AgentDisabledError } from '../../../common/errors/error-types';
 import { deleteAgentAction, type DeleteAgentResultData } from './delete-agent.action';
 import type { Agent, Status, Team } from '../../storage/models/domain.models';
 
@@ -9,6 +10,7 @@ function makeAgent(id: string, name: string, overrides: Partial<Agent> = {}): Ag
     id,
     projectId: PROJECT_ID,
     isProjectOwner: false,
+    disabled: false,
     profileId: 'profile-1',
     providerConfigId: 'config-1',
     modelOverride: null,
@@ -147,6 +149,20 @@ describe('DeleteAgentAction', () => {
     expect(deleteAgentAction.inputs[0].description).toMatch(/priority over Family Slug/i);
   });
 
+  it('does not find a disabled agent by name and deletes nothing', async () => {
+    const parked = makeAgent('parked-agent', 'Parked', { disabled: true });
+    storage.getAgentByName.mockImplementation(async (_projectId, _name, options) => {
+      if (options?.excludeDisabled) throw new Error('Agent not found');
+      return parked;
+    });
+
+    const result = await deleteAgentAction.execute(context, { agentName: 'Parked' });
+
+    expect(result).toMatchObject({ success: false });
+    expect(result.error).toContain('Agent not found');
+    expect(teamsService.deleteAgentForAutomation).not.toHaveBeenCalled();
+  });
+
   it('uses a trimmed Agent Name and ignores Family Slug', async () => {
     const named = makeAgent('named-agent', 'Named Agent');
     storage.getAgentByName.mockResolvedValue(named);
@@ -156,7 +172,9 @@ describe('DeleteAgentAction', () => {
       familySlug: 'ignored-family',
     });
 
-    expect(storage.getAgentByName).toHaveBeenCalledWith(PROJECT_ID, 'Named Agent');
+    expect(storage.getAgentByName).toHaveBeenCalledWith(PROJECT_ID, 'Named Agent', {
+      excludeDisabled: true,
+    });
     expect(storage.listAgentProfiles).not.toHaveBeenCalled();
     expect(storage.listAgents).not.toHaveBeenCalled();
     expect(sessionsService.listActiveSessions).toHaveBeenCalledWith(
@@ -202,6 +220,7 @@ describe('DeleteAgentAction', () => {
     expect(storage.listAgents).toHaveBeenCalledWith(PROJECT_ID, {
       limit: 10_000,
       offset: 0,
+      excludeDisabled: true,
     });
     expect(sessionsService.listActiveSessions).toHaveBeenCalledWith(
       PROJECT_ID,
@@ -351,10 +370,14 @@ describe('DeleteAgentAction', () => {
       'terminate:session-b',
       'delete:beta',
     ]);
-    expect(sessionsService.terminateSession).toHaveBeenCalledWith('session-a1', {
-      source: 'subscriber',
-      reason: 'agent-deletion',
-    });
+    expect(sessionsService.terminateSession).toHaveBeenCalledWith(
+      'session-a1',
+      {
+        source: 'subscriber',
+        reason: 'agent-deletion',
+      },
+      { expectedAgentId: 'alpha' },
+    );
   });
 
   it('skips a target after termination failure and continues with later targets', async () => {
@@ -414,6 +437,35 @@ describe('DeleteAgentAction', () => {
     expect(data.failed).toEqual([expect.objectContaining({ id: 'alpha', stage: 'deletion' })]);
     expect(result.error).toContain('became Project Owner');
     expect(result.retryable).toBe(false);
+  });
+
+  // Every selector reaches the protected facade, whose delete transaction rejects a disabled agent.
+  it.each([
+    { selector: 'agentName', inputs: { agentName: 'Parked' } },
+    { selector: 'event', inputs: {} },
+    { selector: 'familySlug', inputs: { familySlug: 'family' } },
+  ])('reports a disabled agent selected by $selector as not deleted', async ({ inputs }) => {
+    const parked = makeAgent('event-agent', 'Parked', {
+      profileId: 'family-profile',
+      disabled: true,
+    });
+    storage.getAgentByName.mockResolvedValue(parked);
+    storage.getAgent.mockResolvedValue(parked);
+    storage.listAgentProfiles.mockResolvedValue({
+      items: [{ id: 'family-profile', familySlug: 'family' }],
+    });
+    storage.listAgents.mockResolvedValue({ items: [parked] });
+    teamsService.deleteAgentForAutomation.mockRejectedValue(new AgentDisabledError(parked));
+
+    const result = await deleteAgentAction.execute(context, inputs);
+    const data = result.data as DeleteAgentResultData;
+
+    expect(data.deleted).toEqual([]);
+    expect(data.failed).toEqual([
+      expect.objectContaining({ id: 'event-agent', stage: 'deletion' }),
+    ]);
+    expect(result).toMatchObject({ success: false });
+    expect(result.error).toContain('Agent Parked is disabled');
   });
 
   it('reports preset cleanup failure after recording the committed agent deletion', async () => {

@@ -388,6 +388,7 @@ function buildRow(
     upgradeLock,
     actionsButtonId: projectActionsButtonId(project.id),
     remoteLock,
+    importLock: upgradeLock,
     moveTargets: workspaces
       .filter((workspace) => !remoteLock && workspace.id !== project.workspaceId)
       .map((workspace) => ({

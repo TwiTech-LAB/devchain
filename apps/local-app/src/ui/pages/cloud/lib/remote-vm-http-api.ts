@@ -21,6 +21,8 @@ import type {
   ProjectExclusionSuggestions,
   ProjectPatternPreview,
   ProjectFileSyncStatus,
+  FileSyncStatusResponse,
+  SyncStatusRequest,
   DockerPlanRequest,
   DockerPlan,
   DockerPresence,
@@ -729,6 +731,22 @@ export class RemoteVmHttpApi implements RemoteVmApi {
     });
     if (!response.ok) return { folders: null };
     return response.json() as Promise<ProjectFileSyncStatus>;
+  }
+
+  async readSyncStatus(
+    { projectId, details }: SyncStatusRequest,
+    signal: AbortSignal,
+  ): Promise<FileSyncStatusResponse> {
+    const query = new URLSearchParams();
+    if (projectId) query.set('projectId', projectId);
+    if (details) query.set('details', 'true');
+    const search = query.toString();
+    const body = await request<FileSyncStatusResponse | null>(
+      `/api/remotes/file-sync/status${search ? `?${search}` : ''}`,
+      { signal },
+    );
+    if (!Array.isArray(body?.scopes)) throw new Error('The server returned no file sync status.');
+    return body;
   }
 
   async readDockerPlan(

@@ -22,7 +22,12 @@ import type {
   AgentProfile,
   Provider,
 } from '../../../storage/models/domain.models';
-import { ValidationError } from '../../../../common/errors/error-types';
+import {
+  AgentDisabledError,
+  ConflictError,
+  NotFoundError,
+  ValidationError,
+} from '../../../../common/errors/error-types';
 import { createLogger } from '../../../../common/logging/logger';
 import { SessionCoordinatorService } from '../session-coordinator.service';
 import { ProviderAdapterFactory } from '../../../providers/adapters/provider-adapter.factory';
@@ -32,6 +37,19 @@ import {
   isHookCapable,
   isProjectProvisioningCapable,
 } from '../../../providers/adapters/capabilities';
+import type {
+  ProviderSessionTranscript,
+  SessionForkCapability,
+} from '../../../providers/adapters/capabilities/session-fork.capability';
+import {
+  SessionSavePointsService,
+  runningSessionChanged,
+  sessionLineageRunning,
+  savePointsTeamMember,
+  sessionBusy,
+  savePointsUnsupportedProvider,
+  type ForkProviderSupport,
+} from '../session-save-points.service';
 import { TerminalIOService } from '../../../terminal/services/terminal-io/terminal-io.service';
 import { ShellForegroundError } from '../../../terminal/services/terminal-io/delivery';
 
@@ -51,17 +69,42 @@ import { buildTmuxSessionName } from '../../utils/tmux-naming.util';
 import { renderTemplate } from '../../../../common/template/handlebars-renderer';
 import { buildPromptRenderContext } from '../../../../common/template/prompt-render-context';
 import { CleanupStack } from './cleanup-stack';
-import { ensureMcpReadiness } from './ensure-mcp-readiness';
+import { ensureMcpReadiness, type McpReadiness } from './ensure-mcp-readiness';
 import type { LaunchSessionDto, SessionDetailDto } from '../../dtos/sessions.dto';
 import { vaultInstructionBlock } from '../../../vault/vault-instructions';
 import { VaultLaunchService } from '../../../vault/vault-launch.service';
 import { SessionTerminalRuntimeService } from '../../../session-terminal-runtime/session-terminal-runtime.service';
+import { buildForkHelperEnv } from '../provider-launch-config/provider-launch-config.service';
 import {
   ProviderRuntimePreparationService,
   type PreparedProviderRuntime,
 } from '../provider-runtime-preparation';
 
 const logger = createLogger('SessionLaunchPipeline');
+
+export interface ForkLaunchProvider {
+  adapter: ForkProviderSupport['adapter'];
+  providerBinPath: string;
+  cliVersion?: string;
+  helperEnv: Readonly<Record<string, string>>;
+}
+
+/** A launch that forks a session or a save point of the launching agent. */
+export interface ForkLaunch {
+  savePointId: string;
+  admit: () => void;
+  provider: ForkLaunchProvider;
+}
+
+/** Refuses a launch when a preflight check failed: the message names each failed check. */
+function assertPreflightPassed(preflightResult: McpReadiness['preflightResult']): void {
+  if (preflightResult.overall !== 'fail') return;
+  const failedChecks = preflightResult.checks
+    .filter((c) => c.status === 'fail')
+    .map((c) => `${c.name}: ${c.message}`)
+    .join('; ');
+  throw new ValidationError('Preflight checks failed', { failedChecks });
+}
 
 @Injectable()
 export class SessionLaunchPipeline {
@@ -92,6 +135,7 @@ export class SessionLaunchPipeline {
     private readonly providerRuntimePreparation: ProviderRuntimePreparationService,
     private readonly sessionRows: SessionRowStore,
     private readonly vaultLaunch: VaultLaunchService,
+    private readonly savePoints: SessionSavePointsService,
   ) {
     this.sqlite = getRawSqliteClient(db);
   }
@@ -100,86 +144,194 @@ export class SessionLaunchPipeline {
   // Public API
   // ─────────────────────────────────────────────────────────────────────────
 
-  async launch(data: LaunchSessionDto): Promise<SessionDetailDto> {
+  /** `replaceRunningSessionId` lets the running session that the fork replaces be its source. */
+  async validateFork(
+    data: LaunchSessionDto,
+    savePointId: string,
+    replaceRunningSessionId?: string,
+  ) {
+    const source = this.requireForkSource(savePointId, data.agentId, replaceRunningSessionId);
+    const target = await this.resolveLaunchTarget(data);
+    this.assertForkProvider(source.providerNameAtLaunch, target.provider.name);
+    const { adapter, providerBinPath } = await this.requireForkSupport(target);
+    await this.assertForkTeamEligibility(data.agentId, data.projectId);
+    await this.readableForkSource(source, adapter, target.provider.name);
+    return { ...target, provider: { ...target.provider, binPath: providerBinPath } };
+  }
+
+  /** Refuses a fork of `sourceId` while a row other than `replacementId` shares its identity. */
+  assertNoRunningForkLineage(sourceId: string, replacementId: string | null): void {
+    const running = this.sessionRows.findRunningForkLineage(sourceId, replacementId);
+    if (running) throw sessionLineageRunning(running);
+  }
+
+  async assertCurrentForkProvider(
+    data: LaunchSessionDto,
+    savePointId: string,
+    replaceRunningSessionId?: string,
+  ): Promise<ForkLaunchProvider> {
+    const source = this.requireForkSource(savePointId, data.agentId, replaceRunningSessionId);
+    const target = await this.resolveLaunchTarget(data);
+    this.assertForkProvider(source.providerNameAtLaunch, target.provider.name);
+    const support = await this.requireForkSupport(target);
+    // The caller stops a running source next, so read its state again after the awaited checks.
+    this.requireForkSource(savePointId, data.agentId, replaceRunningSessionId);
+    return support;
+  }
+
+  async launch(data: LaunchSessionDto, fork?: ForkLaunch): Promise<SessionDetailDto> {
+    // Phase 1: acquireAgentLock
+    return this.sessionCoordinator.withAgentLock(data.agentId, () =>
+      this.launchUnderLock(data, fork),
+    );
+  }
+
+  /** A launch while the caller holds the lock of `data.agentId`. */
+  async launchUnderLock(data: LaunchSessionDto, fork?: ForkLaunch): Promise<SessionDetailDto> {
     const { epicId, agentId, projectId, options: launchOptions } = data;
     const silent = launchOptions?.silent === true;
 
-    // Phase 1: acquireAgentLock
-    return this.sessionCoordinator.withAgentLock(agentId, async () => {
-      const cleanup = new CleanupStack();
-      let sessionId: string | undefined;
-      let tmuxSessionName: string | undefined;
+    const cleanup = new CleanupStack();
+    let sessionId: string | undefined;
+    let tmuxSessionName: string | undefined;
 
-      try {
-        // Fast idempotency check
-        const existing = await this.checkExistingSession(agentId, projectId);
-        if (existing) return existing;
+    try {
+      // Fast idempotency check
+      const existing = await this.checkExistingSession(agentId, projectId);
+      if (existing) {
+        if (fork) throw runningSessionChanged();
+        // Disable sets the flag before it stops the session, so a disabled agent can
+        // still have a live one. That session is never a successful launch result.
+        const existingAgent = await this.storage.getAgent(agentId);
+        if (existingAgent.disabled) throw new AgentDisabledError(existingAgent);
+        return existing;
+      }
 
-        // Phase 2: resolveLaunchTarget (pure)
-        const target = await this.resolveLaunchTarget({ agentId, projectId, epicId });
-        const { agent, project, epic, profile, provider, options, configEnv } = target;
+      // Phase 2: resolveLaunchTarget (pure)
+      const target = await this.resolveLaunchTarget(data);
+      const { agent, project, epic, profile, provider, options, configEnv } = target;
+      const source = fork ? this.requireForkSource(fork.savePointId, agentId) : null;
+      if (source) {
+        this.assertForkProvider(source.providerNameAtLaunch, provider.name);
+        await this.assertForkTeamEligibility(agentId, projectId);
+      }
 
-        // Auto-compact recommendation (non-blocking)
-        this.emitAutoCompactRecommendation(provider, agent, agentId, silent);
+      // Auto-compact recommendation (non-blocking)
+      this.emitAutoCompactRecommendation(provider, agent, agentId, silent);
 
-        // Phase 3: verifyProvider (preflight + MCP ensure)
-        await this.verifyProvider(provider, project.rootPath, project.id, configEnv);
+      // Phase 3: verifyProvider (preflight + MCP ensure)
+      if (!fork) await this.verifyProvider(provider, project.rootPath, project.id, configEnv);
 
-        // Phase 4: create the read-only provider runtime plan
-        const adapter = this.providerAdapterFactory.getAdapter(provider.name);
+      // Phase 4: resolve the provider command and any fork binding
+      const forkSupport = fork?.provider;
+      const adapter = forkSupport?.adapter ?? this.providerAdapterFactory.getAdapter(provider.name);
 
-        // Generate session ID and tmux name
-        sessionId = randomUUID();
-        const now = new Date().toISOString();
-        const projectSlug = project.name
-          .toLowerCase()
-          .replace(/[^a-z0-9]+/g, '-')
-          .replace(/(^-|-$)/g, '');
-        const epicSegment = epicId ?? 'independent';
-        tmuxSessionName = buildTmuxSessionName(projectSlug, epicSegment, agentId, sessionId);
+      // Generate session ID and tmux name
+      sessionId = randomUUID();
+      const now = new Date().toISOString();
+      const projectSlug = project.name
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, '-')
+        .replace(/(^-|-$)/g, '');
+      const epicSegment = epicId ?? 'independent';
+      tmuxSessionName = buildTmuxSessionName(projectSlug, epicSegment, agentId, sessionId);
 
-        // Opt-in initial-prompt seeding (e.g. agy's full-screen TUI): render the
-        // prompt BEFORE runtime planning so `argv`-mode adapters can embed it
-        // in the launch args and the fragile post-launch paste can be skipped.
-        // Default providers leave `initialPromptSeedMode` undefined and keep the
-        // existing post-launch paste path untouched (seededPrompt stays null).
-        const seedMode = adapter.initialPromptSeedMode;
-        const seededPrompt = seedMode
-          ? await this.renderInitialPromptText({
-              sessionId,
-              project: { id: project.id, name: project.name },
-              agent,
-              epic,
-              profile,
-              provider,
-              vaultEntryCount: target.vaultEntryCount,
-            })
-          : null;
-
-        const providerRuntimePlan = await this.providerRuntimePreparation.createPlan({
-          mode: 'new',
-          adapter,
-          provider,
-          providerBinPath: provider.binPath!,
-          projectId: project.id,
-          projectName: project.name,
-          projectRootPath: project.rootPath,
-          agentId: agent.id,
-          agentModelOverride: agent.modelOverride,
-          agentEffortOverride: agent.effortOverride,
-          configModel: target.configModel,
-          configEffort: target.configEffort,
-          profileOptions: options,
-          configEnv,
+      const markLaunchFailed = async () => {
+        this.sessionRows.markLaunchFailed(sessionId!, new Date().toISOString());
+      };
+      if (fork) {
+        // Before the provider copies the source: a refused fork writes nothing.
+        const inserted = await this.sessionRows.insertForkedSession({
+          parentSessionId: fork.savePointId,
           sessionId,
+          epicId: epicId ?? null,
+          agentId,
           tmuxSessionName,
-          initialPrompt: seededPrompt ?? undefined,
+          providerName: provider.name,
+          now,
+          admit: fork.admit,
         });
+        if (inserted.outcome === 'lineageRunning') throw sessionLineageRunning(inserted.running);
+        cleanup.push('createSession', markLaunchFailed);
+      }
 
-        // Phase 6: setupHooksConfig (filesystem write, non-fatal)
-        await this.setupHooksConfig(provider, project.rootPath);
+      // Opt-in initial-prompt seeding (e.g. agy's bubbletea TUI): render the
+      // prompt BEFORE runtime planning so `argv`-mode adapters can embed it
+      // in the launch args and the fragile post-launch paste can be skipped.
+      // Default providers leave `initialPromptSeedMode` undefined and keep the
+      // existing post-launch paste path untouched (seededPrompt stays null).
+      const seedMode = fork ? undefined : adapter.initialPromptSeedMode;
+      const seededPrompt = seedMode
+        ? await this.renderInitialPromptText({
+            sessionId,
+            project: { id: project.id, name: project.name },
+            agent,
+            epic,
+            profile,
+            provider,
+            vaultEntryCount: target.vaultEntryCount,
+          })
+        : null;
 
-        // Phase 7: createSession (SQLite write)
+      const runtimeInput = {
+        adapter,
+        provider,
+        providerBinPath: forkSupport?.providerBinPath ?? provider.binPath!,
+        projectId: project.id,
+        projectName: project.name,
+        projectRootPath: project.rootPath,
+        agentId: agent.id,
+        agentModelOverride: agent.modelOverride,
+        agentEffortOverride: agent.effortOverride,
+        configModel: target.configModel,
+        configEffort: target.configEffort,
+        profileOptions: options,
+        configEnv,
+        sessionId,
+        tmuxSessionName,
+      };
+      // The source file may have changed since preflight.
+      const forkSource =
+        source && forkSupport
+          ? await this.readableForkSource(source, forkSupport.adapter, provider.name)
+          : null;
+      const providerRuntimePlan = await this.providerRuntimePreparation.createPlan(
+        forkSupport && forkSource
+          ? {
+              ...runtimeInput,
+              mode: 'fork',
+              adapter: forkSupport.adapter,
+              savePoint: forkSource,
+              cliVersion: forkSupport.cliVersion,
+              helperEnv: forkSupport.helperEnv,
+            }
+          : { ...runtimeInput, mode: 'new', initialPrompt: seededPrompt ?? undefined },
+      );
+
+      if (fork) {
+        try {
+          if (!providerRuntimePlan.fork) {
+            throw new ValidationError('Provider runtime plan is missing the fork binding');
+          }
+          const bound = await this.sessionRows.bindForkTranscript({
+            ...providerRuntimePlan.fork,
+            sessionId,
+            updatedAt: now,
+            admit: fork.admit,
+          });
+          if (!bound) throw new NotFoundError('Session', sessionId);
+        } catch (error) {
+          await providerRuntimePlan.discardUnboundTranscript?.();
+          throw error;
+        }
+        await providerRuntimePlan.commitBoundTranscript?.();
+      }
+
+      // Phase 6: setupHooksConfig (filesystem write, non-fatal)
+      await this.setupHooksConfig(provider, project.rootPath);
+
+      // Phase 7: createSession (SQLite write)
+      if (!fork) {
         this.sessionRows.insertSession(
           sessionId,
           epicId ?? null,
@@ -188,121 +340,219 @@ export class SessionLaunchPipeline {
           provider.name,
           now,
         );
-        cleanup.push('createSession', async () => {
-          this.sessionRows.markLaunchFailed(sessionId!, new Date().toISOString());
-        });
-        const providerRuntime =
-          await this.providerRuntimePreparation.materialize(providerRuntimePlan);
-        cleanup.push('providerRuntime', providerRuntime.rollback);
+        cleanup.push('createSession', markLaunchFailed);
+      }
+      const providerRuntime =
+        await this.providerRuntimePreparation.materialize(providerRuntimePlan);
+      cleanup.push('providerRuntime', providerRuntime.rollback);
 
-        // ── Runtime plan finalized checkpoint ──────────────────────────
-        // From here: argv, env, sessionId, and generated artifact paths are immutable.
+      // ── Runtime plan finalized checkpoint ──────────────────────────
+      // From here: argv, env, sessionId, and generated artifact paths are immutable.
 
-        // Phase 8: createTmuxSession
-        await this.terminalIO.createEmptySession(tmuxSessionName, { cwd: project.rootPath });
-        cleanup.push('createTmuxSession', async () => {
-          const result = await this.terminalIO.destroyExpectedSession(
-            { name: tmuxSessionName! },
-            { onUnknownError: 'retire' },
-          );
-          if (result.outcome === 'unknown-error') {
-            logger.warn(
-              { tmuxSessionName, error: result.error },
-              'Failed to destroy tmux session during rollback',
-            );
-          }
-        });
-
-        await this.terminalIO.setAlternateScreen(
-          { name: tmuxSessionName },
-          adapter.terminalOutputBehavior?.usesAlternateScreen ?? false,
+      // Phase 8: createTmuxSession
+      await this.terminalIO.createEmptySession(tmuxSessionName, { cwd: project.rootPath });
+      cleanup.push('createTmuxSession', async () => {
+        const result = await this.terminalIO.destroyExpectedSession(
+          { name: tmuxSessionName! },
+          { onUnknownError: 'retire' },
         );
-        this.terminalIO.startHealthCheck(tmuxSessionName, sessionId);
-
-        // Phase 9: flipToRunning (already running from createSession insert)
-        // In the current model, we insert as 'running' directly.
-        // The compensator from createSession handles rollback.
-
-        // Phase 10: bindStreaming
-        this.terminalSessionRegistry.create(sessionId, tmuxSessionName, {
-          normalizeCapturedLineEndings: true,
-        });
-        cleanup.push('bindStreaming', async () => {
-          this.terminalSessionRegistry.dispose(sessionId!);
-        });
-
-        await this.ptyService.startStreaming(sessionId, tmuxSessionName);
-        this.terminalSessionRegistry.bind(sessionId, this.terminalIO);
-
-        // Phase 11: pasteInitialPrompt + launch CLI + emit session.started
-        //
-        // `session.starting` announces the launch BEFORE the command is typed, because
-        // `launchCliAndPastePrompt` below waits for provider output and then holds for a
-        // minimum launch delay — so `session.started` lands several seconds after the
-        // agent is visibly running. Consumers that need to react as the session begins
-        // use this one. Failure here is non-fatal: it must not block a real launch.
-        try {
-          await this.eventsService.publish('session.starting', {
-            sessionId,
-            projectId: project.id,
-            agentId,
-          });
-        } catch (error) {
+        if (result.outcome === 'unknown-error') {
           logger.warn(
-            { sessionId, agentId, error: error instanceof Error ? error.message : String(error) },
-            'Failed to publish session.starting',
+            { tmuxSessionName, error: result.error },
+            'Failed to destroy tmux session during rollback',
           );
         }
+      });
 
-        await this.launchCliAndPastePrompt(sessionId, tmuxSessionName, providerRuntime, {
-          agent,
-          project,
-          epic,
-          profile,
-          provider,
-          seedMode,
-          seededPrompt,
-          vaultEntryCount: target.vaultEntryCount,
-        });
+      await this.terminalIO.setAlternateScreen(
+        { name: tmuxSessionName },
+        adapter.terminalOutputBehavior?.usesAlternateScreen ?? false,
+      );
+      this.terminalIO.startHealthCheck(tmuxSessionName, sessionId);
 
-        await this.eventsService.publish('session.started', {
+      // Phase 9: flipToRunning (already running from createSession insert)
+      // In the current model, we insert as 'running' directly.
+      // The compensator from createSession handles rollback.
+
+      // Phase 10: bindStreaming
+      this.terminalSessionRegistry.create(sessionId, tmuxSessionName, {
+        normalizeCapturedLineEndings: true,
+      });
+      cleanup.push('bindStreaming', async () => {
+        this.terminalSessionRegistry.dispose(sessionId!);
+      });
+
+      await this.ptyService.startStreaming(sessionId, tmuxSessionName);
+      this.terminalSessionRegistry.bind(sessionId, this.terminalIO);
+
+      // Phase 11: pasteInitialPrompt + launch CLI + emit session.started
+      //
+      // `session.starting` announces the launch BEFORE the command is typed, because
+      // `launchCliAndPastePrompt` below waits for provider output and then holds for a
+      // minimum launch delay — so `session.started` lands several seconds after the
+      // agent is visibly running. Consumers that need to react as the session begins
+      // use this one. Failure here is non-fatal: it must not block a real launch.
+      try {
+        await this.eventsService.publish('session.starting', {
           sessionId,
           projectId: project.id,
-          epicId: epicId ?? null,
           agentId,
-          tmuxSessionName,
         });
-
-        try {
-          await this.eventsService.publish('session.presence.changed', {
-            agentId,
-            online: true,
-            sessionId,
-          });
-        } catch {
-          // Non-fatal
-        }
-
-        return this.buildSessionDetail(
-          sessionId,
-          epicId ?? null,
-          agentId,
-          tmuxSessionName,
-          now,
-          agent,
-          project,
-          epic,
-        );
       } catch (error) {
-        await cleanup.rollback({ sessionId });
-        throw error;
+        logger.warn(
+          { sessionId, agentId, error: error instanceof Error ? error.message : String(error) },
+          'Failed to publish session.starting',
+        );
       }
-    });
+
+      await this.launchCliAndPastePrompt(sessionId, tmuxSessionName, providerRuntime, {
+        agent,
+        project,
+        epic,
+        profile,
+        provider,
+        seedMode,
+        seededPrompt,
+        vaultEntryCount: target.vaultEntryCount,
+        isFork: Boolean(fork),
+      });
+
+      await this.eventsService.publish('session.started', {
+        sessionId,
+        projectId: project.id,
+        epicId: epicId ?? null,
+        agentId,
+        tmuxSessionName,
+      });
+
+      if (providerRuntimePlan.fork) {
+        await this.eventsService.publish('session.transcript.discovered', {
+          ...providerRuntimePlan.fork,
+          sessionId,
+          agentId,
+          projectId: project.id,
+          providerName: provider.name.toLowerCase(),
+        });
+      }
+
+      try {
+        await this.eventsService.publish('session.presence.changed', {
+          agentId,
+          online: true,
+          sessionId,
+        });
+      } catch {
+        // Non-fatal
+      }
+
+      return this.buildSessionDetail(
+        sessionId,
+        epicId ?? null,
+        agentId,
+        tmuxSessionName,
+        now,
+        agent,
+        project,
+        epic,
+        providerRuntimePlan.fork,
+      );
+    } catch (error) {
+      await cleanup.rollback({ sessionId });
+      throw error;
+    }
   }
 
   // ─────────────────────────────────────────────────────────────────────────
   // Phase implementations (private)
   // ─────────────────────────────────────────────────────────────────────────
+
+  private requireForkSource(sourceId: string, agentId: string, replaceRunningSessionId?: string) {
+    const source = this.sessionRows.getSessionTreeRow(sourceId);
+    if (!source || source.agentId !== agentId) throw new NotFoundError('Session', sourceId);
+    const replacedSource = source.status === 'running' && sourceId === replaceRunningSessionId;
+    // Best effort: activity writes take no lock, so a turn can still start before the stop.
+    if (replacedSource && this.sessionRows.getSession(sourceId)?.activityState === 'busy') {
+      throw sessionBusy();
+    }
+    if (!replacedSource && source.status !== 'stopped' && source.status !== 'failed') {
+      throw new ConflictError('The source session must be stopped or failed', {
+        code: 'INVALID_SESSION_STATE',
+      });
+    }
+    if (!source.providerSessionId || !source.transcriptPath) {
+      throw new ConflictError('The source session has no provider session ID or transcript', {
+        code: 'NO_PROVIDER_SESSION_ID',
+      });
+    }
+    return {
+      providerSessionId: source.providerSessionId,
+      transcriptPath: source.transcriptPath,
+      providerNameAtLaunch: source.providerNameAtLaunch,
+    };
+  }
+
+  private assertForkProvider(launchProvider: string | null, currentProvider: string): void {
+    if (launchProvider?.toLowerCase() !== currentProvider.toLowerCase()) {
+      throw new ConflictError('Current provider differs from the source session provider', {
+        code: 'PROVIDER_MISMATCH',
+      });
+    }
+  }
+
+  /**
+   * A fork that copies the source transcript needs a readable file at a validated path.
+   * An ID-based fork (Codex) reads no file, so a moved store still works.
+   */
+  async readableForkSource<T extends { transcriptPath: string }>(
+    source: T,
+    adapter: Pick<SessionForkCapability, 'forkReadsSavePointTranscript'>,
+    providerName: string,
+  ): Promise<T> {
+    if (!adapter.forkReadsSavePointTranscript) return source;
+    const transcriptPath = await this.savePoints.readableTranscript(
+      source.transcriptPath,
+      providerName,
+    );
+    return { ...source, transcriptPath };
+  }
+
+  async requireForkSupport({
+    provider,
+    project,
+    configEnv,
+  }: {
+    provider: Provider;
+    project: Project;
+    configEnv: Record<string, string> | null;
+  }): Promise<ForkLaunchProvider> {
+    const providerEnv = this.storage.getProviderEnvForProject(provider.id, project.id);
+    const env = { ...providerEnv, ...configEnv };
+    const support = await this.savePoints.getForkSupport(
+      provider.name,
+      provider.binPath,
+      env,
+      project.rootPath,
+    );
+    if (!support) throw savePointsUnsupportedProvider();
+    const { adapter, executable } = support;
+    const providerBinPath = executable?.providerBinPath ?? provider.binPath;
+    if (!providerBinPath) {
+      throw new ValidationError(
+        `Provider ${provider.name} is missing a binary path. Set the path before launching sessions.`,
+        { providerId: provider.id, providerName: provider.name },
+      );
+    }
+    return {
+      adapter,
+      providerBinPath,
+      cliVersion: executable?.cliVersion,
+      helperEnv: executable?.helperEnv ?? buildForkHelperEnv(adapter, env),
+    };
+  }
+
+  private async assertForkTeamEligibility(agentId: string, projectId: string): Promise<void> {
+    if (await this.savePoints.isTeamMember(agentId, projectId)) throw savePointsTeamMember();
+  }
 
   private async checkExistingSession(
     agentId: string,
@@ -366,6 +616,9 @@ export class SessionLaunchPipeline {
         projectId: params.projectId,
       });
     }
+    if (agent.disabled) {
+      throw new AgentDisabledError(agent);
+    }
 
     const project = await this.storage.getProject(params.projectId);
     const epic = params.epicId ? await this.storage.getEpic(params.epicId) : null;
@@ -409,35 +662,45 @@ export class SessionLaunchPipeline {
     };
   }
 
-  private async verifyProvider(
+  /**
+   * The checks of `verifyProvider` that can refuse, for the provider the agent would launch on
+   * now. A caller that stops a running session to launch another calls it first, so a provider
+   * that fails does not leave the agent stopped. It provisions no project trust: the launch does,
+   * so a refused restart writes none.
+   */
+  async verifyAgentProvider(agentId: string, projectId: string): Promise<void> {
+    const { provider, project, configEnv } = await this.resolveLaunchTarget({ agentId, projectId });
+    const adapter = this.providerAdapterFactory.getAdapter(provider.name);
+    const { preflightResult } = await this.checkProviderReadiness(
+      provider,
+      adapter,
+      project.rootPath,
+      project.id,
+      configEnv,
+    );
+    assertPreflightPassed(preflightResult);
+  }
+
+  async verifyProvider(
     provider: Provider,
     projectRootPath: string,
     projectId: string,
     configEnv: Record<string, string> | null,
   ): Promise<void> {
-    if (!provider.binPath) {
-      throw new ValidationError(
-        `Provider ${provider.name} is missing a binary path. Set the path before launching sessions.`,
-        { providerId: provider.id, providerName: provider.name },
-      );
-    }
-
-    const { preflightResult, provisioningContext } = await ensureMcpReadiness({
-      storage: this.storage,
-      preflightService: this.preflightService,
-      mcpEnsureService: this.mcpEnsureService,
+    const adapter = this.providerAdapterFactory.getAdapter(provider.name);
+    const { preflightResult, provisioningContext } = await this.checkProviderReadiness(
       provider,
-      projectId,
+      adapter,
       projectRootPath,
+      projectId,
       configEnv,
-    });
+    );
 
     // Providers with pre-launch project provisioning needs (workspace/folder
     // trust) run the trust-only provisioning path here — before runtime
     // planning and before any provider command is typed. MCP drift repair is
     // handled above through the full ensureMcp branch.
     try {
-      const adapter = this.providerAdapterFactory.getAdapter(provider.name);
       if (isProjectProvisioningCapable(adapter) && projectRootPath) {
         const provisioning = await this.mcpEnsureService.ensureProjectProvisioning(
           provider,
@@ -461,13 +724,33 @@ export class SessionLaunchPipeline {
       logger.warn({ providerName: provider.name }, 'Project provisioning failed (non-fatal)');
     }
 
-    if (preflightResult.overall === 'fail') {
-      const failedChecks = preflightResult.checks
-        .filter((c) => c.status === 'fail')
-        .map((c) => `${c.name}: ${c.message}`)
-        .join('; ');
-      throw new ValidationError('Preflight checks failed', { failedChecks });
+    assertPreflightPassed(preflightResult);
+  }
+
+  /** The binary path, then MCP readiness: the check, a repair of drift and the recheck. */
+  private async checkProviderReadiness(
+    provider: Provider,
+    adapter: ProviderAdapter,
+    projectRootPath: string,
+    projectId: string,
+    configEnv: Record<string, string> | null,
+  ): Promise<McpReadiness> {
+    if (!provider.binPath) {
+      throw new ValidationError(
+        `Provider ${provider.name} is missing a binary path. Set the path before launching sessions.`,
+        { providerId: provider.id, providerName: provider.name },
+      );
     }
+    return ensureMcpReadiness({
+      storage: this.storage,
+      preflightService: this.preflightService,
+      mcpEnsureService: this.mcpEnsureService,
+      launchRules: adapter,
+      provider,
+      projectId,
+      projectRootPath,
+      configEnv,
+    });
   }
 
   private emitAutoCompactRecommendation(
@@ -498,10 +781,7 @@ export class SessionLaunchPipeline {
     }
   }
 
-  private async setupHooksConfig(
-    provider: Pick<Provider, 'name'>,
-    projectRootPath: string,
-  ): Promise<void> {
+  async setupHooksConfig(provider: Pick<Provider, 'name'>, projectRootPath: string): Promise<void> {
     try {
       const adapter = this.providerAdapterFactory.getAdapter(provider.name);
       if (!isHookCapable(adapter)) return;
@@ -548,10 +828,12 @@ export class SessionLaunchPipeline {
       seedMode?: 'argv' | 'stdin';
       seededPrompt: string | null;
       vaultEntryCount: number | null;
+      isFork: boolean;
     },
   ): Promise<void> {
     await this.terminalIO.typeCommand({ name: tmuxSessionName }, providerRuntime.typedArgs);
     await providerRuntime.afterCommand();
+    if (context.isFork) return;
 
     const launchTimestamp = Date.now();
     await this.terminalIO.waitForOutput(
@@ -722,6 +1004,7 @@ export class SessionLaunchPipeline {
     agent: Agent,
     project: Project,
     epic: Epic | null,
+    fork: Readonly<ProviderSessionTranscript> | null,
   ): SessionDetailDto {
     return {
       id: sessionId,
@@ -731,7 +1014,8 @@ export class SessionLaunchPipeline {
       status: 'running',
       startedAt: now,
       endedAt: null,
-      transcriptPath: null,
+      transcriptPath: fork?.transcriptPath ?? null,
+      ...(fork && { providerSessionId: fork.providerSessionId }),
       createdAt: now,
       updatedAt: now,
       epic: epic ? { id: epic.id, title: epic.title, projectId: epic.projectId } : null,

@@ -13,6 +13,8 @@ import type {
   ProjectExclusionSuggestions,
   ProjectPatternPreview,
   ProjectFileSyncStatus,
+  FileSyncStatusResponse,
+  SyncStatusRequest,
   DockerPlanRequest,
   DockerPlan,
   DockerPresence,
@@ -162,6 +164,8 @@ export interface RemoteVmApi {
     signal: AbortSignal,
   ): Promise<ProjectPatternPreview>;
   readFileSyncStatus(projectId: string, signal: AbortSignal): Promise<ProjectFileSyncStatus>;
+  /** The measured file sync status of the projects on VMs, read from this PC's Syncthing. */
+  readSyncStatus(request: SyncStatusRequest, signal: AbortSignal): Promise<FileSyncStatusResponse>;
   readDockerPlan(
     projectId: string,
     input: DockerPlanRequest,

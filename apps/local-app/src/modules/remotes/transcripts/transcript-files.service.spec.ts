@@ -9,6 +9,12 @@ import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { DB_CONNECTION } from '../../storage/db/db.provider';
 import { TranscriptPathValidator } from '../../session-reader/services/transcript-path-validator.service';
+import {
+  createReplicaDb,
+  replicaSeeder,
+  seedReplicaSource,
+  T,
+} from '../replica/__fixtures__/replica-seed';
 import { TranscriptFilesService } from './transcript-files.service';
 import type { TranscriptFile } from './transcript-transfer.dto';
 
@@ -18,19 +24,21 @@ const file: TranscriptFile = { provider: 'claude', path: `-project/${uuid}.jsonl
 describe('TranscriptFilesService', () => {
   let root: string;
   let service: TranscriptFilesService;
+  let validator: TranscriptPathValidator;
   beforeEach(async () => {
     root = await mkdtemp(join(tmpdir(), 'transcript-files-'));
+    validator = new TranscriptPathValidator({
+      claude: [join(root, 'claude')],
+      codex: [join(root, 'codex')],
+      devin: [join(root, 'devin')],
+    });
     const module = await Test.createTestingModule({
       providers: [
         TranscriptFilesService,
         { provide: DB_CONNECTION, useValue: {} },
         {
           provide: TranscriptPathValidator,
-          useValue: new TranscriptPathValidator({
-            claude: [join(root, 'claude')],
-            codex: [join(root, 'codex')],
-            devin: [join(root, 'devin')],
-          }),
+          useValue: validator,
         },
       ],
     }).compile();
@@ -39,6 +47,200 @@ describe('TranscriptFilesService', () => {
   afterEach(async () => {
     await rm(root, { recursive: true, force: true });
   });
+
+  // Claude names a saved tool output in three native record shapes.
+  const claudeOutputRecords = {
+    'structured Bash result': (path: string) => ({
+      type: 'user',
+      toolUseResult: { persistedOutputPath: path },
+    }),
+    'persisted-output notice': (path: string) => ({
+      type: 'user',
+      toolUseResult: [{ type: 'text', text: 'preview' }],
+      message: {
+        role: 'user',
+        content: [
+          {
+            type: 'tool_result',
+            tool_use_id: 'tool-1',
+            content: [
+              {
+                type: 'text',
+                text: `<persisted-output>\nOutput too large (1.3MB). Full output saved to: ${path}\n\nPreview (first 2KB):\nline\n</persisted-output>`,
+              },
+            ],
+          },
+        ],
+      },
+    }),
+    'oversized MCP result notice': (path: string) => ({
+      type: 'user',
+      toolUseResult: 'Error: result exceeds maximum allowed tokens.',
+      message: {
+        role: 'user',
+        content: [
+          {
+            type: 'tool_result',
+            tool_use_id: 'tool-1',
+            content: `Error: result (69,978 characters across 1,720 lines) exceeds maximum allowed tokens. Output has been saved to ${path}.\nFormat: Plain text\nUse offset and limit parameters to read specific portions of the file.`,
+          },
+        ],
+      },
+    }),
+  };
+
+  it.each([
+    ...Object.entries(claudeOutputRecords).map(([shape, claudeOutput]) => ({
+      name: `claude (${shape})`,
+      provider: 'claude' as const,
+      claudeOutput,
+    })),
+    {
+      name: 'codex',
+      provider: 'codex' as const,
+      claudeOutput: claudeOutputRecords['structured Bash result'],
+    },
+  ])(
+    'carries $name save-point and child dependencies after the source rows are deleted',
+    async ({ provider, claudeOutput }) => {
+      const { db, sqlite } = createReplicaDb();
+      try {
+        seedReplicaSource(sqlite);
+        const workspace = '/project';
+        const otherWorkspace = '/project-other';
+        sqlite.prepare("UPDATE projects SET root_path = ? WHERE id = 'A'").run(workspace);
+        sqlite.prepare("UPDATE projects SET root_path = ? WHERE id = 'B'").run(otherWorkspace);
+        const files = new TranscriptFilesService(validator, db);
+        const sourceId = uuid;
+        const saveId = 'bbbbbbbb-bbbb-cccc-dddd-eeeeeeeeeeee';
+        const childId = 'cccccccc-bbbb-cccc-dddd-eeeeeeeeeeee';
+        const missingId = 'dddddddd-bbbb-cccc-dddd-eeeeeeeeeeee';
+        const foreignId = 'eeeeeeee-bbbb-cccc-dddd-eeeeeeeeeeee';
+        const transcript = (id: string): TranscriptFile => ({
+          provider,
+          path:
+            provider === 'codex'
+              ? `2026/09/26/rollout-2026-09-26T12-00-00-${id}.jsonl`
+              : `-project/${id}.jsonl`,
+        });
+        const source = transcript(sourceId);
+        const save = transcript(saveId);
+        const child = transcript(childId);
+        const tool: TranscriptFile = {
+          provider: 'claude',
+          path: `-project/${sourceId}/tool-results/output.txt`,
+        };
+        const codexMeta = (id: string, base?: string, cwd = workspace) => ({
+          type: 'session_meta',
+          payload: { id, cwd, history_base: base ? { thread_id: base } : undefined },
+        });
+        const put = async (file: TranscriptFile, ...records: unknown[]) => {
+          const body = records.map((record) => JSON.stringify(record)).join('\n') + '\n';
+          await files.write(file, Readable.from(body), Buffer.byteLength(body));
+        };
+        const insertSession = (id: string, parent: string | null, kind = 'session') => {
+          replicaSeeder(sqlite).insert('sessions', {
+            id,
+            agent_id: 'agent-1',
+            kind,
+            status: 'stopped',
+            parent_session_id: parent,
+            provider_session_id: id,
+            provider_name_at_launch: provider,
+            transcript_path: files.path(transcript(id)),
+            started_at: T,
+            ended_at: T,
+            created_at: T,
+            updated_at: T,
+          });
+        };
+        insertSession(sourceId, null);
+        insertSession(saveId, sourceId, 'save_point');
+        insertSession(childId, saveId);
+        if (provider === 'claude') {
+          await put(tool, 'retained tool result');
+          await put(
+            { provider, path: `-project/${sourceId}/tool-results/unreferenced.txt` },
+            'unreferenced tool result',
+          );
+          await put(source, claudeOutput(files.path(tool)));
+          await put(save, claudeOutput(files.path(tool)));
+          await put(child, claudeOutput(files.path(tool)));
+        } else {
+          await put(source, codexMeta(sourceId));
+          await put(save, codexMeta(saveId, sourceId));
+          await put(child, codexMeta(childId, saveId));
+        }
+
+        const remove = sqlite.prepare('DELETE FROM sessions WHERE id = ?');
+        remove.run(sourceId);
+        const dependency = provider === 'claude' ? tool : source;
+        const inventory = await files.projectRefs('A');
+        expect(inventory.refs).toContainEqual(dependency);
+        expect(inventory.skipped).toBe(0);
+        expect(inventory.listing.files.map(({ file }) => file)).toEqual(
+          expect.arrayContaining([save, child, dependency]),
+        );
+        expect(inventory.listing.files).toHaveLength(3);
+        expect(await files.list(inventory.refs)).toEqual(inventory.listing);
+
+        remove.run(saveId);
+        if (provider === 'claude') {
+          const outside = join(root, 'outside', tool.path);
+          await mkdir(dirname(outside), { recursive: true });
+          await writeFile(outside, 'outside provider root');
+          const foreign: TranscriptFile = {
+            provider,
+            path: `-project-other/${foreignId}/tool-results/output.txt`,
+          };
+          await put(foreign, 'other workspace tool result');
+          await put(
+            child,
+            claudeOutput(files.path(tool)),
+            claudeOutput(join(dirname(files.path(tool)), 'missing.txt')),
+            claudeOutput(outside),
+            claudeOutput(files.path(foreign)),
+            // Ordinary tool output with the same words names no companion file.
+            {
+              type: 'user',
+              toolUseResult: { stdout: 'Report complete. Output has been saved to results.csv.' },
+              message: {
+                role: 'user',
+                content: [
+                  {
+                    type: 'tool_result',
+                    tool_use_id: 'tool-2',
+                    content: 'Report complete. Output has been saved to results.csv.',
+                  },
+                ],
+              },
+            },
+          );
+        } else {
+          await put(source, codexMeta(sourceId, missingId));
+        }
+        const expected = provider === 'claude' ? [child, tool] : [child, save, source];
+        const expectInventory = async (skipped: number) => {
+          const childInventory = await files.projectRefs('A');
+          const recorded = files.recordedProjectRefs('A');
+          const fromHost = await files.list(recorded.refs, 'A');
+          expect(childInventory.skipped).toBe(skipped);
+          expect(fromHost).toEqual({ ...childInventory.listing, skipped });
+          expect(fromHost.files.map(({ file }) => file)).toEqual(expect.arrayContaining(expected));
+          expect(fromHost.files).toHaveLength(expected.length);
+          expect(fromHost.missing).toBe(0);
+        };
+        await expectInventory(provider === 'claude' ? 3 : 1);
+        if (provider === 'codex') {
+          await put(transcript(foreignId), codexMeta(foreignId, undefined, otherWorkspace));
+          await put(source, codexMeta(sourceId, foreignId));
+          await expectInventory(1);
+        }
+      } finally {
+        sqlite.close();
+      }
+    },
+  );
 
   it('lists only recorded regular files, subagents and tool results and counts missing sessions', async () => {
     const files: TranscriptFile[] = [
@@ -62,28 +264,53 @@ describe('TranscriptFilesService', () => {
     expect(listing.files).toEqual(expect.arrayContaining(files.map((file) => ({ file, size: 4 }))));
   });
 
-  it('lists a Devin export and its store session files with content hashes', async () => {
-    const session = 'stores/project-1/cli/sessions/brave-otter';
-    const files: TranscriptFile[] = [
-      { provider: 'devin', path: `${uuid}.json` },
-      { provider: 'devin', path: `${session}/log.jsonl` },
-      { provider: 'devin', path: `${session}/meta.json` },
-    ];
-    for (const entry of files) await service.write(entry, Readable.from('data'), 4);
-    const linked = join(root, 'devin', 'stores', 'project-1', 'cli', 'sessions', 'linked');
-    await mkdir(linked);
-    await symlink(service.path(files[1]), join(linked, 'log.jsonl'));
-    const listing = await service.list([
-      { provider: 'devin', path: files[0].path },
-      { provider: 'devin', path: session },
-      { provider: 'devin', path: 'stores/project-1/cli/sessions/linked' },
-    ]);
-    const sha256 = createHash('sha256').update('data').digest('hex');
-    expect(listing.missing).toBe(1);
-    expect(listing.files).toEqual(
-      expect.arrayContaining(files.map((file) => ({ file, size: 4, sha256 }))),
-    );
-    expect(listing.files).toHaveLength(3);
+  // A saved row and real files exercise the handoff inventory and its content hashes.
+  it('lists a Devin save point export and store session files with content hashes', async () => {
+    const { db, sqlite } = createReplicaDb();
+    try {
+      seedReplicaSource(sqlite);
+      const inventory = new TranscriptFilesService(validator, db);
+      const nativeId = 'cccccccc-bbbb-4ccc-8ddd-eeeeeeeeeeee';
+      const sessionsDir = 'stores/A/cli/sessions';
+      const session = `${sessionsDir}/${nativeId}`;
+      const exportFile: TranscriptFile = { provider: 'devin', path: `${uuid}.json` };
+      const log: TranscriptFile = { provider: 'devin', path: `${session}/log.jsonl` };
+      const meta: TranscriptFile = { provider: 'devin', path: `${session}/meta.json` };
+      replicaSeeder(sqlite).insert('sessions', {
+        id: uuid,
+        agent_id: 'agent-1',
+        kind: 'save_point',
+        status: 'stopped',
+        provider_session_id: nativeId,
+        provider_name_at_launch: 'devin',
+        transcript_path: inventory.path(exportFile),
+        started_at: T,
+        ended_at: T,
+        created_at: T,
+        updated_at: T,
+      });
+      const files = [exportFile, log, meta];
+      for (const entry of files) await inventory.write(entry, Readable.from('data'), 4);
+      const linked = join(root, 'devin', sessionsDir, 'linked');
+      await mkdir(linked);
+      await symlink(inventory.path(log), join(linked, 'log.jsonl'));
+
+      const { refs, skipped } = inventory.recordedProjectRefs('A');
+      expect(skipped).toBe(0);
+      expect(refs).toEqual([exportFile, { provider: 'devin', path: session }]);
+      const listing = await inventory.list([
+        ...refs,
+        { provider: 'devin', path: `${sessionsDir}/linked` },
+      ]);
+      const sha256 = createHash('sha256').update('data').digest('hex');
+      expect(listing.missing).toBe(1);
+      expect(listing.files).toEqual(
+        expect.arrayContaining(files.map((file) => ({ file, size: 4, sha256 }))),
+      );
+      expect(listing.files).toHaveLength(3);
+    } finally {
+      sqlite.close();
+    }
   });
 
   it.each([

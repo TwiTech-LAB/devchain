@@ -252,7 +252,9 @@ export function InlineSessionSummaryChip({
             <span
               className={cn(
                 'inline-block h-1.5 w-1.5 rounded-full',
-                metrics.isOngoing ? 'bg-status-ok animate-pulse' : 'bg-muted-foreground/50',
+                metrics.isOngoing
+                  ? 'bg-status-ok animate-activity-pulse'
+                  : 'bg-muted-foreground/50',
               )}
               aria-hidden="true"
             />

@@ -83,10 +83,12 @@ function uniqueNames(names: string[]): string[] {
 
 function composeTeams(
   templateTeams: TemplateTeam[],
+  templateAgentNames: ReadonlySet<string>,
   current: CurrentTeamSetup,
   choices: PreserveTeamSetup,
 ) {
   const agents = byId(current.agents);
+  const existingAgentNames = new Set(current.agents.map(({ name }) => key(name)));
   const incoming = byName(templateTeams);
   const currentTeams = byName(current.teams);
   const selectedTeams = new Set((choices.addTeams ?? []).map(key));
@@ -187,8 +189,21 @@ function composeTeams(
 
   for (const team of templateTeams) {
     if (currentTeams.has(key(team.name))) continue;
-    const selected = selectedTeams.has(key(team.name));
     const memberAgentNames = uniqueNames(team.memberAgentNames);
+    const teamAgentNames = team.teamLeadAgentName
+      ? [...memberAgentNames, team.teamLeadAgentName]
+      : memberAgentNames;
+    // Until the caller sends addTeams, a new team is selected when it only groups agents that
+    // the project already has outside its teams. Such a team adds no agent and moves none.
+    const selected = choices.addTeams
+      ? selectedTeams.has(key(team.name))
+      : teamAgentNames.length > 0 &&
+        teamAgentNames.every(
+          (name) =>
+            templateAgentNames.has(key(name)) &&
+            existingAgentNames.has(key(name)) &&
+            !retainedAgentNames.has(key(name)),
+        );
     optionalTeams.push({
       name: team.name,
       teamLeadAgentName: team.teamLeadAgentName ?? null,
@@ -206,7 +221,12 @@ export function composePreservedRoster(
   current: CurrentTeamSetup,
   choices: PreserveTeamSetup,
 ) {
-  const roster = composeTeams(template.teams, current, choices);
+  const roster = composeTeams(
+    template.teams,
+    new Set(template.agents.map(({ name }) => key(name))),
+    current,
+    choices,
+  );
   const teamAgentKeys = (team: TemplateTeam) => {
     const names = team.memberAgentNames.map(key);
     if (team.teamLeadAgentName) names.push(key(team.teamLeadAgentName));
@@ -226,6 +246,7 @@ export function composePreservedRoster(
   }));
   const targetProfiles = byName(profiles);
   const incomingAgents = byName(template.agents);
+  const existingAgentNames = new Set(current.agents.map(({ name }) => key(name)));
   const candidates = new Map<string, AgentCandidate>();
 
   for (const agent of current.agents) {
@@ -248,10 +269,14 @@ export function composePreservedRoster(
 
   for (const incoming of template.agents) {
     const name = key(incoming.name);
-    if (candidates.has(name) || (incomingMembers.has(name) && !includedMembers.has(name))) continue;
+    if (candidates.has(name)) continue;
+    // An addition that is not selected brings in none of its agents. It must not remove an agent
+    // that the project already has: that agent stays, outside the teams, under the standalone rules.
+    const existing = existingAgentNames.has(name);
+    if (incomingMembers.has(name) && !includedMembers.has(name) && !existing) continue;
     candidates.set(name, {
       incoming,
-      teamAddition: includedMembers.has(name),
+      teamAddition: includedMembers.has(name) && !existing,
       agent: { ...incoming, id: `preserve-agent:${candidates.size}` },
     });
   }

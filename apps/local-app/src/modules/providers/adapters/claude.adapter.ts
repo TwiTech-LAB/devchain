@@ -1,8 +1,10 @@
 import { getProviderCliNoUpdateOptions } from './provider-cli-policy';
 import { Injectable } from '@nestjs/common';
 import { CLAUDE_TRAITS } from './claude.traits';
-import { mkdir, readFile, writeFile } from 'fs/promises';
-import { join } from 'path';
+import { randomUUID } from 'crypto';
+import { mkdir, readFile, rename, rm, writeFile } from 'fs/promises';
+import { dirname, join } from 'path';
+import { IOError } from '../../../common/errors/error-types';
 import type {
   ProviderAdapter,
   AddMcpServerOptions,
@@ -27,8 +29,18 @@ import type {
   ProviderPluginCatalogSource,
   SessionCommandCapability,
 } from './capabilities';
+import type {
+  CreateSessionSavePointInput,
+  PrepareSessionForkLaunchInput,
+  ProviderSessionTranscript,
+  SessionSavePointCopy,
+  SessionForkCapability,
+  SessionForkLaunchResult,
+} from './capabilities/session-fork.capability';
+import { SESSION_START_SOURCE_ENV } from './capabilities/hook.capability';
 import type { ProviderPluginCatalogEntry } from '../dtos/provider-plugin.dto';
 import {
+  isRecord,
   optionalBoolean,
   optionalNumber,
   optionalString,
@@ -38,6 +50,7 @@ import {
 } from './plugin-catalog.utils';
 
 import { stripFlag } from '../utils/profile-options';
+import { stripPositionalPrompt } from './fork-profile-options';
 
 interface ClaudeSettingsLocal {
   permissions?: {
@@ -62,6 +75,19 @@ function trustProvisioningFailure(message: string): ProvisioningResult {
   };
 }
 
+function rewriteTranscriptSessionId(line: string, sessionId: string): string {
+  let record: unknown;
+  try {
+    record = JSON.parse(line);
+  } catch {
+    throw new IOError('Invalid JSON record in Claude transcript');
+  }
+  if (!isRecord(record)) {
+    throw new IOError('Invalid JSON record in Claude transcript');
+  }
+  return JSON.stringify({ ...record, sessionId });
+}
+
 @Injectable()
 export class ClaudeAdapter
   implements
@@ -74,7 +100,8 @@ export class ClaudeAdapter
     ProjectMcpSettingsCapability,
     ProjectProvisioningCapability,
     ProviderPluginCapability,
-    SessionCommandCapability
+    SessionCommandCapability,
+    SessionForkCapability
 {
   readonly providerName = 'claude';
   readonly traits = CLAUDE_TRAITS;
@@ -121,6 +148,8 @@ export class ClaudeAdapter
 
   readonly hooksEnabled = true as const;
   readonly hooksProvideTranscriptPath = true;
+  readonly managedHookEnvKeys = [SESSION_START_SOURCE_ENV] as const;
+  readonly forkReadsSavePointTranscript = true;
 
   providerPluginCatalog(): ProviderPluginCatalogSource {
     return {
@@ -193,6 +222,9 @@ export class ClaudeAdapter
       DEVCHAIN_AGENT_ID: context.agentId,
       DEVCHAIN_SESSION_ID: context.sessionId,
       DEVCHAIN_TMUX_SESSION_NAME: context.tmuxSessionName,
+      ...(context.sessionStartSource && {
+        [SESSION_START_SOURCE_ENV]: context.sessionStartSource,
+      }),
     };
   }
 
@@ -315,6 +347,115 @@ export class ClaudeAdapter
       return { argv: ['--resume', providerSessionId!, ...profileOptionArgs] };
     }
     return { argv: [...profileOptionArgs] };
+  }
+
+  async createSavePoint({
+    transcriptPath,
+  }: CreateSessionSavePointInput): Promise<SessionSavePointCopy> {
+    const copy = await this.copyTranscript(transcriptPath, randomUUID());
+    return { ...copy, discardUnboundTranscript: () => rm(copy.transcriptPath, { force: true }) };
+  }
+
+  private async copyTranscript(
+    transcriptPath: string,
+    providerSessionId: string,
+  ): Promise<ProviderSessionTranscript> {
+    const source = await readFile(transcriptPath, 'utf8');
+    const lastNewline = source.lastIndexOf('\n');
+    const lines = source
+      .slice(0, Math.max(0, lastNewline))
+      .split('\n')
+      .filter((line) => line.trim());
+    if (lines.length === 0) {
+      throw new IOError('Claude transcript has no complete records to save');
+    }
+
+    const savedPath = join(dirname(transcriptPath), `${providerSessionId}.jsonl`);
+    const tempPath = `${savedPath}.${randomUUID()}.tmp`;
+    const content = lines
+      .map((line) => rewriteTranscriptSessionId(line, providerSessionId))
+      .join('\n');
+
+    try {
+      await writeFile(tempPath, `${content}\n`, { mode: 0o600, flag: 'wx' });
+      await rename(tempPath, savedPath);
+    } catch (error) {
+      await rm(tempPath, { force: true }).catch(() => undefined);
+      throw error;
+    }
+    return { providerSessionId, transcriptPath: savedPath };
+  }
+
+  async prepareForkLaunch({
+    transcriptPath,
+    profileOptionArgs,
+  }: PrepareSessionForkLaunchInput): Promise<SessionForkLaunchResult> {
+    const copyId = randomUUID();
+    const { argv } = this.buildLaunchArgs({
+      mode: 'restore',
+      providerSessionId: copyId,
+      profileOptionArgs: stripPositionalPrompt(profileOptionArgs, {
+        valueFlags: [
+          '--agent',
+          '--agents',
+          '--append-system-prompt',
+          '--append-system-prompt-file',
+          '--autocompact',
+          '--debug-file',
+          '--effort',
+          '--environment',
+          '--fallback-model',
+          '--input-format',
+          '--json-schema',
+          '--max-budget-usd',
+          '--model',
+          '-n',
+          '--name',
+          '--output-format',
+          '--permission-mode',
+          '--permission-prompts',
+          '--plugin-dir',
+          '--plugin-url',
+          '--remote-control-session-name-prefix',
+          '--session-id',
+          '--setting-sources',
+          '--settings',
+          '--system-prompt',
+          '--system-prompt-file',
+          '--system-prompt-snapshot',
+        ],
+        optionalValueFlags: [
+          '--cloud',
+          '-d',
+          '--debug',
+          '--from-pr',
+          '--prompt-suggestions',
+          '--remote-control',
+          '-r',
+          '--resume',
+          '--teleport',
+          '-w',
+          '--worktree',
+        ],
+        variadicFlags: [
+          '--add-dir',
+          '--allowedTools',
+          '--allowed-tools',
+          '--betas',
+          '--disallowedTools',
+          '--disallowed-tools',
+          '--file',
+          '--mcp-config',
+          '--tools',
+        ],
+      }),
+    });
+    const child = await this.copyTranscript(transcriptPath, copyId);
+    return {
+      argv,
+      ...child,
+      discardUnboundTranscript: () => rm(child.transcriptPath, { force: true }),
+    };
   }
 
   parseListOutput(stdout: string, _stderr?: string): McpServerEntry[] {

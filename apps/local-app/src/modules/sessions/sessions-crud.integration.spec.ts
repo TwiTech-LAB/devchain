@@ -13,6 +13,7 @@ import { FastifyAdapter, NestFastifyApplication } from '@nestjs/platform-fastify
 import { AppModule } from '../../app.module';
 import { resetEnvConfig } from '../../common/config/env.config';
 import { DB_CONNECTION } from '../storage/db/db.provider';
+import { beforeRollbackRecordId } from '../storage/sessions/session-row.store';
 import type Database from 'better-sqlite3';
 
 import { EventEmitter2 } from '@nestjs/event-emitter';
@@ -244,6 +245,46 @@ describe('PATCH /api/sessions/:id (rename)', () => {
       });
 
     expect(res.statusCode).toBe(403);
+  });
+
+  // HTTP and SQLite show that only a save point with the derived ID of its parent keeps no name.
+  it.each([
+    { row: 'Before rollback record', parent: true, derived: true, status: 409, name: null },
+    { row: 'ordinary save point', parent: true, derived: false, status: 200, name: 'Kept' },
+    { row: 'orphan with a derived ID', parent: false, derived: true, status: 200, name: 'Kept' },
+  ])('renames a $row: $status', async ({ parent, derived, status, name }) => {
+    const projectId = uuid(1);
+    const agentId = uuid(10);
+    const parentId = uuid(100);
+    const savePointId = derived ? beforeRollbackRecordId(parentId) : uuid(101);
+    seedAgent(sqlite!, { projectId, agentId });
+    seedSession(sqlite!, { sessionId: parentId, agentId, status: 'stopped' });
+    sqlite!
+      .prepare(
+        `INSERT INTO sessions (id, agent_id, kind, parent_session_id, status, started_at,
+                               created_at, updated_at)
+         VALUES (?, ?, 'save_point', ?, 'stopped', ?, ?, ?)`,
+      )
+      .run(savePointId, agentId, parent ? parentId : null, NOW, NOW, NOW);
+
+    const res = await app!
+      .getHttpAdapter()
+      .getInstance()
+      .inject({
+        method: 'PATCH',
+        url: `/api/sessions/${savePointId}`,
+        payload: { projectId, name: 'Kept' },
+      });
+
+    expect(res.statusCode).toBe(status);
+    if (status === 409) {
+      expect(JSON.parse(res.payload)).toMatchObject({
+        details: { code: 'BEFORE_ROLLBACK_NOT_RENAMABLE' },
+      });
+    }
+    expect(sqlite!.prepare('SELECT name FROM sessions WHERE id = ?').get(savePointId)).toEqual({
+      name,
+    });
   });
 
   it('returns 404 for non-existent session', async () => {
@@ -851,5 +892,112 @@ describe('POST /api/sessions/:id/restore', () => {
     const eventNames = events.map((e) => e.name);
     expect(eventNames).toContain('session.restored');
     expect(eventNames).not.toContain('session.started');
+  });
+
+  describe('across a family', () => {
+    const projectId = uuid(11);
+    const ownerId = uuid(110);
+    const targetId = uuid(111);
+    const sessionId = uuid(1100);
+    const post = (url: string, payload: Record<string, unknown>) =>
+      app.getHttpAdapter().getInstance().inject({ method: 'POST', url, payload });
+
+    let claudeConfigId: string;
+    let profileId: string;
+
+    beforeEach(() => {
+      ({ profileId, ppcId: claudeConfigId } = seedRestoreAgent(sqlite, {
+        projectId,
+        agentId: ownerId,
+      }));
+      sqlite
+        .prepare(
+          `INSERT INTO agents (id, project_id, profile_id, provider_config_id, name, created_at, updated_at)
+           VALUES (?, ?, ?, ?, 'Clone', ?, ?)`,
+        )
+        .run(targetId, projectId, profileId, claudeConfigId, NOW, NOW);
+      seedRestoreSession(sqlite, { sessionId, agentId: ownerId });
+    });
+
+    it('restores into the agent named by targetAgentId', async () => {
+      const res = await post(`/api/sessions/${sessionId}/restore`, {
+        projectId,
+        targetAgentId: targetId,
+      });
+
+      expect(res.statusCode).toBe(201);
+      expect(JSON.parse(res.payload)).toMatchObject({ id: sessionId, agentId: targetId });
+      expect(sqlite.prepare('SELECT agent_id FROM sessions WHERE id = ?').get(sessionId)).toEqual({
+        agent_id: targetId,
+      });
+    });
+
+    it('switches the target to switchToProviderConfigId, with no overrides, and restores on it', async () => {
+      const codexId = uuid(112);
+      const codexConfigId = uuid(113);
+      sqlite
+        .prepare(
+          `INSERT INTO providers (id, name, bin_path, mcp_configured, created_at, updated_at)
+           VALUES (?, 'codex', '/usr/bin/codex', 1, ?, ?)`,
+        )
+        .run(codexId, NOW, NOW);
+      sqlite
+        .prepare(
+          `INSERT INTO profile_provider_configs
+             (id, profile_id, provider_id, name, position, created_at, updated_at)
+           VALUES (?, ?, ?, 'codex', 1, ?, ?)`,
+        )
+        .run(codexConfigId, profileId, codexId, NOW, NOW);
+      sqlite
+        .prepare(
+          `UPDATE agents SET provider_config_id = ?, model_override = 'gpt', effort_override = 'high'
+           WHERE id = ?`,
+        )
+        .run(codexConfigId, targetId);
+      const agentConfig = sqlite.prepare(
+        `SELECT provider_config_id AS configId, model_override AS model, effort_override AS effort
+         FROM agents WHERE id = ?`,
+      );
+
+      const refused = await post(`/api/sessions/${sessionId}/restore`, {
+        projectId,
+        targetAgentId: targetId,
+      });
+      expect(JSON.parse(refused.payload).details?.code).toBe('PROVIDER_MISMATCH');
+
+      const res = await post(`/api/sessions/${sessionId}/restore`, {
+        projectId,
+        targetAgentId: targetId,
+        switchToProviderConfigId: claudeConfigId,
+      });
+
+      expect(res.statusCode).toBe(201);
+      expect(JSON.parse(res.payload)).toMatchObject({ id: sessionId, agentId: targetId });
+      expect(agentConfig.get(targetId)).toEqual({
+        configId: claudeConfigId,
+        model: null,
+        effort: null,
+      });
+    });
+
+    it.each([
+      { route: 'start', payload: { targetAgentId: targetId }, statusCode: 400 },
+      { route: 'start', payload: { expectedAgentId: targetId }, statusCode: 409 },
+      {
+        route: 'rollback',
+        payload: { savePointId: uuid(1101), keepCurrent: false, expectedAgentId: targetId },
+        statusCode: 409,
+      },
+    ])('answers $statusCode to $route with $payload', async ({ route, payload, statusCode }) => {
+      const res = await post(`/api/sessions/${sessionId}/${route}`, { projectId, ...payload });
+
+      expect(res.statusCode).toBe(statusCode);
+      if (statusCode === 409) {
+        expect(JSON.parse(res.payload).details?.code).toBe('SESSION_OWNER_CHANGED');
+      }
+      expect(sqlite.prepare('SELECT agent_id, status FROM sessions').all()).toEqual([
+        { agent_id: ownerId, status: 'stopped' },
+      ]);
+    });
   });
 });

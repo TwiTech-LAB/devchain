@@ -831,7 +831,7 @@ describe('useProjectsPageController semantic presentation', () => {
 
       const [homeRow] = await readyRows(result);
       act(() => homeRow.upgrade?.());
-      await waitFor(() => expect(api.upgradeBackends.loadUpgradePreview).toEqual([HOME_BACKEND]));
+      await waitFor(() => expect(api.backends.loadUpgradePreview).toEqual([HOME_BACKEND]));
       act(() => result.current.dialogs.upgrade.wizard.onOpenChange(false));
 
       mockBindings = new Map([
@@ -842,7 +842,7 @@ describe('useProjectsPageController semantic presentation', () => {
       act(() => remoteRow.upgrade?.());
 
       await waitFor(() =>
-        expect(api.upgradeBackends.loadUpgradePreview).toEqual([HOME_BACKEND, 'remote-1']),
+        expect(api.backends.loadUpgradePreview).toEqual([HOME_BACKEND, 'remote-1']),
       );
     });
 
@@ -859,9 +859,9 @@ describe('useProjectsPageController semantic presentation', () => {
 
       await submitUpgrade(result);
 
-      expect(api.upgradeBackends.loadUpgradePreview).toEqual(['remote-1']);
-      expect(api.upgradeBackends.runImportDryRun.every((b) => b === 'remote-1')).toBe(true);
-      expect(api.upgradeBackends.commitUpgrade).toEqual(['remote-1']);
+      expect(api.backends.loadUpgradePreview).toEqual(['remote-1']);
+      expect(api.backends.runImportDryRun.every((b) => b === 'remote-1')).toBe(true);
+      expect(api.backends.commitUpgrade).toEqual(['remote-1']);
       expect(api.calls.pullRemoteProject).toEqual([['one']]);
       expect(result.current.dialogs.upgrade.result?.backend).toBe('remote-1');
 
@@ -931,8 +931,8 @@ describe('useProjectsPageController semantic presentation', () => {
 
       await submitUpgrade(result);
 
-      expect(api.upgradeBackends.loadUpgradePreview).toEqual(['home']);
-      expect(api.upgradeBackends.commitUpgrade).toEqual(['home']);
+      expect(api.backends.loadUpgradePreview).toEqual(['home']);
+      expect(api.backends.commitUpgrade).toEqual(['home']);
       expect(result.current.dialogs.upgrade.result?.backend).toBe('home');
       expect(api.calls.pullRemoteProject).toEqual([]);
     });
@@ -948,6 +948,114 @@ describe('useProjectsPageController semantic presentation', () => {
         expect(result.current.table.notice?.items[0].lockMessage).toBe(
           'Checking remote connections…',
         ),
+      );
+    });
+  });
+
+  describe('import into a connected project', () => {
+    const importApi = (overrides: ConstructorParameters<typeof InMemoryProjectsPageApi>[0] = {}) =>
+      new InMemoryProjectsPageApi({
+        projects: { items: [project('one')] },
+        templates: [template],
+        setupPreview: emptyPreview(),
+        templateContents: { starter: { marker: 'home-starter' } },
+        importDryRunResult: {
+          dryRun: true,
+          missingProviders: [],
+          counts: { toImport: {}, toDelete: {} },
+        },
+        importResult: { success: true, counts: { imported: {}, deleted: {} }, mappings: {} },
+        ...overrides,
+      });
+
+    async function submitTemplateImport(result: ReturnType<typeof renderController>['result']) {
+      const [row] = await readyRows(result);
+      act(() => row.startImport());
+      act(() => result.current.dialogs.import.source.selectTemplate('starter'));
+      act(() => result.current.dialogs.import.source.importTemplate());
+      await waitFor(() =>
+        expect(result.current.dialogs.import.wizard.controller.canProceed).toBe(true),
+      );
+      act(() => result.current.dialogs.import.wizard.controller.submit());
+    }
+
+    it('runs the import on the VM, then pulls without holding the result dialog', async () => {
+      mockBindings.set('one', { projectId: 'one', remoteId: 'remote-1', state: 'remote' });
+      let finishPull!: () => void;
+      const api = importApi({
+        overrides: {
+          pullRemoteProject: () => new Promise<void>((resolve) => (finishPull = resolve)),
+        },
+      });
+      const { result } = renderController(api);
+
+      await submitTemplateImport(result);
+      await waitFor(() => expect(result.current.dialogs.import.result).not.toBeNull());
+
+      expect(api.calls.readHomeTemplateContent).toEqual([['starter', undefined]]);
+      expect(api.calls.loadSetupPreview).toEqual([[{ rawContent: { marker: 'home-starter' } }]]);
+      expect(api.backends.loadSetupPreview).toEqual(['remote-1']);
+      expect(api.backends.runImportDryRun.every((backend) => backend === 'remote-1')).toBe(true);
+      expect(api.backends.commitImport).toEqual(['remote-1']);
+      expect(api.calls.pullRemoteProject).toEqual([['one']]);
+
+      const listedBefore = api.calls.listProjects.length;
+      await act(async () => finishPull());
+      await waitFor(() => expect(api.calls.listProjects.length).toBeGreaterThan(listedBefore));
+    });
+
+    it('does not pull after an import that could not start on the VM', async () => {
+      mockBindings.set('one', { projectId: 'one', remoteId: 'remote-1', state: 'remote' });
+      const api = importApi({
+        importResult: { success: false, mutationStarted: false, error: 'Sessions are active' },
+      });
+      const { result } = renderController(api);
+
+      await submitTemplateImport(result);
+      await waitFor(() => expect(api.calls.commitImport).toHaveLength(1));
+
+      expect(result.current.dialogs.import.result).toBeNull();
+      expect(api.calls.pullRemoteProject).toEqual([]);
+    });
+
+    it('keeps a home project on home and never pulls', async () => {
+      const api = importApi();
+      const { result } = renderController(api);
+
+      await submitTemplateImport(result);
+      await waitFor(() => expect(result.current.dialogs.import.result).not.toBeNull());
+
+      expect(api.calls.readHomeTemplateContent).toEqual([]);
+      expect(api.calls.loadSetupPreview).toEqual([[{ slug: 'starter' }]]);
+      expect(api.backends.commitImport).toEqual(['home']);
+      expect(api.calls.pullRemoteProject).toEqual([]);
+    });
+
+    it('shows the server message of a failed preview for Import and Upgrade', async () => {
+      mockBindings.set('one', { projectId: 'one', remoteId: 'remote-1', state: 'remote' });
+      const offline = new Error('Remote "vm-1" is offline');
+      const api = importApi({
+        overrides: {
+          listProjects: () => ({ items: [outdatedProject()] }),
+          readHomeTemplateContent: { marker: 'home-starter' },
+          loadSetupPreview: offline,
+          loadUpgradePreview: offline,
+        },
+      });
+      const { result } = renderController(api);
+
+      const [row] = await readyRows(result);
+      act(() => row.startImport());
+      act(() => result.current.dialogs.import.source.selectTemplate('starter'));
+      act(() => result.current.dialogs.import.source.importTemplate());
+      await waitFor(() =>
+        expect(result.current.dialogs.import.wizard.errorMessage).toBe('Remote "vm-1" is offline'),
+      );
+      act(() => result.current.dialogs.import.wizard.onOpenChange(false));
+
+      act(() => row.upgrade?.());
+      await waitFor(() =>
+        expect(result.current.dialogs.upgrade.wizard.errorMessage).toBe('Remote "vm-1" is offline'),
       );
     });
   });

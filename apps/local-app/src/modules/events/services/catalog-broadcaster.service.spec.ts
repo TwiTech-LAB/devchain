@@ -360,6 +360,16 @@ describe('CatalogBroadcasterService', () => {
     );
   });
 
+  it('broadcasts agent.updated to project/{projectId}/state with only the agent id', () => {
+    emitter.emit('agent.updated', { agentId: 'a1', projectId: 'p1' });
+
+    expect(mockBroadcaster.broadcastEvent).toHaveBeenCalledWith(
+      'project/p1/state',
+      'agent.updated',
+      { agentId: 'a1' },
+    );
+  });
+
   it('broadcasts agent.deleted with null team fields when omitted', () => {
     emitter.emit('agent.deleted', {
       agentId: 'a1',

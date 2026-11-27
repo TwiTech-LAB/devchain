@@ -1,20 +1,32 @@
-import { useMemo, useState, useCallback } from 'react';
-import { useQueryClient } from '@tanstack/react-query';
+import { useMemo, useState, useCallback, useEffect, useRef } from 'react';
+import { useQueryClient, type InfiniteData } from '@tanstack/react-query';
 import { useToast } from '@/ui/hooks/use-toast';
 import {
   launchSession,
   restartSession,
   terminateSession,
   restoreSession,
+  createSavePoint,
+  startFromSavePoint,
+  rollbackSession,
+  agentSessionTreeKey,
+  agentSessionTreeKeyPrefix,
+  SessionApiError,
   type ActiveSession,
   type AgentPresenceMap,
+  type SavePointAvailability,
+  type SessionTreePage,
 } from '@/ui/lib/sessions';
+import { transcriptQueryKeys } from '@/ui/hooks/useSessionTranscript';
+import { holdRollback } from '@/ui/lib/rollback-holds';
 import { chatQueryKeys, type AgentOrGuest } from './useChatQueries';
 import { useFetchFactory } from '@/ui/hooks/useFetchFactory';
 import {
   getMcpProviderDetails,
   isMcpNotConfigured,
   restoreConflictTitle,
+  runTrackedOperation,
+  savePointConflictTitle,
   useLifecyclePendingTracker,
 } from '@/ui/hooks/lifecycle/session-lifecycle-core';
 
@@ -68,7 +80,32 @@ export interface UseChatSessionControlsResult {
     options?: { attach?: boolean; silent?: boolean },
   ) => Promise<ActiveSession | null>;
   handleRestartSession: (agentId: string) => Promise<void>;
-  handleRestoreSession: (sessionId: string, agentId: string) => Promise<void>;
+  handleRestoreSession: (
+    sessionId: string,
+    agentId: string,
+    replaceRunningSessionId?: string,
+    switchToProviderConfigId?: string,
+  ) => Promise<void>;
+  handleSavePoint: (
+    sessionId: string,
+    agentId: string,
+    availability: SavePointAvailability | undefined,
+  ) => Promise<void>;
+  handleStartFromSavePoint: (
+    savePointId: string,
+    agentId: string,
+    availability: SavePointAvailability | undefined,
+    replaceRunningSessionId?: string,
+  ) => Promise<ActiveSession | null>;
+  /** Restarts the session at one of its save points on the same row. */
+  handleRollbackSession: (
+    sessionId: string,
+    savePointId: string,
+    agentId: string,
+    keepCurrent: boolean,
+    replaceRunningSessionId: string | undefined,
+    savePointLabel: string,
+  ) => Promise<void>;
   handleTerminateSession: (agentId: string, sessionId: string) => Promise<void>;
   handleStartAllAgents: () => Promise<void>;
   handleTerminateAllAgents: () => Promise<void>;
@@ -77,6 +114,10 @@ export interface UseChatSessionControlsResult {
 
   // Restore state
   restoringSessionIds: Record<string, boolean>;
+  savingSessionIds: Record<string, boolean>;
+  forkingSessionIds: Record<string, boolean>;
+  /** The session and the chosen save point of each pending rollback. */
+  rollingBackSessionIds: Record<string, boolean>;
 }
 
 // ============================================
@@ -95,15 +136,20 @@ export function useChatSessionControls({
   const queryClient = useQueryClient();
   const { toast } = useToast();
   const apiFetch = useFetchFactory();
+  const selection = useRef({ projectId, selectedAgentId });
+  useEffect(() => {
+    selection.current = { projectId, selectedAgentId };
+  }, [projectId, selectedAgentId]);
 
-  // Loading states — launching/restarting/terminating go through the shared
-  // lifecycle core; chat folds single-terminate into `launchingAgentIds` (its
-  // historical surface) and keeps restore/batch state chat-local.
+  // Single terminate shares the historical launching projection.
   const pending = useLifecyclePendingTracker();
   const { setAction: setPendingAction, clear: clearPending } = pending;
   const launchingAgentIds = pending.recordOf('launching', 'terminating');
   const restartingAgentId = pending.singleKeyOf('restarting');
-  const [restoringSessionIds, setRestoringSessionIds] = useState<Record<string, boolean>>({});
+  const restoringSessionIds = pending.recordOf('restoring');
+  const savingSessionIds = pending.recordOf('saving');
+  const forkingSessionIds = pending.recordOf('forking');
+  const rollingBackSessionIds = pending.recordOf('rollingBack');
   const [startingAll, setStartingAll] = useState(false);
   const [terminatingAll, setTerminatingAll] = useState(false);
 
@@ -120,7 +166,7 @@ export function useChatSessionControls({
 
   // Derived state
   const offlineAgents = useMemo(
-    () => (presenceReady ? agents.filter((a) => !agentPresence[a.id]?.online) : []),
+    () => (presenceReady ? agents.filter((a) => !a.disabled && !agentPresence[a.id]?.online) : []),
     [presenceReady, agents, agentPresence],
   );
 
@@ -344,47 +390,232 @@ export function useChatSessionControls({
     ],
   );
 
-  // Restore session handler
-  const handleRestoreSession = useCallback(
-    async (sessionId: string, agentId: string) => {
+  const showResumedSession = useCallback(
+    async (agentId: string, session: ActiveSession) => {
       if (!projectId) return;
-      setRestoringSessionIds((prev) => ({ ...prev, [sessionId]: true }));
-      try {
-        const session = await restoreSession(sessionId, projectId, apiFetch);
-        toast({
-          title: 'Session restored',
-          description: `Session ${session.id.slice(0, 8)} is running.`,
-        });
-        await primeRunningSessionCache(agentId, session);
-        queryClient.invalidateQueries({ queryKey: chatQueryKeys.agentPresence(projectId) });
-        queryClient.invalidateQueries({ queryKey: chatQueryKeys.activeSessions(projectId) });
-        queryClient.invalidateQueries({ queryKey: ['agentSessionHistory', agentId, projectId] });
-        if (selectedAgentId === agentId) {
-          onInlineTerminalAttach?.(agentId, session.id);
-          onTerminalMenuClose?.();
+      await primeRunningSessionCache(agentId, session);
+      void queryClient.invalidateQueries({ queryKey: chatQueryKeys.agentPresence(projectId) });
+      void queryClient.invalidateQueries({ queryKey: chatQueryKeys.activeSessions(projectId) });
+      // A family session moves between agents, so every agent's tree can change.
+      void queryClient.invalidateQueries({ queryKey: agentSessionTreeKeyPrefix });
+      if (
+        selection.current.projectId === projectId &&
+        selection.current.selectedAgentId === agentId
+      ) {
+        onInlineTerminalAttach?.(agentId, session.id);
+        onTerminalMenuClose?.();
+      }
+    },
+    [projectId, primeRunningSessionCache, queryClient, onInlineTerminalAttach, onTerminalMenuClose],
+  );
+
+  const handleRestoreSession = useCallback(
+    async (
+      sessionId: string,
+      agentId: string,
+      replaceRunningSessionId?: string,
+      switchToProviderConfigId?: string,
+    ) => {
+      if (!projectId || pending.actionFor(sessionId)) return;
+      await runTrackedOperation(pending, sessionId, 'restoring', {
+        run: async () => {
+          const session = await restoreSession(
+            sessionId,
+            {
+              projectId,
+              targetAgentId: agentId,
+              replaceRunningSessionId,
+              switchToProviderConfigId,
+            },
+            apiFetch,
+          );
+          toast({
+            title: 'Session restored',
+            description: `Session ${session.id.slice(0, 8)} is running.`,
+          });
+          await showResumedSession(agentId, session);
+        },
+        onError: (error) =>
+          toast({
+            title: restoreConflictTitle(error),
+            description:
+              error instanceof Error ? error.message : 'Unable to restore session right now.',
+            variant: 'destructive',
+          }),
+      });
+    },
+    [projectId, apiFetch, toast, pending, showResumedSession],
+  );
+
+  const handleSavePoint = useCallback(
+    async (sessionId: string, agentId: string, availability: SavePointAvailability | undefined) => {
+      const presence = agentPresence[agentId];
+      if (
+        !projectId ||
+        !presenceReady ||
+        !availability?.available ||
+        !presence?.online ||
+        presence.sessionId !== sessionId ||
+        presence.activityState === 'busy' ||
+        pending.actionFor(sessionId)
+      )
+        return;
+
+      await runTrackedOperation(pending, sessionId, 'saving', {
+        run: async () => {
+          const saved = await createSavePoint(sessionId, projectId, apiFetch);
+          const time = new Date(saved.startedAt).toLocaleTimeString(undefined, {
+            hour: 'numeric',
+            minute: '2-digit',
+          });
+          toast({ title: `Saved ${time}` });
+          await queryClient.invalidateQueries({ queryKey: agentSessionTreeKeyPrefix });
+        },
+        onError: (error) =>
+          toast({
+            title: savePointConflictTitle(error, 'Save point failed'),
+            description:
+              error instanceof Error ? error.message : 'Unable to save the session right now.',
+            variant: 'destructive',
+          }),
+      });
+    },
+    [projectId, presenceReady, agentPresence, pending, apiFetch, queryClient, toast],
+  );
+
+  const handleStartFromSavePoint = useCallback(
+    async (
+      savePointId: string,
+      agentId: string,
+      availability: SavePointAvailability | undefined,
+      replaceRunningSessionId?: string,
+    ) => {
+      if (
+        !projectId ||
+        !presenceReady ||
+        !availability?.available ||
+        pending.actionFor(savePointId)
+      )
+        return null;
+      if (
+        !replaceRunningSessionId &&
+        agentPresence[agentId]?.online &&
+        agentPresence[agentId]?.sessionId
+      )
+        return null;
+
+      return runTrackedOperation(pending, savePointId, 'forking', {
+        run: async () => {
+          const session = await startFromSavePoint(
+            savePointId,
+            { projectId, expectedAgentId: agentId, replaceRunningSessionId },
+            apiFetch,
+          );
+          toast({
+            title: 'Session forked',
+            description: `Session ${session.id.slice(0, 8)} is running.`,
+          });
+          await showResumedSession(agentId, session);
+          return session;
+        },
+        onError: (error) =>
+          toast({
+            title: savePointConflictTitle(error, 'Fork failed'),
+            description:
+              error instanceof Error ? error.message : 'Unable to fork the session right now.',
+            variant: 'destructive',
+          }),
+      });
+    },
+    [projectId, presenceReady, agentPresence, pending, apiFetch, toast, showResumedSession],
+  );
+
+  const handleRollbackSession = useCallback(
+    async (
+      sessionId: string,
+      savePointId: string,
+      agentId: string,
+      keepCurrent: boolean,
+      replaceRunningSessionId: string | undefined,
+      savePointLabel: string,
+    ) => {
+      if (!projectId || pending.actionFor(sessionId) || pending.actionFor(savePointId)) return;
+      const treeKey = agentSessionTreeKey(agentId, projectId);
+      // The record keeps its ID when a rollback replaces it, so cached pages would show old content.
+      const refreshTranscripts = () => {
+        const record = queryClient
+          .getQueryData<InfiniteData<SessionTreePage>>(treeKey)
+          ?.pages.flatMap((page) => page.items)
+          .find((node) => node.parentSessionId === sessionId && node.beforeRollback);
+        for (const id of record ? [sessionId, record.id] : [sessionId]) {
+          void queryClient.invalidateQueries({ queryKey: transcriptQueryKeys.summary(id) });
+          void queryClient.invalidateQueries({ queryKey: transcriptQueryKeys.index(id) });
+          void queryClient.invalidateQueries({ queryKey: ['transcript-chunk-page', id] });
         }
-      } catch (error) {
-        const title = restoreConflictTitle(error);
-        const description =
-          error instanceof Error ? error.message : 'Unable to restore session right now.';
-        toast({ title, description, variant: 'destructive' });
-      } finally {
-        setRestoringSessionIds((prev) => {
-          const next = { ...prev };
-          delete next[sessionId];
-          return next;
+      };
+
+      setPendingAction(sessionId, 'rollingBack');
+      // The row is stopped while the server copies the save point; the hold keeps its window open.
+      const releaseHold = holdRollback(sessionId);
+      try {
+        await runTrackedOperation(pending, savePointId, 'rollingBack', {
+          run: async () => {
+            const session = await rollbackSession(
+              sessionId,
+              {
+                projectId,
+                savePointId,
+                keepCurrent,
+                expectedAgentId: agentId,
+                replaceRunningSessionId,
+              },
+              apiFetch,
+            );
+            toast({ title: `Rolled back to ${savePointLabel}` });
+            refreshTranscripts();
+            await showResumedSession(agentId, session);
+          },
+          onError: (error) => {
+            if (error instanceof SessionApiError && error.hasCode('ROLLBACK_START_FAILED')) {
+              toast({
+                title: 'Session rolled back but did not start',
+                description: 'Use Restore to start it.',
+                variant: 'destructive',
+              });
+              refreshTranscripts();
+              void queryClient.invalidateQueries({ queryKey: agentSessionTreeKeyPrefix });
+              void queryClient.invalidateQueries({
+                queryKey: chatQueryKeys.agentPresence(projectId),
+              });
+              void queryClient.invalidateQueries({
+                queryKey: chatQueryKeys.activeSessions(projectId),
+              });
+              return;
+            }
+            toast({
+              title: savePointConflictTitle(error, 'Rollback failed'),
+              description:
+                error instanceof Error
+                  ? error.message
+                  : 'Unable to roll back the session right now.',
+              variant: 'destructive',
+            });
+          },
         });
+      } finally {
+        releaseHold();
+        clearPending(sessionId);
       }
     },
     [
       projectId,
+      pending,
+      queryClient,
+      setPendingAction,
+      clearPending,
       apiFetch,
       toast,
-      primeRunningSessionCache,
-      queryClient,
-      selectedAgentId,
-      onInlineTerminalAttach,
-      onTerminalMenuClose,
+      showResumedSession,
     ],
   );
 
@@ -402,7 +633,7 @@ export function useChatSessionControls({
       setTerminateConfirm(null);
       setPendingAction(agentId, 'terminating');
       try {
-        await terminateSession(sessionId, apiFetch);
+        await terminateSession(sessionId, apiFetch, { expectedAgentId: agentId });
         toast({ title: 'Session terminated', description: 'The session was terminated.' });
         queryClient.invalidateQueries({ queryKey: chatQueryKeys.agentPresence(projectId) });
         queryClient.invalidateQueries({ queryKey: chatQueryKeys.activeSessions(projectId) });
@@ -474,7 +705,7 @@ export function useChatSessionControls({
         const sessionId = agentPresence[agent.id]?.sessionId;
         if (sessionId) {
           try {
-            await terminateSession(sessionId, apiFetch);
+            await terminateSession(sessionId, apiFetch, { expectedAgentId: agent.id });
             succeeded++;
           } catch {
             failed++;
@@ -552,6 +783,9 @@ export function useChatSessionControls({
     handleLaunchSession,
     handleRestartSession,
     handleRestoreSession,
+    handleSavePoint,
+    handleStartFromSavePoint,
+    handleRollbackSession,
     handleTerminateSession,
     handleStartAllAgents,
     handleTerminateAllAgents,
@@ -560,5 +794,8 @@ export function useChatSessionControls({
 
     // Restore state
     restoringSessionIds,
+    savingSessionIds,
+    forkingSessionIds,
+    rollingBackSessionIds,
   };
 }

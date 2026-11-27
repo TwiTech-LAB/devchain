@@ -10,7 +10,9 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import {
   PagedSessionMessageList,
   buildRetainedChunkIds,
+  createReaderResizeHolds,
   pruneChunkMap,
+  shouldAdjustScrollOnRowResize,
 } from './PagedSessionMessageList';
 import { transcriptQueryKeys } from '@/ui/hooks/useSessionTranscript';
 import type { SerializedChunk } from '@/ui/hooks/useSessionTranscript';
@@ -57,6 +59,7 @@ jest.mock('@/ui/lib/sessions', () => ({
 }));
 
 jest.mock('@/ui/hooks/useAutoScrollBottom', () => ({
+  BOTTOM_THRESHOLD: 48,
   useAutoScrollBottom: () => ({
     scrollContainerRef: { current: null },
     bottomRef: { current: null },
@@ -1136,5 +1139,55 @@ describe('paged transcript chunk retention', () => {
       );
       expect(renderedIds).toEqual(['chunk-0', 'chunk-1', 'chunk-2', 'chunk-3', 'chunk-4']);
     });
+    const loadedRow = view.container.querySelector('[data-chunk-id="chunk-0"]')?.parentElement;
+    expect(loadedRow?.style.minHeight).toBe('');
+  });
+});
+
+// The first real measurement of a large result can come long after the response.
+describe('createReaderResizeHolds', () => {
+  afterEach(() => jest.useRealTimers());
+
+  it('holds a row until a live update replaces its chunk, however late the measurement', () => {
+    jest.useFakeTimers();
+    const holds = createReaderResizeHolds();
+    const shown = { id: 'chunk-1' } as SerializedChunk;
+    holds.hold(shown);
+
+    jest.advanceTimersByTime(10 * 60 * 1000);
+    expect(holds.isHeld(shown)).toBe(true);
+
+    const liveUpdate = { ...shown } as SerializedChunk;
+    expect(holds.isHeld(liveUpdate)).toBe(false);
+    holds.hold(liveUpdate);
+    expect(holds.isHeld(liveUpdate)).toBe(true);
+    holds.clear();
+    expect(holds.isHeld(liveUpdate)).toBe(false);
+  });
+});
+
+describe('shouldAdjustScrollOnRowResize', () => {
+  const viewport = { scrollOffset: 1000, viewportHeight: 600, totalSize: 5000, followEnd: true };
+
+  it.each([
+    ['row fully above the viewport', 1000, viewport, true],
+    ['row across the viewport top', 1001, viewport, false],
+    ['row below the viewport top', 1800, viewport, false],
+    ['reader at the bottom', 4900, { ...viewport, scrollOffset: 4400 }, true],
+    [
+      'reader at the bottom who opened a block',
+      4900,
+      { ...viewport, scrollOffset: 4400, followEnd: false },
+      false,
+    ],
+    [
+      'row above the viewport after the reader opened a block',
+      1000,
+      { ...viewport, followEnd: false },
+      true,
+    ],
+    ['unknown scroll offset', 120, { ...viewport, scrollOffset: null }, false],
+  ])('%s', (_case, rowEnd, view, expected) => {
+    expect(shouldAdjustScrollOnRowResize(rowEnd, view)).toBe(expected);
   });
 });

@@ -53,19 +53,20 @@ export interface AddMcpServerOptions {
 }
 
 export interface BuildLaunchArgsInput {
+  /** A fork launch comes from `SessionForkCapability.prepareForkLaunch`, never from here. */
   mode: 'new' | 'restore';
+  /** The existing provider session ID for a restore. */
   providerSessionId?: string;
   /**
-   * The devchain `sessions.id` of this launch. Supplied for BOTH modes so a
+   * The devchain `sessions.id` of this launch, so a
    * deterministic-binding adapter can anchor its transcript to it: Copilot
    * passes it as the provider session UUID on `mode:'new'` (`--session-id
    * <sessions.id>`) and ignores it on restore; Devin derives its DevChain-owned
    * `--export` path from it on new AND restore (a resume re-writes the full
-   * conversation to the fresh path). Adapters that do not bind at launch simply
-   * never read it.
+   * conversation to the fresh path).
    */
   sessionId?: string;
-  /** The project this launch runs in. Supplied for both modes. */
+  /** The project this launch runs in. */
   projectId?: string;
   profileOptionArgs: string[];
   /**
@@ -78,8 +79,9 @@ export interface BuildLaunchArgsInput {
    */
   initialPrompt?: string;
   /**
-   * Raw `<bin> --version` output of the binary this launch runs. Supplied only for
-   * adapters that set `requiresCliVersion`.
+   * Raw `<bin> --version` output of the binary this launch runs. Always supplied for an
+   * adapter that sets `requiresCliVersion`; for one that sets `optionalCliVersion`, only
+   * when the probe succeeded.
    */
   cliVersion?: string;
   /** The binary this launch runs; lets an adapter name it in version errors. */
@@ -102,8 +104,8 @@ export interface ProviderAdapter {
   readonly terminalOutputBehavior?: TerminalOutputBehavior;
   /**
    * Opt-in initial-prompt seeding at launch time, instead of the default
-   * post-launch out-of-band paste. Set this for full-screen TUIs (e.g. agy)
-   * where pasting into an alt-screen bubbletea UI is fragile. When set, the
+   * post-launch out-of-band paste. Set this for TUIs where a post-launch paste
+   * is fragile (e.g. agy's bubbletea UI). When set, the
    * launch pipeline renders the initial prompt BEFORE `resolveLaunchConfig()`,
    * threads it into `buildLaunchArgs` as `initialPrompt`, and SKIPS the
    * post-launch paste.
@@ -135,8 +137,15 @@ export interface ProviderAdapter {
   readonly launchRejectEnv?: readonly string[];
   /**
    * When true, the launch pipeline probes `<bin> --version` before every launch and
-   * restore and passes the output to `buildLaunchArgs` as `cliVersion`.
+   * restore and passes the output to `buildLaunchArgs` as `cliVersion`. A failed probe stops
+   * the launch.
    */
   readonly requiresCliVersion?: true;
+  /**
+   * When true, the launch pipeline probes `<bin> --version` before every launch, restore and
+   * fork that has no version yet. A failed probe logs a warning and the launch continues
+   * without `cliVersion`. Unlike `requiresCliVersion`, save points do not probe.
+   */
+  readonly optionalCliVersion?: true;
   buildLaunchArgs(input: BuildLaunchArgsInput): BuildLaunchArgsResult;
 }

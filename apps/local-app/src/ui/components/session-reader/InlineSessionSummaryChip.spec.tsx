@@ -113,7 +113,7 @@ describe('InlineSessionSummaryChip', () => {
     'pulses only when ongoing=$isOngoing',
     ({ isOngoing }) => {
       render(<InlineSessionSummaryChip {...defaultProps} metrics={makeMetrics({ isOngoing })} />);
-      expect(screen.getByRole('button').querySelector('span.animate-pulse') !== null).toBe(
+      expect(screen.getByRole('button').querySelector('span.animate-activity-pulse') !== null).toBe(
         isOngoing,
       );
     },
@@ -302,7 +302,7 @@ describe('InlineSessionSummaryChip', () => {
     expect(chip).not.toHaveTextContent('compaction');
     expect(chip).not.toHaveTextContent('50%');
 
-    const statusDot = chip.querySelector('span.animate-pulse');
+    const statusDot = chip.querySelector('span.animate-activity-pulse');
     expect(statusDot).toBeTruthy();
   });
 

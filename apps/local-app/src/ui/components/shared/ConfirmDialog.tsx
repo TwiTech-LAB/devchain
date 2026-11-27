@@ -13,6 +13,7 @@ import { AlertTriangle } from 'lucide-react';
 interface ConfirmDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  onCloseAutoFocus?: (event: Event) => void;
   onConfirm: () => void;
   title: string;
   description: string | ReactNode;
@@ -22,11 +23,14 @@ interface ConfirmDialogProps {
   loading?: boolean;
   /** Blocks only the confirm action (for example while context loads); Cancel stays available. */
   confirmDisabled?: boolean;
+  /** Controls between the description and the buttons, such as an option checkbox. */
+  children?: ReactNode;
 }
 
 export function ConfirmDialog({
   open,
   onOpenChange,
+  onCloseAutoFocus,
   onConfirm,
   title,
   description,
@@ -35,6 +39,7 @@ export function ConfirmDialog({
   variant = 'default',
   loading = false,
   confirmDisabled = false,
+  children,
 }: ConfirmDialogProps) {
   const handleConfirm = () => {
     onConfirm();
@@ -45,7 +50,7 @@ export function ConfirmDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent>
+      <DialogContent onCloseAutoFocus={onCloseAutoFocus}>
         <DialogHeader>
           <div className="flex items-center gap-3">
             {variant === 'destructive' && (
@@ -57,6 +62,7 @@ export function ConfirmDialog({
           </div>
           <DialogDescription className="text-left">{description}</DialogDescription>
         </DialogHeader>
+        {children}
         <DialogFooter>
           <Button variant="outline" onClick={() => onOpenChange(false)} disabled={loading}>
             {cancelText}

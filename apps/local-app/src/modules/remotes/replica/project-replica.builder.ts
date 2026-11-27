@@ -33,6 +33,8 @@ export interface BuildProjectReplicaRequest<S extends ProjectReplicaScope> {
   changedSince?: string;
   /** Adds the complete epic, comment, relation and segment ID sets for delete detection. */
   includeIdSets?: boolean;
+  /** A claimed VM's link tables, for projects home has seeded. Home never sends them. */
+  includeExternalLinks?: boolean;
 }
 
 export type ProjectReplicaBuildResult<S extends ProjectReplicaScope> =
@@ -64,6 +66,7 @@ export class ProjectReplicaBuilder {
       includeWorkspaceGrants: request.scope === 'attach',
       changedSince: request.changedSince,
       includeIdSets: request.includeIdSets,
+      includeExternalLinks: request.includeExternalLinks,
     });
     const result = assembleProjectReplica(source, request);
     if (result.ok) {
@@ -235,6 +238,11 @@ function assembleProjectReplica<S extends ProjectReplicaScope>(
     epic_relations: relations,
     epic_time_segments: source.epic_time_segments,
     project_settings: projectSettings,
+    ...(source.external_task_links &&
+      source.external_link_receipts && {
+        external_task_links: source.external_task_links,
+        external_link_receipts: source.external_link_receipts,
+      }),
   };
   const configuration = {
     prompts,

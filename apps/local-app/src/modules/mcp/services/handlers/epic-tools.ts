@@ -61,6 +61,14 @@ import {
 } from '../mappers/dto-mappers';
 import { ServiceUnavailableError } from '../../../../common/errors/service-unavailable.error';
 import type { EpicToolContext } from './epic-context';
+import {
+  mapExternalTaskError,
+  readExternalTaskForSession,
+  requireAgentForExternalTask,
+  summarizeExternalLink,
+  summarizeExternalTaskChange,
+} from './external-task-resolution';
+import type { ExternalTaskLinkInput } from '../../../storage/models/domain.models';
 import { resolveEpicId } from '../utils/resolve-epic-id';
 import { resolveSessionContext, getActorFromContext } from '../utils/session-context-helpers';
 import { resolveAgentNames } from '../utils/agent-name-resolver';
@@ -129,6 +137,18 @@ function relationAgentContextRequired(): McpResponse {
   return {
     success: false,
     error: { code: 'AGENT_CONTEXT_REQUIRED', message: 'An agent context is required.' },
+  };
+}
+
+/** The epic tools link only a top-level epic. The refusal comes before any vendor read. */
+function externalTaskLinkTopLevelOnly(): McpResponse {
+  return {
+    success: false,
+    error: {
+      code: 'EXTERNAL_TASK_LINK_TOP_LEVEL_ONLY',
+      message:
+        'Only a top-level epic can be linked to an external task. This epic has a parent: link the parent epic instead.',
+    },
   };
 }
 
@@ -306,6 +326,7 @@ export async function handleListAssignedEpicsTasks(
       limit,
       offset,
       excludeMcpHidden: true,
+      excludeDisabledAgent: true,
     });
 
     const statusesResult = await ctx.storage.listStatuses(project.id, {
@@ -404,8 +425,25 @@ export async function handleCreateEpic(
     statusId = status.id;
   }
 
+  const sessionCtx = sessionCtxResult.data as SessionContext;
+  let title = validated.title;
+  let description = validated.description;
+  let externalTaskLink: ExternalTaskLinkInput | undefined;
+  if (validated.externalTask) {
+    if (validated.parentId) return externalTaskLinkTopLevelOnly();
+    const read = await readExternalTaskForSession(
+      ctx,
+      sessionCtx,
+      project.id,
+      validated.externalTask,
+    );
+    if ('response' in read) return read.response;
+    externalTaskLink = read.resolved.link;
+    title ??= read.resolved.detail.title;
+    description ??= read.resolved.detail.description ?? undefined;
+  }
+
   try {
-    const sessionCtx = sessionCtxResult.data as SessionContext;
     const agentContext = sessionCtx.type === 'agent' ? sessionCtx.agent : null;
     const actor = agentContext
       ? { type: 'agent' as const, id: agentContext.id }
@@ -418,18 +456,30 @@ export async function handleCreateEpic(
       creatorAgentName: agentContext?.name,
     };
 
+    // Refuses a disabled name here; EpicsService keeps the complete read for REST callers.
+    // The name still goes along: an auto-clean status clears agentId and the service then
+    // assigns by name.
+    const assignee = validated.agentName?.trim()
+      ? await ctx.storage.getAgentByName(project.id, validated.agentName, {
+          excludeDisabled: true,
+        })
+      : null;
+
     const epic = await ctx.epicsService.createEpicForProject(
       project.id,
       {
-        title: validated.title,
-        description: validated.description ?? null,
+        // The schema requires a title unless externalTask supplied one above.
+        title: title!,
+        description: description ?? null,
         statusId,
         tags: validated.tags ?? [],
+        agentId: assignee?.id,
         agentName: validated.agentName,
         parentId: validated.parentId ?? null,
         skillsRequired: validated.skillsRequired ?? null,
         relation: validated.relation,
         relations: validated.relations,
+        externalTaskLink,
       },
       context,
     );
@@ -449,6 +499,10 @@ export async function handleCreateEpic(
           message: 'Epic creation requires full app context (not available in standalone MCP mode)',
         },
       };
+    }
+    const externalTaskError = mapExternalTaskError(error);
+    if (externalTaskError) {
+      return externalTaskError;
     }
     // A route conflict inside one create rolled the whole Epic back, so the
     // fix is in the request list; never hint at deleting a stored pair here.
@@ -656,6 +710,11 @@ export async function handleGetEpicById(
     }));
     response.worktreeInstruction =
       'This task has a worktree. Work in it by path: `cd <path> && …` for every command. It contains tracked files only; set it up from the project root.';
+  }
+
+  const externalLinks = await ctx.storage.listExternalTaskLinksForEpic(epic.id);
+  if (externalLinks.length > 0) {
+    response.externalLinks = externalLinks.map(summarizeExternalLink);
   }
 
   return { success: true, data: response };
@@ -992,13 +1051,16 @@ export async function handleUpdateEpic(
       updateData.agentId = null;
     } else if ('agentName' in validated.assignment) {
       try {
-        const agent = await ctx.storage.getAgentByName(project.id, validated.assignment.agentName);
+        const agent = await ctx.storage.getAgentByName(project.id, validated.assignment.agentName, {
+          excludeDisabled: true,
+        });
         updateData.agentId = agent.id;
       } catch (error) {
         if (error instanceof NotFoundError) {
           const agentsList = await ctx.storage.listAgents(project.id, {
             limit: 1000,
             offset: 0,
+            excludeDisabled: true,
           });
           return {
             success: false,
@@ -1074,6 +1136,28 @@ export async function handleUpdateEpic(
     updateData.tags = Array.from(currentTags);
   }
 
+  if (validated.externalTask) {
+    if ('clear' in validated.externalTask) {
+      const agentRequired = requireAgentForExternalTask(sessionCtx);
+      if (agentRequired) return agentRequired;
+      updateData.externalTask = { clear: true };
+    } else {
+      // A clear stays possible on a sub-epic, so a link that exists can be removed.
+      const parentAfterUpdate =
+        updateData.parentId !== undefined ? updateData.parentId : epic.parentId;
+      if (parentAfterUpdate) return externalTaskLinkTopLevelOnly();
+      // The vendor read runs before, and outside, the versioned update.
+      const read = await readExternalTaskForSession(
+        ctx,
+        sessionCtx,
+        project.id,
+        validated.externalTask,
+      );
+      if ('response' in read) return read.response;
+      updateData.externalTask = { set: read.resolved.link };
+    }
+  }
+
   let updatedEpic: Epic;
   let outcome: UpdateEpicOutcome | undefined;
   try {
@@ -1103,6 +1187,10 @@ export async function handleUpdateEpic(
           message: 'Epic updates require full app context (not available in standalone MCP mode)',
         },
       };
+    }
+    const externalTaskError = mapExternalTaskError(error);
+    if (externalTaskError) {
+      return externalTaskError;
     }
     if (error instanceof OptimisticLockError) {
       const currentEpic = await ctx.storage.getEpic(epicId);
@@ -1155,6 +1243,10 @@ export async function handleUpdateEpic(
       response.appended = descriptionEdit.appended;
     }
     response.descriptionLength = descriptionEdit.descriptionLength;
+  }
+
+  if (outcome?.externalTask) {
+    response.externalTask = summarizeExternalTaskChange(outcome.externalTask);
   }
 
   if (

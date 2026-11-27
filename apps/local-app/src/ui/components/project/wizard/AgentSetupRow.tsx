@@ -1,6 +1,5 @@
 import { useId, type ReactNode } from 'react';
 import { ChevronDown, Plug } from 'lucide-react';
-import { Badge } from '@/ui/components/ui/badge';
 import { Button } from '@/ui/components/ui/button';
 import { Label } from '@/ui/components/ui/label';
 import { Popover, PopoverContent, PopoverTrigger } from '@/ui/components/ui/popover';
@@ -28,14 +27,15 @@ import {
 } from './agentPlan';
 import { optionLabel, providerDisplayList, providerDisplayName } from './providerDisplay';
 import { installedProviderNames } from './providerSelection';
-import { agentModelChoices } from './useProviderCatalogs';
+import { agentModelChoices, configPickPatch, modelPickPatch } from './useProviderCatalogs';
 import { useSetupReview } from './SetupReviewContext';
+import { RosterRow, type RosterRole } from './Roster';
 
 const DEFAULT_MODEL_OVERRIDE = '__default_model_override__';
 const DEFAULT_EFFORT_OVERRIDE = '__default_effort_override__';
 
 /** One agent the template creates: name, description, and the value it runs on. */
-export function AgentSetupRow({ agent, isLead }: { agent: TemplateAgent; isLead: boolean }) {
+export function AgentSetupRow({ agent, role }: { agent: TemplateAgent; role?: RosterRole }) {
   const { preview, state } = useSetupReview();
   const row = state.agentRows[agentKey(agent.name)];
   if (!row) return null;
@@ -46,26 +46,22 @@ export function AgentSetupRow({ agent, isLead }: { agent: TemplateAgent; isLead:
   const config = findConfig(profile, resolved.resolvedConfigName);
 
   return (
-    <li className="flex items-start gap-3 py-2" data-testid={`wizard-agent-row-${agent.name}`}>
-      <div className="min-w-0 flex-1 space-y-0.5">
-        <div className="flex items-center gap-2">
-          <span className="text-sm font-medium text-foreground">{agent.name}</span>
-          {isLead && (
-            <Badge variant="outline" className="font-normal">
-              Lead
-            </Badge>
-          )}
-        </div>
-        {agent.description && <p className="text-xs text-muted-foreground">{agent.description}</p>}
-        {!config && (
+    <RosterRow
+      name={agent.name}
+      role={role}
+      description={agent.description}
+      testId={`wizard-agent-row-${agent.name}`}
+      alert={
+        !config && (
           <p
-            className="text-xs text-destructive"
+            className="break-words text-xs text-destructive"
             data-testid={`wizard-agent-blocked-${agent.name}`}
           >
             {blockedReason(profile)}
           </p>
-        )}
-      </div>
+        )
+      }
+    >
       {config && (
         <AgentValuePopover
           agent={agent}
@@ -74,7 +70,7 @@ export function AgentSetupRow({ agent, isLead }: { agent: TemplateAgent; isLead:
           options={availableConfigs(profile, installed)}
         />
       )}
-    </li>
+    </RosterRow>
   );
 }
 
@@ -97,20 +93,17 @@ function AgentValuePopover({
   config,
   options,
 }: AgentValueProps & { options: TemplateProviderConfig[] }) {
-  const { handlers } = useSetupReview();
+  const { catalogs, handlers } = useSetupReview();
   return (
     <AgentOptionPicker
       agentName={agent.name}
       selected={config}
       options={options.map((option) => ({ ...option, model: option.model ?? null }))}
       displayValue={row.modelOverride ? shortModelName(row.modelOverride) : config.name}
-      onSelect={(option) =>
-        handlers.onAgentRowChange(agent.name, {
-          configName: option.name,
-          pinned: true,
-          userSelectedOption: true,
-        })
-      }
+      onSelect={(option) => {
+        const picked = options.find((candidate) => candidate.name === option.name);
+        if (picked) handlers.onAgentRowChange(agent.name, configPickPatch(catalogs, row, picked));
+      }}
     >
       <AgentModelEffort agent={agent} row={row} config={config} />
     </AgentOptionPicker>
@@ -167,15 +160,15 @@ export function AgentOptionPicker({
           type="button"
           variant="outline"
           size="sm"
-          className="shrink-0 gap-1.5"
+          className="min-w-0 max-w-full gap-1.5"
           aria-label={`${agentName}: ${label}`}
         >
           <ProviderIcon
             provider={selected?.providerName ?? null}
-            className="h-4 w-4 text-muted-foreground"
+            className="h-4 w-4 shrink-0 text-muted-foreground"
           />
-          <span className="max-w-[12rem] truncate">{label}</span>
-          <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" aria-hidden="true" />
+          <span className="min-w-0 max-w-[12rem] truncate">{label}</span>
+          <ChevronDown className="h-3.5 w-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
         </Button>
       </PopoverTrigger>
       <PopoverContent
@@ -274,12 +267,8 @@ function ProviderIcon({ provider, className }: { provider: string | null; classN
 /** Model and effort overrides for the agent's current config. */
 function AgentModelEffort({ agent, row, config }: AgentValueProps) {
   const { catalogs, handlers } = useSetupReview();
-  const { modelOptions, effortOptions, supportsEffort, effortDisabled } = agentModelChoices(
-    catalogs,
-    agent,
-    row,
-    config,
-  );
+  const { modelOptions, effortOptions, supportsEffort, requiresModelForEffort, effortDisabled } =
+    agentModelChoices(catalogs, agent, row, config);
   const modelId = useId();
   const effortId = useId();
 
@@ -292,9 +281,14 @@ function AgentModelEffort({ agent, row, config }: AgentValueProps) {
         <Select
           value={row.modelOverride ?? DEFAULT_MODEL_OVERRIDE}
           onValueChange={(value) =>
-            handlers.onAgentRowChange(agent.name, {
-              modelOverride: value === DEFAULT_MODEL_OVERRIDE ? null : value,
-            })
+            handlers.onAgentRowChange(
+              agent.name,
+              modelPickPatch(
+                requiresModelForEffort,
+                config,
+                value === DEFAULT_MODEL_OVERRIDE ? null : value,
+              ),
+            )
           }
         >
           <SelectTrigger id={modelId} aria-label={`${agent.name} model`}>

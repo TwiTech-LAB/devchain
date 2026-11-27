@@ -41,6 +41,14 @@ const parentIdChangeSchema = z.object({
   currentTitle: z.string().optional(),
 });
 
+// Ordinary external task link ids; the keys are the remote keys for display.
+const externalTaskChangeSchema = z.object({
+  previous: z.string().nullable(),
+  current: z.string().nullable(),
+  previousKey: z.string().optional(),
+  currentKey: z.string().optional(),
+});
+
 export const epicUpdatedEvent = {
   name: 'epic.updated',
   schema: z.object({
@@ -58,6 +66,7 @@ export const epicUpdatedEvent = {
       statusId: statusIdChangeSchema.optional(),
       agentId: agentIdChangeSchema.optional(),
       parentId: parentIdChangeSchema.optional(),
+      externalTask: externalTaskChangeSchema.optional(),
     }),
   }),
 } as const;

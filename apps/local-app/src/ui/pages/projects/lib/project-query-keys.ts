@@ -13,7 +13,8 @@ export const projectsQueryKeys = {
   templatesForCreate: () => ['project-templates'] as const,
   templatesForUpgrade: () => ['templates-for-upgrade'] as const,
   manifest: (projectId: string | undefined) => ['template-manifest', projectId] as const,
-  setupPreview: (request: SetupPreviewRequest | null) => ['setup-preview', request] as const,
+  setupPreview: (request: SetupPreviewRequest | null, backend: BackendId) =>
+    ['setup-preview', request, backend] as const,
   /** Prefix of every setup preview. A preview holds the installed providers of its fetch time. */
   setupPreviews: () => ['setup-preview'] as const,
   /** Home and the project's VM preview the same version differently, so the backend is part of the key. */

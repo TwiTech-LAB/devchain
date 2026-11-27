@@ -1,9 +1,9 @@
-import { renderHook, act } from '@testing-library/react';
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { renderHook, act, waitFor } from '@testing-library/react';
+import { QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-query';
 import React from 'react';
-import type { WsEnvelope } from '@/ui/lib/socket';
 import { dispatchRealtimeEnvelope } from '@/ui/lib/realtime-invalidation-registry';
 import { epicTimeQueryKeys } from '@/ui/lib/epic-time';
+import { epicExternalSourceQueryKeys, externalMyWorkQueryKeys } from '@/ui/lib/external-my-work';
 import { useAppSocket } from './useAppSocket';
 import { useHomeSocket } from './useHomeSocket';
 import {
@@ -29,33 +29,6 @@ function makeWrapper() {
 describe('useEpicTimeScopeSync registry', () => {
   const workspaceId = '11111111-1111-4111-8111-111111111111';
 
-  it('invalidates Epic-time detail and batch families for its exact workspace topic', () => {
-    const queryClient = new QueryClient();
-    const invalidate = jest.spyOn(queryClient, 'invalidateQueries').mockResolvedValue(undefined);
-    const envelope: WsEnvelope = {
-      topic: `workspace/${workspaceId}/epic-time-scope`,
-      type: 'invalidated',
-      payload: { workspaceId },
-      ts: '2026-08-30T00:00:00.000Z',
-    };
-
-    dispatchRealtimeEnvelope(
-      envelope,
-      createEpicTimeScopeInvalidationRegistry(workspaceId),
-      queryClient,
-    );
-
-    expect(invalidate).toHaveBeenNthCalledWith(1, {
-      queryKey: epicTimeQueryKeys.detailRoot(),
-    });
-    expect(invalidate).toHaveBeenNthCalledWith(2, {
-      queryKey: epicTimeQueryKeys.batchRoot(),
-    });
-    expect(invalidate).toHaveBeenNthCalledWith(3, {
-      queryKey: epicTimeQueryKeys.bufferRoot(),
-    });
-  });
-
   it('ignores scope hints for another workspace', () => {
     const queryClient = new QueryClient();
     const invalidate = jest.spyOn(queryClient, 'invalidateQueries').mockResolvedValue(undefined);
@@ -74,7 +47,7 @@ describe('useEpicTimeScopeSync registry', () => {
     expect(invalidate).not.toHaveBeenCalled();
   });
 
-  it('refreshes every runtime scope variant through the family-prefix invalidation', async () => {
+  it('refreshes every runtime scope variant and the link views after an external link change', async () => {
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     const epicId = 'epic-1';
     for (const scope of ['active', 'disabled'] as const) {
@@ -85,12 +58,16 @@ describe('useEpicTimeScopeSync registry', () => {
         items: [],
       });
     }
+    queryClient.setQueryData(epicExternalSourceQueryKeys.detail(epicId), { items: [] });
+    queryClient.setQueryData(epicExternalSourceQueryKeys.batch([epicId]), { items: [] });
+    queryClient.setQueryData(['epic', epicId], { version: 7 });
+    queryClient.setQueryData(['external-my-work', 'clickup', 'connection-1', 'landing'], {});
 
     dispatchRealtimeEnvelope(
       {
         topic: `workspace/${workspaceId}/epic-time-scope`,
         type: 'invalidated',
-        payload: { workspaceId },
+        payload: { workspaceId, externalLinks: true },
         ts: '2026-08-30T00:00:00.000Z',
       },
       createEpicTimeScopeInvalidationRegistry(workspaceId),
@@ -108,6 +85,52 @@ describe('useEpicTimeScopeSync registry', () => {
       expect(
         queryClient.getQueryState(epicTimeQueryKeys.buffers('project-1', scope))?.isInvalidated,
       ).toBe(true);
+    }
+    for (const key of [
+      epicExternalSourceQueryKeys.detail(epicId),
+      epicExternalSourceQueryKeys.batch([epicId]),
+      ['epic', epicId],
+    ]) {
+      expect(queryClient.getQueryState(key)?.isInvalidated).toBe(true);
+    }
+    // Provider data that does not show link state is left alone.
+    expect(
+      queryClient.getQueryState(['external-my-work', 'clickup', 'connection-1', 'landing'])
+        ?.isInvalidated,
+    ).toBe(false);
+    queryClient.clear();
+  });
+
+  it('refreshes only Epic time for a hint without an external link change', async () => {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const epicId = 'epic-1';
+    const taskDetailKey = externalMyWorkQueryKeys.taskDetail('jira', 'connection-1', 'ENG-1');
+    queryClient.setQueryData(epicTimeQueryKeys.detail(epicId, 'UTC', 'active'), 0);
+    queryClient.setQueryData(epicExternalSourceQueryKeys.detail(epicId), { items: [] });
+    queryClient.setQueryData(['epic', epicId], { version: 7 });
+    queryClient.setQueryData(taskDetailKey, {});
+
+    dispatchRealtimeEnvelope(
+      {
+        topic: `workspace/${workspaceId}/epic-time-scope`,
+        type: 'invalidated',
+        payload: { workspaceId },
+        ts: '2026-11-23T00:00:00.000Z',
+      },
+      createEpicTimeScopeInvalidationRegistry(workspaceId),
+      queryClient,
+    );
+    await Promise.resolve();
+
+    expect(
+      queryClient.getQueryState(epicTimeQueryKeys.detail(epicId, 'UTC', 'active'))?.isInvalidated,
+    ).toBe(true);
+    for (const key of [
+      epicExternalSourceQueryKeys.detail(epicId),
+      ['epic', epicId],
+      taskDetailKey,
+    ]) {
+      expect(queryClient.getQueryState(key)?.isInvalidated).toBe(false);
     }
     queryClient.clear();
   });
@@ -130,24 +153,51 @@ describe('useEpicTimeScopeSync socket source', () => {
     expect(useAppSocketMock).not.toHaveBeenCalled();
   });
 
-  it('invalidates detail, batch and buffer roots when the home socket delivers the scope hint', () => {
-    const { wrapper, queryClient } = makeWrapper();
-    const invalidate = jest.spyOn(queryClient, 'invalidateQueries').mockResolvedValue(undefined);
+  it.each([
+    ['the scope hint', 'message'],
+    ['a reconnect', 'connect'],
+  ] as const)(
+    'clears the former epic from active provider link lookups and task detail after %s',
+    async (_name, trigger) => {
+      const { wrapper } = makeWrapper();
+      let linkedEpicId: string | null = 'epic-1';
+      const linkLookup = renderHook(
+        () =>
+          useQuery({
+            queryKey: externalMyWorkQueryKeys.linksBatch('jira', 'connection-1', true),
+            queryFn: async () => ({ 'ENG-1': { epicId: linkedEpicId } }),
+          }),
+        { wrapper },
+      );
+      const taskDetail = renderHook(
+        () =>
+          useQuery({
+            queryKey: externalMyWorkQueryKeys.taskDetail('jira', 'connection-1', 'ENG-1'),
+            queryFn: async () => ({ remoteId: 'ENG-1', linkedEpicId }),
+          }),
+        { wrapper },
+      );
+      renderHook(() => useEpicTimeScopeSync(workspaceId), { wrapper });
+      await waitFor(() => expect(taskDetail.result.current.data?.linkedEpicId).toBe('epic-1'));
+      expect(linkLookup.result.current.data?.['ENG-1'].epicId).toBe('epic-1');
 
-    renderHook(() => useEpicTimeScopeSync(workspaceId), { wrapper });
+      linkedEpicId = null;
+      const handlers = useHomeSocketMock.mock.lastCall![0];
+      act(() => {
+        if (trigger === 'connect') handlers.connect?.();
+        else
+          handlers.message?.({
+            topic: `workspace/${workspaceId}/epic-time-scope`,
+            type: 'invalidated',
+            payload: { workspaceId, externalLinks: true },
+            ts: '2026-11-23T00:00:00.000Z',
+          });
+      });
 
-    const handlers = useHomeSocketMock.mock.calls[0][0];
-    const envelope: WsEnvelope = {
-      topic: `workspace/${workspaceId}/epic-time-scope`,
-      type: 'invalidated',
-      payload: { workspaceId },
-      ts: '2026-08-30T00:00:00.000Z',
-    };
-
-    act(() => handlers.message?.(envelope));
-
-    expect(invalidate).toHaveBeenCalledWith({ queryKey: epicTimeQueryKeys.detailRoot() });
-    expect(invalidate).toHaveBeenCalledWith({ queryKey: epicTimeQueryKeys.batchRoot() });
-    expect(invalidate).toHaveBeenCalledWith({ queryKey: epicTimeQueryKeys.bufferRoot() });
-  });
+      await waitFor(() => {
+        expect(linkLookup.result.current.data?.['ENG-1'].epicId).toBeNull();
+        expect(taskDetail.result.current.data?.linkedEpicId).toBeNull();
+      });
+    },
+  );
 });

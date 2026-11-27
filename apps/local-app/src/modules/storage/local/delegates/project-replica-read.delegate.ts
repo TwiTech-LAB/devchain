@@ -35,6 +35,7 @@ import {
 import { TERMINAL_INPUT_MODES } from '../../../settings/dtos/settings.dto';
 import { SkillsSettingsDelegate } from '../../../settings/local/delegates/skills-settings.delegate';
 import { readRevokedDeviceKids } from '../helpers/device-revocation-history';
+import { readSeededLinkProjects } from '../helpers/external-link-receipts';
 import { BaseStorageDelegate, type StorageDelegateContext } from './base-storage.delegate';
 
 // Stays well under SQLite's bound-parameter limit.
@@ -209,8 +210,32 @@ export class ProjectReplicaReadStorageDelegate
       source.epic_time_session_watermarks = byProject('epic_time_session_watermarks', 'session_id');
     }
 
+    if (options.includeExternalLinks) this.readExternalLinks(source, projectIds);
+
     this.readReferencedConfiguration(source, projectIds, options.includeConfiguration);
     return source;
+  }
+
+  /**
+   * Before home seeds a project, the VM may lack home's links: sending its table then
+   * would read at home as unlinks.
+   */
+  private readExternalLinks(source: ProjectReplicaSource, projectIds: string[]): void {
+    const seeded = readSeededLinkProjects(this.rawClient);
+    if (!projectIds.every((projectId) => projectId in seeded)) return;
+    source.external_task_links = this.selectIn(
+      `SELECT id, epic_id, project_id, connection_id, provider, remote_scope_key, remote_task_id,
+              source_snapshot, created_at, updated_at
+       FROM external_task_links
+       WHERE json_extract(source_snapshot, '$.managedProjectionId') IS NULL AND project_id IN`,
+      projectIds,
+      'ORDER BY id',
+    );
+    source.external_link_receipts = this.selectIn(
+      'SELECT * FROM external_link_receipts WHERE project_id IN',
+      projectIds,
+      'ORDER BY seq, id',
+    );
   }
 
   /**

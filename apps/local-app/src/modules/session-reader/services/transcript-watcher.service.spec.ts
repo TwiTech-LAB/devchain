@@ -231,6 +231,7 @@ describe('TranscriptWatcherService', () => {
 
   const SESSION_ID = 'session-1';
   const FILE_PATH = '/tmp/test.jsonl';
+  const OTHER_FILE_PATH = '/tmp/save-point-copy.jsonl';
   const PROVIDER_NAME = 'claude';
 
   beforeEach(() => {
@@ -743,7 +744,9 @@ describe('TranscriptWatcherService', () => {
       },
     );
 
-    it.each(['stop', 'replacement'])(
+    // 'source change' is a discovery of another transcript for the running session (a rollback):
+    // the watcher moves to the new file without a final parse or an ended event.
+    it.each(['stop', 'replacement', 'source change'])(
       'module-unit: an active parse cannot publish or change state after %s',
       async (action) => {
         const watcher = createMockFsWatcher();
@@ -753,13 +756,32 @@ describe('TranscriptWatcherService', () => {
         watcher.triggerChange('change');
         await jest.advanceTimersByTimeAsync(100);
         watcher.triggerChange('change');
-        await service.stopWatching(SESSION_ID);
-        if (action === 'replacement') {
+        if (action !== 'source change') await service.stopWatching(SESSION_ID);
+        if (action !== 'stop') {
           createMockFsWatcher();
+          mockCacheService.getOrParse.mockClear();
+          mockedFsWatch.mockClear();
+          mockEvents.publish.mockClear();
           mockCacheService.getOrParse.mockResolvedValue(
             makeSession({ metrics: makeMetrics({ messageCount: 20 }) }),
           );
-          await service.startWatching(SESSION_ID, FILE_PATH, PROVIDER_NAME);
+          const path = action === 'source change' ? OTHER_FILE_PATH : FILE_PATH;
+          await service.startWatching(SESSION_ID, path, PROVIDER_NAME);
+        }
+        if (action === 'source change') {
+          expect(watcher.close).toHaveBeenCalledTimes(1);
+          expect(mockedFsWatch).toHaveBeenCalledWith(OTHER_FILE_PATH, expect.anything());
+          expect(jest.getTimerCount()).toBe(1);
+          expect(mockCacheService.getOrParse).not.toHaveBeenCalledWith(
+            SESSION_ID,
+            FILE_PATH,
+            expect.anything(),
+          );
+          expect(mockEvents.publish).not.toHaveBeenCalledWith(
+            'session.transcript.ended',
+            expect.anything(),
+          );
+          expect(service.getLastKnownSummaryMetrics(SESSION_ID)?.messageCount).toBe(20);
         }
         mockEvents.publish.mockClear();
         parse.resolve(
@@ -767,9 +789,7 @@ describe('TranscriptWatcherService', () => {
         );
         await jest.advanceTimersByTimeAsync(2500);
         expect(mockEvents.publish).not.toHaveBeenCalled();
-        expect(service.getLastKnownMessageCount(SESSION_ID)).toBe(
-          action === 'replacement' ? 20 : null,
-        );
+        expect(service.getLastKnownMessageCount(SESSION_ID)).toBe(action === 'stop' ? null : 20);
       },
     );
 
@@ -2060,6 +2080,7 @@ describe('TranscriptWatcherService', () => {
     });
 
     it('watches the -wal sidecar (hint) and seeds via getFreshnessToken', async () => {
+      const first = createMockFsWatcher();
       const getFreshnessToken = jest.fn().mockResolvedValue({ count: 5, maxUpdated: 100 });
       const adapter = makeDbAdapter(getFreshnessToken);
       mockAdapterFactory.getAdapter.mockReturnValue(adapter);
@@ -2078,6 +2099,24 @@ describe('TranscriptWatcherService', () => {
       expect(mockedFsWatch).toHaveBeenCalledWith(`${DB_PATH}-wal`, expect.any(Function));
       expect(getFreshnessToken).toHaveBeenCalledWith(
         expect.objectContaining({ providerSessionId: 'ses_abc', kind: 'db' }),
+      );
+
+      // One DB holds every session of the provider, so the provider session ID is part of the
+      // source: the same ID keeps the watcher, another ID replaces it.
+      mockedFsWatch.mockClear();
+      await service.startWatching(SES, DB_PATH, 'opencode', 'ses_abc');
+      expect(mockedFsWatch).not.toHaveBeenCalled();
+      createMockFsWatcher();
+      getFreshnessToken.mockClear();
+      await service.startWatching(SES, DB_PATH, 'opencode', 'ses_other');
+      expect(first.close).toHaveBeenCalledTimes(1);
+      expect(service.activeWatcherCount).toBe(1);
+      expect(getFreshnessToken).toHaveBeenCalledWith(
+        expect.objectContaining({ providerSessionId: 'ses_other', kind: 'db' }),
+      );
+      expect(mockEvents.publish).not.toHaveBeenCalledWith(
+        'session.transcript.ended',
+        expect.anything(),
       );
     });
 

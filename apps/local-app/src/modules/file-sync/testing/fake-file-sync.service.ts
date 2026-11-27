@@ -24,7 +24,10 @@ import {
   FileSyncService,
   projectFolderId,
   projectFolderList,
+  type DeviceConnection,
+  type FolderConfigurationSummary,
   type FolderNeed,
+  type FolderStats,
   type ProjectFolder,
   type SyncProgress,
   type WaitForCompleteOptions,
@@ -53,6 +56,11 @@ export class FakeFileSyncService
       | 'device'
       | 'addPeer'
       | 'isConnected'
+      | 'connections'
+      | 'folderConfigurations'
+      | 'folderStats'
+      | 'needSample'
+      | 'remoteNeedSample'
       | 'getIgnores'
       | 'getIgnoresRevision'
       | 'setIgnores'
@@ -96,6 +104,8 @@ export class FakeFileSyncService
   /** Per folder, what `status` reports this side still needs. */
   readonly need = new Map<string, { needItems: number; needBytes: number }>();
   readonly remoteNeeds = new Map<string, RemoteNeed>();
+  /** Per folder, the names `needSample` reports this side still needs. */
+  readonly needNames = new Map<string, string[]>();
   readonly receiveOnlyChanges = new Map<string, ReceiveOnlyChanges>();
   /** Where `folderPath` answers; tests point it at real directories. */
   readonly codeRoots = new Map<string, string>();
@@ -114,6 +124,52 @@ export class FakeFileSyncService
 
   async isConnected(deviceId: string): Promise<boolean> {
     return this.peers.has(deviceId);
+  }
+
+  async connections(): Promise<Record<string, DeviceConnection>> {
+    return Object.fromEntries(
+      [...this.peers].map((deviceId) => [
+        deviceId,
+        {
+          connected: true,
+          address: '127.0.0.1:22000',
+          type: 'tcp-client',
+          startedAt: new Date(0).toISOString(),
+          inBytesTotal: 0,
+          outBytesTotal: 0,
+        },
+      ]),
+    );
+  }
+
+  async folderConfigurations(): Promise<FolderConfigurationSummary[]> {
+    return [...this.folders].map(([id, folder]) => ({
+      id,
+      type: folder.type,
+      paused: folder.paused,
+      devices: [{ deviceID: this.deviceId }, { deviceID: folder.peerDeviceId }],
+    }));
+  }
+
+  async folderStats(): Promise<Record<string, FolderStats>> {
+    return Object.fromEntries(
+      [...this.folders.keys()].map((id) => [
+        id,
+        { lastFile: null, lastScan: new Date(0).toISOString() },
+      ]),
+    );
+  }
+
+  async needSample(folderId: string, limit: number): Promise<string[]> {
+    this.require(folderId);
+    return (this.needNames.get(folderId) ?? []).slice(0, Math.max(limit, 0));
+  }
+
+  async remoteNeedSample(folderId: string, _deviceId: string, limit: number): Promise<string[]> {
+    this.require(folderId);
+    return (this.remoteNeeds.get(folderId)?.sample ?? [])
+      .map((file) => file.path)
+      .slice(0, Math.max(limit, 0));
   }
 
   getIgnores(projectId: string): string[] {

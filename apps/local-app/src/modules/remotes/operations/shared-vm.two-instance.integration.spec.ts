@@ -142,5 +142,7 @@ describe('two homes joining a shared VM', () => {
     expect(vm.instanceSnapshot('carol').pid).not.toBe(carolBefore.pid);
     expect(vm.instanceSnapshot('carol').claim?.version).toBe('0.25.1');
     expect(vm.instanceSnapshot('bob')).toEqual(bobBefore);
-  });
+    // Five operations run here (three joins, two updates); the body takes about 5 s on an
+    // idle machine. Each `settle` stops after 15 s, so a stuck operation fails there first.
+  }, 90_000);
 });

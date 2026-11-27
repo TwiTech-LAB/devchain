@@ -5,15 +5,23 @@ import type { TerminalIOService } from '../../../terminal/services/terminal-io/t
 import { SessionContextResolver } from './session-context-resolver';
 
 const SESSION_ID = 'a1b2c3d4-e5f6-7890-abcd-ef1234567890';
+const INHERITED_ID = 'deadbeef-1111-4111-8111-111111111111';
+const SECOND_INHERITED_ID = 'deadbeef-2222-4222-8222-222222222222';
+const OTHER_AGENT_SESSION_ID = 'deadbeef-3333-4333-8333-333333333333';
 const PROJECT_ID = 'project-1';
 const AGENT_ID = 'agent-1';
 
-function session(id = SESSION_ID, agentId: string | null = AGENT_ID) {
+function session(
+  id = SESSION_ID,
+  agentId: string | null = AGENT_ID,
+  inheritedSessionIds: string[] = [],
+) {
   return {
     id,
     agentId,
     status: 'running' as const,
     startedAt: '2024-01-01T00:00:00Z',
+    inheritedSessionIds,
   };
 }
 
@@ -32,7 +40,7 @@ function createStorage(): jest.Mocked<StorageService> {
 
 function createSessions(active = [session()]) {
   return {
-    listActiveSessions: jest.fn().mockResolvedValue(active),
+    listRunningSessionIdentities: jest.fn().mockReturnValue(active),
   } as unknown as SessionsService;
 }
 
@@ -69,38 +77,60 @@ describe('SessionContextResolver', () => {
     });
   });
 
-  it('resolves an unambiguous eight-character prefix', async () => {
-    const resolver = new SessionContextResolver(createStorage(), createSessions());
-
-    await expect(resolver.resolve(SESSION_ID.slice(0, 8))).resolves.toMatchObject({
-      success: true,
-      data: { session: { id: SESSION_ID } },
-    });
-  });
-
-  it('returns SESSION_NOT_FOUND when no session or guest matches', async () => {
-    const resolver = new SessionContextResolver(createStorage(), createSessions([]));
-
-    await expect(resolver.resolve('deadbeef')).resolves.toMatchObject({
-      success: false,
-      error: { code: 'SESSION_NOT_FOUND' },
-    });
-  });
-
-  it('returns AMBIGUOUS_SESSION with disambiguating prefixes', async () => {
-    const sessions = createSessions([
-      session('a1b2c3d4-1111-1111-1111-111111111111'),
-      session('a1b2c3d4-2222-2222-2222-222222222222'),
-    ]);
-    const resolver = new SessionContextResolver(createStorage(), sessions);
-
-    await expect(resolver.resolve('a1b2c3d4')).resolves.toMatchObject({
-      success: false,
-      error: {
-        code: 'AMBIGUOUS_SESSION',
-        data: { matchingSessionIdPrefixes: ['a1b2c3d4-111', 'a1b2c3d4-222'] },
+  const resolved = { success: true, data: { session: { id: SESSION_ID } } };
+  it.each([
+    {
+      name: 'resolves the current row by its eight-character prefix',
+      input: SESSION_ID.slice(0, 8),
+      running: [session()],
+      expected: resolved,
+    },
+    {
+      name: 'resolves a full inherited ID to the current row',
+      input: INHERITED_ID,
+      running: [
+        session(SESSION_ID, AGENT_ID, [INHERITED_ID]),
+        session(OTHER_AGENT_SESSION_ID, 'agent-2'),
+      ],
+      expected: resolved,
+    },
+    {
+      name: 'resolves the eight-character prefix of an inherited ID',
+      input: INHERITED_ID.slice(0, 8),
+      running: [session(SESSION_ID, AGENT_ID, [INHERITED_ID])],
+      expected: resolved,
+    },
+    {
+      name: 'counts a row once when two inherited IDs match',
+      input: INHERITED_ID.slice(0, 8),
+      running: [session(SESSION_ID, AGENT_ID, [INHERITED_ID, SECOND_INHERITED_ID])],
+      expected: resolved,
+    },
+    {
+      name: 'returns AMBIGUOUS_SESSION when an inherited ID and another row ID match',
+      input: INHERITED_ID.slice(0, 8),
+      running: [
+        session(SESSION_ID, AGENT_ID, [INHERITED_ID]),
+        session(OTHER_AGENT_SESSION_ID, 'agent-2'),
+      ],
+      expected: {
+        success: false,
+        error: {
+          code: 'AMBIGUOUS_SESSION',
+          data: { matchingSessionIdPrefixes: ['a1b2c3d4-e5f', 'deadbeef-333'] },
+        },
       },
-    });
+    },
+    {
+      name: 'returns SESSION_NOT_FOUND when no running row carries the inherited ID',
+      input: INHERITED_ID,
+      running: [session()],
+      expected: { success: false, error: { code: 'SESSION_NOT_FOUND' } },
+    },
+  ])('$name', async ({ input, running, expected }) => {
+    const resolver = new SessionContextResolver(createStorage(), createSessions(running));
+
+    await expect(resolver.resolve(input)).resolves.toMatchObject(expected);
   });
 
   it('keeps null agent and project context for an unassigned session', async () => {
@@ -171,7 +201,9 @@ describe('SessionContextResolver', () => {
 
   it('maps active-session lookup failures to SESSION_RESOLUTION_FAILED', async () => {
     const sessions = {
-      listActiveSessions: jest.fn().mockRejectedValue(new Error('session store down')),
+      listRunningSessionIdentities: jest.fn(() => {
+        throw new Error('session store down');
+      }),
     } as unknown as SessionsService;
     const resolver = new SessionContextResolver(createStorage(), sessions);
 

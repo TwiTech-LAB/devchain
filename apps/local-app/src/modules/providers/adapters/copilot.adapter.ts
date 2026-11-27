@@ -1,5 +1,11 @@
 import { getProviderCliNoUpdateOptions } from './provider-cli-policy';
 import { Injectable } from '@nestjs/common';
+import { randomUUID } from 'node:crypto';
+import { cp, mkdtemp, readdir, readFile, realpath, rename, rm, writeFile } from 'fs/promises';
+import { homedir } from 'os';
+import { basename, dirname, join } from 'path';
+import { parseDocument } from 'yaml';
+import { IOError, ValidationError } from '../../../common/errors/error-types';
 import { COPILOT_TRAITS } from './copilot.traits';
 import type {
   ProviderAdapter,
@@ -18,13 +24,49 @@ import type {
   EffortCapability,
   HookCapability,
   HookEnvContext,
+  CreateSessionSavePointInput,
+  PrepareSessionForkLaunchInput,
+  ProviderSessionTranscript,
+  SessionSavePointCopy,
+  SessionForkCapability,
+  SessionForkLaunchResult,
 } from './capabilities';
+import { SESSION_START_SOURCE_ENV } from './capabilities/hook.capability';
 import { stripFlag } from '../utils/profile-options';
+import { stripPromptFlags } from './fork-profile-options';
+import { isRecord } from './plugin-catalog.utils';
 import { CopilotTrustedFoldersService } from '../../core/services/copilot-trusted-folders.service';
 import {
   CopilotAuthProbeService,
   COPILOT_AUTH_REMEDIATION,
 } from '../../core/services/copilot-auth-probe.service';
+
+function rewriteTranscriptSessionId(line: string, sourceId: string, targetId: string): string {
+  let record: unknown;
+  try {
+    record = JSON.parse(line);
+  } catch {
+    throw new IOError('Invalid JSON record in Copilot transcript');
+  }
+  if (!isRecord(record)) throw new IOError('Invalid JSON record in Copilot transcript');
+
+  const { type, data } = record as {
+    type?: string;
+    data?: { input?: unknown; metadata?: unknown; usage?: { accounting?: unknown } };
+  };
+  // Tool arguments can hold the parent DevChain ID, so only rewrite provider metadata.
+  const metadata: unknown[] = [record, data];
+  if (type === 'hook.start') metadata.push(data?.input);
+  if (type === 'session.usage_record') metadata.push(data?.usage?.accounting);
+  if (type === 'system.message') metadata.push(data?.metadata);
+  for (const entry of metadata) {
+    if (!isRecord(entry)) continue;
+    for (const [key, value] of Object.entries(entry)) {
+      if (value === sourceId && /session_?id$/i.test(key)) entry[key] = targetId;
+    }
+  }
+  return JSON.stringify(record);
+}
 
 /**
  * Adapter for the GitHub Copilot CLI (`copilot`, verified v1.0.65) — devchain
@@ -67,7 +109,8 @@ export class CopilotAdapter
     ProjectProvisioningCapability,
     AuthProbeCapability,
     EffortCapability,
-    HookCapability
+    HookCapability,
+    SessionForkCapability
 {
   readonly providerName = 'copilot';
   readonly traits = COPILOT_TRAITS;
@@ -105,6 +148,7 @@ export class CopilotAdapter
   // from `sessions.id`, so discovery takes the first (only) derived candidate.
   readonly transcriptDiscoveryStrategy = 'first' as const;
   readonly providerSessionIdRequiredForRestore = true;
+  readonly forkReadsSavePointTranscript = true;
 
   // Registration uses the DEFAULT list-then-add strategy (we deliberately leave
   // `mcpProjectRegistrationStrategy` unset — NOT 'upsert'). S3-confirmed: `copilot
@@ -123,6 +167,7 @@ export class CopilotAdapter
   // SessionStart-oriented flag is therefore false — the listener confirms by
   // provider session id, and uses the Stop-carried path only to validate-on-match.
   readonly hooksProvideTranscriptPath = false;
+  readonly managedHookEnvKeys = [SESSION_START_SOURCE_ENV] as const;
 
   // Same DEVCHAIN_* env contract as Claude — the relay reads these to attribute the
   // hook to a devchain session and no-ops when they're absent (blast-radius guard).
@@ -133,6 +178,9 @@ export class CopilotAdapter
       DEVCHAIN_AGENT_ID: context.agentId,
       DEVCHAIN_SESSION_ID: context.sessionId,
       DEVCHAIN_TMUX_SESSION_NAME: context.tmuxSessionName,
+      ...(context.sessionStartSource && {
+        [SESSION_START_SOURCE_ENV]: context.sessionStartSource,
+      }),
     };
   }
 
@@ -158,6 +206,105 @@ export class CopilotAdapter
     }
     argv.push(...profileOptionArgs);
     return { argv };
+  }
+
+  async createSavePoint(input: CreateSessionSavePointInput): Promise<SessionSavePointCopy> {
+    const copy = await this.copySession(input);
+    return {
+      ...copy,
+      discardUnboundTranscript: () =>
+        rm(dirname(copy.transcriptPath), { recursive: true, force: true }),
+    };
+  }
+
+  async prepareForkLaunch(input: PrepareSessionForkLaunchInput): Promise<SessionForkLaunchResult> {
+    const child = await this.copySession({ ...input, sessionId: randomUUID() });
+    const launch = this.buildLaunchArgs({
+      mode: 'restore',
+      providerSessionId: child.providerSessionId,
+      profileOptionArgs: stripPromptFlags(input.profileOptionArgs, {
+        valueFlags: ['-i', '--interactive', '-p', '--prompt', '--attachment'],
+        shortFlags: {
+          boolean: ['h', 's', 'v'],
+          takesValue: ['C', 'i', 'n', 'p', 'r'],
+        },
+      }),
+      env: input.env,
+    });
+    return {
+      ...child,
+      ...launch,
+      discardUnboundTranscript: () =>
+        rm(dirname(child.transcriptPath), { recursive: true, force: true }),
+    };
+  }
+
+  private async copySession({
+    providerSessionId: sourceId,
+    sessionId: targetId,
+    transcriptPath,
+  }: CreateSessionSavePointInput): Promise<ProviderSessionTranscript> {
+    if (sourceId === targetId || !/^[\da-f]{8}(?:-[\da-f]{4}){3}-[\da-f]{12}$/i.test(targetId)) {
+      throw new ValidationError('Copilot copy requires a distinct destination session UUID');
+    }
+
+    const stateDir = join(homedir(), '.copilot', 'session-state');
+    const sourceTranscript = await realpath(transcriptPath);
+    const sourceDir = dirname(sourceTranscript);
+    if (
+      basename(sourceTranscript) !== 'events.jsonl' ||
+      basename(sourceDir) !== sourceId ||
+      dirname(sourceDir) !== (await realpath(stateDir))
+    ) {
+      throw new ValidationError('Copilot transcript must be in the source session folder');
+    }
+    const sourceWorkspace = join(sourceDir, 'workspace.yaml');
+    const [transcript, workspaceText] = await Promise.all([
+      readFile(sourceTranscript, 'utf8'),
+      readFile(sourceWorkspace, 'utf8'),
+    ]);
+    const workspace = parseDocument(workspaceText);
+    if (workspace.errors.length || workspace.get('id') !== sourceId) {
+      throw new IOError('Copilot workspace does not contain the source session ID');
+    }
+    workspace.set('id', targetId);
+
+    const lines = transcript
+      .slice(0, Math.max(0, transcript.lastIndexOf('\n')))
+      .split('\n')
+      .filter((line) => line.trim());
+    if (!lines.length) {
+      throw new IOError('Copilot transcript has no complete records to copy');
+    }
+    const events = lines.map((line) => rewriteTranscriptSessionId(line, sourceId, targetId));
+
+    const targetDir = join(stateDir, targetId);
+    const tempDir = await mkdtemp(join(stateDir, '.devchain-copy-'));
+    try {
+      await cp(sourceDir, tempDir, {
+        recursive: true,
+        verbatimSymlinks: true,
+        filter: (source) => source !== sourceTranscript && source !== sourceWorkspace,
+      });
+      // Validate the staging tree because a live provider can change the source during the copy.
+      const stagedEntries = await readdir(tempDir, { recursive: true, withFileTypes: true });
+      if (stagedEntries.some((entry) => entry.isSymbolicLink())) {
+        throw new ValidationError('Copilot session folders with symbolic links cannot be copied');
+      }
+      await writeFile(join(tempDir, 'workspace.yaml'), workspace.toString(), {
+        mode: 0o600,
+        flag: 'wx',
+      });
+      await writeFile(join(tempDir, 'events.jsonl'), `${events.join('\n')}\n`, {
+        mode: 0o600,
+        flag: 'wx',
+      });
+      await rename(tempDir, targetDir);
+    } catch (error) {
+      await rm(tempDir, { recursive: true, force: true }).catch(() => undefined);
+      throw error;
+    }
+    return { providerSessionId: targetId, transcriptPath: join(targetDir, 'events.jsonl') };
   }
 
   applyEffort(

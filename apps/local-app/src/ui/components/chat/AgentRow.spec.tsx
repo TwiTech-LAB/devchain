@@ -62,6 +62,7 @@ const agent: AgentOrGuest = {
   name: 'Alpha',
   profileId: 'profile-1',
   isProjectOwner: false,
+  disabled: false,
 };
 
 function renderAgentRow(overrides: Partial<React.ComponentProps<typeof AgentRow>> = {}) {
@@ -278,6 +279,57 @@ describe('AgentRow', () => {
       fireEvent.click(screen.getByText(action));
       expect(callback).toHaveBeenCalledTimes(1);
     } else expect(screen.queryByText(action)).not.toBeInTheDocument();
+  });
+
+  it('lists Disable last, after Delete, only when canDisable', async () => {
+    const onDisable = jest.fn();
+    renderAgentRow({ canDisable: true, onDisable, canDelete: true, onDelete: jest.fn() });
+    fireEvent.contextMenu(screen.getByLabelText(/Open terminal for Alpha/i));
+    await screen.findByText(/Context tracking/i);
+    const items = screen.getAllByRole('menuitem').map((i) => i.textContent);
+    expect(items[items.length - 1]).toBe('Disable');
+    fireEvent.click(screen.getByText('Disable'));
+    expect(onDisable).toHaveBeenCalledTimes(1);
+  });
+
+  it('hides Disable when canDisable is false', async () => {
+    renderAgentRow({ canDisable: false, onDisable: jest.fn() });
+    fireEvent.contextMenu(screen.getByLabelText(/Open terminal for Alpha/i));
+    await screen.findByText(/Context tracking/i);
+    expect(screen.queryByText('Disable')).not.toBeInTheDocument();
+  });
+
+  describe('disabled row', () => {
+    it('is dimmed, labelled, aria-disabled, and ignores clicks without the native disabled attribute', () => {
+      const { onClick } = renderAgentRow({
+        isDisabled: true,
+        isOnline: false,
+        humanHeldMessageCount: 2,
+        canForceSend: true,
+        onForceSend: jest.fn(),
+        activityBadge: <span>Busy 10s</span>,
+      });
+      const row = screen.getByLabelText('Alpha (disabled)');
+      expect(row).toHaveAttribute('aria-disabled', 'true');
+      expect(row).not.toBeDisabled();
+      expect(row).toHaveClass('opacity-50');
+      expect(screen.getByText('Disabled')).toBeInTheDocument();
+      fireEvent.click(row);
+      expect(onClick).not.toHaveBeenCalled();
+      expect(screen.queryByText('Busy 10s')).not.toBeInTheDocument();
+      expect(screen.queryByText('Send now')).not.toBeInTheDocument();
+      expect(screen.queryByText(/waiting/)).not.toBeInTheDocument();
+    });
+
+    it('opens a context menu with exactly one item, Enable', async () => {
+      const onEnable = jest.fn();
+      renderAgentRow({ isDisabled: true, onEnable, canDisable: true, canDelete: true });
+      fireEvent.contextMenu(screen.getByLabelText('Alpha (disabled)'));
+      await screen.findByText('Enable');
+      expect(screen.getAllByRole('menuitem')).toHaveLength(1);
+      fireEvent.click(screen.getByText('Enable'));
+      expect(onEnable).toHaveBeenCalledTimes(1);
+    });
   });
 
   it('shows "Deleting…" and disables Delete when pendingDelete is true', async () => {

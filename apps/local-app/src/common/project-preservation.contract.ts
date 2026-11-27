@@ -24,6 +24,11 @@ export interface TeamPermissionChoice {
 }
 
 export interface PreserveTeamSetup {
+  /**
+   * The new template teams to add. A list is exact, an empty list included. When the field is
+   * absent, the planner selects each new team that only groups agents that the project already
+   * has outside its teams (`additions.teams[].selected` reports the result).
+   */
   addTeams?: string[];
   addMembers?: Array<{ teamName: string; agentName: string }>;
   agentOptions?: Array<{ agentName: string } & PreservationOption>;

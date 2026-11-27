@@ -224,6 +224,40 @@ describe('McpRegistrationPort', () => {
     });
   });
 
+  describe('CLI adapter environment', () => {
+    const saved = { ...process.env };
+    beforeEach(() => {
+      accessMock.mockResolvedValue(undefined);
+      process.env.DEVCHAIN_TEST_INHERITED = 'inherited';
+      process.env.DEVCHAIN_TEST_OVERRIDDEN = 'inherited';
+    });
+    afterEach(() => {
+      process.env = { ...saved };
+    });
+
+    it.each([
+      { op: 'list', run: (env?: Record<string, string>) => port.list(claudeProvider, { env }) },
+      {
+        op: 'remove',
+        run: (env?: Record<string, string>) => port.remove(claudeProvider, 'devchain', { env }),
+      },
+    ])('$op runs the CLI with the given environment on top of process.env', async ({ run }) => {
+      await run({ DEVCHAIN_TEST_OVERRIDDEN: 'session' });
+      await run(undefined);
+
+      const [withEnv, withoutEnv] = fakeExecutor.calls.map((call) => call.env);
+      expect(withEnv).toMatchObject({
+        DEVCHAIN_TEST_INHERITED: 'inherited',
+        DEVCHAIN_TEST_OVERRIDDEN: 'session',
+        DISABLE_AUTOUPDATER: '1',
+      });
+      expect(withoutEnv).toMatchObject({
+        DEVCHAIN_TEST_INHERITED: 'inherited',
+        DEVCHAIN_TEST_OVERRIDDEN: 'inherited',
+      });
+    });
+  });
+
   describe('CLI adapter routing (Copilot — pipe + list-then-add, no Authorization)', () => {
     it('ensure (list-then-add): already_configured on empty list → adds, on match → no re-add', async () => {
       accessMock.mockResolvedValue(undefined);

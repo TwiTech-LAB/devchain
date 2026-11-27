@@ -1,4 +1,5 @@
 const { spawn } = require("node:child_process");
+const { once } = require("node:events");
 const { readFileSync } = require("node:fs");
 const { constants } = require("node:os");
 const {
@@ -51,6 +52,7 @@ async function runGitSupervisor(args, dependencies = {}) {
       dependencies.sleep ??
       ((ms) => new Promise((done) => setTimeout(done, ms))),
     announceAfterMs: (dependencies.isTTY ?? stderr.isTTY) ? 1_000 : 10_000,
+    expectedRemoteId: env.DEVCHAIN_GIT_EXPECTED_REMOTE_ID,
   };
   try {
     const baseUrl = await (
@@ -78,15 +80,19 @@ async function runGitSupervisor(args, dependencies = {}) {
       });
     }
     if (!project?.remoteName) {
+      if (context.expectedRemoteId)
+        throw new SupervisorError("automatic Git recovery needs a connected project.");
       return exitCode(
         await supervise(spawnImpl(git, args, { stdio: "inherit", cwd }), signals),
       );
     }
     const child = gated(spawnImpl, git, args, cwd, env, project.projectId);
     // Ctrl-C while waiting: the home app aborts a handover that has not flipped.
-    const write = await runGated(child, signals, (signal) =>
-      acquire({ ...context, signal }, project, child.pid),
-    );
+    const write = await runGated(child, signals, async (signal) => {
+      const writeId = await acquire({ ...context, signal }, project, child.pid);
+      await dependencies.prepareWrite?.(writeId, signal);
+      return writeId;
+    });
     return exitCode(write.result);
   } catch (error) {
     writeLine(stderr, `git: ${error.message ?? "the Git write failed."}`);
@@ -161,12 +167,15 @@ async function acquireHold(context, path, hold) {
   );
   try {
     if (!hold) throw new SupervisorError("the Git process identity cannot be read.");
-    await requestJson(context.fetchImpl, context.baseUrl, `${path}/acquire`, {
+    const response = await requestJson(context.fetchImpl, context.baseUrl, `${path}/acquire`, {
       method: "POST",
       body: hold,
       timeoutMs: HOLD_TIMEOUT_MS,
       signal: context.signal,
     });
+    if (typeof response?.notice === "string" && response.notice) {
+      writeLine(context.stderr, response.notice.replace(/[\r\n]+/g, " "));
+    }
     return hold.holdId;
   } finally {
     clearTimeout(timer);
@@ -220,7 +229,11 @@ async function acquire(context, project, pid) {
           "/api/git-writes/acquire",
           {
             method: "POST",
-            body: { projectId: project.projectId, pid },
+            body: {
+              projectId: project.projectId,
+              pid,
+              ...(context.expectedRemoteId && { expectedRemoteId: context.expectedRemoteId }),
+            },
             timeoutMs: ACQUIRE_TIMEOUT_MS,
             signal: context.signal,
           },
@@ -282,8 +295,26 @@ function exitCode({ code, signal, error }) {
 
 module.exports = { runGitSupervisor };
 
+/** Recovery journals the admitted write before Git can change refs. */
+async function prepareRecoveryWrite(writeId, signal) {
+  const [[message]] = await Promise.all([
+    once(process, "message", { signal }),
+    new Promise((resolve, reject) => {
+      process.send({ writeId }, (error) => (error ? reject(error) : resolve()));
+    }),
+  ]);
+  if (message?.ready !== writeId) throw new SupervisorError("Git recovery was not journaled.");
+}
+
 if (require.main === module) {
-  runGitSupervisor(process.argv.slice(2)).then((code) => {
+  const recovery = process.connected && process.env.DEVCHAIN_GIT_EXPECTED_REMOTE_ID;
+  const stop = () => process.kill(process.pid, "SIGTERM");
+  if (recovery) process.once("disconnect", stop);
+  runGitSupervisor(process.argv.slice(2), {
+    prepareWrite: recovery ? prepareRecoveryWrite : undefined,
+  }).then((code) => {
+    process.off("disconnect", stop);
+    if (process.connected) process.disconnect();
     process.exitCode = code;
   });
 }

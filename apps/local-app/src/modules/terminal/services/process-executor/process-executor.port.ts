@@ -35,6 +35,17 @@ export function validateEnv(env: Readonly<Record<string, string>>): void {
   }
 }
 
+/** `baseEnv` without the entries `validateEnv` rejects, for passing an inherited environment. */
+export function inheritableEnv(baseEnv: NodeJS.ProcessEnv): Record<string, string> {
+  const inherited: Record<string, string> = {};
+  for (const [key, value] of Object.entries(baseEnv)) {
+    if (value !== undefined && ENV_KEY_RE.test(key) && !CONTROL_CHAR_RE.test(value)) {
+      inherited[key] = value;
+    }
+  }
+  return inherited;
+}
+
 export interface DaemonSpawnOptions {
   readonly argv: readonly string[];
   readonly cwd?: string;

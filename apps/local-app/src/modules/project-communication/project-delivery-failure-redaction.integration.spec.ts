@@ -105,6 +105,7 @@ describe('project delivery failure redaction workflow', () => {
     resetEnvConfig();
 
     const storage = {
+      isAgentDisabled: jest.fn().mockReturnValue(false),
       getAgent: jest.fn(async (agentId: string) => {
         if (agentId === CALLER_ID) return caller;
         if (agentId === TARGET_OWNER_ID) return targetOwner;
@@ -218,6 +219,7 @@ describe('project delivery failure redaction workflow', () => {
       { deliverToGuest: jest.fn() } as never,
       { getActiveSession: jest.fn() } as never,
       { publish: jest.fn().mockResolvedValue('event-1') } as never,
+      { isAgentDisabled: jest.fn().mockReturnValue(false) } as never,
     );
     projectCommunication = new ProjectCommunicationService(
       storage as never,

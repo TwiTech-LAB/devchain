@@ -85,3 +85,47 @@ export function normalizeExternalProviderSourceUrl(
 
   return JIRA_TENANT_HOSTNAME.test(url.hostname.toLowerCase()) ? url.toString() : null;
 }
+
+export type ExternalTaskUrlReference =
+  | { kind: 'task'; provider: IntegrationProvider; hostname: string; taskId: string }
+  /** A supported task host whose path is not exactly one segment after the task prefix. */
+  | { kind: 'unsupported_path'; provider: IntegrationProvider }
+  | { kind: 'unsupported_host' };
+
+/**
+ * Reads a pasted task URL through the same host and path policy as stored
+ * source URLs. Query and hash are ignored. A ClickUp custom-id URL
+ * (`/t/<team>/<CUSTOM>`) has two segments and is reported as `unsupported_path`.
+ */
+/** A Jira connection's site hostname, the Jira remote scope key; null when the URL does not parse. */
+export function jiraSiteHostname(siteUrl: string): string | null {
+  try {
+    return new URL(siteUrl).hostname.toLowerCase();
+  } catch {
+    return null;
+  }
+}
+
+export function parseExternalTaskUrl(value: string): ExternalTaskUrlReference {
+  const url = parseSafeHttpsUrl(value);
+  if (!url) return { kind: 'unsupported_host' };
+  for (const provider of Object.keys(SOURCE_URL_POLICIES) as IntegrationProvider[]) {
+    const policy = SOURCE_URL_POLICIES[provider];
+    if (!policy.allowsHost(url)) continue;
+    if (!url.pathname.startsWith(policy.pathPrefix)) {
+      return { kind: 'unsupported_path', provider };
+    }
+    const segments = url.pathname.slice(policy.pathPrefix.length).replace(/\/$/, '').split('/');
+    let taskId: string;
+    try {
+      taskId = decodeURIComponent(segments[0] ?? '').trim();
+    } catch {
+      return { kind: 'unsupported_path', provider };
+    }
+    if (segments.length !== 1 || !taskId) {
+      return { kind: 'unsupported_path', provider };
+    }
+    return { kind: 'task', provider, hostname: url.hostname.toLowerCase(), taskId };
+  }
+  return { kind: 'unsupported_host' };
+}

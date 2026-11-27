@@ -14,6 +14,8 @@ export const remoteProjectSyncedEvent = {
       remoteId: z.string().min(1).nullable(),
       changedEpicIds: z.array(z.string().min(1)),
       deletedEpicIds: z.array(z.string().min(1)),
+      /** Epics whose ordinary link the replica added, removed or replaced; absent on older events. */
+      linkChangedEpicIds: z.array(z.string().min(1)).optional(),
       /** Host-side ISO timestamp the replica reflects; null when not tracked. */
       cursor: z.string().min(1).nullable(),
     })

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 
-const BOTTOM_THRESHOLD = 48;
+export const BOTTOM_THRESHOLD = 48;
 
 export interface UseAutoScrollBottomOptions {
   /** Whether auto-scroll is enabled (e.g., only for live sessions) */

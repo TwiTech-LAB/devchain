@@ -1,5 +1,5 @@
 import { renderHook, act, waitFor } from '@testing-library/react';
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { QueryClient, QueryClientProvider, onlineManager } from '@tanstack/react-query';
 import type { ReactNode } from 'react';
 import { agentQueryKeys } from '@/ui/lib/agents';
 import { useAgentAdminActions, type UseAgentAdminActionsOptions } from './useAgentAdminActions';
@@ -26,6 +26,7 @@ jest.mock('@/ui/lib/teams', () => ({
 
 const terminateSession = jest.fn();
 jest.mock('@/ui/lib/sessions', () => ({
+  agentSessionTreeKeyPrefix: ['agentSessionTree'],
   terminateSession: (...args: unknown[]) => terminateSession(...args),
 }));
 
@@ -206,6 +207,7 @@ describe('useAgentAdminActions — delete', () => {
     terminateSession.mockResolvedValue(undefined);
     const apiFetch = jest.fn().mockResolvedValue({ ok: true, json: async () => ({}) });
     const client = makeClient();
+    const invalidate = jest.spyOn(client, 'invalidateQueries');
     const { result } = renderHook(
       () => useAgentAdminActions(baseOptions({ apiFetch, activeSessions: [runningSession] })),
       { wrapper: wrapper(client) },
@@ -217,9 +219,11 @@ describe('useAgentAdminActions — delete', () => {
     });
 
     await waitFor(() => expect(result.current.pendingDeleteAgent).toBeNull());
-    expect(terminateSession).toHaveBeenCalledWith('s1', apiFetch);
+    expect(terminateSession).toHaveBeenCalledWith('s1', apiFetch, { expectedAgentId: 'a1' });
     expect(apiFetch).toHaveBeenCalledWith('/api/agents/a1', { method: 'DELETE' });
     expect(toast).toHaveBeenCalledWith({ title: 'Agent deleted' });
+    // Family session trees: the deleted agent's sessions move to a family member.
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ['agentSessionTree'] });
   });
 
   it('maps a 409 delete conflict to the running-agent message', async () => {
@@ -271,5 +275,172 @@ describe('useAgentAdminActions — quick-add', () => {
       expect.objectContaining({ method: 'POST' }),
     );
     expect(invalidate).toHaveBeenCalledWith({ queryKey: ['teams', 'p1'] });
+  });
+});
+
+describe('useAgentAdminActions — disable / enable', () => {
+  beforeEach(() => jest.clearAllMocks());
+
+  const running = [{ id: 's1', agentId: 'a1', status: 'running' }] as unknown as ActiveSession[];
+
+  afterEach(() => onlineManager.setOnline(true));
+
+  /** Both latest requests succeeded and show the agent offline. */
+  function seedOffline(client: QueryClient) {
+    client.setQueryData(['active-sessions', 'p1'], []);
+    client.setQueryData(['agent-presence', 'p1'], {});
+  }
+
+  /** A client whose latest session-list and presence requests succeeded with these answers. */
+  function clientWith(sessions: ActiveSession[] = [], presence: Record<string, unknown> = {}) {
+    const client = makeClient();
+    client.setQueryData(['active-sessions', 'p1'], sessions);
+    client.setQueryData(['agent-presence', 'p1'], presence);
+    return client;
+  }
+
+  it('disables an agent that is known to be offline at once with no dialog', async () => {
+    const apiFetch = jest.fn().mockResolvedValue(okJson({}));
+    const client = clientWith();
+    const invalidate = jest.spyOn(client, 'invalidateQueries');
+    const { result } = renderHook(() => useAgentAdminActions(baseOptions({ apiFetch })), {
+      wrapper: wrapper(client),
+    });
+
+    act(() => result.current.requestDisableAgent(agentA));
+
+    expect(result.current.pendingDisableAgent).toBeNull();
+    await waitFor(() =>
+      expect(apiFetch).toHaveBeenCalledWith('/api/agents/a1/disable', { method: 'POST' }),
+    );
+    await waitFor(() => expect(invalidate).toHaveBeenCalledWith({ queryKey: ['teams', 'p1'] }));
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ['teams', 'detail'] });
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ['agent-presence', 'p1'] });
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: agentQueryKeys.project('p1') });
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ['agentSessionTree'] });
+  });
+
+  it('asks first when the agent has a running session, then disables on confirm', async () => {
+    const apiFetch = jest.fn().mockResolvedValue(okJson({}));
+    const { result } = renderHook(() => useAgentAdminActions(baseOptions({ apiFetch })), {
+      wrapper: wrapper(clientWith(running, { a1: { online: true } })),
+    });
+
+    act(() => result.current.requestDisableAgent(agentA));
+    expect(result.current.pendingDisableAgent).toBe(agentA);
+    expect(apiFetch).not.toHaveBeenCalled();
+
+    act(() => result.current.handleConfirmDisable());
+    await waitFor(() =>
+      expect(apiFetch).toHaveBeenCalledWith('/api/agents/a1/disable', { method: 'POST' }),
+    );
+    await waitFor(() => expect(result.current.pendingDisableAgent).toBeNull());
+  });
+
+  it.each([
+    {
+      state: 'the session list failed and presence shows the agent online',
+      seed: (client: QueryClient) => {
+        client.setQueryData(['agent-presence', 'p1'], { a1: { online: true } });
+        client
+          .getQueryCache()
+          .build(client, { queryKey: ['active-sessions', 'p1'] })
+          .setState({ status: 'error', error: new Error('503'), data: [] });
+      },
+    },
+    {
+      state: 'the session list is empty but presence shows the agent online',
+      seed: (client: QueryClient) => {
+        client.setQueryData(['active-sessions', 'p1'], []);
+        client.setQueryData(['agent-presence', 'p1'], { a1: { online: true } });
+      },
+    },
+    {
+      state: 'presence failed',
+      seed: (client: QueryClient) => {
+        client.setQueryData(['active-sessions', 'p1'], []);
+        client
+          .getQueryCache()
+          .build(client, { queryKey: ['agent-presence', 'p1'] })
+          .setState({ status: 'error', error: new Error('503'), data: {} });
+      },
+    },
+    { state: 'no answer arrived yet', seed: () => {} },
+    ...(['active-sessions', 'agent-presence'] as const).flatMap((key) => [
+      {
+        state: `a refresh of ${key} is in flight after an offline answer`,
+        seed: (client: QueryClient) => {
+          seedOffline(client);
+          client
+            .getQueryCache()
+            .find({ queryKey: [key, 'p1'] })!
+            .setState({ fetchStatus: 'fetching' });
+        },
+      },
+      {
+        state: `the offline answer of ${key} is invalidated`,
+        seed: (client: QueryClient) => {
+          seedOffline(client);
+          void client.invalidateQueries({ queryKey: [key, 'p1'] });
+        },
+      },
+    ]),
+    {
+      state: 'the browser is disconnected after an offline answer',
+      seed: (client: QueryClient) => {
+        seedOffline(client);
+        onlineManager.setOnline(false);
+      },
+    },
+  ])('asks first when $state', ({ seed }) => {
+    const apiFetch = jest.fn().mockResolvedValue(okJson({}));
+    const client = makeClient();
+    seed(client);
+    const { result } = renderHook(() => useAgentAdminActions(baseOptions({ apiFetch })), {
+      wrapper: wrapper(client),
+    });
+
+    act(() => result.current.requestDisableAgent(agentA));
+
+    expect(result.current.pendingDisableAgent).toBe(agentA);
+    expect(apiFetch).not.toHaveBeenCalled();
+  });
+
+  it('enables without a dialog', async () => {
+    const apiFetch = jest.fn().mockResolvedValue(okJson({}));
+    const { result } = renderHook(
+      () => useAgentAdminActions(baseOptions({ apiFetch, activeSessions: running })),
+      { wrapper: wrapper(makeClient()) },
+    );
+
+    act(() => result.current.enableAgent(agentA));
+
+    await waitFor(() =>
+      expect(apiFetch).toHaveBeenCalledWith('/api/agents/a1/enable', { method: 'POST' }),
+    );
+    expect(result.current.pendingDisableAgent).toBeNull();
+  });
+
+  it('shows the server message when Disable fails and does not refresh the roster', async () => {
+    const apiFetch = jest.fn().mockResolvedValue({
+      ok: false,
+      status: 409,
+      json: async () => ({ message: 'Agent leads a team' }),
+    });
+    const client = clientWith();
+    const invalidate = jest.spyOn(client, 'invalidateQueries');
+    const { result } = renderHook(() => useAgentAdminActions(baseOptions({ apiFetch })), {
+      wrapper: wrapper(client),
+    });
+
+    act(() => result.current.requestDisableAgent(agentA));
+
+    await waitFor(() =>
+      expect(showError).toHaveBeenCalledWith({
+        title: 'Failed to disable agent',
+        description: 'Agent leads a team',
+      }),
+    );
+    expect(invalidate).not.toHaveBeenCalled();
   });
 });

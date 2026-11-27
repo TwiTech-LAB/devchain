@@ -3,6 +3,12 @@ import { axe } from 'jest-axe';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { InlineTerminalHeader } from './InlineTerminalHeader';
+import { agentSessionTreeKey, renameSession } from '@/ui/lib/sessions';
+
+jest.mock('@/ui/lib/sessions', () => ({
+  ...jest.requireActual('@/ui/lib/sessions'),
+  renameSession: jest.fn(),
+}));
 
 jest.mock('@/ui/components/session-reader/InlineSessionSummaryChip', () => {
   const actual = jest.requireActual('@/ui/components/session-reader/InlineSessionSummaryChip');
@@ -216,6 +222,31 @@ describe('InlineTerminalHeader', () => {
 
     fireEvent.click(screen.getByRole('button', { name: /Rename session/i }));
     expect(screen.getByRole('textbox', { name: /Session name/i })).toBeInTheDocument();
+  });
+
+  it('marks the session tree stale after a rename, so the switcher shows the new name', async () => {
+    jest.mocked(renameSession).mockResolvedValue(undefined as never);
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const treeKey = agentSessionTreeKey('agent-1', 'proj-1');
+    qc.setQueryData(treeKey, { pages: [], pageParams: [] });
+    render(
+      <QueryClientProvider client={qc}>
+        <InlineTerminalHeader
+          {...defaultProps}
+          sessionId={SESSION_ID}
+          sessionName="Old"
+          projectId="proj-1"
+        />
+      </QueryClientProvider>,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: /Rename session/i }));
+    const input = screen.getByRole('textbox', { name: /Session name/i });
+    fireEvent.change(input, { target: { value: 'New' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+
+    await waitFor(() => expect(qc.getQueryState(treeKey)?.isInvalidated).toBe(true));
+    expect(renameSession).toHaveBeenCalledWith(SESSION_ID, 'proj-1', 'New', expect.anything());
   });
 
   it('exits edit mode on Escape', () => {

@@ -1,4 +1,5 @@
 import { applyProviderCliNoUpdate } from '../../adapters/provider-cli-policy';
+import { sessionLaunchEnv } from '../../utils/launch-env-rules';
 import { Injectable } from '@nestjs/common';
 import * as path from 'path';
 import type { Provider } from '../../../storage/models/domain.models';
@@ -118,8 +119,8 @@ export class CliMcpRegistrationAdapter implements McpRegistrationAdapter {
     const cliAdapter = this.getCliAdapter(provider);
     const args = cliAdapter.removeMcpServer(alias);
     return this.execute(provider.name, resolution.binaryPath, args, {
+      ...execOptions,
       timeoutMs: execOptions?.timeoutMs ?? 10_000,
-      cwd: execOptions?.cwd,
     });
   }
 
@@ -189,12 +190,14 @@ export class CliMcpRegistrationAdapter implements McpRegistrationAdapter {
     execOptions?: McpExecOptions,
   ): Promise<EnsureRegistrationResult> {
     const listResult = await this.list(provider, execOptions);
+    // Output read in a session environment can name that environment's paths or keys.
+    const quiet = execOptions?.env !== undefined;
 
     logger.info(
       {
         providerId: provider.id,
         success: listResult.success,
-        entries: listResult.entries,
+        ...(quiet ? { entryCount: listResult.entries.length } : { entries: listResult.entries }),
       },
       'MCP list registrations result',
     );
@@ -215,7 +218,11 @@ export class CliMcpRegistrationAdapter implements McpRegistrationAdapter {
       }
 
       logger.info(
-        { provider: provider.name, existing: existing.endpoint, expected: options.endpoint },
+        {
+          provider: provider.name,
+          ...(quiet ? {} : { existing: existing.endpoint }),
+          expected: options.endpoint,
+        },
         'MCP endpoint mismatch, removing and re-adding',
       );
 
@@ -283,7 +290,13 @@ export class CliMcpRegistrationAdapter implements McpRegistrationAdapter {
   ): Promise<McpCommandResult> {
     // MCP CLI commands (add/list/remove) all run pipe-safe: they exit 0/non-zero
     // reliably and emit machine-readable output without requiring a TTY.
-    const command = applyProviderCliNoUpdate(providerName, [binaryPath, ...args], process.env);
+    // A session environment gets the session's launch environment, so the CLI reads the account
+    // the session will use (for example without an inherited COPILOT_HOME that launch clears).
+    const baseEnv =
+      options?.env === undefined
+        ? process.env
+        : sessionLaunchEnv(this.adapterFactory.getAdapter(providerName), options.env);
+    const command = applyProviderCliNoUpdate(providerName, [binaryPath, ...args], baseEnv);
     const result = await this.executor.run({
       argv: command.argv,
       env: command.env,
@@ -304,8 +317,15 @@ export class CliMcpRegistrationAdapter implements McpRegistrationAdapter {
     }
 
     if (!result.success) {
+      // In a session environment the child's stderr can echo that environment's values.
       logger.warn(
-        { binaryPath, args, code: result.exitCode, stderr: result.stderr },
+        options?.env === undefined
+          ? { binaryPath, args, code: result.exitCode, stderr: result.stderr }
+          : {
+              provider: providerName,
+              operation: args.slice(0, 2).join(' '),
+              code: result.exitCode,
+            },
         'MCP command exited with error',
       );
     }

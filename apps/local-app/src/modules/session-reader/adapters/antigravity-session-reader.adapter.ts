@@ -28,8 +28,13 @@ import type {
   IncrementalResult,
 } from './session-reader-adapter.interface';
 import { EXACT_SUMMARY_FIELDS } from './session-reader-adapter.interface';
-import type { UnifiedSession, UnifiedMessage } from '../dtos/unified-session.types';
+import type {
+  UnifiedSession,
+  UnifiedMessage,
+  UnifiedToolResult,
+} from '../dtos/unified-session.types';
 import { PRICING_SERVICE, type PricingServiceInterface } from '../services/pricing.interface';
+import { PROVIDER_TRANSCRIPT_SOURCE_KINDS } from '../services/transcript-path-validator.service';
 import { ValidationError } from '../../../common/errors/error-types';
 import { AntigravityTranscriptReader } from '../readers/antigravity-transcript.reader';
 import { AntigravityMetricsReader } from '../readers/antigravity-metrics.reader';
@@ -67,7 +72,7 @@ interface RawHistoryEntry {
 export class AntigravitySessionReaderAdapter implements SessionReaderAdapter {
   readonly providerName = 'agy';
   readonly incrementalMode = 'snapshot' as const;
-  readonly sourceKind = 'db' as const;
+  readonly sourceKind = PROVIDER_TRANSCRIPT_SOURCE_KINDS[this.providerName];
   readonly allowedRoots: string[];
 
   private readonly logger = new Logger(AntigravitySessionReaderAdapter.name);
@@ -140,6 +145,14 @@ export class AntigravitySessionReaderAdapter implements SessionReaderAdapter {
     const { session } = await this.reader.readSession(dbPath, convId);
     this.applyTokenMetrics(session, dbPath, convId);
     return session;
+  }
+
+  async readFullToolResult(
+    sourceRef: SessionSourceRef,
+    toolCallId: string,
+  ): Promise<UnifiedToolResult | null> {
+    const convId = this.requireConversationId(sourceRef.providerSessionId);
+    return this.reader.readToolResult(this.resolveDbPath(sourceRef), convId, toolCallId);
   }
 
   async getSummary(sourceRef: SessionSourceRef) {

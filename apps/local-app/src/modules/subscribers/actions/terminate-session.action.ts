@@ -187,10 +187,11 @@ async function terminateFamilySessions(
         previousStatus: session.status,
       };
       try {
-        await sessionsService.terminateSession(session.id, {
-          source: 'subscriber',
-          reason: 'user-requested',
-        });
+        await sessionsService.terminateSession(
+          session.id,
+          { source: 'subscriber', reason: 'user-requested' },
+          { expectedAgentId: target.id },
+        );
         data.terminated.push(result);
       } catch (error) {
         data.failed.push({ ...result, error: getErrorMessage(error) });
@@ -290,7 +291,7 @@ export const terminateSessionAction: ActionDefinition = {
       if (targetMode === 'agentName') {
         let agent: Agent;
         try {
-          agent = await storage.getAgentByName(projectId, agentName);
+          agent = await storage.getAgentByName(projectId, agentName, { excludeDisabled: true });
         } catch {
           return {
             success: false,
@@ -349,10 +350,12 @@ export const terminateSessionAction: ActionDefinition = {
       if (busyTarget) {
         return busySkippedResult([busyTarget]);
       }
-      await sessionsService.terminateSession(sessionId, {
-        source: 'subscriber',
-        reason: 'user-requested',
-      });
+      // An agent-name target stays with that agent; the event's own session follows its owner.
+      await sessionsService.terminateSession(
+        sessionId,
+        { source: 'subscriber', reason: 'user-requested' },
+        { expectedAgentId: targetMode === 'agentName' ? resolvedAgentId : undefined },
+      );
 
       const resultData: TerminateSessionResultData = {
         resolvedBy: targetMode,

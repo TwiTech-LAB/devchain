@@ -5,6 +5,7 @@ export function createMockAgent(overrides: Partial<Agent> = {}): Agent {
     id: 'agent-test-1',
     projectId: 'project-test-1',
     isProjectOwner: false,
+    disabled: false,
     profileId: 'profile-test-1',
     providerConfigId: 'config-test-1',
     modelOverride: null,

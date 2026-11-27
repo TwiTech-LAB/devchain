@@ -4,6 +4,13 @@ import type { McpServerEntry } from '../../adapters/provider-adapter.interface';
 export interface McpExecOptions {
   cwd?: string;
   timeoutMs?: number;
+  /**
+   * The session's environment (provider env, then config env). The provider CLI runs with the
+   * session's launch environment built from it (`sessionLaunchEnv`), and a home-relative
+   * registration file resolves from it. Omitted, `process.env` alone. It can hold secrets: pass
+   * it only to the child process, never to a log or an error.
+   */
+  env?: Readonly<Record<string, string>>;
 }
 
 export interface McpRegisterOptions {

@@ -1,15 +1,20 @@
 import type { AgentsController } from '@/modules/agents/controllers/agents.controller';
 import { useCallback, useMemo, useState } from 'react';
-import { useMutation, useQueryClient } from '@tanstack/react-query';
+import { onlineManager, useMutation, useQueryClient, type QueryState } from '@tanstack/react-query';
 import { agentQueryKeys } from '@/ui/lib/agents';
 import { getErrorMessage, useToastHelpers } from '@/ui/lib/toast-helpers';
 import { chatQueryKeys, type AgentOrGuest } from '@/ui/hooks/useChatQueries';
 import { teamsQueryKeys } from '@/ui/lib/teams';
-import { terminateSession } from '@/ui/lib/sessions';
-import type { ActiveSession } from '@/ui/lib/sessions';
+import { agentSessionTreeKeyPrefix, terminateSession } from '@/ui/lib/sessions';
+import type { ActiveSession, AgentPresenceMap } from '@/ui/lib/sessions';
 import type { QuickAddPayload } from '@/ui/components/chat/TeamQuickAddButton';
 
 type FetchFn = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+
+/** The latest request succeeded, and no newer request is in flight or due. */
+function isCurrentAnswer<T>(state: QueryState<T> | undefined): state is QueryState<T> {
+  return state?.status === 'success' && state.fetchStatus === 'idle' && !state.isInvalidated;
+}
 
 export interface CloneAgentRequest {
   agent: AgentOrGuest;
@@ -40,6 +45,14 @@ export interface UseAgentAdminActionsResult {
   pendingDeleteHasSession: boolean;
   handleConfirmDelete: () => void;
   deletingAgent: boolean;
+  // Disable / Enable
+  /** Disables at once only for an agent known to be offline; otherwise opens the confirmation first. */
+  requestDisableAgent: (agent: AgentOrGuest) => void;
+  pendingDisableAgent: AgentOrGuest | null;
+  cancelDisableAgent: () => void;
+  handleConfirmDisable: () => void;
+  disablingAgent: boolean;
+  enableAgent: (agent: AgentOrGuest) => void;
   // Quick-add
   handleAddTeamAgent: (payload: QuickAddPayload) => void;
 }
@@ -207,7 +220,9 @@ export function useAgentAdminActions({
         (s) => s.agentId === agentId && s.status === 'running',
       );
       if (agentSessions.length > 0) {
-        await Promise.all(agentSessions.map((s) => terminateSession(s.id, apiFetch)));
+        await Promise.all(
+          agentSessions.map((s) => terminateSession(s.id, apiFetch, { expectedAgentId: agentId })),
+        );
       }
       const res = await apiFetch(`/api/agents/${agentId}`, { method: 'DELETE' });
       if (!res.ok) {
@@ -225,6 +240,8 @@ export function useAgentAdminActions({
       setPendingDeleteAgent(null);
       toast({ title: 'Agent deleted' });
       invalidateAgentAndTeamCaches();
+      // The deleted agent's stopped sessions move to a family member.
+      void queryClient.invalidateQueries({ queryKey: agentSessionTreeKeyPrefix });
     },
     onError: (error) => {
       showError({
@@ -241,6 +258,77 @@ export function useAgentAdminActions({
     if (!pendingDeleteAgent) return;
     deleteAgentMutation.mutate(pendingDeleteAgent.id);
   }, [pendingDeleteAgent, deleteAgentMutation]);
+
+  // ── Disable / Enable agent ──
+  const [pendingDisableAgent, setPendingDisableAgent] = useState<AgentOrGuest | null>(null);
+
+  const setAgentDisabledMutation = useMutation({
+    mutationFn: async (payload: { agentId: string; action: 'disable' | 'enable' }) => {
+      const res = await apiFetch(`/api/agents/${payload.agentId}/${payload.action}`, {
+        method: 'POST',
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.message ?? `Failed to ${payload.action} agent`);
+      }
+    },
+    onSuccess: (_data, { action }) => {
+      setPendingDisableAgent(null);
+      invalidateAgentAndTeamCaches();
+      // Turning an agent off stops its session: family trees show its running state.
+      void queryClient.invalidateQueries({ queryKey: agentSessionTreeKeyPrefix });
+      toast({ title: action === 'disable' ? 'Agent disabled' : 'Agent enabled' });
+    },
+    onError: (error, { action }) => {
+      setPendingDisableAgent(null);
+      showError({
+        title: `Failed to ${action} agent`,
+        description: getErrorMessage(error, 'Unknown error'),
+      });
+    },
+  });
+  const mutateDisabled = setAgentDisabledMutation.mutate;
+
+  // Disable at once only for an agent that is known to be offline: the browser
+  // is connected, and the latest presence and session-list requests both
+  // succeeded, are settled, and show no session. A failed, missing or
+  // invalidated answer, a refresh in flight, or two answers that disagree asks
+  // first. A cached answer says nothing while a newer one is on its way, and a
+  // disconnected browser would send the request later, on reconnect.
+  const requestDisableAgent = useCallback(
+    (agent: AgentOrGuest) => {
+      const sessions = queryClient.getQueryState<ActiveSession[]>(
+        chatQueryKeys.activeSessions(projectId),
+      );
+      const presence = queryClient.getQueryState<AgentPresenceMap>(
+        chatQueryKeys.agentPresence(projectId),
+      );
+      const confirmedOffline =
+        onlineManager.isOnline() &&
+        isCurrentAnswer(sessions) &&
+        isCurrentAnswer(presence) &&
+        !sessions.data?.some((s) => s.agentId === agent.id && s.status === 'running') &&
+        presence.data?.[agent.id]?.online !== true;
+      if (!confirmedOffline) {
+        setPendingDisableAgent(agent);
+        return;
+      }
+      mutateDisabled({ agentId: agent.id, action: 'disable' });
+    },
+    [mutateDisabled, projectId, queryClient],
+  );
+
+  const cancelDisableAgent = useCallback(() => setPendingDisableAgent(null), []);
+
+  const handleConfirmDisable = useCallback(() => {
+    if (!pendingDisableAgent) return;
+    mutateDisabled({ agentId: pendingDisableAgent.id, action: 'disable' });
+  }, [pendingDisableAgent, mutateDisabled]);
+
+  const enableAgent = useCallback(
+    (agent: AgentOrGuest) => mutateDisabled({ agentId: agent.id, action: 'enable' }),
+    [mutateDisabled],
+  );
 
   // ── Quick-add team agent ──
   const createTeamAgentMutation = useMutation({
@@ -301,6 +389,12 @@ export function useAgentAdminActions({
     pendingDeleteHasSession,
     handleConfirmDelete,
     deletingAgent: deleteAgentMutation.isPending,
+    requestDisableAgent,
+    pendingDisableAgent,
+    cancelDisableAgent,
+    handleConfirmDisable,
+    disablingAgent: setAgentDisabledMutation.isPending,
+    enableAgent,
     handleAddTeamAgent,
   };
 }

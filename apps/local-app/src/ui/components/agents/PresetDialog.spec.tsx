@@ -25,7 +25,7 @@ global.fetch = mockFetch;
 const mockProfileConfigs = (
   profileConfigs: Record<
     string,
-    Array<{ id: string; name: string; providerId?: string; model?: string }>
+    Array<{ id: string; name: string; providerId?: string; model?: string; options?: string }>
   >,
   providerModels: Record<string, Array<{ id?: string; name: string }>> = {},
   providerEfforts: Record<
@@ -906,6 +906,65 @@ describe('PresetDialog', () => {
 
       const effortSelect = await screen.findByTestId('preset-effort-select-agent-1');
       expect(effortSelect).not.toBeDisabled();
+    });
+
+    const OPENCODE_EFFORTS = {
+      efforts: [{ name: 'high' }],
+      supportsEffort: true,
+      requiresModelForEffort: true,
+    };
+
+    it('enables the effort selector when requiresModelForEffort and the raw options carry --model', async () => {
+      mockProfileConfigs(
+        {
+          'profile-1': [
+            { id: 'config-1', name: 'claude-config', providerId: 'provider-1' },
+            {
+              id: 'config-2',
+              name: 'codex-config',
+              providerId: 'provider-1',
+              options: '--model zed/sonnet',
+            },
+          ],
+        },
+        { 'provider-1': [{ id: 'm1', name: 'opus' }] },
+        { 'provider-1': OPENCODE_EFFORTS },
+      );
+      renderWithQueryClient(<PresetDialog {...defaultProps} agents={effortAgents} />);
+
+      const reviewerEffortSelect = await screen.findByTestId('preset-effort-select-agent-2');
+      expect(reviewerEffortSelect).not.toBeDisabled();
+    });
+
+    it('clears the effort override when Model -> Default leaves no model', async () => {
+      setupEffortMocks(OPENCODE_EFFORTS);
+      renderWithQueryClient(<PresetDialog {...defaultProps} agents={effortAgents} />);
+
+      const coderEffortSelect = await screen.findByTestId('preset-effort-select-agent-1');
+      await waitFor(() => expect(coderEffortSelect).toHaveTextContent('high'));
+
+      await userEvent.click(screen.getByTestId('preset-model-select-agent-1'));
+      await userEvent.click(await screen.findByRole('option', { name: 'Default' }));
+
+      await waitFor(() => expect(coderEffortSelect).toBeDisabled());
+      expect(coderEffortSelect).not.toHaveTextContent('high');
+
+      await userEvent.type(await screen.findByLabelText('Name *'), 'cleared-effort');
+      const saveButton = screen.getByRole('button', { name: 'Save Preset' });
+      await waitFor(() => expect(saveButton).toBeEnabled());
+      await userEvent.click(saveButton);
+
+      await waitFor(() => {
+        expect(findCreateBody().agentConfigs).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({
+              agentName: 'Coder',
+              modelOverride: null,
+              effortOverride: null,
+            }),
+          ]),
+        );
+      });
     });
 
     it('disables the effort selector when requiresModelForEffort and no model is resolvable', async () => {

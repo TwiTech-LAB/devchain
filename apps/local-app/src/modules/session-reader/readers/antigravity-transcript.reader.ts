@@ -15,9 +15,10 @@
 
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
-import type { UnifiedSession } from '../dtos/unified-session.types';
+import type { UnifiedSession, UnifiedToolResult } from '../dtos/unified-session.types';
 import type { PricingServiceInterface } from '../services/pricing.interface';
 import { parseAntigravityJsonl } from '../parsers/antigravity-jsonl.parser';
+import { findToolResult } from '../adapters/utils/tool-result-fold';
 
 const PROVIDER_NAME = 'agy';
 
@@ -87,6 +88,22 @@ export class AntigravityTranscriptReader {
 
     const freshness = await this.getFreshness(dbPath, convId);
     return { session, sizeBytes: parsed.bytesRead, freshness };
+  }
+
+  /**
+   * One tool result of `convId`, read again from the JSONL without the output cap.
+   * Tool call ids come from the parser's step order and result pairing, so the parser maps
+   * the file again; only the selected output is kept whole, and nothing else is returned.
+   */
+  async readToolResult(
+    dbPath: string,
+    convId: string,
+    toolCallId: string,
+  ): Promise<UnifiedToolResult | null> {
+    const parsed = await parseAntigravityJsonl(this.resolveJsonlPath(dbPath, convId), {
+      fullOutputToolCallId: toolCallId,
+    });
+    return findToolResult(parsed.messages, toolCallId) ?? null;
   }
 
   /**

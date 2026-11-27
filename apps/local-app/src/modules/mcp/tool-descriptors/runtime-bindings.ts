@@ -10,6 +10,7 @@ import { teamBindings } from './team.bindings';
 import { reviewBindings } from './review.bindings';
 import { worktreeBindings } from './worktree.bindings';
 import { vaultBindings } from './vault.bindings';
+import { externalTaskBindings } from './external-task.bindings';
 
 export const allBindingGroups = Object.freeze([
   sessionBindings,
@@ -24,6 +25,7 @@ export const allBindingGroups = Object.freeze([
   reviewBindings,
   worktreeBindings,
   vaultBindings,
+  externalTaskBindings,
 ]);
 
 export const allBindingDefinitions = Object.freeze(allBindingGroups.flat());

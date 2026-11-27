@@ -10,7 +10,10 @@ import { SettingsService } from '../../settings/services/settings.service';
 import { STORAGE_SERVICE, type AgentStorage } from '../../storage/interfaces/storage.interface';
 import { createLogger } from '../../../common/logging/logger';
 import { TerminalIOService } from '../../terminal/services/terminal-io/terminal-io.service';
-import { ShellForegroundError } from '../../terminal/services/terminal-io/delivery';
+import {
+  DeliveryRefusedError,
+  ShellForegroundError,
+} from '../../terminal/services/terminal-io/delivery';
 import { ProviderAdapterFactory } from '../../providers/adapters/provider-adapter.factory';
 import {
   type MessagePoolConfig,
@@ -27,6 +30,7 @@ import {
   type FailureDisclosurePolicy,
   type MessageLogEntry,
   type PoolDetails,
+  AGENT_DISABLED_DELIVERY_ERROR,
 } from './message-pool.types';
 import type { SessionActivityChangedEventPayload } from '../../events/catalog/session.activity.changed';
 import type { SessionStoppedEventPayload } from '../../events/catalog/session.stopped';
@@ -103,6 +107,7 @@ interface ResolvedEnqueueInput {
   readonly deferWhileHumanTyping: boolean;
   readonly humanPromptSubmit: boolean;
   readonly outsideText: boolean;
+  readonly admissionFence?: number;
 }
 
 type DeferredClaimOutcome = 'delivered' | 'unconfirmed' | 'deferred' | 'failed';
@@ -140,6 +145,7 @@ export type ManualHumanHoldReleaseResult =
 
 export const HUMAN_DRAFT_IDLE_GRACE_MS = 2_000;
 export const FORCE_ELIGIBLE_DELAY_MS = 30_000;
+const FORCE_REFUSED_DISABLED_REASON = 'Agent is disabled';
 
 function canStartDeferredClaimMutation(claim: DeferredLaneClaim): boolean {
   return claim.state.phase === 'preparing' && !claim.state.cancellationReason;
@@ -169,6 +175,7 @@ const DEFAULT_CONFIG: MessagePoolConfig = {
 @Injectable()
 export class SessionsMessagePoolService implements OnModuleDestroy {
   private pools = new Map<string, AgentPool>();
+  private readonly disableFences = new Map<string, number>();
   private deferredLanes = new Map<string, AgentDeferredLane>();
   private config: MessagePoolConfig;
   private closing = false;
@@ -296,6 +303,10 @@ export class SessionsMessagePoolService implements OnModuleDestroy {
     } = options;
 
     const { projectId, agentName } = await this.resolveProjectInfo(agentId, options);
+    // No await between this check and the pool push below, so a Disable that commits later
+    // finds the message in the pool and discards it.
+    const refused = this.refuseDisabledAgent(agentId, options.admissionFence);
+    if (refused) return refused;
     const logEntryId = randomUUID();
     const timestamp = Date.now();
     const deliveryMode = this.resolveDeliveryMode(options);
@@ -318,6 +329,7 @@ export class SessionsMessagePoolService implements OnModuleDestroy {
       deferWhileHumanTyping: options.deferWhileHumanTyping === true,
       humanPromptSubmit: options.humanPromptSubmit === true,
       outsideText: options.outsideText === true,
+      admissionFence: options.admissionFence,
     };
 
     if (options.commandGuard) {
@@ -352,12 +364,17 @@ export class SessionsMessagePoolService implements OnModuleDestroy {
       this.recordEnqueued(this.createLogEntry(input, true));
 
       try {
-        const delivery = await this.deliverMessage(agentId, text, submitKeys, {
-          skipConfirmation: immediateDelivery,
-          preKeys,
-          preDelayMs,
-          outsideText: input.outsideText,
-        });
+        const delivery = await this.coordinator.withAgentLock(agentId, async () =>
+          this.refuseDisabledAgent(agentId, input.admissionFence)
+            ? null
+            : this.deliverMessageUnderAgentLock(agentId, text, submitKeys, {
+                skipConfirmation: immediateDelivery,
+                preKeys,
+                preDelayMs,
+                outsideText: input.outsideText,
+              }),
+        );
+        if (!delivery) return this.refuseImmediateAsDisabled(logEntryId);
         return this.recordImmediateDelivered(logEntryId, delivery);
       } catch (error) {
         return this.recordImmediateFailed(input, error);
@@ -450,6 +467,8 @@ export class SessionsMessagePoolService implements OnModuleDestroy {
     commandGuard: NonNullable<EnqueueOptions['commandGuard']>,
   ): Promise<EnqueueResult> {
     return this.coordinator.withAgentLock(input.agentId, async () => {
+      const refused = this.refuseDisabledAgent(input.agentId, input.admissionFence);
+      if (refused) return refused;
       const activeSession = this.sessions.getActiveSessionForAgent(input.agentId);
       let error: CommandGuardError | undefined;
       if (!activeSession || activeSession.id !== commandGuard.sessionId) {
@@ -533,6 +552,8 @@ export class SessionsMessagePoolService implements OnModuleDestroy {
   private async enqueueSerializedUnderAgentLock(
     input: ResolvedEnqueueInput,
   ): Promise<EnqueueResult> {
+    const refused = this.refuseDisabledAgent(input.agentId, input.admissionFence);
+    if (refused) return refused;
     const duplicate = this.findDuplicate(input);
     if (duplicate) return duplicate;
 
@@ -586,7 +607,7 @@ export class SessionsMessagePoolService implements OnModuleDestroy {
 
   private recordImmediateDelivered(
     logEntryId: string,
-    delivery: Awaited<ReturnType<SessionsMessagePoolService['deliverMessage']>>,
+    delivery: Awaited<ReturnType<SessionsMessagePoolService['deliverMessageUnderAgentLock']>>,
   ): EnqueueResult {
     const status = delivery.unconfirmed ? 'unconfirmed' : 'delivered';
     const deliveredAt = Date.now();
@@ -607,6 +628,9 @@ export class SessionsMessagePoolService implements OnModuleDestroy {
   }
 
   private recordImmediateFailed(input: ResolvedEnqueueInput, error: unknown): EnqueueResult {
+    if (error instanceof DeliveryRefusedError) {
+      return this.refuseImmediateAsDisabled(input.logEntryId);
+    }
     const errorMsg = error instanceof Error ? error.message : String(error);
     const failure = classifyDeliveryFailure(
       input.failureDisclosure,
@@ -840,6 +864,54 @@ export class SessionsMessagePoolService implements OnModuleDestroy {
     }, delayMs);
   }
 
+  /**
+   * Fails every message waiting in the agent's pool, so none of them reaches a session that
+   * starts after Enable. Deferred lanes need no call: they fail when their session stops.
+   */
+  async discardPooledMessages(agentId: string): Promise<number> {
+    return this.coordinator.withAgentLock(agentId, async () =>
+      this.discardPoolUnderAgentLock(agentId),
+    );
+  }
+
+  /** Current disable fence of the agent; see {@link EnqueueOptions.admissionFence}. */
+  getAdmissionFence(agentId: string): number {
+    return this.disableFences.get(agentId) ?? 0;
+  }
+
+  /** Call once the disabled flag is written: refuses messages admitted against an older fence. */
+  advanceDisableFence(agentId: string): void {
+    this.disableFences.set(agentId, this.getAdmissionFence(agentId) + 1);
+  }
+
+  private discardPoolUnderAgentLock(agentId: string): number {
+    const pool = this.pools.get(agentId);
+    if (!pool || pool.messages.length === 0) return 0;
+    this.clearPoolTimers(pool);
+    this.pools.delete(agentId);
+    this.failAsDisabled(pool.messages.map((message) => message.logEntryId));
+    this.broadcastPoolsUpdate();
+    logger.info({ agentId, count: pool.messages.length }, 'Discarded pooled messages');
+    return pool.messages.length;
+  }
+
+  private failAsDisabled(logEntryIds: readonly string[]): void {
+    for (const logEntryId of logEntryIds) {
+      this.messageLog.update(logEntryId, {
+        status: 'failed',
+        error: AGENT_DISABLED_DELIVERY_ERROR,
+        failureCode: 'no_active_session',
+      });
+      const entry = this.messageLog.getById(logEntryId);
+      if (entry) this.activityStream.broadcastFailed(entry);
+    }
+  }
+
+  private refuseImmediateAsDisabled(logEntryId: string): EnqueueResult {
+    this.failAsDisabled([logEntryId]);
+    return { status: 'failed', error: AGENT_DISABLED_DELIVERY_ERROR, logEntryId };
+  }
+
   async flushNow(agentId: string): Promise<FlushResult> {
     while (true) {
       const step: { result: FlushResult } | { detachment: DeferredLaneDetachment } =
@@ -866,6 +938,11 @@ export class SessionsMessagePoolService implements OnModuleDestroy {
     const pool = this.pools.get(agentId);
     if (!pool || pool.messages.length === 0) {
       return { success: true, deliveredCount: 0 };
+    }
+    // Between the flag write and the session stop, the original session is still running.
+    if (this.storage.isAgentDisabled(agentId)) {
+      const discardedCount = this.discardPoolUnderAgentLock(agentId);
+      return { success: false, discardedCount, reason: AGENT_DISABLED_DELIVERY_ERROR };
     }
 
     this.clearPoolTimers(pool);
@@ -1133,12 +1210,15 @@ export class SessionsMessagePoolService implements OnModuleDestroy {
           quietSnapshot: null,
           forceSnapshot,
         });
-        return null;
+        return forceClaim ? null : { status: 'conflict', reason: FORCE_REFUSED_DISABLED_REASON };
       },
     );
     if (rejection) return rejection;
 
     const result = await this.deliverDeferredClaim(forceClaim!);
+    if (result.outcome === 'deferred' && this.storage.isAgentDisabled(agentId)) {
+      return { status: 'conflict', reason: FORCE_REFUSED_DISABLED_REASON };
+    }
     if (result.outcome === 'delivered') {
       return { status: 'delivered', deliveredCount: result.deliveredCount ?? 0 };
     }
@@ -1423,7 +1503,11 @@ export class SessionsMessagePoolService implements OnModuleDestroy {
       lane.sessionId !== expectedSessionId ||
       expectedSession?.status !== 'running' ||
       expectedSession.tmuxSessionId !== lane.tmuxSessionName ||
-      activeSession?.id !== expectedSessionId
+      activeSession?.id !== expectedSessionId ||
+      // Also checked where every claim starts; refusing here keeps the quiet-timer branches
+      // below from re-arming while the agent is disabled. Last, because it reads storage and
+      // most calls have no lane.
+      this.storage.isAgentDisabled(agentId)
     ) {
       return null;
     }
@@ -1468,11 +1552,16 @@ export class SessionsMessagePoolService implements OnModuleDestroy {
     });
   }
 
+  /**
+   * Returns null for a disabled agent: the lane and its timer stay as they are, and the stop
+   * that follows Disable fails the lane.
+   */
   private startDeferredClaimUnderAgentLock(
     agentId: string,
     lane: AgentDeferredLane,
     snapshots: Pick<DeferredLaneClaim, 'quietSnapshot' | 'forceSnapshot'>,
-  ): DeferredLaneClaim {
+  ): DeferredLaneClaim | null {
+    if (this.storage.isAgentDisabled(agentId)) return null;
     this.clearDeferredLaneTimer(lane);
     let resolveCompletion!: (failureLane: AgentDeferredLane | null) => void;
     const completion = new Promise<AgentDeferredLane | null>((resolve) => {
@@ -1878,6 +1967,8 @@ export class SessionsMessagePoolService implements OnModuleDestroy {
             claim.forceSnapshot ? undefined : quietSnapshot,
             {
               canStartMutation: () => {
+                // A claim can start before the flag write and reach the paste after it.
+                if (this.storage.isAgentDisabled(agentId)) return false;
                 if (!canStartDeferredClaimMutation(claim)) return false;
                 if (!claim.forceSnapshot) return true;
                 return this.humanPromptState.applyForceDelivery(
@@ -1898,6 +1989,7 @@ export class SessionsMessagePoolService implements OnModuleDestroy {
             postPasteDelayMs,
             followNote: batchFollowNote,
             inputPromptMarker,
+            firstMutationGuard: () => !this.storage.isAgentDisabled(agentId),
           });
       const cancellation = deferredClaimCancellationResult(claim, messages.length);
       if (cancellation) return cancellation;
@@ -1934,6 +2026,15 @@ export class SessionsMessagePoolService implements OnModuleDestroy {
         outcome: result.confirmed ? 'delivered' : 'unconfirmed',
       };
     } catch (error) {
+      if (error instanceof DeliveryRefusedError) {
+        this.failAsDisabled(messages.map((message) => message.logEntryId));
+        this.broadcastPoolsUpdate();
+        return {
+          success: false,
+          discardedCount: messages.length,
+          reason: AGENT_DISABLED_DELIVERY_ERROR,
+        };
+      }
       const errorMsg = error instanceof Error ? error.message : String(error);
       const cancellation = deferredClaimCancellationResult(claim, messages.length);
       if (cancellation) return cancellation;
@@ -1974,22 +2075,6 @@ export class SessionsMessagePoolService implements OnModuleDestroy {
     }
   }
 
-  private async deliverMessage(
-    agentId: string,
-    text: string,
-    submitKeys: string[],
-    opts?: {
-      skipConfirmation?: boolean;
-      preKeys?: string[];
-      preDelayMs?: number;
-      outsideText?: boolean;
-    },
-  ): Promise<{ nonce: string; unconfirmed?: boolean; skipped?: boolean; retryCount: number }> {
-    return this.coordinator.withAgentLock(agentId, () =>
-      this.deliverMessageUnderAgentLock(agentId, text, submitKeys, opts),
-    );
-  }
-
   private async deliverMessageUnderAgentLock(
     agentId: string,
     text: string,
@@ -2016,6 +2101,8 @@ export class SessionsMessagePoolService implements OnModuleDestroy {
     const postPasteDelayMs = behavior.postPasteDelayMs;
     const followNote = behavior.followNote === true && opts?.outsideText !== true;
     const inputPromptMarker = behavior.inputPromptMarker;
+    // Disable writes the flag without this lock, so it can land during the awaits above.
+    const firstMutationGuard = () => !this.storage.isAgentDisabled(agentId);
     if (opts?.skipConfirmation) {
       const delivery = await this.terminalIO.deliverImmediate(
         { name: session.tmuxSessionId },
@@ -2028,6 +2115,7 @@ export class SessionsMessagePoolService implements OnModuleDestroy {
           preDelayMs: opts.preDelayMs,
           followNote,
           inputPromptMarker,
+          firstMutationGuard,
         },
       );
       return {
@@ -2047,6 +2135,7 @@ export class SessionsMessagePoolService implements OnModuleDestroy {
       preDelayMs: opts?.preDelayMs,
       followNote,
       inputPromptMarker,
+      firstMutationGuard,
     });
     return {
       nonce: delivery.nonce,
@@ -2124,6 +2213,14 @@ export class SessionsMessagePoolService implements OnModuleDestroy {
   private broadcastPoolsUpdate(): void {
     const pools = this.getPoolDetails();
     this.activityStream.broadcastPoolsUpdated(pools);
+  }
+
+  private refuseDisabledAgent(agentId: string, admissionFence?: number): EnqueueResult | null {
+    const staleFence =
+      admissionFence !== undefined && admissionFence !== this.getAdmissionFence(agentId);
+    if (!staleFence && !this.storage.isAgentDisabled(agentId)) return null;
+    logger.debug({ agentId, staleFence }, 'Refused message for a disabled agent');
+    return { status: 'failed', error: AGENT_DISABLED_DELIVERY_ERROR };
   }
 
   private async resolveProjectInfo(

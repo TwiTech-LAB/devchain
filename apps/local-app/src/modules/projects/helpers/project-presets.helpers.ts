@@ -1,6 +1,8 @@
 import { firstPresetTeamEntries, presetNameKey, type PresetTeamConfigs } from '@devchain/shared';
 import { NotFoundError, ValidationError } from '../../../common/errors/error-types';
 import { createLogger } from '../../../common/logging/logger';
+import type { EventsService } from '../../events/services/events.service';
+import { publishAgentsUpdated } from '../../events/catalog/agent.updated';
 import type { TemplatePresetDto } from '../../settings/dtos/settings.dto';
 import type { SettingsService } from '../../settings/services/settings.service';
 import type {
@@ -29,6 +31,7 @@ interface PresetMatchDeps {
 interface PresetDeps extends PresetMatchDeps {
   settings: SettingsService;
   teamsService: Pick<TeamsService, 'listTeams' | 'getTeam' | 'updateTeam'>;
+  eventsService?: Pick<EventsService, 'publish'>;
 }
 
 export interface ApplyPresetResult {
@@ -199,7 +202,7 @@ export async function doesProjectMatchPresetWithHelper(
 export async function applyAgentConfigs(
   projectId: string,
   agentConfigs: PresetAgentConfig[],
-  deps: Pick<PresetDeps, 'storage'>,
+  deps: Pick<PresetDeps, 'storage' | 'eventsService'>,
   nameMaps?: ApplyPresetNameMaps,
 ): Promise<{ applied: number; warnings: string[] }> {
   const warnings: string[] = [];
@@ -212,58 +215,69 @@ export async function applyAgentConfigs(
   let applied = 0;
   const agentsById = new Map(agentsRes.items.map((agent) => [agent.id, agent]));
 
-  for (const agentConfig of agentConfigs) {
-    const agentId = agentNameToId.get(presetNameKey(agentConfig.agentName));
-    if (!agentId) {
-      warnings.push(`Agent "${agentConfig.agentName}" not found in project`);
-      continue;
-    }
+  // Repeated entries may name the same agent: one event per agent, sent after the loop so it
+  // carries the final values. Writes that committed before a failed one still get theirs.
+  const updatedAgentIds = new Set<string>();
+  try {
+    for (const agentConfig of agentConfigs) {
+      const agentId = agentNameToId.get(presetNameKey(agentConfig.agentName));
+      if (!agentId) {
+        warnings.push(`Agent "${agentConfig.agentName}" not found in project`);
+        continue;
+      }
 
-    const agent = agentsById.get(agentId);
-    if (!agent) {
-      continue;
-    }
+      const agent = agentsById.get(agentId);
+      if (!agent) {
+        continue;
+      }
 
-    const lookupKey = buildProviderConfigLookupKey(agent.profileId, agentConfig.providerConfigName);
-    const providerConfigId = configLookupMap.get(lookupKey);
-
-    if (!providerConfigId) {
-      warnings.push(
-        `Provider config "${agentConfig.providerConfigName}" not found for agent "${agentConfig.agentName}"`,
+      const lookupKey = buildProviderConfigLookupKey(
+        agent.profileId,
+        agentConfig.providerConfigName,
       );
-      continue;
-    }
+      const providerConfigId = configLookupMap.get(lookupKey);
 
-    const updatePayload: {
-      providerConfigId: string;
-      modelOverride?: string | null;
-      effortOverride?: string | null;
-    } = {
-      providerConfigId,
-    };
-    if (agentConfig.modelOverride !== undefined) {
-      updatePayload.modelOverride = agentConfig.modelOverride;
-    }
-    if (agentConfig.effortOverride !== undefined) {
-      updatePayload.effortOverride = agentConfig.effortOverride;
-    }
-    await deps.storage.updateAgent(agentId, updatePayload);
-    applied++;
-    logger.debug(
-      {
-        projectId,
-        agentId,
-        agentName: agentConfig.agentName,
+      if (!providerConfigId) {
+        warnings.push(
+          `Provider config "${agentConfig.providerConfigName}" not found for agent "${agentConfig.agentName}"`,
+        );
+        continue;
+      }
+
+      const updatePayload: {
+        providerConfigId: string;
+        modelOverride?: string | null;
+        effortOverride?: string | null;
+      } = {
         providerConfigId,
-        ...(agentConfig.modelOverride !== undefined
-          ? { modelOverride: agentConfig.modelOverride }
-          : {}),
-        ...(agentConfig.effortOverride !== undefined
-          ? { effortOverride: agentConfig.effortOverride }
-          : {}),
-      },
-      'Applied agent config: updated agent provider config and overrides',
-    );
+      };
+      if (agentConfig.modelOverride !== undefined) {
+        updatePayload.modelOverride = agentConfig.modelOverride;
+      }
+      if (agentConfig.effortOverride !== undefined) {
+        updatePayload.effortOverride = agentConfig.effortOverride;
+      }
+      await deps.storage.updateAgent(agentId, updatePayload);
+      applied++;
+      updatedAgentIds.add(agentId);
+      logger.debug(
+        {
+          projectId,
+          agentId,
+          agentName: agentConfig.agentName,
+          providerConfigId,
+          ...(agentConfig.modelOverride !== undefined
+            ? { modelOverride: agentConfig.modelOverride }
+            : {}),
+          ...(agentConfig.effortOverride !== undefined
+            ? { effortOverride: agentConfig.effortOverride }
+            : {}),
+        },
+        'Applied agent config: updated agent provider config and overrides',
+      );
+    }
+  } finally {
+    await publishAgentsUpdated(deps.eventsService, projectId, updatedAgentIds);
   }
 
   return { applied, warnings };

@@ -5,6 +5,7 @@
  * No ImportContext reads/writes.
  */
 import { createLogger } from '../../../../common/logging/logger';
+import { groupNamesByProvider } from '../../../providers/utils/catalog-names';
 import type { ImportContext } from '../import-context';
 import type {
   CodecApplyResult,
@@ -31,13 +32,9 @@ export async function buildProviderEfforts(
     return [] as Array<{ providerName: string; efforts: string[] }>;
   }
 
-  const allEfforts = await storage.listProviderEffortsByProviderIds(providerIds);
-  const effortsByProviderId = new Map<string, string[]>();
-  for (const effort of allEfforts) {
-    const efforts = effortsByProviderId.get(effort.providerId) ?? [];
-    efforts.push(effort.name);
-    effortsByProviderId.set(effort.providerId, efforts);
-  }
+  const effortsByProviderId = groupNamesByProvider(
+    await storage.listProviderEffortsByProviderIds(providerIds),
+  );
 
   const result: Array<{ providerName: string; efforts: string[] }> = [];
   for (const [providerId, provider] of providersMap.entries()) {

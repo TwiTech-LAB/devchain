@@ -7,9 +7,16 @@ import { HealthService } from './services/health.service';
 import { FileSyncModule } from '../file-sync/file-sync.module';
 import { StorageModule } from '../storage/storage.module';
 import { VaultVmCacheModule } from '../vault/vault-vm-cache.module';
+import { IntegrationVmCacheModule } from '../external-integrations/vm-cache/integration-vm-cache.module';
 
 @Module({
-  imports: [FileSyncModule, StorageModule, ProviderCliStateModule, VaultVmCacheModule],
+  imports: [
+    FileSyncModule,
+    StorageModule,
+    ProviderCliStateModule,
+    VaultVmCacheModule,
+    IntegrationVmCacheModule,
+  ],
   controllers: [HealthController, RuntimeController, HostStatsController],
   providers: [HealthService],
   exports: [HealthService],

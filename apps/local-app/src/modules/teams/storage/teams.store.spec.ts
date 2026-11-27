@@ -1485,6 +1485,100 @@ describe('TeamsStore', () => {
     });
   });
 
+  describe('disabled members', () => {
+    let teamId: string;
+    let lead: string;
+    let enabled: string;
+    let enabled2: string;
+    let disabled: string;
+
+    beforeEach(async () => {
+      lead = await seedAgent(db, projectId, 'DisLead');
+      enabled = await seedAgent(db, projectId, 'DisEnabled');
+      enabled2 = await seedAgent(db, projectId, 'DisEnabled2');
+      disabled = await seedAgent(db, projectId, 'DisOff');
+      sqlite.prepare('UPDATE agents SET disabled = 1 WHERE id = ?').run(disabled);
+      const team = await store.createTeam({
+        projectId,
+        name: 'Disabled Team',
+        memberAgentIds: [lead, enabled, enabled2, disabled],
+        teamLeadAgentId: lead,
+        maxMembers: 3,
+      });
+      teamId = team.id;
+    });
+
+    it('returns every member by default and omits disabled ones on request, in all member reads', async () => {
+      const ids = (members: Array<{ agentId: string }>) => members.map((m) => m.agentId).sort();
+
+      expect(ids((await store.getTeam(teamId))!.members)).toEqual(
+        [lead, enabled, enabled2, disabled].sort(),
+      );
+      expect(ids((await store.getTeam(teamId, { excludeDisabledMembers: true }))!.members)).toEqual(
+        [lead, enabled, enabled2].sort(),
+      );
+
+      const listed = (options: { excludeDisabledMembers?: boolean }) =>
+        store.listTeams(projectId, { q: 'Disabled Team', ...options });
+      expect((await listed({})).items[0].memberCount).toBe(4);
+      expect((await listed({ excludeDisabledMembers: true })).items[0].memberCount).toBe(3);
+
+      const withMembers = async (options: { excludeDisabledMembers?: boolean }) =>
+        (await store.listTeamsWithMembers(projectId, options)).find((r) => r.team.id === teamId)!
+          .memberAgentIds;
+      expect((await withMembers({})).sort()).toEqual([lead, enabled, enabled2, disabled].sort());
+      expect((await withMembers({ excludeDisabledMembers: true })).sort()).toEqual(
+        [lead, enabled, enabled2].sort(),
+      );
+    });
+
+    it('keeps the seat of a disabled agent against the create-agent cap', async () => {
+      await expect(
+        store.createTeamAgentAtomicCapped({
+          teamId,
+          maxMembers: 3,
+          teamLeadAgentId: lead,
+          createAgentFn: async () => {
+            throw new Error('must not be reached');
+          },
+        }),
+      ).rejects.toThrow(TeamMemberCapReachedError);
+    });
+
+    it('does not count open sub-epics of a disabled agent as busy', async () => {
+      const now = new Date().toISOString();
+      const statusId = randomUUID();
+      await db.insert(statuses).values({
+        id: statusId,
+        projectId,
+        label: 'In Progress',
+        color: '#000',
+        position: 1,
+        createdAt: now,
+        updatedAt: now,
+      });
+      const insertEpic = async (agentId: string, parentId: string | null) => {
+        const id = randomUUID();
+        await db.insert(epics).values({
+          id,
+          projectId,
+          title: `E-${id.slice(0, 6)}`,
+          statusId,
+          parentId,
+          agentId,
+          createdAt: now,
+          updatedAt: now,
+        });
+        return id;
+      };
+      const parent = await insertEpic(lead, null);
+      await insertEpic(enabled, parent);
+      await insertEpic(disabled, parent);
+
+      expect(await store.countBusyTeamMembers(teamId, lead)).toBe(1);
+    });
+  });
+
   describe('createTeamAgentAtomicCapped', () => {
     it('throws TeamMemberCapReachedError when at cap', async () => {
       const agentA = await seedAgent(db, projectId, 'CapA');
@@ -1515,6 +1609,7 @@ describe('TeamsStore', () => {
             modelOverride: null,
             effortOverride: null,
             isProjectOwner: false,
+            disabled: false,
             name: 'CapC',
             description: null,
             createdAt: new Date().toISOString(),
@@ -1696,6 +1791,7 @@ describe('TeamsStore', () => {
                 modelOverride: null,
                 effortOverride: null,
                 isProjectOwner: false,
+                disabled: false,
                 name: 'RunnerCapAgent',
                 description: null,
                 createdAt: new Date().toISOString(),
@@ -1766,6 +1862,7 @@ describe('TeamsStore', () => {
             modelOverride: null,
             effortOverride: null,
             isProjectOwner: false,
+            disabled: false,
             name: 'CapErrNew',
             description: null,
             createdAt: new Date().toISOString(),

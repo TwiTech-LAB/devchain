@@ -44,6 +44,7 @@ import {
   type SaveProjectIgnoresResult,
   type FileSyncFailedCounts,
   type FileSyncProblem,
+  type FileSyncUpkeepState,
   type ForceSyncOffer,
 } from './remote-file-sync.dto';
 
@@ -78,6 +79,8 @@ interface ProjectState {
   ignoresRepairedAt?: number;
   observations?: Map<string, SyncObservation>;
   failed?: FileSyncFailedCounts;
+  /** The VM's failed count for the measured status; `checkSync` sets it. */
+  vmFailedReport?: number;
   autoFixAttempt?: { at: number; home: number; vm: number };
   ownershipScan?: { attemptedAt: number; inspectedSequence?: number };
   dockerExclusionsChecked?: boolean;
@@ -231,6 +234,19 @@ export class RemoteFileSyncService {
 
   failedCounts(projectId: string): FileSyncFailedCounts | null {
     return this.projects.get(projectId)?.failed ?? null;
+  }
+
+  /** What upkeep last knew about a project; null when it holds no state for it. */
+  upkeepState(projectId: string): FileSyncUpkeepState | null {
+    const state = this.projects.get(projectId);
+    if (!state) return null;
+    return {
+      remoteId: state.remoteId,
+      done: state.step === 'done',
+      problem: this.problem(projectId),
+      warning: this.warning(projectId),
+      vmFailed: state.vmFailedReport ?? null,
+    };
   }
 
   forget(projectId: string): void {
@@ -561,8 +577,7 @@ export class RemoteFileSyncService {
 
   /**
    * The owner upkeep may act for, or null when this PC's cache disagrees with the VM record in a
-   * way only a handover or step-down may settle. A VM-owned record only moves the cached
-   * generation forward; this PC is the receiver either way.
+   * way only a handover or step-down may settle.
    */
   private followVmRecord(
     projectId: string,
@@ -570,20 +585,24 @@ export class RemoteFileSyncService {
     state: ProjectState,
   ): GitOwner | null {
     const cached = this.gitOwner.get(projectId);
+    const generation = this.gitOwner.generation(projectId);
     // `cached === 'home'` with a VM-owned record at the same generation is a PC that took Git with
     // the removed manual take: its saved 'home' reads as generation 0, and the VM record starts at
     // vm/0. It is not dead code.
-    if (
-      vm.generation === this.gitOwner.generation(projectId) &&
-      (vm.owner === cached || cached === 'home')
-    )
-      return cached;
-    if (vm.owner === 'vm' && cached === 'vm') {
+    if (vm.generation === generation && (vm.owner === cached || cached === 'home')) return cached;
+    // A force-reclaimed handover can leave this PC's cached owner at vm while its folder sends.
+    // Leave the generation and the local index for home Git recovery to settle together.
+    const reclaimed =
+      vm.owner === 'vm' &&
+      vm.forcedReclaim !== undefined &&
+      generation <= vm.forcedReclaim.fromGeneration &&
+      vm.generation > generation;
+    if (vm.owner === 'vm' && cached === 'vm' && !reclaimed) {
       this.gitOwner.remember(projectId, vm);
       return 'vm';
     }
     state.warning =
-      cached === 'home'
+      cached === 'home' || reclaimed
         ? 'The VM took Git back while this PC was away. File sync continues after this PC gives up Git.'
         : 'Git is moving to this PC. File sync continues after the move finishes.';
     return null;
@@ -714,6 +733,11 @@ export class RemoteFileSyncService {
         }
       }
       state.observations = observations;
+      // For the measured status only. A count of the VM sets it. A rejected read sets it only
+      // to a retained count that is past the grace time: a zero from a rejected read, or an
+      // answer without a count, is no evidence of recovery and leaves it as it is.
+      if (typeof vmStatus?.errors === 'number' || (!vmStatus && vmFailed > 0))
+        state.vmFailedReport = vmFailed;
       state.checkWarning = warnings[0]?.message ?? null;
       state.checkProblem = warnings[0]?.problem;
       state.failed = homeFailed || vmFailed ? { home: homeFailed, vm: vmFailed } : undefined;

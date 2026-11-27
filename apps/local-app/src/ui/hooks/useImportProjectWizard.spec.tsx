@@ -151,9 +151,98 @@ describe('useImportProjectWizard', () => {
       result.current.controller.submit();
     });
     await waitFor(() => expect(api.calls.commitImport).toHaveLength(1));
-    expect(onImported).toHaveBeenCalledWith(expect.objectContaining({ success: true }));
+    expect(onImported).toHaveBeenCalledWith(expect.objectContaining({ success: true }), TARGET);
     await waitFor(() => expect(result.current.isOpen).toBe(false));
+
+    // A home target sends today's requests to home.
+    expect(api.calls.loadSetupPreview).toEqual([[{ slug: 'demo' }]]);
+    expect(api.calls.readHomeTemplateContent).toEqual([]);
+    expect(api.backends.loadSetupPreview).toEqual(['home']);
+    expect(api.backends.runImportDryRun).toEqual(['home']);
+    expect(api.backends.commitImport).toEqual(['home']);
   });
+
+  it.each([
+    {
+      source: 'template',
+      request: { slug: 'demo', version: '1.2.0' },
+      vmRequest: { rawContent: { marker: 'home-template' } },
+      homeReads: [['demo', '1.2.0']],
+    },
+    {
+      source: 'file',
+      request: { rawContent: { marker: 'file' } },
+      vmRequest: { rawContent: { marker: 'file' } },
+      homeReads: [],
+    },
+  ])(
+    'sends the $source preview content, the dry run and the commit to the VM of a remote target',
+    async ({ request, vmRequest, homeReads }) => {
+      const api = new InMemoryProjectsPageApi({
+        setupPreview: preview(),
+        templateContents: { demo: { marker: 'home-template' } },
+        importDryRunResult: {
+          dryRun: true,
+          missingProviders: [],
+          counts: { toImport: { agents: 1 }, toDelete: {} },
+        },
+        importResult: { success: true, counts: { imported: {}, deleted: {} }, mappings: {} },
+      });
+      const onImported = jest.fn();
+      const remoteTarget = { ...TARGET, backend: 'remote-1' };
+      const { result } = renderHook(
+        () => useImportProjectWizard({ onImported, toast: jest.fn(), api }),
+        { wrapper },
+      );
+
+      act(() => result.current.openImportWizard(remoteTarget, request));
+      await waitFor(() => expect(result.current.controller.canProceed).toBe(true));
+      await act(async () => result.current.controller.submit());
+      await waitFor(() => expect(onImported).toHaveBeenCalledTimes(1));
+
+      expect(api.calls.readHomeTemplateContent).toEqual(homeReads);
+      expect(api.calls.loadSetupPreview).toEqual([[vmRequest]]);
+      expect(api.backends.loadSetupPreview).toEqual(['remote-1']);
+      expect(api.backends.loadProjectExport).toEqual(['remote-1']);
+      expect(api.backends.runImportDryRun).toEqual(['remote-1']);
+      expect(api.backends.commitImport).toEqual(['remote-1']);
+      expect(onImported).toHaveBeenCalledWith(
+        expect.objectContaining({ success: true }),
+        remoteTarget,
+      );
+    },
+  );
+
+  it.each(['import', 'upgrade'] as const)(
+    'exposes the message of a failed %s preview',
+    async (flow) => {
+      const failure = new Error('Remote "vm-1" is offline');
+      const api = new InMemoryProjectsPageApi({
+        overrides: { loadSetupPreview: failure, loadUpgradePreview: failure },
+      });
+      const { result } = renderHook(
+        () =>
+          flow === 'import'
+            ? useImportProjectWizard({ onImported: jest.fn(), toast: jest.fn(), api })
+            : useUpgradeProjectWizard({
+                actionName: 'Upgrade',
+                onFinished: jest.fn(),
+                onClosed: jest.fn(),
+                toast: jest.fn(),
+                api,
+              }),
+        { wrapper },
+      );
+
+      act(() => {
+        const wizard = result.current;
+        if ('openImportWizard' in wizard) wizard.openImportWizard(TARGET, { slug: 'demo' });
+        else wizard.openUpgradeWizard({ ...TARGET, targetVersion: '2.0.0' });
+      });
+      await waitFor(() => expect(result.current.isError).toBe(true));
+      expect(result.current.errorMessage).toBe('Remote "vm-1" is offline');
+    },
+  );
 
   it('ignores a precheck result that belongs to an earlier opening', async () => {
     // Project A's precheck is slow and fails; project B's is fast and passes. A's late result
@@ -199,7 +288,7 @@ describe('useImportProjectWizard', () => {
   });
 
   // The rendered import flow verifies that the reset starts a precheck with the displayed values.
-  it('checks a manual agent choice and clears it when template defaults are clicked', async () => {
+  it('checks a manual agent choice and clears it with Reset', async () => {
     const target = configuredPreview();
     const options = target.payload.profiles![0].providerConfigs!;
     options.push({
@@ -238,7 +327,8 @@ describe('useImportProjectWizard', () => {
       ],
     });
 
-    fireEvent.click(screen.getByRole('radio', { name: 'Use template defaults' }));
+    expect(screen.getByText('No ready-made setup fits the selected providers.')).toBeVisible();
+    fireEvent.click(screen.getByRole('button', { name: 'Reset setup' }));
 
     expect(
       await screen.findByRole('button', { name: `Captain: Claude · ${defaultOption.name}` }),
@@ -360,6 +450,63 @@ describe('useImportProjectWizard', () => {
       expect(body).not.toHaveProperty('statusMappings');
     }
   });
+});
+
+describe('setup review provider catalogs', () => {
+  const originalFetch = global.fetch;
+  afterEach(() => {
+    global.fetch = originalFetch;
+  });
+
+  it.each([
+    { flow: 'Import', backend: undefined, prefix: '' },
+    { flow: 'Import', backend: 'remote-1', prefix: '/r/remote-1' },
+    { flow: 'Upgrade', backend: 'remote-1', prefix: '/r/remote-1' },
+  ] as const)(
+    '$flow with target backend $backend reads the catalogs from it',
+    async ({ flow, backend, prefix }) => {
+      const fetchMock = jest.fn(
+        async (_input: RequestInfo | URL) =>
+          ({ ok: true, json: async () => [] }) as unknown as Response,
+      );
+      global.fetch = fetchMock as unknown as typeof fetch;
+      const api = new InMemoryProjectsPageApi({
+        setupPreview: configuredPreview(),
+        upgradePreview: configuredPreview(),
+        templateContents: { demo: {} },
+      });
+      const target = { ...TARGET, ...(backend ? { backend } : {}) };
+      function Harness() {
+        const importWizard = useImportProjectWizard({
+          onImported: jest.fn(),
+          toast: jest.fn(),
+          api,
+        });
+        const upgradeWizard = useUpgradeProjectWizard({
+          actionName: 'Upgrade',
+          onFinished: jest.fn(),
+          onClosed: jest.fn(),
+          toast: jest.fn(),
+          api,
+        });
+        const wizard = flow === 'Import' ? importWizard : upgradeWizard;
+        useEffect(() => {
+          if (flow === 'Import') importWizard.openImportWizard(target, { slug: 'demo' });
+          else upgradeWizard.openUpgradeWizard({ ...target, targetVersion: '2.0.0' });
+          // eslint-disable-next-line react-hooks/exhaustive-deps
+        }, []);
+        return <>{wizard.controller.currentStep?.render()}</>;
+      }
+      render(<Harness />, { wrapper });
+
+      await waitFor(() =>
+        expect(fetchMock.mock.calls.map(([url]) => String(url)).sort()).toEqual([
+          `${prefix}/api/providers/provider-1/efforts`,
+          `${prefix}/api/providers/provider-1/models`,
+        ]),
+      );
+    },
+  );
 });
 
 describe('useUpgradeProjectWizard', () => {
@@ -553,8 +700,19 @@ describe('useUpgradeProjectWizard — keep my current setup', () => {
   };
   const currentExport = {
     ...preview().payload,
-    agents: ['Lead', 'Analyst', 'Scribe', 'Retired'].map((name) => ({ name })),
-    teams: [{ name: team.name, memberAgentNames: team.memberAgentNames }],
+    agents: [
+      { name: 'Lead', description: 'Current lead description' },
+      { name: 'Analyst', description: '   ' },
+      { name: 'Scribe' },
+      { name: 'Retired' },
+    ],
+    teams: [
+      {
+        name: team.name,
+        description: 'Current planning team',
+        memberAgentNames: team.memberAgentNames,
+      },
+    ],
   } as ExportData;
 
   function plan(): PreservationReview {
@@ -652,8 +810,21 @@ describe('useUpgradeProjectWizard — keep my current setup', () => {
       .mockResolvedValueOnce({ ...ready, preservationPlan: reviewed })
       .mockResolvedValueOnce({ ...ready, preservationPlan: withMember })
       .mockResolvedValueOnce({ ...ready, preservationPlan: withTeam });
+    const upgradePreview = configuredPreview();
+    upgradePreview.payload = {
+      ...upgradePreview.payload,
+      agents: [
+        ...(upgradePreview.payload.agents ?? []),
+        { name: 'Scribe', description: 'Template scribe description' },
+        { name: 'Courier', description: 'Template courier description' },
+      ],
+      teams: [
+        ...(upgradePreview.payload.teams ?? []),
+        { name: 'Research', description: 'Template research team', memberAgentNames: ['Scout'] },
+      ],
+    } as ExportData;
     const api = new InMemoryProjectsPageApi({
-      upgradePreview: configuredPreview(),
+      upgradePreview,
       projectExport: currentExport,
       upgradeResult: { success: true, newVersion: '2.0.0' },
       overrides: { runImportDryRun },
@@ -661,7 +832,8 @@ describe('useUpgradeProjectWizard — keep my current setup', () => {
     const getWizard = renderUpgrade(api);
 
     expect(await screen.findByRole('radio', { name: /Keep my current setup/ })).toBeChecked();
-    const planning = await screen.findByRole('region', { name: 'Planning' });
+    const rosterSection = await screen.findByRole('region', { name: 'Teams and agents' });
+    const planning = within(rosterSection).getByRole('region', { name: 'Planning' });
     expect(
       within(planning)
         .getAllByRole('listitem')
@@ -671,12 +843,22 @@ describe('useUpgradeProjectWizard — keep my current setup', () => {
       expect.stringMatching(/^Analyst/),
       expect.stringMatching(/^ScribeChanged/),
     ]);
+    // The fixture's lead is named "Lead", so the badge is found by its test id, not its text.
+    expect(
+      within(planning)
+        .getAllByRole('listitem')
+        .filter((row) => within(row).queryByTestId('wizard-lead-badge'))
+        .map((row) => row.textContent),
+    ).toEqual([expect.stringMatching(/^Lead/)]);
+    expect(within(planning).getByText('Current planning team')).toBeVisible();
+    expect(within(planning).getByText('Current lead description')).toBeVisible();
+    expect(within(planning).queryByText('Template scribe description')).not.toBeInTheDocument();
     expect(
       within(planning).getByText('Some allowed options are not in this template.'),
     ).toBeVisible();
-    expect(
-      within(screen.getByRole('region', { name: 'Independent' })).getByText('Courier'),
-    ).toBeVisible();
+    const independent = within(rosterSection).getByRole('region', { name: 'Independent' });
+    expect(within(independent).getByText('Courier')).toBeVisible();
+    expect(within(independent).getByText('Template courier description')).toBeVisible();
     expect(screen.getByText(/Scribe \(old-option → claude-config\)/)).toBeVisible();
     expect(screen.getByText('Retired', { exact: false })).toHaveTextContent('Removed: Retired');
     expect(getWizard().controller.canProceed).toBe(true);
@@ -692,6 +874,7 @@ describe('useUpgradeProjectWizard — keep my current setup', () => {
     ).toBeVisible();
     fireEvent.click(addTeam);
     const research = await screen.findByRole('region', { name: 'Research' });
+    expect(within(research).getByText('Template research team')).toBeVisible();
     expect(within(research).getByText('Scout')).toBeVisible();
 
     await waitFor(() => expect(getWizard().controller.canProceed).toBe(true));
@@ -710,7 +893,32 @@ describe('useUpgradeProjectWizard — keep my current setup', () => {
         },
       ],
     ]);
-    expect(api.upgradeBackends.commitUpgrade).toEqual(['remote-1']);
+    expect(api.backends.commitUpgrade).toEqual(['remote-1']);
+  });
+
+  it('checks a team that the server selected and sends an empty list when the user clears it', async () => {
+    const selected = plan();
+    selected.additions.teams[0].selected = true;
+    const runImportDryRun = jest
+      .fn()
+      .mockResolvedValueOnce({ ...ready, preservationPlan: selected })
+      .mockResolvedValueOnce({ ...ready, preservationPlan: plan() });
+    const api = new InMemoryProjectsPageApi({
+      upgradePreview: configuredPreview(),
+      projectExport: currentExport,
+      upgradeResult: { success: true, newVersion: '2.0.0' },
+      overrides: { runImportDryRun },
+    });
+    renderUpgrade(api);
+
+    const addTeam = await screen.findByRole('checkbox', { name: 'Add team Research' });
+    expect(addTeam).toBeChecked();
+    expect(api.calls.runImportDryRun[0][1]).toMatchObject({ preserveTeamSetup: {} });
+
+    fireEvent.click(addTeam);
+    await waitFor(() => expect(api.calls.runImportDryRun).toHaveLength(2));
+    expect(api.calls.runImportDryRun[1][1]).toMatchObject({ preserveTeamSetup: { addTeams: [] } });
+    expect(screen.getByRole('checkbox', { name: 'Add team Research' })).not.toBeChecked();
   });
 
   it('requires a new result when switching to a preset and ignores the pending Keep result', async () => {
@@ -731,8 +939,17 @@ describe('useUpgradeProjectWizard — keep my current setup', () => {
     const getWizard = renderUpgrade(api);
     await waitFor(() => expect(api.calls.runImportDryRun).toHaveLength(1));
 
-    fireEvent.click(screen.getByRole('radio', { name: /Target Default/ }));
+    expect(screen.queryByRole('combobox', { name: 'Ready-made setup' })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('radio', { name: /^Use the template setup/ }));
     await waitFor(() => expect(api.calls.runImportDryRun).toHaveLength(2));
+    expect(screen.getByRole('combobox', { name: 'Ready-made setup' })).toHaveTextContent(
+      'Target Default',
+    );
+    // A click on the checked card, or on its text, changes nothing.
+    fireEvent.click(screen.getByRole('radio', { name: /^Use the template setup/ }));
+    fireEvent.click(screen.getByText('Use the template setup'));
+    await act(async () => undefined);
+    expect(api.calls.runImportDryRun).toHaveLength(2);
     await act(async () => {
       finishOld({ ...ready, preservationPlan: plan() });
     });
@@ -856,8 +1073,8 @@ describe('useUpgradeProjectWizard — keep my current setup', () => {
     const getWizard = renderUpgrade(api);
 
     expect(await screen.findByRole('checkbox', { name: 'Codex' })).toBeChecked();
-    expect(screen.getByRole('radio', { name: /Target Default/ })).toBeVisible();
-    expect(screen.queryByRole('radio', { name: 'Use template defaults' })).not.toBeInTheDocument();
+    expect(screen.getByRole('radio', { name: /^Use the template setup/ })).not.toBeChecked();
+    expect(screen.queryByRole('combobox', { name: 'Ready-made setup' })).not.toBeInTheDocument();
     fireEvent.click(await screen.findByRole('checkbox', { name: 'Add team Research' }));
     fireEvent.click(screen.getByRole('checkbox', { name: 'Add Extra to Planning' }));
     expect(await screen.findByText(/Scribe \(old-option → claude-config\)/)).toBeVisible();
@@ -876,7 +1093,7 @@ describe('useUpgradeProjectWizard — keep my current setup', () => {
 
     fireEvent.click(screen.getByRole('checkbox', { name: 'Claude' }));
     expect(screen.getByRole('radio', { name: /Keep my current setup/ })).toBeChecked();
-    expect(screen.queryByRole('radio', { name: /Target Default/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole('combobox', { name: 'Ready-made setup' })).not.toBeInTheDocument();
     expect(await screen.findByText('Checking project setup…')).toBeVisible();
     expect(screen.queryByRole('region', { name: 'Planning' })).not.toBeInTheDocument();
     expect(getWizard().controller.canProceed).toBe(false);
@@ -894,7 +1111,7 @@ describe('useUpgradeProjectWizard — keep my current setup', () => {
       finishProviderCheck({ ...ready, preservationPlan: replacementPlan(codexOption) }),
     );
 
-    fireEvent.click(screen.getByRole('radio', { name: 'Use template defaults' }));
+    fireEvent.click(screen.getByRole('radio', { name: /^Use the template setup/ }));
     await waitFor(() => expect(getWizard().controller.canProceed).toBe(true));
     expect(screen.getByRole('checkbox', { name: 'Codex' })).toBeChecked();
     expect(screen.getByRole('checkbox', { name: 'Claude' })).not.toBeChecked();
@@ -955,8 +1172,10 @@ describe('useUpgradeProjectWizard — keep my current setup', () => {
     });
     const getWizard = renderUpgrade(api);
 
-    expect(await screen.findByRole('radio', { name: /Target Default/ })).toBeChecked();
-    expect(screen.queryByRole('radio', { name: /Keep my current setup/ })).not.toBeInTheDocument();
+    expect(await screen.findByRole('combobox', { name: 'Ready-made setup' })).toHaveTextContent(
+      'Target Default',
+    );
+    expect(screen.queryByRole('radio')).not.toBeInTheDocument();
     expect(screen.queryByTestId('wizard-current-setup-unavailable') !== null).toBe(notice);
     await waitFor(() => expect(getWizard().controller.canProceed).toBe(true));
     await act(async () => getWizard().controller.submit());

@@ -9,6 +9,7 @@ import type { ConnectDialog } from './ConnectDialog';
 import type { DisconnectProjectDialog } from './DisconnectProjectDialog';
 import type { DisconnectAllDialog } from './DisconnectAllDialog';
 import type { FileSyncSettingsDialog } from './FileSyncSettingsDialog';
+import type { FileSyncTabData } from './FileSyncTab';
 import type { FirstRunChecklist } from './FirstRunChecklist';
 import type { FixFileSyncDialog } from './FixFileSyncDialog';
 import type { ForceSyncDialog } from './ForceSyncDialog';
@@ -28,7 +29,7 @@ import type { VmDetailsDrawer } from './VmDetailsDrawer';
 import type { VmList } from './VmList';
 import type { VmSummary } from './VmSummary';
 
-export type RemoteVmTab = 'overview' | 'projects' | 'vms' | 'logins' | 'proxmox';
+export type RemoteVmTab = 'overview' | 'projects' | 'vms' | 'file-sync' | 'logins' | 'proxmox';
 
 export interface RemoteVmSectionPresentation {
   readonly tabs: {
@@ -49,6 +50,7 @@ export interface RemoteVmSectionPresentation {
     readonly projectSummary: ComponentProps<typeof ProjectSummary> | null;
   };
   readonly projects: ProjectListData;
+  readonly fileSync: FileSyncTabData;
   readonly projectActions: {
     readonly run: (row: ProjectListRow, action: ProjectAction) => void;
     readonly openSettings: (row: ProjectListRow) => void;

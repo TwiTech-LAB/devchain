@@ -1,24 +1,42 @@
+import type { ReplicaExternalTaskLinkRow } from '@devchain/shared';
 import type {
+  DeliveredIntegrationsResult,
+  DeliveredLinkSync,
   FactualEventFactory,
   IntegrationStorage,
   VerifyIntegrationCredentials,
 } from '../../interfaces/storage.interface';
 import { randomUUID } from 'node:crypto';
-import { and, asc, eq, inArray, isNull, sql } from 'drizzle-orm';
+import { and, asc, eq, inArray, isNotNull, isNull, notInArray, sql, type SQL } from 'drizzle-orm';
 import {
+  AppError,
   ConflictError,
   NotFoundError,
   StorageError,
   ValidationError,
   VaultUnavailableError,
 } from '../../../../common/errors/error-types';
-import { externalTaskLinks, integrationConnections, projects } from '../../db/schema';
+import {
+  epics,
+  externalEstimateLogStates,
+  externalManagedSubtaskLinks,
+  externalTaskLinks,
+  integrationConnections,
+  projects,
+} from '../../db/schema';
 import type {
   CreateExternalTaskLink,
+  DeliveredIntegrationConnection,
   CreateEpicWithExternalTaskLink,
   CreateEpicWithExternalTaskLinkResult,
   Epic,
+  ExternalEstimateLogIdentity,
   ExternalTaskLink,
+  ExternalTaskLinkChangeResult,
+  ExternalTaskLinkInput,
+  ExternalTaskLinkWriteOptions,
+  ImportHostedExternalTask,
+  ImportHostedExternalTaskResult,
   IntegrationConnection,
   IntegrationConnectionLookup,
   IntegrationCredentials,
@@ -26,7 +44,16 @@ import type {
   ReplaceIntegrationConnection,
   VaultStoreMigrationResult,
 } from '../../models/domain.models';
+import { isOrdinaryExternalTaskLink } from '../../models/domain.models';
+import { closeLinkReleaseAttempt, openLinkReleaseAttempt } from '../helpers/pending-link-releases';
 import { isSqliteUniqueConstraint } from '../helpers/storage-helpers';
+import { externalImportIdempotencyKey } from '../helpers/external-import-key';
+import {
+  assertLinkProjectSeeded,
+  markLinkProjectsSeeded,
+  readSeededLinkProjects,
+  writeLinkReceipt,
+} from '../helpers/external-link-receipts';
 import {
   INTEGRATION_CREDENTIALS_CONTEXT,
   parseIntegrationCredentials,
@@ -38,6 +65,16 @@ import {
 } from '../stored-secret-codec';
 import { BaseStorageDelegate, type StorageDelegateContext } from './base-storage.delegate';
 import type { PreparedEvent } from '../../../events/services/durable-event-registry.service';
+
+/** Recognition links belong to managed sync; no unlink removes one. */
+function managedLinkRefusal(epicId: string, linkId: string): AppError {
+  return new AppError(
+    'This link belongs to a managed subtask; managed sync removes it.',
+    'EXTERNAL_TASK_LINK_MANAGED',
+    409,
+    { epicId, linkId },
+  );
+}
 
 function credentialBinding(connectionId: string): StoredSecretBinding {
   return {
@@ -82,6 +119,13 @@ export class IntegrationStorageDelegate
       | 'assignUnassignedIntegrationConnection'
       | 'listIntegrationConnectionsByLegacySourceConnectionId'
       | 'listIntegrationConnections'
+      | 'replaceDeliveredIntegrationConnections'
+      | 'readExternalLinkSyncState'
+      | 'listOrdinaryExternalTaskLinkRows'
+      | 'listExternalLinkReceiptIds'
+      | 'assertExternalLinkReleaseAllowed'
+      | 'beginExternalLinkRelease'
+      | 'closeExternalLinkReleaseAttempt'
       | 'getIntegrationConnectionCredentials'
       | 'getIntegrationConnectionCredentialsById'
       | 'disconnectIntegrationConnection'
@@ -90,7 +134,11 @@ export class IntegrationStorageDelegate
       | 'updateIntegrationConnectionSyncSetting'
       | 'updateIntegrationConnectionSyncSettingById'
       | 'createExternalTaskLink'
+      | 'createRemoteProjectExternalTaskLink'
+      | 'setEpicExternalTaskLink'
+      | 'deleteExternalTaskLink'
       | 'createEpicWithExternalTaskLink'
+      | 'importHostedExternalTask'
       | 'findExternalTaskLink'
       | 'listExternalTaskLinksByRemoteScope'
       | 'listExternalTaskLinksByRemoteTask'
@@ -304,6 +352,154 @@ export class IntegrationStorageDelegate
       .from(integrationConnections)
       .where(eq(integrationConnections.projectId, this.requireIdentifier(projectId, 'Project')))
       .orderBy(asc(integrationConnections.provider));
+  }
+
+  async replaceDeliveredIntegrationConnections(
+    connections: readonly DeliveredIntegrationConnection[],
+    links: DeliveredLinkSync = {},
+  ): Promise<DeliveredIntegrationsResult> {
+    return this.txRunner.runImmediateQueuedOrJoin(() => {
+      const wanted = new Set(connections.map((connection) => connection.id));
+      const current = this.db
+        .select({ id: integrationConnections.id })
+        .from(integrationConnections)
+        .all();
+      // Deletes go first: a reconnect at home gives the same project and provider a new
+      // id, and the old row would otherwise hit the project/provider unique index.
+      for (const row of current) {
+        if (!wanted.has(row.id)) {
+          this.db.delete(integrationConnections).where(eq(integrationConnections.id, row.id)).run();
+        }
+      }
+      const projectExists = this.rawClient.prepare('SELECT 1 FROM projects WHERE id = ?');
+      const now = new Date().toISOString();
+      const applied: DeliveredIntegrationConnection[] = [];
+      for (const connection of connections) {
+        // A detaching project stays in home's push after this VM released it.
+        if (!projectExists.get(connection.projectId)) continue;
+        applied.push(connection);
+        this.db
+          .insert(integrationConnections)
+          .values({
+            id: connection.id,
+            projectId: connection.projectId,
+            provider: connection.provider,
+            legacySourceConnectionId: null,
+            credentialCiphertext: '',
+            generation: connection.generation,
+            subtaskSyncEnabled: false,
+            syncSettingRevision: 1,
+            createdAt: now,
+            updatedAt: now,
+          })
+          .onConflictDoUpdate({
+            target: integrationConnections.id,
+            set: {
+              projectId: connection.projectId,
+              provider: connection.provider,
+              credentialCiphertext: '',
+              generation: connection.generation,
+              subtaskSyncEnabled: false,
+              updatedAt: now,
+            },
+          })
+          .run();
+      }
+      const deleteReceipt = this.rawClient.prepare(
+        'DELETE FROM external_link_receipts WHERE id = ?',
+      );
+      for (const id of links.ackedReceiptIds ?? []) deleteReceipt.run(id);
+      this.seedLinksSync(links.seed ?? []);
+      const seededProjectIds = Object.keys(readSeededLinkProjects(this.rawClient))
+        .filter((projectId) => projectExists.get(projectId))
+        .sort();
+      return { connections: applied, seededProjectIds };
+    });
+  }
+
+  /**
+   * First seed of a project only: a later one would bring back links the VM unlinked.
+   * Links of epics this VM lacks are skipped, and so is a connection it does not hold.
+   */
+  private seedLinksSync(seed: NonNullable<DeliveredLinkSync['seed']>): void {
+    const seeded = readSeededLinkProjects(this.rawClient);
+    const projectExists = this.rawClient.prepare('SELECT 1 FROM projects WHERE id = ?');
+    const epicInProject = this.rawClient.prepare(
+      'SELECT 1 FROM epics WHERE id = ? AND project_id = ?',
+    );
+    const connectionInProject = this.rawClient.prepare(
+      'SELECT 1 FROM integration_connections WHERE id = ? AND project_id = ?',
+    );
+    const insert = this.rawClient.prepare(
+      `INSERT INTO external_task_links
+         (id, epic_id, project_id, connection_id, provider, remote_scope_key, remote_task_id,
+          source_snapshot, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT DO NOTHING`,
+    );
+    const newlySeeded: string[] = [];
+    for (const { projectId, links } of seed) {
+      if (projectId in seeded || !projectExists.get(projectId)) continue;
+      for (const link of links) {
+        if (!epicInProject.get(link.epic_id, projectId)) continue;
+        const connectionId =
+          link.connection_id && connectionInProject.get(link.connection_id, projectId)
+            ? link.connection_id
+            : null;
+        insert.run(
+          link.id,
+          link.epic_id,
+          projectId,
+          connectionId,
+          link.provider,
+          link.remote_scope_key,
+          link.remote_task_id,
+          link.source_snapshot,
+          link.created_at,
+          link.updated_at,
+        );
+      }
+      newlySeeded.push(projectId);
+    }
+    markLinkProjectsSeeded(this.rawClient, newlySeeded);
+  }
+
+  async readExternalLinkSyncState(): Promise<{
+    seededProjectIds: string[];
+    pendingReceipts: number;
+  }> {
+    const { pending } = this.rawClient
+      .prepare('SELECT COUNT(*) AS pending FROM external_link_receipts')
+      .get() as { pending: number };
+    return {
+      seededProjectIds: Object.keys(readSeededLinkProjects(this.rawClient)).sort(),
+      pendingReceipts: pending,
+    };
+  }
+
+  async listOrdinaryExternalTaskLinkRows(projectId: string): Promise<ReplicaExternalTaskLinkRow[]> {
+    return this.rawClient
+      .prepare(
+        `SELECT id, epic_id, project_id, connection_id, provider, remote_scope_key, remote_task_id,
+                source_snapshot, created_at, updated_at
+         FROM external_task_links
+         WHERE project_id = ? AND json_extract(source_snapshot, '$.managedProjectionId') IS NULL
+         ORDER BY id`,
+      )
+      .all(projectId) as ReplicaExternalTaskLinkRow[];
+  }
+
+  async listExternalLinkReceiptIds(projectIds: readonly string[]): Promise<string[]> {
+    if (projectIds.length === 0) return [];
+    return (
+      this.rawClient
+        .prepare(
+          `SELECT id FROM external_link_receipts WHERE project_id IN (${projectIds
+            .map(() => '?')
+            .join(', ')}) ORDER BY seq, id`,
+        )
+        .all(...projectIds) as Array<{ id: string }>
+    ).map(({ id }) => id);
   }
 
   async getIntegrationConnectionCredentials(
@@ -527,6 +723,441 @@ export class IntegrationStorageDelegate
       throw error;
     }
     return link;
+  }
+
+  async createRemoteProjectExternalTaskLink(
+    data: CreateExternalTaskLink,
+  ): Promise<ExternalTaskLink> {
+    return this.createExternalTaskLink(data);
+  }
+
+  async setEpicExternalTaskLink(
+    epicId: string,
+    input: ExternalTaskLinkInput,
+    eventFactory?: (link: ExternalTaskLink) => PreparedEvent | null,
+    options: ExternalTaskLinkWriteOptions = {},
+  ): Promise<ExternalTaskLinkChangeResult> {
+    const remoteScopeKey = input.remoteScopeKey.trim();
+    const remoteTaskId = input.remoteTaskId.trim();
+    if (!epicId.trim() || !remoteScopeKey || !remoteTaskId) {
+      throw new ValidationError('Epic, remote scope, and remote task identifiers are required.');
+    }
+    if (
+      !input.sourceSnapshot ||
+      typeof input.sourceSnapshot !== 'object' ||
+      Array.isArray(input.sourceSnapshot)
+    ) {
+      throw new ValidationError('External task source snapshot must be an object.');
+    }
+    return this.txRunner.runImmediateQueuedOrJoin(() => {
+      const epic = this.db
+        .select({ projectId: epics.projectId })
+        .from(epics)
+        .where(eq(epics.id, epicId))
+        .get();
+      if (!epic) {
+        throw new NotFoundError('Epic', epicId);
+      }
+      if (options.vmHosted) assertLinkProjectSeeded(this.rawClient, epic.projectId);
+      const connection = this.db
+        .select(CONNECTION_STATE_COLUMNS)
+        .from(integrationConnections)
+        .where(eq(integrationConnections.id, input.connectionId))
+        .get();
+      if (
+        !connection ||
+        connection.projectId !== epic.projectId ||
+        connection.provider !== input.provider ||
+        connection.generation !== input.connectionGeneration
+      ) {
+        throw new AppError(
+          'The integration connection changed after the remote task was read; try again.',
+          'INTEGRATION_CONNECTION_CHANGED',
+          409,
+          { provider: input.provider, retryable: true },
+        );
+      }
+
+      const ordinary = this.listEpicLinksSync(epicId).find(isOrdinaryExternalTaskLink);
+      if (
+        ordinary &&
+        ordinary.provider === input.provider &&
+        ordinary.remoteScopeKey === remoteScopeKey &&
+        ordinary.remoteTaskId === remoteTaskId &&
+        this.isDetachedSync(ordinary)
+      ) {
+        // The link keeps its id, so a pending estimate on this task stays
+        // attached and can be resolved through the new connection.
+        const rebound: ExternalTaskLink = {
+          ...ordinary,
+          connectionId: connection.id,
+          updatedAt: new Date().toISOString(),
+        };
+        this.db
+          .update(externalTaskLinks)
+          .set({ connectionId: rebound.connectionId, updatedAt: rebound.updatedAt })
+          .where(eq(externalTaskLinks.id, ordinary.id))
+          .run();
+        const event = eventFactory?.(rebound);
+        if (event) {
+          this.dependencies.appendEvent(event);
+        }
+        return {
+          link: rebound,
+          releasedManagedLinkIds: [],
+          rebound: true,
+          ...this.receiptFor(options, 'set', rebound),
+        };
+      }
+      if (ordinary) {
+        throw new AppError(
+          'This epic is already linked to an external task; unlink it first.',
+          'EPIC_ALREADY_LINKED',
+          409,
+          { epicId, linkId: ordinary.id },
+        );
+      }
+      const { releasedManagedLinkIds, removedLinks } = this.releaseManagedProjectionsSync(
+        eq(externalManagedSubtaskLinks.epicIdSnapshot, epicId),
+      );
+      const taken = this.db
+        .select({ id: externalTaskLinks.id, epicId: externalTaskLinks.epicId })
+        .from(externalTaskLinks)
+        .where(
+          and(
+            eq(externalTaskLinks.projectId, epic.projectId),
+            eq(externalTaskLinks.provider, input.provider),
+            eq(externalTaskLinks.remoteScopeKey, remoteScopeKey),
+            eq(externalTaskLinks.remoteTaskId, remoteTaskId),
+          ),
+        )
+        .get();
+      if (taken) {
+        throw new AppError(
+          'The external task is already linked to an epic in this project.',
+          'EXTERNAL_TASK_ALREADY_LINKED',
+          409,
+          { epicId: taken.epicId, linkId: taken.id },
+        );
+      }
+
+      const now = new Date().toISOString();
+      const link: ExternalTaskLink = {
+        id: randomUUID(),
+        epicId,
+        projectId: epic.projectId,
+        connectionId: connection.id,
+        provider: input.provider,
+        remoteScopeKey,
+        remoteTaskId,
+        sourceSnapshot: input.sourceSnapshot,
+        createdAt: now,
+        updatedAt: now,
+      };
+      this.db.insert(externalTaskLinks).values(link).run();
+      // After the insert: linking the epic to its own managed subtask keeps that task linked.
+      this.assertNoPendingEstimateSync(removedLinks);
+      const event = eventFactory?.(link);
+      if (event) {
+        this.dependencies.appendEvent(event);
+      }
+      return { link, releasedManagedLinkIds, ...this.receiptFor(options, 'set', link) };
+    });
+  }
+
+  async deleteExternalTaskLink(
+    epicId: string,
+    linkId: string | null,
+    eventFactory?: (link: ExternalTaskLink) => PreparedEvent | null,
+    options: ExternalTaskLinkWriteOptions = {},
+  ): Promise<ExternalTaskLinkChangeResult> {
+    return this.txRunner.runImmediateQueuedOrJoin(() => {
+      const epic = this.db
+        .select({ projectId: epics.projectId })
+        .from(epics)
+        .where(eq(epics.id, epicId))
+        .get();
+      if (!epic) {
+        throw new NotFoundError('Epic', epicId);
+      }
+      if (options.vmHosted) assertLinkProjectSeeded(this.rawClient, epic.projectId);
+      const links = this.listEpicLinksSync(epicId);
+      const link = linkId
+        ? links.find((candidate) => candidate.id === linkId)
+        : links.find(isOrdinaryExternalTaskLink);
+      if (!link) {
+        if (linkId) {
+          throw new AppError(
+            'This epic is no longer linked to that task; refresh and try again.',
+            'EXTERNAL_TASK_LINK_STALE',
+            409,
+            { epicId, linkId },
+          );
+        }
+        throw new AppError('This epic is not linked to an external task.', 'EPIC_NOT_LINKED', 409, {
+          epicId,
+        });
+      }
+      if (!isOrdinaryExternalTaskLink(link)) throw managedLinkRefusal(epicId, link.id);
+
+      const { releasedManagedLinkIds, removedLinks } = this.releaseManagedProjectionsSync(
+        eq(externalManagedSubtaskLinks.parentSourceLinkIdSnapshot, link.id),
+      );
+      this.db.delete(externalTaskLinks).where(eq(externalTaskLinks.id, link.id)).run();
+      // An import's key finds an epic it never linked; after an unlink of that task it must
+      // not. The key travels with the epic, so an unlink at home retires it too. Only this
+      // task's key goes: an unfinished import of another task keeps its own.
+      this.rawClient
+        .prepare(
+          `UPDATE epics SET data = json_remove(data, '$.idempotencyKey'), updated_at = ?
+           WHERE id = ? AND json_extract(data, '$.idempotencyKey') = ?`,
+        )
+        .run(
+          new Date().toISOString(),
+          epicId,
+          externalImportIdempotencyKey(link.provider, link.remoteScopeKey, link.remoteTaskId),
+        );
+      this.assertNoPendingEstimateSync([link, ...removedLinks]);
+      const event = eventFactory?.(link);
+      if (event) {
+        this.dependencies.appendEvent(event);
+      }
+      return { link, releasedManagedLinkIds, ...this.receiptFor(options, 'release', link) };
+    });
+  }
+
+  /** Home replays the receipt to release the managed projections the VM never holds. */
+  private receiptFor(
+    options: ExternalTaskLinkWriteOptions,
+    kind: 'set' | 'release',
+    link: ExternalTaskLink,
+  ): { receiptId?: string } {
+    return options.vmHosted ? { receiptId: writeLinkReceipt(this.rawClient, kind, link) } : {};
+  }
+
+  /** A disconnect leaves the link's connection unset; a dangling id counts too. */
+  private isDetachedSync(link: ExternalTaskLink): boolean {
+    if (link.connectionId === null) {
+      return true;
+    }
+    return !this.db
+      .select({ id: integrationConnections.id })
+      .from(integrationConnections)
+      .where(eq(integrationConnections.id, link.connectionId))
+      .get();
+  }
+
+  private listEpicLinksSync(epicId: string): ExternalTaskLink[] {
+    return this.db
+      .select()
+      .from(externalTaskLinks)
+      .where(eq(externalTaskLinks.epicId, epicId))
+      .orderBy(asc(externalTaskLinks.createdAt), asc(externalTaskLinks.id))
+      .all() as ExternalTaskLink[];
+  }
+
+  /**
+   * Refuses a write that leaves a remote task with a pending estimate
+   * operation but no link in its project: resolving that operation needs the
+   * link. Run it after every link change of the write, inside its transaction.
+   * Settled estimate history is never touched.
+   */
+  private assertNoPendingEstimateSync(
+    removedLinks: readonly ExternalTaskLink[],
+    /** Links still stored that the caller's write would delete, for a check before it. */
+    alsoRemoved: ReadonlySet<string> = new Set(),
+  ): void {
+    for (const removed of removedLinks) {
+      const identity = and(
+        eq(externalTaskLinks.projectId, removed.projectId),
+        eq(externalTaskLinks.provider, removed.provider),
+        eq(externalTaskLinks.remoteScopeKey, removed.remoteScopeKey),
+        eq(externalTaskLinks.remoteTaskId, removed.remoteTaskId),
+        alsoRemoved.size > 0 ? notInArray(externalTaskLinks.id, [...alsoRemoved]) : undefined,
+      );
+      if (
+        this.db.select({ id: externalTaskLinks.id }).from(externalTaskLinks).where(identity).get()
+      ) {
+        continue;
+      }
+      const pending = this.db
+        .select({ operationId: externalEstimateLogStates.pendingOperationId })
+        .from(externalEstimateLogStates)
+        .where(
+          and(
+            eq(externalEstimateLogStates.projectId, removed.projectId),
+            eq(externalEstimateLogStates.provider, removed.provider),
+            eq(externalEstimateLogStates.remoteScopeKey, removed.remoteScopeKey),
+            eq(externalEstimateLogStates.remoteTaskId, removed.remoteTaskId),
+            isNotNull(externalEstimateLogStates.pendingOperationId),
+          ),
+        )
+        .get();
+      if (pending?.operationId) {
+        const remoteKey =
+          typeof removed.sourceSnapshot.remoteKey === 'string' && removed.sourceSnapshot.remoteKey
+            ? removed.sourceSnapshot.remoteKey
+            : removed.remoteTaskId;
+        throw new AppError(
+          `Task ${remoteKey} has a pending time estimate. Verify or resolve it on its epic first, then change the link.`,
+          'EXTERNAL_TASK_ESTIMATE_PENDING',
+          409,
+          { epicId: removed.epicId, remoteKey, operationId: pending.operationId },
+        );
+      }
+    }
+  }
+
+  /**
+   * Forgets managed projections without any vendor call: their remote
+   * subtasks stay as they are. Deletes each projection's recognition link
+   * with it, so managed sync never sees the subtask again.
+   */
+  private releaseManagedProjectionsSync(condition: SQL | undefined): {
+    releasedManagedLinkIds: string[];
+    removedLinks: ExternalTaskLink[];
+  } {
+    const rows = this.managedProjectionsSync(condition);
+    const removedLinks: ExternalTaskLink[] = [];
+    for (const row of rows) {
+      if (row.remoteTaskId) {
+        const recognitionLinks = this.recognitionLinksSync({
+          ...row,
+          remoteTaskId: row.remoteTaskId,
+        });
+        for (const recognition of recognitionLinks) {
+          this.db.delete(externalTaskLinks).where(eq(externalTaskLinks.id, recognition.id)).run();
+        }
+        removedLinks.push(...recognitionLinks);
+      }
+      this.db
+        .delete(externalManagedSubtaskLinks)
+        .where(eq(externalManagedSubtaskLinks.id, row.id))
+        .run();
+    }
+    return { releasedManagedLinkIds: rows.map((row) => row.id), removedLinks };
+  }
+
+  private managedProjectionsSync(condition: SQL | undefined) {
+    return this.db
+      .select({
+        id: externalManagedSubtaskLinks.id,
+        epicIdSnapshot: externalManagedSubtaskLinks.epicIdSnapshot,
+        provider: externalManagedSubtaskLinks.provider,
+        remoteScopeKey: externalManagedSubtaskLinks.remoteScopeKey,
+        remoteTaskId: externalManagedSubtaskLinks.remoteTaskId,
+      })
+      .from(externalManagedSubtaskLinks)
+      .where(condition)
+      .orderBy(asc(externalManagedSubtaskLinks.id))
+      .all();
+  }
+
+  /** The recognition links of one managed projection: the projected epic's managed links. */
+  private recognitionLinksSync(projection: {
+    epicIdSnapshot: string;
+    provider: IntegrationProvider;
+    remoteScopeKey: string;
+    remoteTaskId: string;
+  }): ExternalTaskLink[] {
+    return this.db
+      .select()
+      .from(externalTaskLinks)
+      .where(
+        and(
+          eq(externalTaskLinks.epicId, projection.epicIdSnapshot),
+          eq(externalTaskLinks.provider, projection.provider),
+          eq(externalTaskLinks.remoteScopeKey, projection.remoteScopeKey),
+          eq(externalTaskLinks.remoteTaskId, projection.remoteTaskId),
+          sql`json_extract(${externalTaskLinks.sourceSnapshot}, '$.managedProjectionId') IS NOT NULL`,
+        ),
+      )
+      .all() as ExternalTaskLink[];
+  }
+
+  async beginExternalLinkRelease(epicId: string, linkId: string): Promise<string | null> {
+    return this.txRunner.runImmediateQueuedOrJoin(() => {
+      const tasks = this.externalLinkReleaseTasksSync(epicId, linkId);
+      const projectId = tasks[0]?.projectId;
+      return projectId
+        ? openLinkReleaseAttempt(this.rawClient, linkId, { projectId, epicId, tasks })
+        : null;
+    });
+  }
+
+  async closeExternalLinkReleaseAttempt(linkId: string, attempt: string | null): Promise<void> {
+    return this.txRunner.runImmediateQueuedOrJoin(() =>
+      closeLinkReleaseAttempt(this.rawClient, linkId, attempt),
+    );
+  }
+
+  async assertExternalLinkReleaseAllowed(
+    epicId: string,
+    linkId: string,
+  ): Promise<ExternalEstimateLogIdentity[]> {
+    return this.externalLinkReleaseTasksSync(epicId, linkId);
+  }
+
+  private externalLinkReleaseTasksSync(
+    epicId: string,
+    linkId: string,
+  ): ExternalEstimateLogIdentity[] {
+    const link = this.listEpicLinksSync(epicId).find((candidate) => candidate.id === linkId);
+    if (!link) return [];
+    // Home owns recognition links; the VM has none to unlink. Refuse before an attempt opens.
+    if (!isOrdinaryExternalTaskLink(link)) throw managedLinkRefusal(epicId, linkId);
+    const removed = [link];
+    for (const projection of this.managedProjectionsSync(
+      eq(externalManagedSubtaskLinks.parentSourceLinkIdSnapshot, link.id),
+    )) {
+      if (projection.remoteTaskId) {
+        removed.push(
+          ...this.recognitionLinksSync({ ...projection, remoteTaskId: projection.remoteTaskId }),
+        );
+      }
+    }
+    this.assertNoPendingEstimateSync(removed, new Set(removed.map((candidate) => candidate.id)));
+    return removed.map(({ projectId, provider, remoteScopeKey, remoteTaskId }) => ({
+      projectId,
+      provider,
+      remoteScopeKey,
+      remoteTaskId,
+    }));
+  }
+
+  async importHostedExternalTask(
+    data: ImportHostedExternalTask,
+    epicCreatedEvent?: (epic: Epic) => PreparedEvent | null,
+  ): Promise<ImportHostedExternalTaskResult> {
+    const projectId = data.epic.projectId;
+    return this.txRunner.runImmediateAsync(async () => {
+      assertLinkProjectSeeded(this.rawClient, projectId);
+      const existing = await this.findExternalTaskLink(
+        projectId,
+        data.link.provider,
+        data.link.remoteScopeKey.trim(),
+        data.link.remoteTaskId.trim(),
+      );
+      if (existing) return { epicId: existing.epicId, link: existing, created: false };
+      const unfinished = this.rawClient
+        .prepare(
+          `SELECT e.id FROM epics e
+           WHERE e.project_id = ? AND json_extract(e.data, '$.idempotencyKey') = ?
+             AND NOT EXISTS (SELECT 1 FROM external_task_links l WHERE l.epic_id = e.id)
+           ORDER BY e.created_at, e.id LIMIT 1`,
+        )
+        .get(projectId, data.idempotencyKey) as { id: string } | undefined;
+      const createdEpic = unfinished
+        ? undefined
+        : await this.dependencies.createEpicWithinTransaction(data.epic);
+      const epicId = unfinished?.id ?? createdEpic!.id;
+      const { link } = await this.setEpicExternalTaskLink(epicId, data.link, undefined, {
+        vmHosted: true,
+      });
+      const event = createdEpic && epicCreatedEvent?.(createdEpic);
+      if (event) this.dependencies.appendEvent(event);
+      return { epicId, link, created: true, ...(createdEpic && { createdEpic }) };
+    });
   }
 
   async createEpicWithExternalTaskLink(

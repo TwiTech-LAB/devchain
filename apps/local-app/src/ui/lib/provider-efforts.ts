@@ -1,7 +1,8 @@
 import { queryOptions } from '@tanstack/react-query';
 import type { ProviderEffortsResponse } from '@/modules/providers/controllers/provider-efforts.controller';
 import type { ProviderEffort } from '@/modules/storage/models/domain.models';
-import type { FetchFn } from './api-transport';
+import { extractModelFromProfileOptions } from '@/modules/providers/utils/profile-options';
+import type { BackendId, FetchFn } from './api-transport';
 import { fetchJsonOrThrow } from './http-json';
 
 export type { ProviderEffort, ProviderEffortsResponse };
@@ -15,7 +16,9 @@ export type ProviderEffortNamesCatalog = Omit<ProviderEffortsResponse, 'efforts'
 
 export const providerEffortQueryKeys = {
   all: ['provider-efforts'] as const,
-  catalog: (providerId: string | null) => ['provider-efforts', providerId] as const,
+  /** Provider ids are per instance, so the backend that answers is part of the key. */
+  catalog: (providerId: string | null, backend: BackendId) =>
+    ['provider-efforts', providerId, backend] as const,
 };
 
 export function fetchProviderEfforts(
@@ -31,9 +34,10 @@ export function fetchProviderEfforts(
 }
 
 export const providerEffortQueries = {
-  catalog: (fetchFn: FetchFn, providerId: string | null) =>
+  /** `backend` must be the backend that `fetchFn` sends the request to. */
+  catalog: (fetchFn: FetchFn, providerId: string | null, backend: BackendId) =>
     queryOptions({
-      queryKey: providerEffortQueryKeys.catalog(providerId),
+      queryKey: providerEffortQueryKeys.catalog(providerId, backend),
       queryFn: () => fetchProviderEfforts(fetchFn, providerId!),
     }),
 };
@@ -57,4 +61,28 @@ export function selectProviderEffortNames(
     ...catalog,
     efforts: catalog.efforts.map((effort) => effort.name.trim()).filter(Boolean),
   };
+}
+
+/** The fields of a provider config that can give a launch its model. */
+export interface LaunchModelSource {
+  model?: string | null;
+  options?: string | null;
+}
+
+/**
+ * The model a launch uses: the agent's model override, else the config's model, else the
+ * `--model` of the config's raw options. The same order as the launch
+ * (provider-runtime-preparation.service.ts). A provider with `requiresModelForEffort` fails the
+ * launch when an effort applies and this is null.
+ */
+export function launchModelOf(
+  modelOverride: string | null | undefined,
+  config: LaunchModelSource | undefined,
+): string | null {
+  return (
+    modelOverride ||
+    config?.model ||
+    extractModelFromProfileOptions(config?.options ?? null) ||
+    null
+  );
 }

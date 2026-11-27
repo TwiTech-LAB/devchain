@@ -18,6 +18,12 @@ export type {
   ProviderPluginCatalogSource,
   TranscriptDiscoveryCapability,
   SessionCommandCapability,
+  CreateSessionSavePointInput,
+  PrepareSessionForkLaunchInput,
+  ProviderSessionTranscript,
+  SessionSavePointCopy,
+  SessionForkCapability,
+  SessionForkLaunchResult,
   GlobalMcpConfigCapability,
 } from './type-guards';
 export {
@@ -32,5 +38,6 @@ export {
   isProjectMcpSettingsCapable,
   isTranscriptDiscoveryCapable,
   isSessionCommandCapable,
+  isSessionForkCapable,
   isProviderPluginCapable,
 } from './type-guards';

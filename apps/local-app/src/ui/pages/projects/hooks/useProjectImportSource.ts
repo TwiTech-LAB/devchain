@@ -1,9 +1,12 @@
 import { useCallback, useMemo, useRef, useState } from 'react';
 import type { ProjectTemplate } from '@/ui/pages/projects/lib/project-contracts';
+import type { BackendId } from '@/ui/lib/api-transport';
 
 export interface ProjectImportTarget {
   id: string;
   name: string;
+  /** Instance that runs the import, fixed when the Import dialog opens. */
+  backend: BackendId;
 }
 
 export function useProjectImportSource(templates?: ProjectTemplate[]) {

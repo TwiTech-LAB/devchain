@@ -6,11 +6,19 @@ import {
   GitCoordinatorService,
   GIT_COORDINATOR_TIMINGS,
   DEFAULT_GIT_COORDINATOR_TIMINGS,
+  type GitCoordinatorTimings,
 } from './git-coordinator.service';
 import { GitCoordinatorStore } from './git-coordinator.store';
 import { GitCoordinatorIndexService } from './git-coordinator-index.service';
 import { GitProcessIdentity } from './git-process-identity';
 import type { GitCoordinatorRecord, GitFence } from './git-coordinator.dto';
+import { missingBaselineObjects, restoreGitBaseline, type GitBaseline } from './git-checkpoint';
+
+jest.mock('./git-checkpoint', () => ({
+  ...jest.requireActual('./git-checkpoint'),
+  missingBaselineObjects: jest.fn(),
+  restoreGitBaseline: jest.fn(),
+}));
 
 // Unit tests exercise admission and timeouts without real processes, sync, or clocks.
 const fence: GitFence = { expectedGeneration: 0, transitionId: null };
@@ -29,11 +37,30 @@ const home = (): GitCoordinatorRecord => ({
   owner: 'home',
   checkpoint: { writeId: 'write', generation: 0, refsDigest: 'refs', at: 1 },
 });
+const baseline: GitBaseline = {
+  generation: 0,
+  head: 'refs/heads/main',
+  refs: [],
+  symbolicRefs: {},
+  sequencer: [],
+  refsDigest: 'baseline',
+};
+const pendingHome = (): GitCoordinatorRecord => ({
+  ...home(),
+  homeWrites: { pending: 1 },
+  baseline: { generation: 0, refsDigest: baseline.refsDigest },
+});
 
 describe('GitCoordinatorService admission', () => {
   let service: GitCoordinatorService;
   let records: Map<string, GitCoordinatorRecord>;
-  const files = { folderPath: jest.fn(), updateFolder: jest.fn() };
+  const files = {
+    folderPath: jest.fn(),
+    updateFolder: jest.fn(),
+    device: jest.fn(),
+    folderConfiguration: jest.fn(),
+    isConnected: jest.fn(),
+  };
   const guard = { remove: jest.fn() };
   const indexes = {
     sequencer: jest.fn(),
@@ -41,20 +68,28 @@ describe('GitCoordinatorService admission', () => {
     install: jest.fn(),
     cleanup: jest.fn(),
     worktreeBranches: jest.fn(),
+    readBaseline: jest.fn(),
   };
   const processes = { read: jest.fn() };
   const executor = { run: jest.fn() };
 
-  beforeEach(async () => {
-    jest.useFakeTimers({ now: 100_000 });
-    jest.resetAllMocks();
-    records = new Map([['p', fresh()]]);
-    files.folderPath.mockResolvedValue('/project');
-    guard.remove.mockResolvedValue({ removed: true, warning: null });
-    indexes.sequencer.mockResolvedValue(null);
-    indexes.worktreeBranches.mockResolvedValue([]);
-    processes.read.mockResolvedValue('boot:10');
-    executor.run.mockResolvedValue({ success: true });
+  /** The PC's unconfirmed write changed the ref storage after the VM saved its baseline. */
+  const reftable = () =>
+    executor.run.mockImplementation(async ({ argv }: { argv: string[] }) => ({
+      success: true,
+      stdout: argv.includes('config') ? 'extensions.refstorage\nreftable\0' : '',
+    }));
+  /** What Git does when it cannot read `.git/config`: --get exits 1 as for an absent setting. */
+  const unreadableConfig = () =>
+    executor.run.mockImplementation(async ({ argv }: { argv: string[] }) =>
+      argv.includes('config')
+        ? { success: false, exitCode: argv.includes('--get') ? 1 : 128, stdout: '', stderr: '' }
+        : { success: true, stdout: '' },
+    );
+
+  async function startCoordinator(
+    timings: Partial<GitCoordinatorTimings> = {},
+  ): Promise<GitCoordinatorService> {
     const module = await Test.createTestingModule({
       providers: [
         GitCoordinatorService,
@@ -75,15 +110,81 @@ describe('GitCoordinatorService admission', () => {
         { provide: ProcessExecutor, useValue: executor },
         {
           provide: GIT_COORDINATOR_TIMINGS,
-          useValue: { ...DEFAULT_GIT_COORDINATOR_TIMINGS, gcMs: Infinity },
+          useValue: { ...DEFAULT_GIT_COORDINATOR_TIMINGS, gcMs: Infinity, ...timings },
         },
       ],
     }).compile();
-    service = module.get(GitCoordinatorService);
+    return module.get(GitCoordinatorService);
+  }
+
+  beforeEach(async () => {
+    jest.useFakeTimers({ now: 100_000 });
+    jest.resetAllMocks();
+    records = new Map([['p', fresh()]]);
+    files.folderPath.mockResolvedValue('/project');
+    files.device.mockReturnValue({ deviceId: 'VM' });
+    files.folderConfiguration.mockResolvedValue({
+      devices: [{ deviceID: 'VM' }, { deviceID: 'PC' }],
+    });
+    files.isConnected.mockResolvedValue(false);
+    guard.remove.mockResolvedValue({ removed: true, warning: null });
+    indexes.sequencer.mockResolvedValue(null);
+    indexes.worktreeBranches.mockResolvedValue([]);
+    indexes.readBaseline.mockResolvedValue(baseline);
+    jest.mocked(missingBaselineObjects).mockResolvedValue([]);
+    jest.mocked(restoreGitBaseline).mockResolvedValue(undefined);
+    processes.read.mockResolvedValue('boot:10');
+    executor.run.mockResolvedValue({ success: true, stdout: '' });
+    service = await startCoordinator();
   });
   afterEach(async () => {
     await service.onModuleDestroy();
     jest.useRealTimers();
+  });
+
+  it('refreshes the home deadline on home activity and restores one grace period on first read after restart', async () => {
+    const deadline = (id: string) => service['homeLeaseDeadlines'].get(id);
+    const graceMs = 300_000;
+    const moving = { ...fence, transitionId: 'handover' };
+    await service.beginHandover('p', { ...fence, id: 'handover', homeName: 'PC' });
+    expect(deadline('p')).toBeUndefined();
+
+    jest.setSystemTime(101_000);
+    await service.renewHandover('p', moving);
+    expect(deadline('p')).toBe(101_000 + graceMs);
+
+    jest.setSystemTime(102_000);
+    const flipped = await service.handoverPhase('p', { ...moving, phase: 'vm-receiving' });
+    expect(deadline('p')).toBe(102_000 + graceMs);
+    await service.handoverPhase('p', { ...moving, phase: 'home-sending' });
+    await service.handoverPhase('p', { ...moving, phase: 'published', writeId: 'first' });
+    await service.handoverComplete('p', { ...moving, expectedGeneration: 1 });
+
+    const owned = { ...fence, expectedGeneration: 1 };
+    jest.setSystemTime(103_000);
+    await service.homeWriteBegin('p', { ...owned, writeId: 'second', homeName: 'PC' });
+    expect(deadline('p')).toBe(103_000 + graceMs);
+
+    jest.setSystemTime(104_000);
+    expect(await service.homeRenew('p', owned)).toEqual(records.get('p'));
+    expect(deadline('p')).toBe(104_000 + graceMs);
+
+    await service.onModuleDestroy();
+    service = await startCoordinator();
+    records.set('flipped', flipped);
+    expect(deadline('p')).toBeUndefined();
+    expect(deadline('flipped')).toBeUndefined();
+    jest.setSystemTime(110_000);
+    await service.status('p');
+    await service.status('flipped');
+    expect(deadline('p')).toBe(110_000 + graceMs);
+    expect(deadline('flipped')).toBe(110_000 + graceMs);
+
+    jest.setSystemTime(111_000);
+    await service.status('p');
+    expect(deadline('p')).toBe(110_000 + graceMs);
+    await service.forget('p');
+    expect(deadline('p')).toBeUndefined();
   });
 
   it.each([false, 'boot:11'])(
@@ -110,6 +211,22 @@ describe('GitCoordinatorService admission', () => {
     await jest.advanceTimersByTimeAsync(90_000);
     await result;
     expect(records.get('p')?.vmHolds.hold.pid).toBe(123);
+  });
+
+  it('returns the forced reclaim notice only to the first admitted VM hold', async () => {
+    records.set('p', {
+      ...fresh(),
+      forcedReclaim: { at: 100_000, fromGeneration: 0, homeName: 'my-PC' },
+    });
+    const first = await service.acquireVmHold('p', hold);
+    expect(first.notice).toBe(
+      "git: this VM took Git back from PC 'my-PC' at 1970-01-01T00:01:40.000Z. Files that the PC changed can show here as uncommitted changes. Do not commit them as your own work.",
+    );
+    await service.onModuleDestroy();
+    service = await startCoordinator();
+
+    const second = await service.acquireVmHold('p', { ...hold, holdId: 'next', pid: 124 });
+    expect(second.notice).toBeUndefined();
   });
 
   it('refuses to release a live process or grant a mismatched process identity', async () => {
@@ -159,12 +276,159 @@ describe('GitCoordinatorService admission', () => {
     });
     const value = await service.withVmPermit('p', async () => {
       expect(records.get('p')).toMatchObject({ owner: 'vm', generation: 1, transition: null });
+      expect(service['homeLeaseDeadlines'].has('p')).toBe(false);
       return 'admitted';
     });
     expect(value).toBe('admitted');
     expect(files.updateFolder).toHaveBeenCalledWith('git:p', { type: 'sendonly' });
     expect(guard.remove).toHaveBeenCalledWith('p', { refreshIndex: false, failOnReadError: true });
   });
+
+  it.each([
+    ['connected PC', 'a home Git write is unconfirmed'],
+    ['unexpired lease', 'a home Git write is unconfirmed'],
+    ['live VM hold', 'VM Git processes are still active'],
+    ['unknown VM hold', 'a persisted Git process cannot be verified'],
+    ['sequencer in the baseline', 'Git there is in the middle of a merge'],
+    ['different baseline digest', 'a home Git write is unconfirmed'],
+    ['missing baseline metadata', 'a home Git write is unconfirmed'],
+    ['missing baseline object', 'a home Git write is unconfirmed'],
+    ['multiple configured peers', 'a home Git write is unconfirmed'],
+    ['unavailable Syncthing', 'a home Git write is unconfirmed'],
+    ['a ref store that the PC changed to reftable', 'a home Git write is unconfirmed'],
+    ['a Git config that the VM cannot read', 'a home Git write is unconfirmed'],
+  ])('rejects a forced reclaim with %s', async (blockedBy, reason) => {
+    const record = pendingHome();
+    if (blockedBy === 'a ref store that the PC changed to reftable') reftable();
+    if (blockedBy === 'a Git config that the VM cannot read') unreadableConfig();
+    if (blockedBy === 'connected PC') files.isConnected.mockResolvedValue(true);
+    if (blockedBy === 'live VM hold' || blockedBy === 'unknown VM hold')
+      record.vmHolds.hold = { ...hold, startedAt: 1 };
+    if (blockedBy === 'unknown VM hold') processes.read.mockResolvedValue(null);
+    if (blockedBy === 'sequencer in the baseline')
+      indexes.readBaseline.mockResolvedValue({ ...baseline, sequencer: ['MERGE_HEAD'] });
+    if (blockedBy === 'different baseline digest')
+      indexes.readBaseline.mockResolvedValue({ ...baseline, refsDigest: 'different' });
+    if (blockedBy === 'missing baseline metadata') delete record.baseline;
+    if (blockedBy === 'missing baseline object')
+      jest.mocked(missingBaselineObjects).mockResolvedValue(['a'.repeat(40)]);
+    if (blockedBy === 'multiple configured peers')
+      files.folderConfiguration.mockResolvedValue({
+        devices: [{ deviceID: 'PC' }, { deviceID: 'OTHER' }],
+      });
+    if (blockedBy === 'unavailable Syncthing')
+      files.isConnected.mockRejectedValue(new Error('offline API'));
+
+    records.set('p', record);
+    await service.status('p');
+    // Keep the PC-connected and sequencer rows inside the grace window to check their message.
+    if (!['unexpired lease', 'connected PC', 'sequencer in the baseline'].includes(blockedBy))
+      jest.setSystemTime(400_000);
+    const outcome = service
+      .withVmPermit('p', async () => 'admitted')
+      .catch((error: unknown) => error);
+    await jest.advanceTimersByTimeAsync(90_000);
+    const normalMessage = `Git is on PC 'my-PC': ${reason}.`;
+    const takeBackTime = new Date(400_000).toTimeString().slice(0, 8);
+    const retryMessage = ` This is temporary: this VM takes Git back at ${takeBackTime} (in 210 s) if the PC stays away. Wait until then and run the same command again. Do not stop your task.`;
+    expect(await outcome).toMatchObject({
+      code: 'GIT_VM_ACQUIRE_TIMEOUT',
+      message: normalMessage + (blockedBy === 'unexpired lease' ? retryMessage : ''),
+    });
+    expect(files.updateFolder).not.toHaveBeenCalled();
+    expect(records.get('p')?.transition).toBeNull();
+  });
+
+  it('journals supersession before changing direction and admits a waiting VM operation after expiry', async () => {
+    records.set('p', {
+      ...pendingHome(),
+      generation: 3,
+      transition: { kind: 'handover', id: 'active', phase: 'published', lease: 1 },
+      supersededWrites: Object.fromEntries(
+        Array.from({ length: 32 }, (_, i) => [`write-${i}`, { generation: 0, at: i }]),
+      ),
+      supersededHandovers: Array.from({ length: 32 }, (_, i) => `handover-${i}`),
+    });
+    files.updateFolder.mockImplementation(async () => {
+      const record = records.get('p');
+      expect(record).toMatchObject({
+        homeWrites: {},
+        supersededWrites: { pending: { generation: 3, at: expect.any(Number) } },
+        transition: { kind: 'reclaim', forced: true, phase: 'sending' },
+      });
+      expect(Object.keys(record?.supersededWrites ?? {})).toHaveLength(32);
+      expect(record?.supersededWrites?.['write-0']).toBeUndefined();
+      expect(record?.supersededHandovers).toEqual([
+        ...Array.from({ length: 31 }, (_, i) => `handover-${i + 1}`),
+        'active',
+      ]);
+    });
+    await service.status('p');
+    jest.setSystemTime(399_500);
+    const operation = jest.fn(async () => 'admitted');
+    const result = service.withVmPermit('p', operation);
+    await jest.advanceTimersByTimeAsync(0);
+    expect(operation).not.toHaveBeenCalled();
+    await jest.advanceTimersByTimeAsync(1_000);
+    await expect(result).resolves.toBe('admitted');
+    expect(records.get('p')).toMatchObject({ owner: 'vm', generation: 4, transition: null });
+    expect(indexes.install).not.toHaveBeenCalled();
+  });
+
+  it.each(['sending', 'unguarding', 'rollback', 'publishing'] as const)(
+    'resumes a forced reclaim from the journal in %s even with an unconfirmed sequencer marker',
+    async (phase) => {
+      records.set('p', {
+        ...pendingHome(),
+        homeWrites: {},
+        transition: { kind: 'reclaim', id: 'forced', phase, forced: true, lease: null },
+      });
+      indexes.sequencer.mockResolvedValue('MERGE_HEAD');
+      guard.remove.mockImplementation(async () => {
+        expect(records.get('p')?.transition?.phase).toBe('unguarding');
+        return { warning: null };
+      });
+      jest.mocked(restoreGitBaseline).mockImplementation(async () => {
+        expect(records.get('p')?.transition?.phase).toBe(
+          phase === 'publishing' ? phase : 'rollback',
+        );
+      });
+
+      await service.poll();
+      expect(restoreGitBaseline).toHaveBeenCalledWith(executor, '/project', baseline);
+      expect(files.updateFolder).toHaveBeenCalledTimes(phase === 'sending' ? 1 : 0);
+      expect(guard.remove).toHaveBeenCalledTimes(
+        phase === 'sending' || phase === 'unguarding' ? 1 : 0,
+      );
+      expect(indexes.install).not.toHaveBeenCalled();
+      expect(records.get('p')).toMatchObject({
+        owner: 'vm',
+        generation: 1,
+        transition: null,
+        forcedReclaim: { at: 100_000, fromGeneration: 0, homeName: 'my-PC' },
+      });
+    },
+  );
+
+  it.each(['a restore that fails', 'a ref store that changed to reftable'])(
+    'keeps admission closed when a journaled rollback meets %s',
+    async (failure) => {
+      service = await startCoordinator({ acquireMs: 0 });
+      records.set('p', {
+        ...pendingHome(),
+        transition: { kind: 'reclaim', id: 'forced', phase: 'rollback', forced: true, lease: null },
+      });
+      if (failure === 'a restore that fails')
+        jest.mocked(restoreGitBaseline).mockRejectedValue(new Error('digest mismatch'));
+      else reftable();
+      await expect(service.withVmPermit('p', async () => 'admitted')).rejects.toMatchObject({
+        code: 'GIT_VM_ACQUIRE_TIMEOUT',
+        message: "Git is on PC 'my-PC': the VM could not return to the last confirmed Git state.",
+      });
+      expect(records.get('p')).toMatchObject({ owner: 'home', transition: { phase: 'rollback' } });
+      expect(restoreGitBaseline).toHaveBeenCalledTimes(failure === 'a restore that fails' ? 1 : 0);
+    },
+  );
 
   it('keeps waiting when a reclaim step fails once, and resumes the journal on the next poll', async () => {
     records.set('p', home());

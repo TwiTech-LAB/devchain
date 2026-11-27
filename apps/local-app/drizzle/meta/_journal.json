@@ -715,6 +715,34 @@
       "when": 1794330790698,
       "tag": "0101_vault_use_approvals",
       "breakpoints": true
+    },
+    {
+      "idx": 102,
+      "version": "6",
+      "when": 1795349591509,
+      "tag": "0102_session_lineage",
+      "breakpoints": true
+    },
+    {
+      "idx": 103,
+      "version": "6",
+      "when": 1795371080986,
+      "tag": "0103_overrated_nightmare",
+      "breakpoints": true
+    },
+    {
+      "idx": 104,
+      "version": "6",
+      "when": 1795472348084,
+      "tag": "0104_external_link_receipts",
+      "breakpoints": true
+    },
+    {
+      "idx": 105,
+      "version": "6",
+      "when": 1795613701510,
+      "tag": "0105_agent_disabled",
+      "breakpoints": true
     }
   ]
 }

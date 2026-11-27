@@ -57,6 +57,7 @@ function makeOperation(
     { clear: jest.fn() } as never,
     { assertLocalEmpty: jest.fn().mockResolvedValue(null) } as never,
     { pushNow: async () => undefined } as never,
+    { pushNow: async () => undefined } as never,
   );
 }
 
@@ -153,6 +154,7 @@ describe('AttachOperation preflight home gate', () => {
       new FakeProcessExecutor(),
       { clear: jest.fn() } as never,
       { assertLocalEmpty: jest.fn().mockResolvedValue(null) } as never,
+      { pushNow: async () => undefined } as never,
       { pushNow: async () => undefined } as never,
     );
   }
@@ -324,6 +326,7 @@ describe('AttachOperation rollback managed exclusions', () => {
       { clear: jest.fn() } as never,
       { assertLocalEmpty: jest.fn().mockResolvedValue(null) } as never,
       { pushNow: async () => undefined } as never,
+      { pushNow: async () => undefined } as never,
     );
   }
 
@@ -363,6 +366,7 @@ describe('AttachOperation rollback managed exclusions', () => {
       { remove: async () => ({ removed: false, indexRefreshed: null, warning: null }) } as never,
       new FakeProcessExecutor(),
       { get: () => 'vm', fence: () => ({ expectedGeneration: 0, transitionId: null }) } as never,
+      {} as never,
     );
     const details: Record<string, unknown> = { pushStarted: true };
     const started = { id: 'file_sync_initial', state: 'running', startedAt: HOST_FROZEN_AT };
@@ -624,6 +628,7 @@ describe('AttachOperation Docker steps', () => {
       new FakeProcessExecutor(),
       { clear: jest.fn() } as never,
       { assertLocalEmpty: jest.fn().mockResolvedValue(null) } as never,
+      { pushNow: async () => undefined } as never,
       { pushNow: async () => undefined } as never,
     );
   };

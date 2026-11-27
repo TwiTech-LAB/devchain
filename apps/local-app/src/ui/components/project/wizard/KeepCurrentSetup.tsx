@@ -4,8 +4,16 @@ import type { ExportData } from '@devchain/shared';
 import type { PreservationReview, PreserveTeamSetup } from '@/common/project-preservation.contract';
 import { Alert, AlertDescription } from '@/ui/components/ui/alert';
 import { canPreserveTeams, currentSetupRemovals } from './currentSetup';
-import { SetupChoiceCard, SetupPresetSection, SummaryLine } from './SetupReviewSections';
+import {
+  ReviewSection,
+  SetupChoiceCard,
+  SetupChoiceGroup,
+  SetupPresetPicker,
+  SetupPresetSection,
+  SummaryLine,
+} from './SetupReviewSections';
 import { useSetupReview } from './SetupReviewContext';
+import { presetFor } from './useWizardConfig';
 
 export interface CurrentSetupValue {
   currentExport: ExportData | null;
@@ -38,8 +46,18 @@ export function useCurrentSetup(): CurrentSetupValue {
 
 export function ReplaceSetupSection() {
   const current = useCurrentSetup();
-  const { state } = useSetupReview();
+  const { preview, state, handlers } = useSetupReview();
   const offerKeep = canPreserveTeams(current.currentExport);
+
+  // Applies the earlier setup when it still fits, else the suggested one, else the template defaults.
+  const onUseTemplate = () => {
+    const preset = presetFor(preview, state.selectedProviderNames, {
+      presetName: state.agentPresetName,
+    });
+    if (preset) handlers.onApplyPreset(preset.name);
+    else current.onUseTemplate();
+  };
+
   return (
     <>
       {!current.currentExport && (
@@ -50,28 +68,28 @@ export function ReplaceSetupSection() {
           </AlertDescription>
         </Alert>
       )}
-      <SetupPresetSection
-        showPresetSelection={!current.selected}
-        noPresetChoice={
-          <SetupChoiceCard
-            title="Use template defaults"
-            checked={!current.selected && state.agentPresetName === null}
-            onSelect={current.onUseTemplate}
-          />
-        }
-      >
-        {offerKeep && (
-          <SetupChoiceCard
-            title="Keep my current setup"
-            checked={current.selected}
-            onSelect={current.onKeep}
-          >
-            <span className="block text-xs text-muted-foreground">
-              Keep your teams, their leads and members, and choose template additions.
-            </span>
-          </SetupChoiceCard>
-        )}
-      </SetupPresetSection>
+      {offerKeep ? (
+        <ReviewSection title="Setup">
+          <SetupChoiceGroup legend="Setup">
+            <SetupChoiceCard
+              title="Keep my current setup"
+              description="Keep your teams, their leads and members, and choose template additions."
+              checked={current.selected}
+              onSelect={current.onKeep}
+            />
+            <SetupChoiceCard
+              title="Use the template setup"
+              description="Replace your teams and agents with the template's."
+              checked={!current.selected}
+              onSelect={onUseTemplate}
+            >
+              {!current.selected && <SetupPresetPicker />}
+            </SetupChoiceCard>
+          </SetupChoiceGroup>
+        </ReviewSection>
+      ) : (
+        <SetupPresetSection />
+      )}
     </>
   );
 }

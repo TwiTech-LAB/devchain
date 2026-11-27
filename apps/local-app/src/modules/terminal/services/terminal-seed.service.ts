@@ -327,14 +327,20 @@ export class TerminalSeedService {
     let recoveryWatermark: TerminalRecoverySeedWatermark | undefined;
     let emptyCompletionSequence: number | undefined;
     const runtimeDescriptor = this.sessionTerminalRuntime.getDescriptor(sessionId);
+    // A standalone terminal (an isolated provider login) has no session row; the registry
+    // that streams it knows its tmux session.
+    const tmuxSessionName =
+      runtimeDescriptor.tmuxSessionName ??
+      this.terminalSessionRegistry.get(sessionId)?.tmuxSessionName ??
+      null;
 
     try {
-      if (runtimeDescriptor.tmuxSessionName) {
+      if (tmuxSessionName) {
         const scrollbackLines = this.settingsService.getScrollbackLines();
         logger.info(
           {
             sessionId,
-            tmuxSessionId: runtimeDescriptor.tmuxSessionName,
+            tmuxSessionId: tmuxSessionName,
             scrollbackLines,
             source: 'tmux-ansi',
           },
@@ -342,11 +348,7 @@ export class TerminalSeedService {
         );
 
         // Use cached capture if available (2s TTL)
-        snapshot = await this.getCachedCapture(
-          sessionId,
-          runtimeDescriptor.tmuxSessionName,
-          scrollbackLines,
-        );
+        snapshot = await this.getCachedCapture(sessionId, tmuxSessionName, scrollbackLines);
         captureSucceeded = snapshot !== null;
         // Sample the sequence AFTER capture completes: frames stamped while capture-pane
         // ran are already inside the snapshot, so the baseline must sit at or below them.
@@ -370,7 +372,7 @@ export class TerminalSeedService {
           wasTruncated = truncateResult.wasTruncated;
 
           const cursorPos = await this.terminalIO.getCursorPosition({
-            name: runtimeDescriptor.tmuxSessionName,
+            name: tmuxSessionName,
           });
           if (cursorPos) {
             tmuxCursorX = cursorPos.x;

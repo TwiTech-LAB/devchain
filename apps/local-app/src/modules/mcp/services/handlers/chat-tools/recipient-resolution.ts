@@ -16,7 +16,7 @@ export async function resolveRecipientByName(
   name: string,
 ): Promise<ResolvedRecipient | null> {
   try {
-    const agent = await ctx.storage.getAgentByName(projectId, name);
+    const agent = await ctx.storage.getAgentByName(projectId, name, { excludeDisabled: true });
     return {
       type: 'agent',
       id: agent.id,
@@ -46,7 +46,7 @@ export async function getAvailableRecipientNames(
   projectId: string,
 ): Promise<string[]> {
   const [agentsResult, guests] = await Promise.all([
-    ctx.storage.listAgents(projectId, { limit: 100, offset: 0 }),
+    ctx.storage.listAgents(projectId, { limit: 100, offset: 0, excludeDisabled: true }),
     ctx.storage.listGuests(projectId),
   ]);
 

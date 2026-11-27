@@ -26,6 +26,8 @@ export const claudeHooksSessionStartedEvent = {
     agentId: z.string().uuid().nullable(),
     agentName: z.string().min(1).nullable().optional(),
     sessionId: z.string().uuid().nullable(),
+    /** When the provider fired the hook (epoch ms), if the relay stamps it. */
+    firedAtMs: z.number().int().nonnegative().optional(),
   }),
 } as const;
 

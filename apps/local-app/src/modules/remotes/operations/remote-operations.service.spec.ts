@@ -14,6 +14,10 @@ import type {
 import { RemoteOperationsService } from './remote-operations.service';
 import { ClaimRemoteSchema, InstallHostSchema, SshCredentialsSchema } from './remote-operation.dto';
 import { generateEd25519PublicKey } from '../../../common/test/ssh-key.fixture';
+import {
+  HomeGitRecoveryService,
+  type HomeGitRecovery,
+} from '../git-writes/home-git-recovery.service';
 
 /** A Connect choices store that remembers nothing. */
 const noChoices = { recordAttach: () => undefined } as never;
@@ -51,6 +55,8 @@ describe('RemoteOperationsService.gitOwnerStatus', () => {
     status = jest.fn().mockResolvedValue(record),
     warning = null as string | null,
     lastError = null as string | null,
+    recoveries = [] as HomeGitRecovery[],
+    liveRefs = [] as string[],
   } = {}) {
     const storage = {
       getProject: jest.fn(),
@@ -58,6 +64,17 @@ describe('RemoteOperationsService.gitOwnerStatus', () => {
       getRemote: jest.fn().mockResolvedValue({ id: 'remote-1', name: 'vm-01' }),
     };
     const owners = { get: () => 'vm', generation: () => 3 };
+    const recovery = new HomeGitRecoveryService(
+      { syncthingHome: () => '/home/devchain/.devchain/syncthing' } as never,
+      '',
+      storage as never,
+      {} as never,
+      { gitCoordinatorStatus: status } as never,
+      { folderPath: async () => '/project' } as never,
+      { run: async () => ({ success: true, stdout: liveRefs.join('\n') }) } as never,
+      {} as never,
+    );
+    jest.spyOn(recovery, 'list').mockResolvedValue(recoveries);
     const service = new RemoteOperationsService(
       storage as never,
       {} as never,
@@ -71,7 +88,7 @@ describe('RemoteOperationsService.gitOwnerStatus', () => {
       { warning: () => warning } as never,
       owners as never,
       { gitCoordinatorStatus: status } as never,
-      { lastError: () => lastError } as never,
+      { lastError: () => lastError, recoveryWarning: recovery.warning.bind(recovery) } as never,
     );
     return { service, storage, status };
   }
@@ -92,6 +109,50 @@ describe('RemoteOperationsService.gitOwnerStatus', () => {
       checkpoint: record.checkpoint,
       warnings: ['Git guard was not installed.'],
     });
+  });
+
+  describe('forced reclaim visibility', () => {
+    const time = '2026-11-21T12:00:00.000Z';
+    const backup = '2026-11-21T12-01-00-000Z';
+    const branch = `refs/heads/devchain-recovered/pc-${backup}/feature`;
+    const tag = `refs/tags/devchain-recovered/pc-${backup}/release`;
+    const refs = [branch, tag];
+    const reclaim = { at: Date.parse(time), fromGeneration: 6, homeName: 'pc' };
+    const prefix = `The VM 'vm-01' took Git back at ${time}`;
+    const pending = `${prefix} because this PC was away. Recovery of this PC's Git work is pending.`;
+    const recovered = `${prefix}. This PC's work is in: ${refs.join(', ')}. Merge or delete these branches.`;
+    const staged = `Staged changes had conflicts and are in /home/devchain/.devchain/backups/git/project-1/${backup}/index.`;
+
+    // The service contract combines the coordinator record, recovery marker and live refs.
+    it.each([
+      ['pending', reclaim, 'pending', [], undefined, [pending]],
+      ['fetched', reclaim, 'fetched', refs, undefined, [pending]],
+      ['recovered', reclaim, 'recovered', refs, undefined, [recovered]],
+      ['staged conflicts', reclaim, 'recovered', refs, 'conflicts', [`${recovered} ${staged}`]],
+      ['refs deleted', reclaim, 'recovered', [], undefined, []],
+      ['no forced reclaim', undefined, 'recovered', refs, undefined, []],
+    ] as const)(
+      'reports the warning for %s',
+      async (_case, forcedReclaim, state, refs, stagedSkipped, warnings) => {
+        const { service } = serviceFor({
+          status: jest.fn().mockResolvedValue({ ...record, homeWrites: {}, forcedReclaim }),
+          recoveries: [
+            {
+              remoteId: 'remote-1',
+              pcName: 'pc',
+              createdAt: Date.parse(time),
+              time: backup,
+              state,
+              refs: [branch, tag],
+              stagedSkipped,
+            },
+          ],
+          liveRefs: [...refs],
+        });
+
+        expect((await service.gitOwnerStatus('project-1')).warnings).toEqual(warnings);
+      },
+    );
   });
 
   describe('stuck home writes', () => {

@@ -28,6 +28,7 @@ import {
   type SetExternalEstimateLoggedMinutes,
   type StoreExternalEstimateLogResolution,
 } from '../../models/domain.models';
+import { assertNoLinkReleasePending } from '../helpers/pending-link-releases';
 import { isSqliteUniqueConstraint } from '../helpers/storage-helpers';
 import { BaseStorageDelegate, type StorageDelegateContext } from './base-storage.delegate';
 
@@ -448,6 +449,7 @@ export class ExternalEstimateLogStorageDelegate
       const startedAt = this.requireTimestamp(data.startedAt);
       const connectionId = this.requireIdentifier(data.connectionId, 'Connection');
       this.requirePositiveInteger(data.connectionGeneration, 'Connection generation');
+      assertNoLinkReleasePending(this.rawClient, normalized);
       this.assertCurrentLink(normalized);
       this.assertConnectionEpoch(normalized.provider, connectionId, data.connectionGeneration);
 

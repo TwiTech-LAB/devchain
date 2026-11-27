@@ -14,15 +14,24 @@ import {
 import { ProcessExecutor } from '../../terminal/services/process-executor/process-executor.port';
 import { ProjectGitMutex } from '../../worktrees/project-git-mutex';
 import { exportIndexSnapshot, refsDigest } from '../git-coordinator/git-checkpoint';
-import type { GitCoordinatorRecord } from '../git-coordinator/git-coordinator.dto';
+import {
+  HOME_GIT_COMMAND_RUNNING,
+  type GitCoordinatorRecord,
+} from '../git-coordinator/git-coordinator.dto';
 import { GitProcessIdentity } from '../git-coordinator/git-process-identity';
 import { RemoteHostClient, RemoteHostRequestError } from '../operations/remote-host.client';
 import { hostErrorCode } from '../transport/host-transport';
 import { GitOwnerStore } from '../git-owner.store';
 import { RemoteBindingsService } from '../services/remote-bindings.service';
 import { ChangeBarrierTimeoutError, scanSequences, waitForChangeBarrier } from './change-barrier';
-import { HomeGitTransitions, gitReclaimPending } from './home-git-transitions';
+import {
+  HomeGitTransitions,
+  gitReclaimPending,
+  isHomeGitSuperseded,
+  type HomeGitTransitionContext,
+} from './home-git-transitions';
 import { HomeGitWriteStore, type HomeGitWrite } from './home-git-write.store';
+import { HomeGitRecoveryService } from './home-git-recovery.service';
 
 const logger = createLogger('HomeGitWrites');
 export const HOME_GIT_WRITE_TIMINGS = Symbol('HOME_GIT_WRITE_TIMINGS');
@@ -31,7 +40,7 @@ export const DEFAULT_HOME_GIT_WRITE_TIMINGS = {
   pidPollMs: 100,
   /** A batch starts once no git of the project's tracked writes has run for this long. */
   batchQuietMs: 300,
-  /** The longest a batch waits for that quiet before it confirms the writes whose git is gone. */
+  /** The longest a batch waits for that quiet before it checks which writes can confirm. */
   batchWaitMs: 3_000,
   barrierPollMs: 100,
   /** One barrier attempt; the next attempt scans again and records new sequences. */
@@ -40,6 +49,7 @@ export const DEFAULT_HOME_GIT_WRITE_TIMINGS = {
   retryMaxMs: 10_000,
   /** How often home checks whether the VM took back Git this PC owns. */
   stepDownPollMs: 5_000,
+  homeRenewMs: 30_000,
 };
 export type HomeGitWriteTimings = typeof DEFAULT_HOME_GIT_WRITE_TIMINGS;
 
@@ -49,10 +59,10 @@ export interface HomeGitProject {
   remoteName: string | null;
 }
 
-class Stopped extends Error {}
-
 /** The start identity of a write home learned only from the VM: its git is treated as gone. */
 const UNKNOWN_START = 'unknown';
+
+class HomeGitCommandRunningError extends Error {}
 
 /**
  * The home write path: `acquire` registers a write on the VM before git runs, and write-through
@@ -64,13 +74,19 @@ const UNKNOWN_START = 'unknown';
 export class HomeGitWriteService implements OnApplicationBootstrap, OnModuleDestroy {
   private readonly admission = new ProjectGitMutex();
   private readonly capture = new ProjectGitMutex();
-  private readonly jobs = new Map<string, Promise<void>>();
+  private readonly jobs = new Map<
+    string,
+    { projectId: string; controller: AbortController; done: Promise<void> }
+  >();
+  private readonly steppingDown = new Set<string>();
+  private readonly checking = new Set<string>();
   /** Projects whose VM record home must settle before their writes are tracked: project → remote. */
   private readonly recovering = new Map<string, string>();
   /** Why write-through last failed, per project; cleared once the writes confirm or are gone. */
   private readonly lastErrors = new Map<string, string>();
   private readonly stop = new AbortController();
   private stepDownTimer?: NodeJS.Timeout;
+  private homeRenewTimer?: NodeJS.Timeout;
   private polling = false;
 
   constructor(
@@ -83,6 +99,7 @@ export class HomeGitWriteService implements OnApplicationBootstrap, OnModuleDest
     private readonly store: HomeGitWriteStore,
     private readonly transitions: HomeGitTransitions,
     private readonly owners: GitOwnerStore,
+    private readonly backupRecovery: HomeGitRecoveryService,
     @Inject(HOME_GIT_WRITE_TIMINGS) private readonly timings: HomeGitWriteTimings,
   ) {}
 
@@ -97,17 +114,32 @@ export class HomeGitWriteService implements OnApplicationBootstrap, OnModuleDest
     for (const [projectId, remoteId] of connected) this.recoverLater(projectId, remoteId);
     this.stepDownTimer = setInterval(() => void this.pollStepDowns(), this.timings.stepDownPollMs);
     this.stepDownTimer.unref();
+    this.homeRenewTimer = setInterval(() => {
+      void this.renewHomeLeases().catch((error: unknown) =>
+        logger.warn({ error }, 'Home Git lease renewal poll failed'),
+      );
+    }, this.timings.homeRenewMs);
+    this.homeRenewTimer.unref();
   }
 
   async onModuleDestroy(): Promise<void> {
     clearInterval(this.stepDownTimer);
+    clearInterval(this.homeRenewTimer);
     this.stop.abort();
-    await Promise.allSettled(this.jobs.values());
+    await Promise.allSettled([...this.jobs.values()].map(({ done }) => done));
   }
 
   /** One line on why the project's home writes are still unconfirmed, if write-through failed. */
   lastError(projectId: string): string | null {
     return this.lastErrors.get(projectId) ?? null;
+  }
+
+  recoveryWarning(
+    projectId: string,
+    remoteId: string,
+    vm: { name: string; forcedReclaim: NonNullable<GitCoordinatorRecord['forcedReclaim']> },
+  ): Promise<string | undefined> {
+    return this.backupRecovery.warning(projectId, remoteId, vm);
   }
 
   /** The registered project containing `path`, with its VM when Git writes need the VM. */
@@ -128,8 +160,13 @@ export class HomeGitWriteService implements OnApplicationBootstrap, OnModuleDest
    * Registers the gated git child `pid` as a home write, after moving Git to this PC if needed.
    * The write id follows from the pid and its start identity, so a retry reuses it.
    */
-  async acquire(projectId: string, pid: number, signal: AbortSignal): Promise<{ writeId: string }> {
-    const remoteId = await this.connectedRemote(projectId);
+  async acquire(
+    projectId: string,
+    pid: number,
+    signal: AbortSignal,
+    expectedRemoteId?: string,
+  ): Promise<{ writeId: string }> {
+    const remoteId = expectedRemoteId ?? (await this.connectedRemote(projectId));
     const identity = await this.processes.read(pid);
     if (typeof identity !== 'string')
       throw new AppError(
@@ -139,6 +176,8 @@ export class HomeGitWriteService implements OnApplicationBootstrap, OnModuleDest
       );
     const writeId = `hw-${pid}-${createHash('sha256').update(identity).digest('hex').slice(0, 16)}`;
     return this.admission.runExclusive(projectId, async () => {
+      if (expectedRemoteId && (await this.connectedRemote(projectId)) !== expectedRemoteId)
+        throw new AppError('The recovery project changed VMs', 'GIT_RECOVERY_REMOTE_CHANGED', 409);
       const saved = this.store.get(writeId);
       const createdAt = saved?.createdAt ?? Date.now();
       const writeAt = (generation: number): HomeGitWrite => ({
@@ -168,7 +207,10 @@ export class HomeGitWriteService implements OnApplicationBootstrap, OnModuleDest
             );
             return { writeId };
           } catch (error) {
+            if (isHomeGitSuperseded(error)) this.handleSuperseded(projectId, remoteId);
             if (attempt >= 2 || !GIT_MOVED.includes(hostErrorCode(error) ?? '')) throw error;
+            // This child is still gated. Only keep writes the VM could already have admitted.
+            if (attempt === 0 && !saved) this.store.delete(writeId);
           }
         }
         try {
@@ -186,19 +228,27 @@ export class HomeGitWriteService implements OnApplicationBootstrap, OnModuleDest
   }
 
   private track(write: HomeGitWrite): void {
-    if (this.jobs.has(write.writeId)) return;
-    this.jobs.set(
-      write.writeId,
-      this.writeThrough(write).finally(() => this.jobs.delete(write.writeId)),
-    );
+    if (
+      this.stop.signal.aborted ||
+      this.jobs.has(write.writeId) ||
+      this.steppingDown.has(write.projectId)
+    )
+      return;
+    const controller = new AbortController();
+    const signal = AbortSignal.any([this.stop.signal, controller.signal]);
+    const done = this.writeThrough(write, signal).finally(() => this.jobs.delete(write.writeId));
+    this.jobs.set(write.writeId, { projectId: write.projectId, controller, done });
   }
 
   /** Ends once a batch confirmed the write or the VM no longer knows it. */
-  private async writeThrough({ writeId, projectId }: HomeGitWrite): Promise<void> {
+  private async writeThrough(
+    { writeId, projectId, remoteId }: HomeGitWrite,
+    signal: AbortSignal,
+  ): Promise<void> {
     let delay = this.timings.retryMinMs;
     try {
       for (;;) {
-        this.stop.signal.throwIfAborted();
+        signal.throwIfAborted();
         // Acquire may re-register the write under a newer generation after a move.
         const write = this.store.get(writeId);
         if (!write) {
@@ -206,26 +256,32 @@ export class HomeGitWriteService implements OnApplicationBootstrap, OnModuleDest
           return;
         }
         if (!(await this.gitGone(write))) {
-          await this.sleep(this.timings.pidPollMs);
+          await this.sleep(this.timings.pidPollMs, signal);
           continue;
         }
         try {
-          await this.capture.runExclusive(write.projectId, () => this.confirmBatch(writeId));
+          await this.capture.runExclusive(write.projectId, () =>
+            this.confirmBatch(writeId, signal),
+          );
           this.lastErrors.delete(write.projectId);
           delay = this.timings.retryMinMs;
         } catch (error) {
-          if (error instanceof Stopped || this.stop.signal.aborted) throw error;
+          if (isHomeGitSuperseded(error)) {
+            this.handleSuperseded(projectId, remoteId);
+            return;
+          }
+          if (signal.aborted) return;
           this.lastErrors.set(write.projectId, failureReason(error));
           logger.warn(
             { error, projectId: write.projectId, writeId: write.writeId },
             'Home Git write is not confirmed on the VM yet; retrying',
           );
-          await this.sleep(delay);
+          await this.sleep(delay, signal);
           delay = Math.min(delay * 2, this.timings.retryMaxMs);
         }
       }
     } catch (error) {
-      if (this.stop.signal.aborted) return;
+      if (signal.aborted) return;
       throw error;
     }
   }
@@ -245,28 +301,35 @@ export class HomeGitWriteService implements OnApplicationBootstrap, OnModuleDest
    * the rescan, so each member's git exited before the snapshot; the VM still checks the refs and
    * objects for each write. Every member carries the full index: the VM installs what it gets.
    */
-  private async confirmBatch(writeId: string): Promise<void> {
+  private async confirmBatch(writeId: string, signal: AbortSignal): Promise<void> {
+    signal.throwIfAborted();
     // A batch run while this job waited for the capture queue may have confirmed it.
     const write = this.store.get(writeId);
     if (!write) return;
-    await this.settle(write.projectId);
+    await this.settle(write.projectId, signal);
+    const tracked = this.tracked(write.projectId).filter(
+      (candidate) => candidate.remoteId === write.remoteId,
+    );
     const members: HomeGitWrite[] = [];
-    for (const candidate of this.tracked(write.projectId))
-      if (candidate.remoteId === write.remoteId && (await this.gitGone(candidate)))
-        members.push(candidate);
+    for (const candidate of tracked) if (await this.gitGone(candidate)) members.push(candidate);
     if (members.length === 0) return;
     members.sort((a, b) => a.createdAt - b.createdAt);
+    const batch = members.map((member) => member.writeId);
     const binding = await this.bindings.get(write.projectId);
+    signal.throwIfAborted();
     if (!binding || binding.remoteId !== write.remoteId) {
       logger.warn(
-        { projectId: write.projectId, writeIds: members.map((member) => member.writeId) },
+        { projectId: write.projectId, writeIds: batch },
         'Dropping home Git writes for a project that is no longer connected to its VM',
       );
       for (const member of members) this.store.delete(member.writeId);
       this.forgetErrorWithoutWrites(write.projectId);
       return;
     }
-    await this.changeBarrier(write.projectId, write.remoteId);
+    if (members.length !== tracked.length)
+      throw new HomeGitCommandRunningError(HOME_GIT_COMMAND_RUNNING);
+    await this.changeBarrier(write.projectId, write.remoteId, signal);
+    signal.throwIfAborted();
     const root = await this.files.folderPath(write.projectId);
     const [digest, index] = await Promise.all([
       refsDigest(this.executor, root),
@@ -274,12 +337,13 @@ export class HomeGitWriteService implements OnApplicationBootstrap, OnModuleDest
     ]);
     const indexBase64 = index.toString('base64');
     for (const member of members) {
-      if (this.stop.signal.aborted) throw new Stopped();
+      signal.throwIfAborted();
       try {
         await this.host.homeWriteEnd(member.remoteId, member.projectId, {
           expectedGeneration: member.generation,
           transitionId: null,
           writeId: member.writeId,
+          batch,
           refsDigest: digest,
           indexBase64,
         });
@@ -308,7 +372,7 @@ export class HomeGitWriteService implements OnApplicationBootstrap, OnModuleDest
    * `batchWaitMs`: in `git commit && git push`, the push registers shortly after the commit's
    * git exits, and its write then joins the batch.
    */
-  private async settle(projectId: string): Promise<void> {
+  private async settle(projectId: string, signal: AbortSignal): Promise<void> {
     const started = Date.now();
     let quietSince = started;
     for (;;) {
@@ -319,7 +383,7 @@ export class HomeGitWriteService implements OnApplicationBootstrap, OnModuleDest
         now - started >= this.timings.batchWaitMs
       )
         return;
-      await this.sleep(this.timings.pidPollMs);
+      await this.sleep(this.timings.pidPollMs, signal);
     }
   }
 
@@ -343,7 +407,11 @@ export class HomeGitWriteService implements OnApplicationBootstrap, OnModuleDest
    * PC owns Git, receive-only changes in the VM's `.git` are stray writes, so the barrier reverts
    * them.
    */
-  private async changeBarrier(projectId: string, remoteId: string): Promise<void> {
+  private async changeBarrier(
+    projectId: string,
+    remoteId: string,
+    signal: AbortSignal,
+  ): Promise<void> {
     const folders = await this.files.projectFolders(projectId);
     const self = this.files.device().deviceId;
     const code = folders.find((folder) => folder.kind === 'code');
@@ -355,6 +423,7 @@ export class HomeGitWriteService implements OnApplicationBootstrap, OnModuleDest
       : undefined;
     if (!vmDevice) throw new Error('The project has no VM device in its code folder');
     const sequences: Record<string, number> = {};
+    signal.throwIfAborted();
     const scanned = await scanSequences(
       this.files,
       folders.map((folder) => folder.id),
@@ -363,16 +432,22 @@ export class HomeGitWriteService implements OnApplicationBootstrap, OnModuleDest
       sequences[folderId] = sequence ?? Number.MAX_SAFE_INTEGER;
     await waitForChangeBarrier({
       sequences,
-      needed: (folderId, sequence) => this.files.remoteNeedThrough(folderId, vmDevice, sequence),
+      needed: (folderId, sequence) => {
+        signal.throwIfAborted();
+        return this.files.remoteNeedThrough(folderId, vmDevice, sequence);
+      },
       receiver: (folderId) =>
         this.host.syncStatus(remoteId, folderId, undefined, { allErrors: true }),
       revert: git && {
         folderId: git.id,
-        send: () => this.host.syncRevert(remoteId, git.id, this.owners.fence(projectId)),
+        send: () => {
+          signal.throwIfAborted();
+          return this.host.syncRevert(remoteId, git.id, this.owners.fence(projectId));
+        },
       },
       timeoutMs: this.timings.barrierMs,
       pollMs: this.timings.barrierPollMs,
-      sleep: (ms) => this.sleep(ms),
+      sleep: (ms) => this.sleep(ms, signal),
     });
   }
 
@@ -400,14 +475,20 @@ export class HomeGitWriteService implements OnApplicationBootstrap, OnModuleDest
         signal,
         published,
       };
-      if (record.transition?.kind === 'reclaim') throw gitReclaimPending();
-      if (record.transition) await this.transitions.handover(context);
+      if (record.transition?.kind === 'reclaim') {
+        this.handleSuperseded(projectId, remoteId);
+        throw gitReclaimPending();
+      }
+      if (record.transition) await this.handover(context);
       else if (record.owner === 'home') {
         // Only this PC hands Git over, so a home-owned record is ours, even if the cache lags.
         this.owners.remember(projectId, record);
         return record.generation;
-      } else if (this.owners.get(projectId) === 'home') await this.transitions.stepDown(context);
-      else await this.transitions.handover(context);
+      } else if (await this.stepDown(context)) {
+        await this.resumeConfirmations(projectId);
+      } else {
+        await this.handover(context);
+      }
       signal.throwIfAborted();
     }
     throw new AppError('Git did not move to this PC', 'GIT_HANDOVER_REQUIRED', 409);
@@ -418,18 +499,41 @@ export class HomeGitWriteService implements OnApplicationBootstrap, OnModuleDest
     return this.owners.get(projectId) === 'home' ? this.owners.generation(projectId) : null;
   }
 
+  private async renewHomeLeases(): Promise<void> {
+    const projects = new Map(
+      this.store.list().map(({ projectId, remoteId }) => [projectId, remoteId]),
+    );
+    await Promise.all(
+      [...projects].map(async ([projectId, remoteId]) => {
+        if (this.steppingDown.has(projectId)) return;
+        try {
+          await this.host.homeRenew(remoteId, projectId, this.owners.fence(projectId));
+        } catch (error) {
+          if (isHomeGitSuperseded(error)) {
+            this.handleSuperseded(projectId, remoteId);
+            return;
+          }
+          logger.warn({ error, projectId }, 'Home Git lease renewal failed');
+        }
+      }),
+    );
+  }
+
   /** A VM reclaim seen here steps this PC down before any other home Git work. */
   private async pollStepDowns(): Promise<void> {
     if (this.polling) return;
     this.polling = true;
     try {
-      for (const [projectId, remoteId] of this.recovering) await this.recover(projectId, remoteId);
-      for (const binding of await this.bindings.list()) {
-        if (binding.state !== 'remote' || this.owners.get(binding.projectId) !== 'home') continue;
-        await this.stepDownIfReclaimed(binding.projectId, binding.remoteId).catch(
-          (error: unknown) =>
-            logger.warn({ error, projectId: binding.projectId }, 'Git step-down will retry'),
-        );
+      for (const { projectId, remoteId, state } of await this.bindings.list()) {
+        if (state !== 'remote' || this.checking.has(projectId)) continue;
+        this.checking.add(projectId);
+        const check =
+          this.recovering.get(projectId) === remoteId
+            ? this.recover(projectId, remoteId)
+            : this.stepDownIfReclaimed(projectId, remoteId);
+        void check
+          .catch((error: unknown) => logger.warn({ error, projectId }, 'Git step-down will retry'))
+          .finally(() => this.checking.delete(projectId));
       }
     } catch (error) {
       logger.warn({ error }, 'Git step-down poll failed');
@@ -439,29 +543,155 @@ export class HomeGitWriteService implements OnApplicationBootstrap, OnModuleDest
   }
 
   async stepDownIfReclaimed(projectId: string, remoteId: string): Promise<void> {
-    await this.admission.runExclusive(projectId, async () => {
-      if (this.owners.get(projectId) !== 'home') return;
+    const settled = await this.admission.runExclusive(projectId, async () => {
       const record = await this.host.gitCoordinatorStatus(remoteId, projectId);
-      if (record.owner === 'home' && !record.transition) {
-        this.adopt(projectId, remoteId, record);
-        this.trackProject(projectId);
+      if (this.recovering.get(projectId) === remoteId) return;
+      if (record.transition) {
+        if (record.transition.kind === 'reclaim') await this.stopConfirmations(projectId);
+        return;
       }
-      if (record.owner !== 'vm' || record.generation <= this.owners.generation(projectId)) return;
-      await this.transitions.stepDown({
-        projectId,
-        remoteId,
-        remoteName: await this.remoteName(remoteId),
-        record,
-        signal: this.stop.signal,
-      });
+      if (record.owner === 'home') {
+        if (this.ownedGeneration(projectId) !== record.generation)
+          this.owners.remember(projectId, record);
+        this.adopt(projectId, remoteId, record);
+      } else {
+        await this.stepDown({
+          projectId,
+          remoteId,
+          remoteName: await this.remoteName(remoteId),
+          record,
+          signal: this.stop.signal,
+        });
+      }
+      await this.resumeConfirmations(projectId);
+      return true;
     });
+    if (settled) this.backupRecovery.schedule(projectId, remoteId);
   }
 
-  private trackProject(projectId: string): void {
+  async hasPendingRecovery(
+    projectId: string,
+    remoteId: string,
+    record: GitCoordinatorRecord,
+  ): Promise<boolean> {
+    const { writes, handover } = this.supersededWork(
+      projectId,
+      remoteId,
+      record,
+      this.store.list(),
+    );
+    return (
+      writes.length > 0 ||
+      handover ||
+      this.steppingDown.has(projectId) ||
+      this.store.stepDownStartedAt(projectId, remoteId, record.generation) !== null ||
+      record.transition?.kind === 'reclaim' ||
+      (record.owner === 'vm' &&
+        record.generation > this.owners.generation(projectId) &&
+        (this.owners.get(projectId) === 'home' || record.forcedReclaim !== undefined)) ||
+      (await this.backupRecovery.list(projectId)).some(
+        (backup) =>
+          backup.remoteId === remoteId &&
+          (backup.state === 'pending' || backup.state === 'fetched'),
+      )
+    );
+  }
+
+  private supersededWork(
+    projectId: string,
+    remoteId: string,
+    record: GitCoordinatorRecord,
+    writes: HomeGitWrite[],
+  ) {
+    const handover = this.store.handover(projectId);
+    return {
+      writes: writes.filter(
+        (write) =>
+          write.projectId === projectId &&
+          write.remoteId === remoteId &&
+          record.supersededWrites?.[write.writeId]?.generation === write.generation,
+      ),
+      handover:
+        handover?.remoteId === remoteId &&
+        record.supersededHandovers?.includes(handover.id) === true,
+    };
+  }
+
+  private async stepDown(context: HomeGitTransitionContext): Promise<boolean> {
+    const { projectId, remoteId, record } = context;
+    if (
+      record.owner !== 'vm' ||
+      record.transition ||
+      record.generation <= this.owners.generation(projectId)
+    )
+      return false;
+
+    const startedAt = this.store.stepDownStartedAt(projectId, remoteId, record.generation);
+    const writes = this.store.list().filter((write) => write.projectId === projectId);
+    const { writes: superseded, handover: supersededHandover } = this.supersededWork(
+      projectId,
+      remoteId,
+      record,
+      writes,
+    );
+    const preserveSuperseded = superseded.length > 0 || supersededHandover;
+    if (startedAt === null && this.owners.get(projectId) !== 'home' && !preserveSuperseded) {
+      const git = (await this.files.projectFolders(projectId)).find(({ kind }) => kind === 'git');
+      if (!git || (await this.files.folderConfiguration(git.id)).type === 'receiveonly') {
+        this.owners.remember(projectId, record);
+        return false;
+      }
+    }
+
+    await this.stopConfirmations(projectId);
+    for (const write of writes) if (!(await this.gitGone(write))) throw gitReclaimPending();
+    const stepDownAt = startedAt ?? Date.now();
+    if (startedAt === null)
+      this.store.rememberStepDown(projectId, remoteId, record.generation, stepDownAt);
+    await this.transitions.stepDown({
+      ...context,
+      preserveSuperseded,
+      startedAt: stepDownAt,
+      signal: this.stop.signal,
+      settled: () => {
+        for (const write of superseded) this.store.delete(write.writeId);
+        this.store.clearHandover(projectId, remoteId);
+      },
+    });
+    this.store.clearStepDown(projectId, remoteId);
+    return true;
+  }
+
+  private async handover(context: HomeGitTransitionContext): Promise<void> {
+    const { projectId, remoteId } = context;
+    await this.transitions.handover({
+      ...context,
+      started: (id) => this.store.rememberHandover(projectId, remoteId, id),
+      superseded: () => this.handleSuperseded(projectId, remoteId),
+    });
+    this.store.clearHandover(projectId, remoteId);
+  }
+
+  private handleSuperseded(projectId: string, remoteId: string): void {
+    void this.stopConfirmations(projectId);
+    this.recoverLater(projectId, remoteId);
+  }
+
+  private async stopConfirmations(projectId: string): Promise<void> {
+    this.steppingDown.add(projectId);
+    const jobs = [...this.jobs.values()].filter((job) => job.projectId === projectId);
+    for (const job of jobs) job.controller.abort();
+    await Promise.allSettled(jobs.map(({ done }) => done));
+  }
+
+  private async resumeConfirmations(projectId: string): Promise<void> {
+    if (this.steppingDown.has(projectId)) await this.stopConfirmations(projectId);
+    this.steppingDown.delete(projectId);
     for (const write of this.store.list()) if (write.projectId === projectId) this.track(write);
   }
 
   private recoverLater(projectId: string, remoteId: string): void {
+    if (this.recovering.get(projectId) === remoteId || this.stop.signal.aborted) return;
     this.recovering.set(projectId, remoteId);
     void this.recover(projectId, remoteId);
   }
@@ -473,32 +703,44 @@ export class HomeGitWriteService implements OnApplicationBootstrap, OnModuleDest
    */
   private async recover(projectId: string, remoteId: string): Promise<void> {
     try {
-      await this.admission.runExclusive(projectId, async () => {
+      const settled = await this.admission.runExclusive(projectId, async () => {
         if (this.recovering.get(projectId) !== remoteId) return;
         let record = await this.host.gitCoordinatorStatus(remoteId, projectId);
         const transition = record.transition;
+        if (transition?.kind === 'reclaim') {
+          await this.stopConfirmations(projectId);
+          return;
+        }
+        const context = {
+          projectId,
+          remoteId,
+          remoteName: await this.remoteName(remoteId),
+          record,
+          signal: this.stop.signal,
+        };
         if (transition?.kind === 'handover') {
           // Before the flip the VM lease ends it; the next poll looks again.
           if (transition.phase === 'draining')
             throw new Error('A Git handover is still draining on the VM');
-          await this.transitions.handover({
-            projectId,
-            remoteId,
-            remoteName: await this.remoteName(remoteId),
-            record,
+          await this.handover({
+            ...context,
             writeId: `hw-${process.pid}-recovered-${transition.id}`,
-            signal: this.stop.signal,
             published: (published) => this.adopt(projectId, remoteId, published),
           });
           record = await this.host.gitCoordinatorStatus(remoteId, projectId);
         }
-        if (record.owner === 'home' && !record.transition) {
+        if (record.transition) return;
+        if (record.owner === 'home') {
           this.owners.remember(projectId, record);
           this.adopt(projectId, remoteId, record);
+        } else {
+          await this.stepDown({ ...context, record });
         }
-        this.trackProject(projectId);
+        await this.resumeConfirmations(projectId);
         this.recovering.delete(projectId);
+        return true;
       });
+      if (settled) this.backupRecovery.schedule(projectId, remoteId);
     } catch (error) {
       logger.warn({ error, projectId }, 'Home Git write recovery will retry');
     }
@@ -557,9 +799,8 @@ export class HomeGitWriteService implements OnApplicationBootstrap, OnModuleDest
     return (await this.storage.getRemote(remoteId)).name;
   }
 
-  private async sleep(ms: number): Promise<void> {
-    const signal = this.stop.signal;
-    if (signal.aborted) throw new Stopped();
+  private async sleep(ms: number, signal: AbortSignal): Promise<void> {
+    signal.throwIfAborted();
     await new Promise<void>((done, fail) => {
       const timer = setTimeout(() => {
         signal.removeEventListener('abort', onAbort);
@@ -567,7 +808,7 @@ export class HomeGitWriteService implements OnApplicationBootstrap, OnModuleDest
       }, ms);
       const onAbort = () => {
         clearTimeout(timer);
-        fail(new Stopped());
+        fail(signal.reason);
       };
       signal.addEventListener('abort', onAbort, { once: true });
     });
@@ -582,7 +823,7 @@ const GIT_MOVED = ['GIT_GENERATION_MISMATCH', 'GIT_HANDOVER_REQUIRED'];
  */
 const WRITE_NOT_REGISTERED = ['GIT_HOME_WRITE_UNKNOWN', 'GIT_GENERATION_MISMATCH'];
 
-/** A single line without request bodies or URLs: the host's code and HTTP status, else the barrier wait. */
+/** A single line without request bodies or URLs. */
 function failureReason(error: unknown): string {
   if (error instanceof RemoteHostRequestError) {
     const code = error.hostCode;
@@ -591,6 +832,7 @@ function failureReason(error: unknown): string {
       ? `${code} (${status})`
       : (code ?? status ?? 'the VM could not be reached');
   }
-  if (error instanceof ChangeBarrierTimeoutError) return error.message;
+  if (error instanceof ChangeBarrierTimeoutError || error instanceof HomeGitCommandRunningError)
+    return error.message;
   return error instanceof AppError ? error.code : 'unexpected error';
 }

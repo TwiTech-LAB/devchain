@@ -6,6 +6,8 @@ import type { McpBindingRuntime } from '../tool-descriptors/binding-types';
 import { projectBindings } from '../tool-descriptors/project.bindings';
 import { allBindingDefinitions, allBindingGroups } from '../tool-descriptors/runtime-bindings';
 import { skillBindings } from '../tool-descriptors/skill.bindings';
+import { epicBindings } from '../tool-descriptors/epic.bindings';
+import { externalTaskBindings } from '../tool-descriptors/external-task.bindings';
 import * as nullAdapter from './handlers/null-adapter';
 import { createMcpToolBindingRegistryFixture } from './testing/mcp-tool-binding-registry.fixture';
 import { McpService } from './mcp.service';
@@ -31,12 +33,13 @@ function createStorage(): StorageService {
 
 function createSessionsService(): NonNullable<McpBindingRuntime['sessionsService']> {
   return {
-    listActiveSessions: jest.fn().mockResolvedValue([
+    listRunningSessionIdentities: jest.fn().mockReturnValue([
       {
         id: SESSION_ID,
         agentId: AGENT_ID,
         status: 'running',
         startedAt: '2024-01-01T00:00:00Z',
+        inheritedSessionIds: [],
       },
     ]),
   } as unknown as NonNullable<McpBindingRuntime['sessionsService']>;
@@ -67,12 +70,12 @@ describe('McpToolBindingRegistry composition', () => {
     jest.restoreAllMocks();
   });
 
-  it('publishes twelve groups and fifty-two unique executable names with exact metadata parity', () => {
+  it('publishes thirteen groups and fifty-three unique executable names with exact metadata parity', () => {
     const names = allBindingDefinitions.map((definition) => definition.name);
 
-    expect(allBindingGroups).toHaveLength(12);
-    expect(names).toHaveLength(52);
-    expect(new Set(names).size).toBe(52);
+    expect(allBindingGroups).toHaveLength(13);
+    expect(names).toHaveLength(53);
+    expect(new Set(names).size).toBe(53);
     expect(new Set(names)).toEqual(new Set(allMetadata.map((metadata) => metadata.name)));
   });
 
@@ -159,6 +162,77 @@ describe('McpToolBindingRegistry composition', () => {
     expect(createAdapter).not.toHaveBeenCalled();
     await invoke({ sessionId: SESSION_ID });
     expect(createAdapter).toHaveBeenCalledWith('SkillsService');
+  });
+
+  describe('in standalone MCP mode', () => {
+    it('answers devchain_external_tasks_get with SERVICE_UNAVAILABLE', async () => {
+      const invoke = externalTaskBindings[0].bind(minimalRuntime());
+
+      await expect(invoke({ sessionId: SESSION_ID, ref: 'ENG-1' })).resolves.toMatchObject({
+        success: false,
+        error: { code: 'SERVICE_UNAVAILABLE' },
+      });
+    });
+
+    it('still lists externalLinks in devchain_get_epic_by_id from local rows', async () => {
+      const epicId = '00000000-0000-0000-0000-000000000004';
+      const storage = {
+        ...createStorage(),
+        getEpic: jest.fn().mockResolvedValue({
+          id: epicId,
+          projectId: PROJECT_ID,
+          title: 'Epic',
+          description: null,
+          statusId: 'status-1',
+          parentId: null,
+          agentId: null,
+          version: 1,
+          tags: [],
+          skillsRequired: null,
+        }),
+        listEpicComments: jest.fn().mockResolvedValue({ items: [] }),
+        listSubEpics: jest.fn().mockResolvedValue({ items: [] }),
+        listEpicRelations: jest
+          .fn()
+          .mockResolvedValue({ items: [], total: 0, limit: 50, offset: 0 }),
+        listStatuses: jest.fn().mockResolvedValue({ items: [] }),
+        listWorktrees: jest.fn().mockResolvedValue([]),
+        listExternalTaskLinksForEpic: jest.fn().mockResolvedValue([
+          {
+            id: 'link-1',
+            epicId,
+            projectId: PROJECT_ID,
+            connectionId: null,
+            provider: 'clickup',
+            remoteScopeKey: 'team-1',
+            remoteTaskId: 'abc123',
+            sourceSnapshot: { remoteKey: 'abc123', title: 'Remote', webUrl: null },
+            createdAt: '',
+            updatedAt: '',
+          },
+        ]),
+      } as unknown as McpBindingRuntime['storage'];
+      const getEpic = epicBindings.find(({ name }) => name === 'devchain_get_epic_by_id')!;
+      const invoke = getEpic.bind(minimalRuntime({ storage }));
+
+      const result = await invoke({ sessionId: SESSION_ID, id: epicId });
+
+      expect(result).toMatchObject({
+        success: true,
+        data: {
+          externalLinks: [
+            {
+              linkId: 'link-1',
+              provider: 'clickup',
+              remoteKey: 'abc123',
+              title: 'Remote',
+              webUrl: null,
+              managed: false,
+            },
+          ],
+        },
+      });
+    });
   });
 
   it('validates through a real service before constructing the domain context', async () => {

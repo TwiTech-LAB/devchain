@@ -1,12 +1,14 @@
 import { useMemo } from 'react';
 import { useQueries } from '@tanstack/react-query';
 import {
+  launchModelOf,
   providerEffortQueries,
   selectProviderEffortNames,
   type ProviderEffortNamesCatalog,
 } from '@/ui/lib/provider-efforts';
 import { providerModelQueryKeys } from '@/ui/lib/provider-model-query-keys';
-import { useFetchFactory } from '@/ui/hooks/useFetchFactory';
+import { useBackendFetch } from '@/ui/hooks/useFetchFactory';
+import type { BackendId } from '@/ui/lib/api-transport';
 import type { SetupPreviewResponse } from '@/ui/pages/projects/lib/project-contracts';
 import type { AgentRow, TemplateAgent, TemplateProviderConfig } from './agentPlan';
 import { installedReferencedProviders } from './providerSelection';
@@ -66,10 +68,14 @@ export interface ProviderCatalogs {
 
 /**
  * Load the model and effort catalogs of the referenced installed providers, and index the catalogs
- * the template carries (available even for providers not installed locally).
+ * the template carries (available even for providers not installed locally). `backend` must be the
+ * backend that answered the preview: the provider ids come from its installed providers.
  */
-export function useProviderCatalogs(preview: SetupPreviewResponse): ProviderCatalogs {
-  const fetchFn = useFetchFactory();
+export function useProviderCatalogs(
+  preview: SetupPreviewResponse,
+  backend: BackendId,
+): ProviderCatalogs {
+  const fetchFn = useBackendFetch(backend);
   const payload = preview.payload;
 
   const providerIdByName = useMemo(() => {
@@ -89,23 +95,28 @@ export function useProviderCatalogs(preview: SetupPreviewResponse): ProviderCata
     return out.sort((a, b) => a.id.localeCompare(b.id));
   }, [preview, providerIdByName]);
 
+  // The Projects page keeps these entries in the home query client, also for a VM backend. A
+  // catalog edit on the VM's Providers page invalidates only that page's client, so each opening
+  // of the wizard reads the catalogs again.
   const modelQueries = useQueries({
     queries: catalogProviders.map(({ id }) => ({
-      queryKey: providerModelQueryKeys.main(id),
+      queryKey: providerModelQueryKeys.main(id, backend),
       queryFn: async () => {
         const res = await fetchFn(`/api/providers/${id}/models`);
         if (!res.ok) return [] as ProviderModelCatalogOption[];
         return parseModelOptions((await res.json().catch(() => [])) as unknown, id);
       },
       staleTime: 5 * 60 * 1000,
+      refetchOnMount: 'always' as const,
     })),
   });
 
   const effortQueries = useQueries({
     queries: catalogProviders.map(({ id }) => ({
-      ...providerEffortQueries.catalog(fetchFn, id),
+      ...providerEffortQueries.catalog(fetchFn, id, backend),
       select: selectProviderEffortNames,
       staleTime: 5 * 60 * 1000,
+      refetchOnMount: 'always' as const,
     })),
   });
 
@@ -154,6 +165,8 @@ export interface AgentModelChoices {
   modelOptions: string[];
   effortOptions: string[];
   supportsEffort: boolean;
+  /** The provider applies an effort only with a model. */
+  requiresModelForEffort: boolean;
   /** The provider needs a model before an effort can be chosen and none resolves. */
   effortDisabled: boolean;
 }
@@ -186,12 +199,44 @@ export function agentModelChoices(
     agent.effortOverride ?? null,
     row.effortOverride,
   ]);
-  const hasResolvableModel = Boolean(row.modelOverride || config?.model);
+  const { requiresModelForEffort } = localEfforts;
 
   return {
     modelOptions,
     effortOptions,
     supportsEffort: localEfforts.supportsEffort || effortOptions.length > 0,
-    effortDisabled: localEfforts.requiresModelForEffort && !hasResolvableModel,
+    requiresModelForEffort,
+    effortDisabled: requiresModelForEffort && !launchModelOf(row.modelOverride, config),
   };
+}
+
+/**
+ * The row change for a Model pick. A pick that leaves no model also clears the effort: the effort
+ * select locks then, so its pick could no longer be changed.
+ */
+export function modelPickPatch(
+  requiresModelForEffort: boolean,
+  config: TemplateProviderConfig | undefined,
+  modelOverride: string | null,
+): Partial<AgentRow> {
+  return requiresModelForEffort && !launchModelOf(modelOverride, config)
+    ? { modelOverride, effortOverride: null }
+    : { modelOverride };
+}
+
+/**
+ * The row change for a config pick. A pick that leaves no model for a provider that needs one
+ * also clears the effort, for the same reason as a Model pick.
+ */
+export function configPickPatch(
+  catalogs: ProviderCatalogs,
+  row: AgentRow,
+  config: TemplateProviderConfig,
+): Partial<AgentRow> {
+  const pick = { configName: config.name, pinned: true, userSelectedOption: true };
+  const { requiresModelForEffort } =
+    catalogs.localEfforts.get(config.providerName.trim().toLowerCase()) ?? EMPTY_EFFORTS;
+  return requiresModelForEffort && !launchModelOf(row.modelOverride, config)
+    ? { ...pick, effortOverride: null }
+    : pick;
 }

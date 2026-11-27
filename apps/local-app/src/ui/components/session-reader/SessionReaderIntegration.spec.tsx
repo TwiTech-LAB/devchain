@@ -7,7 +7,7 @@
  * PagedSessionMessageList.spec.tsx; this file proves the live-metrics contract.
  */
 import React, { useState } from 'react';
-import { render, screen, waitFor, act, fireEvent } from '@testing-library/react';
+import { render, screen, waitFor, act, fireEvent, within } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type { Socket } from 'socket.io-client';
 import { useSessionTranscript, type TranscriptSummary } from '@/ui/hooks/useSessionTranscript';
@@ -18,6 +18,7 @@ import type { WsEnvelope } from '@/ui/lib/socket';
 import type { UnifiedMetrics } from '@/modules/session-reader/dtos/unified-session.types';
 import { InlineSessionSummaryChip, DEFAULT_CHIP_VISIBLE_ITEMS } from './InlineSessionSummaryChip';
 import { SessionViewerPanel } from './SessionViewerPanel';
+import { installLayoutMock } from './__tests__/layout-mock';
 
 // ---------------------------------------------------------------------------
 // Mocks
@@ -219,6 +220,41 @@ function makePagedIndex(): TranscriptIndex {
   };
 }
 
+/** The paged index with a fallback-rendered assistant message that holds long blocks. */
+function makeFallbackIndex(): TranscriptIndex {
+  const index = makePagedIndex();
+  const [userChunk, aiChunk] = index.pages![0].response.chunks;
+  userChunk.messages[0] = {
+    ...userChunk.messages[0],
+    content: [{ type: 'text' as const, text: 'U'.repeat(500) + ' USER-END' }],
+  };
+  aiChunk.messages[0] = {
+    ...aiChunk.messages[0],
+    content: [
+      { type: 'thinking' as const, thinking: 'T'.repeat(400) + ' THINKING-END' },
+      { type: 'text' as const, text: 'Done.' },
+    ],
+    toolCalls: [
+      {
+        id: 'tc-fallback',
+        name: 'Write',
+        input: { data: 'I'.repeat(300), tail: 'INPUT-END' },
+        isTask: false,
+      },
+    ],
+    toolResults: [
+      {
+        toolCallId: 'tc-fallback',
+        content: 'R'.repeat(200),
+        isError: false,
+        isTruncated: true,
+        fullLength: 4096,
+      },
+    ],
+  } as (typeof aiChunk.messages)[number];
+  return index;
+}
+
 /** Extract the WS message handler passed to useAppSocket */
 function captureWsHandler(): (envelope: WsEnvelope) => void {
   const handlers = useAppSocketMock.mock.calls[0]?.[0];
@@ -328,6 +364,56 @@ describe('Session Reader Integration', () => {
     expect(chip).toHaveTextContent('$0.04');
   });
 
+  it('fallback renderer: each long block has one toggle that reveals the full text', async () => {
+    const layout = installLayoutMock();
+    try {
+      fetchTranscriptIndexMock.mockResolvedValue(makeFallbackIndex());
+      fetchMock.mockImplementation((url) => {
+        const urlStr = String(url);
+        if (urlStr.includes('/transcript/summary')) {
+          return Promise.resolve(mockResponse(makeSummary()));
+        }
+        if (urlStr.includes('/transcript/tool-result/tc-fallback')) {
+          return Promise.resolve(
+            mockResponse({
+              sessionId: 'session-1',
+              toolCallId: 'tc-fallback',
+              content: 'R'.repeat(200) + ' RESULT-SENTINEL-PAST-PREFIX',
+              isError: false,
+              fullLength: 4096,
+            }),
+          );
+        }
+        return Promise.reject(new Error(`Unexpected fetch URL: ${urlStr}`));
+      });
+
+      renderHarness();
+
+      const userCard = await screen.findByTestId('user-message-card');
+      fireEvent.click(within(userCard).getByRole('button', { name: 'Show full' }));
+      expect(within(userCard).getByRole('button', { name: 'Show less' })).toBeInTheDocument();
+
+      fireEvent.click(screen.getByText('Thinking'));
+      const thinking = screen.getByTestId('fallback-thinking');
+      fireEvent.click(within(thinking).getByRole('button', { name: 'Show full' }));
+      expect(within(thinking).getByRole('button', { name: 'Show less' })).toBeInTheDocument();
+
+      fireEvent.click(screen.getByText('Write'));
+      const input = screen.getByTestId('fallback-tool-input');
+      expect(input).not.toHaveTextContent('INPUT-END');
+      fireEvent.click(within(input).getByRole('button', { name: 'Show full' }));
+      expect(input).toHaveTextContent('INPUT-END');
+
+      const result = screen.getByTestId('fallback-tool-result');
+      expect(within(result).getAllByRole('button')).toHaveLength(1);
+      fireEvent.click(within(result).getByRole('button', { name: /^Show full result/ }));
+      expect(await within(result).findByText(/RESULT-SENTINEL-PAST-PREFIX/)).toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: /^Show full result/ })).not.toBeInTheDocument();
+    } finally {
+      layout.restore();
+    }
+  });
+
   // -------------------------------------------------------------------------
   // Live update via WebSocket
   // -------------------------------------------------------------------------
@@ -382,7 +468,7 @@ describe('Session Reader Integration', () => {
 
     // Chip should have pulsing dot
     const chip = screen.getByRole('button', { name: /ongoing/i });
-    expect(chip.querySelector('span.animate-pulse')).toBeTruthy();
+    expect(chip.querySelector('span.animate-activity-pulse')).toBeTruthy();
   });
 
   // -------------------------------------------------------------------------

@@ -107,6 +107,35 @@ describe('useChatSocket', () => {
     ).toBe(false);
   });
 
+  it('agent.updated on the project state topic invalidates the agent list', () => {
+    useAppSocketMock.mockReturnValue(createMockSocket());
+
+    renderHook(() => useChatSocket(buildOptions({ projectId: 'project-1' })), {
+      wrapper: createWrapper(),
+    });
+
+    const registry = useRealtimeDispatchMock.mock.calls.at(-1)?.[0] ?? [];
+    const entry = registry.find((e) => e.type === 'agent.updated');
+    expect(entry?.match('project/project-1/state')).toBe(true);
+    expect(entry?.match('project/project-other/state')).toBe(false);
+    expect(entry?.entries).toEqual([
+      { kind: 'invalidate', queryKey: ['agents', 'project-1'] },
+      { kind: 'invalidate', queryKey: ['agentSessionTree'] },
+    ]);
+  });
+
+  it('agent.deleted invalidates the family session trees', () => {
+    useAppSocketMock.mockReturnValue(createMockSocket());
+
+    renderHook(() => useChatSocket(buildOptions({ projectId: 'project-1' })), {
+      wrapper: createWrapper(),
+    });
+
+    const registry = useRealtimeDispatchMock.mock.calls.at(-1)?.[0] ?? [];
+    const entry = registry.find((e) => e.type === 'agent.deleted');
+    expect(entry?.entries).toContainEqual({ kind: 'invalidate', queryKey: ['agentSessionTree'] });
+  });
+
   describe('project-state topic', () => {
     let queryClient: QueryClient;
     let messageHandler: (envelope: WsEnvelope) => void;

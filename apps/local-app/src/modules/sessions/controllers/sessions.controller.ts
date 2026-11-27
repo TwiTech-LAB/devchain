@@ -13,7 +13,9 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { z } from 'zod';
+import { ApiOperation, ApiResponse, ApiTags } from '@nestjs/swagger';
 import { SessionsService } from '../services/sessions.service';
+import { SessionSavePointsService } from '../services/session-save-points.service';
 import { SessionRuntime } from '../services/session-runtime';
 import {
   SessionsMessagePoolService,
@@ -24,10 +26,17 @@ import {
 import {
   LaunchSessionSchema,
   RestoreSessionSchema,
+  RollbackSessionSchema,
+  StartFromSavePointSchema,
+  CreateSessionSavePointSchema,
+  AgentSessionPageQuerySchema,
+  TerminateSessionQuerySchema,
   SessionDetailDto,
   SessionDto,
   AgentPresenceResponseDto,
   SessionHistoryResponseDto,
+  type SessionTreeNodeDto,
+  type SessionTreeResponseDto,
 } from '../dtos/sessions.dto';
 import { createLogger } from '../../../common/logging/logger';
 import { ProjectWriteGate } from '../../storage/write-gate/project-write-gate';
@@ -82,21 +91,6 @@ const DeleteRecordQuerySchema = z.object({
   projectId: z.string().uuid('projectId must be a valid UUID'),
 });
 
-/** Query params for GET /sessions/agents/:agentId/history */
-const AgentHistoryQuerySchema = z.object({
-  projectId: z.string().uuid('projectId must be a valid UUID'),
-  cursor: z.string().optional(),
-  limit: z
-    .string()
-    .optional()
-    .transform((val) => {
-      if (!val) return 20;
-      const num = parseInt(val, 10);
-      if (isNaN(num) || num < 1) return 20;
-      return Math.min(num, 100);
-    }),
-});
-
 /** Preview of a message log entry (omits full text for list performance) */
 interface MessageLogPreview {
   id: string;
@@ -135,6 +129,7 @@ interface PoolsResponse {
   pools: PoolDetails[];
 }
 
+@ApiTags('Sessions')
 @Controller('api/sessions')
 export class SessionsController {
   constructor(
@@ -142,6 +137,7 @@ export class SessionsController {
     private readonly messagePoolService: SessionsMessagePoolService,
     private readonly sessionRuntime: SessionRuntime,
     private readonly gate: ProjectWriteGate,
+    private readonly savePoints: SessionSavePointsService,
   ) {}
 
   /**
@@ -205,15 +201,24 @@ export class SessionsController {
   }
 
   /**
-   * Terminate a session
+   * Terminate a session. With `expectedAgentId`, stops nothing when another agent owns the session
+   * by then; without it, follows the owner.
    */
   @Delete(':id')
-  async terminateSession(@Param('id') id: string): Promise<{ message: string }> {
-    logger.info({ sessionId: id }, 'DELETE /api/sessions/:id');
-    await this.sessionsService.terminateSession(id, {
-      source: 'web-api',
-      reason: 'user-requested',
-    });
+  async terminateSession(
+    @Param('id') id: string,
+    @Query('expectedAgentId') expectedAgentId?: string,
+  ): Promise<{ message: string }> {
+    logger.info({ sessionId: id, expectedAgentId }, 'DELETE /api/sessions/:id');
+    const parsed = TerminateSessionQuerySchema.safeParse({ expectedAgentId });
+    if (!parsed.success) {
+      throw new BadRequestException(parsed.error.errors.map((e) => e.message).join(', '));
+    }
+    await this.sessionsService.terminateSession(
+      id,
+      { source: 'web-api', reason: 'user-requested' },
+      { expectedAgentId: parsed.data.expectedAgentId },
+    );
     return { message: 'Session terminated successfully' };
   }
 
@@ -443,16 +448,18 @@ export class SessionsController {
     @Query('projectId') projectId?: string,
     @Query('cursor') cursor?: string,
     @Query('limit') limit?: string,
+    @Query('scope') scope?: string,
   ): Promise<SessionHistoryResponseDto> {
     logger.info({ agentId }, 'GET /api/sessions/agents/:agentId/history');
 
     try {
-      const query = AgentHistoryQuerySchema.parse({ projectId, cursor, limit });
+      const query = AgentSessionPageQuerySchema.parse({ projectId, cursor, limit, scope });
       return this.sessionsService.getAgentSessionHistory(
         agentId,
         query.projectId,
         query.cursor,
         query.limit,
+        query.scope,
       );
     } catch (error) {
       if (error instanceof z.ZodError) {
@@ -465,11 +472,76 @@ export class SessionsController {
     }
   }
 
+  @Get('agents/:agentId/tree')
+  @ApiOperation({ summary: 'List session tree roots and their descendants for an agent' })
+  @ApiResponse({
+    status: 200,
+    description: 'Root page with session nodes and save point availability',
+  })
+  @ApiResponse({ status: 403, description: 'Agent belongs to a different project' })
+  async getAgentSessionTree(
+    @Param('agentId') agentId: string,
+    @Query() query: unknown,
+  ): Promise<SessionTreeResponseDto> {
+    const parsed = AgentSessionPageQuerySchema.safeParse(query);
+    if (!parsed.success) {
+      throw new BadRequestException(parsed.error.errors.map((error) => error.message).join(', '));
+    }
+    const { projectId, cursor, limit, scope } = parsed.data;
+    return this.savePoints.getAgentSessionTree(agentId, projectId, cursor, limit, scope);
+  }
+
+  @Post(':id/save-points')
+  @ApiOperation({ summary: 'Save a copy of a live session conversation' })
+  @ApiResponse({ status: 201, description: 'New save point tree node' })
+  @ApiResponse({ status: 409, description: 'Session or provider does not permit a save point' })
+  async createSavePoint(
+    @Param('id') id: string,
+    @Body() body: unknown,
+  ): Promise<SessionTreeNodeDto> {
+    const parsed = CreateSessionSavePointSchema.safeParse(body);
+    if (!parsed.success) {
+      throw new BadRequestException(parsed.error.errors.map((error) => error.message).join(', '));
+    }
+    return this.savePoints.createSavePoint(id, parsed.data.projectId);
+  }
+
+  @Post(':savePointId/start')
+  @ApiOperation({ summary: 'Fork a session or a save point into a new session' })
+  @ApiResponse({ status: 201, description: 'The new running session' })
+  @ApiResponse({ status: 409, description: 'Fork source, agent, or running session conflict' })
+  async startFromSavePoint(
+    @Param('savePointId') savePointId: string,
+    @Body() body: unknown,
+  ): Promise<SessionDetailDto> {
+    const parsed = StartFromSavePointSchema.safeParse(body);
+    if (!parsed.success) {
+      throw new BadRequestException(parsed.error.errors.map((error) => error.message).join(', '));
+    }
+    return this.sessionRuntime.startFromSavePoint(savePointId, parsed.data);
+  }
+
+  /** MUST remain declared before @Get(':id') — NestJS evaluates routes in declaration order. */
+  @Post(':id/rollback')
+  @ApiOperation({ summary: 'Restart a session at one of its save points on the same row' })
+  @ApiResponse({ status: 201, description: 'The rolled-back running session' })
+  @ApiResponse({ status: 409, description: 'Save point, session, or running session conflict' })
+  async rollbackSession(@Param('id') id: string, @Body() body: unknown): Promise<SessionDetailDto> {
+    const parsed = RollbackSessionSchema.safeParse(body);
+    if (!parsed.success) {
+      throw new BadRequestException(parsed.error.errors.map((e) => e.message).join(', '));
+    }
+    return this.sessionRuntime.rollback(id, parsed.data);
+  }
+
   /**
    * Restore a previously stopped/failed session.
    * MUST remain declared before @Get(':id') — NestJS evaluates routes in declaration order.
    */
   @Post(':id/restore')
+  @ApiOperation({ summary: 'Restore a stopped or failed session' })
+  @ApiResponse({ status: 201, description: 'The restored running session' })
+  @ApiResponse({ status: 409, description: 'Restore target or running session conflict' })
   async restoreSession(@Param('id') id: string, @Body() body: unknown): Promise<SessionDetailDto> {
     logger.info({ sessionId: id }, 'POST /api/sessions/:id/restore');
 
@@ -478,7 +550,13 @@ export class SessionsController {
       throw new BadRequestException(parsed.error.errors.map((e) => e.message).join(', '));
     }
 
-    return this.sessionRuntime.restore(id, parsed.data.projectId);
+    const { projectId, replaceRunningSessionId, targetAgentId, switchToProviderConfigId } =
+      parsed.data;
+    return this.sessionRuntime.restore(id, projectId, {
+      replaceRunningSessionId,
+      targetAgentId,
+      switchToProviderConfigId,
+    });
   }
 
   /**

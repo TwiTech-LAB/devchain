@@ -1,6 +1,7 @@
 import { createContext, useContext, useMemo, type ReactNode } from 'react';
 import type { ExportData } from '@devchain/shared';
 import type { SetupPreviewResponse } from '@/ui/pages/projects/lib/project-contracts';
+import type { BackendId } from '@/ui/lib/api-transport';
 import type { WizardConfigHandlers, WizardConfigState } from './wizardConfigTypes';
 import { useProviderCatalogs, type ProviderCatalogs } from './useProviderCatalogs';
 import { setupProviderList, type SetupProvider } from './providerSelection';
@@ -24,13 +25,16 @@ export function SetupReviewProvider({
   preview,
   state,
   handlers,
+  backend,
   currentExport,
   children,
 }: Omit<SetupReviewContextValue, 'catalogs' | 'providers'> & {
+  /** The backend that answered the preview; the catalogs are read from it. */
+  backend: BackendId;
   currentExport?: ExportData | null;
   children: ReactNode;
 }) {
-  const catalogs = useProviderCatalogs(preview);
+  const catalogs = useProviderCatalogs(preview, backend);
   const providers = useMemo(
     () => setupProviderList(preview, currentExport),
     [preview, currentExport],

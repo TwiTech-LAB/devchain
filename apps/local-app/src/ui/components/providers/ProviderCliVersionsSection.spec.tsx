@@ -295,11 +295,11 @@ describe('ProviderCliVersionsSection', () => {
     );
   });
 
-  it('saves the Managed by DevChain toggle', async () => {
+  it('saves the Auto-update toggle', async () => {
     renderSection();
 
     const toggle = await screen.findByRole('switch', {
-      name: 'Managed by DevChain on this PC: Claude',
+      name: 'Auto-update on this PC: Claude',
     });
     fireEvent.click(toggle);
 

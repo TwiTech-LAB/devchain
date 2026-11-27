@@ -30,6 +30,20 @@ export interface FileSyncFailedCounts {
   vm: number;
 }
 
+export interface FileSyncUpkeepState {
+  /** The VM the state belongs to; it can be stale after the project moved to another VM. */
+  remoteId: string;
+  /** The setup steps have finished. */
+  done: boolean;
+  problem: FileSyncProblem | null;
+  warning: string | null;
+  /**
+   * The VM's failed-file count after the grace time, as the check last reported it; null until
+   * the VM gave a count. An answer of the VM without a count does not change it.
+   */
+  vmFailed: number | null;
+}
+
 export interface FailedSyncFile {
   path: string;
   error: string;

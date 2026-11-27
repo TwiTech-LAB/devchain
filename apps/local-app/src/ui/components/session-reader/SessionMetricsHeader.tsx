@@ -196,7 +196,7 @@ export function SessionMetricsHeader({ metrics, onScrollToMessage }: SessionMetr
         {metrics.isOngoing && (
           <span className="ml-auto inline-flex items-center gap-1" data-testid="metrics-live">
             <span
-              className="inline-block h-1.5 w-1.5 rounded-full bg-status-ok animate-pulse"
+              className="inline-block h-1.5 w-1.5 rounded-full bg-status-ok animate-activity-pulse"
               aria-hidden="true"
             />
             Live

@@ -9,6 +9,8 @@ import {
   RotateCcw,
   SlidersHorizontal,
   Trash2,
+  UserCheck,
+  UserX,
 } from 'lucide-react';
 import { AgentContextBar } from './AgentContextBar';
 import {
@@ -76,6 +78,11 @@ interface AgentRowProps {
   isTeamLead?: boolean;
   canClone?: boolean;
   onClone?: () => void;
+  /** Parked agent: dimmed, not selectable, context menu offers only Enable. */
+  isDisabled?: boolean;
+  canDisable?: boolean;
+  onDisable?: () => void;
+  onEnable?: () => void;
   canDelete?: boolean;
   onDelete?: () => void;
   pendingDelete?: boolean;
@@ -178,6 +185,10 @@ export function AgentRow({
   isTeamLead = false,
   canClone = false,
   onClone,
+  isDisabled = false,
+  canDisable = false,
+  onDisable,
+  onEnable,
   canDelete = false,
   onDelete,
   pendingDelete = false,
@@ -208,6 +219,47 @@ export function AgentRow({
   const unloggedLabel = showsUnloggedMarker
     ? `${formatEpicTimeMinutes(unloggedTimeMinutes)} not logged to an Epic.`
     : null;
+
+  if (isDisabled) {
+    return (
+      <ContextMenu>
+        <div className="flex items-center gap-1">
+          <ContextMenuTrigger asChild>
+            {/* aria-disabled, not `disabled`: the native attribute would block the context menu. */}
+            <button
+              ref={setTriggerRef}
+              aria-disabled="true"
+              className="flex min-w-0 flex-1 cursor-default items-center gap-2 rounded-md border border-transparent bg-card/40 px-3 py-2 text-sm opacity-50"
+              role="listitem"
+              aria-label={`${agent.name} (disabled)`}
+              data-agent-event-bus-key={eventBusAnchor?.key}
+              data-agent-event-bus-agent-id={eventBusAnchor?.agentId}
+              data-agent-event-bus-team-id={eventBusAnchor?.teamId}
+            >
+              <Circle
+                className="h-2 w-2 shrink-0 fill-current text-muted-foreground"
+                aria-hidden="true"
+              />
+              <AgentIdentity
+                agentName={agent.name}
+                configDisplayName={configDisplayName}
+                configDisplayTitle={configDisplayTitle}
+              />
+              <span className="shrink-0 rounded-full border border-border px-2 text-[10px] font-medium leading-5 text-muted-foreground">
+                Disabled
+              </span>
+            </button>
+          </ContextMenuTrigger>
+        </div>
+        <ContextMenuContent className="w-56">
+          <ContextMenuItem onSelect={() => onEnable?.()}>
+            <UserCheck className="mr-2 h-4 w-4" />
+            Enable
+          </ContextMenuItem>
+        </ContextMenuContent>
+      </ContextMenu>
+    );
+  }
 
   return (
     <ContextMenu>
@@ -433,6 +485,15 @@ export function AgentRow({
             >
               <Trash2 className="mr-2 h-4 w-4" />
               {pendingDelete ? 'Deleting…' : 'Delete'}
+            </ContextMenuItem>
+          </>
+        )}
+        {canDisable && onDisable && (
+          <>
+            <ContextMenuSeparator />
+            <ContextMenuItem onSelect={() => onDisable()}>
+              <UserX className="mr-2 h-4 w-4" />
+              Disable
             </ContextMenuItem>
           </>
         )}

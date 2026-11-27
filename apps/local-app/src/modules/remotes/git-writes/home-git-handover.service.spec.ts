@@ -12,7 +12,7 @@ import { GitService } from '../../git/services/git.service';
 import { ProcessExecutor } from '../../terminal/services/process-executor/process-executor.port';
 import { GitCoordinatorIndexService } from '../git-coordinator/git-coordinator-index.service';
 import type { GitCoordinatorRecord, GitTransition } from '../git-coordinator/git-coordinator.dto';
-import { refsDigest } from '../git-coordinator/git-checkpoint';
+import { exportIndexSnapshot, refsDigest } from '../git-coordinator/git-checkpoint';
 import { GitOwnerStore } from '../git-owner.store';
 import { RemoteHostClient, RemoteHostRequestError } from '../operations/remote-host.client';
 import { RemoteLiveSyncService } from '../sync/remote-live-sync.service';
@@ -80,6 +80,7 @@ describe('HomeGitHandoverService', () => {
     gitCoordinatorStatus: jest.fn(),
     gitCoordinatorIndex: jest.fn(),
     syncRemoteNeedThrough: jest.fn(),
+    syncOverride: jest.fn(),
     syncStatus: jest.fn(),
   };
   const files = {
@@ -155,6 +156,7 @@ describe('HomeGitHandoverService', () => {
     }));
     host.gitCoordinatorIndex.mockResolvedValue(Buffer.from('DIRC'));
     host.syncRemoteNeedThrough.mockResolvedValue([]);
+    host.syncOverride.mockImplementation(log('vm:override'));
     files.device.mockReturnValue({ deviceId: 'HOME' });
     files.status.mockResolvedValue({ fileErrors: [] });
     files.folderPath.mockResolvedValue(root);
@@ -179,6 +181,7 @@ describe('HomeGitHandoverService', () => {
     );
     git.refreshIndexFromHead.mockImplementation(log('index-from-head'));
     jest.mocked(refsDigest).mockResolvedValue('refs');
+    jest.mocked(exportIndexSnapshot).mockResolvedValue(Buffer.from('DIRC'));
     const module = await Test.createTestingModule({
       providers: [
         HomeGitHandoverService,
@@ -220,7 +223,13 @@ describe('HomeGitHandoverService', () => {
   const flip = ['phase:vm-receiving', 'phase:home-sending', 'home:sendonly', 'phase:published'];
 
   it('runs C1–C4 receiver first and caches home ownership only after handoverComplete', async () => {
-    await service.handover(context(vmOwned()));
+    const started = jest.fn();
+    const begin = host.handoverBegin.getMockImplementation()!;
+    host.handoverBegin.mockImplementation(async (...args) => {
+      expect(started).toHaveBeenCalledWith(args[2].id);
+      return begin(...args);
+    });
+    await service.handover({ ...context(vmOwned()), started });
     expect(calls).toEqual(['begin', 'phase:draining', ...flip, ...finish]);
     expect(host.handoverPhase).toHaveBeenCalledWith(
       'r',
@@ -296,6 +305,64 @@ describe('HomeGitHandoverService', () => {
       expectedGeneration: 0,
       transitionId: 'h1',
     });
+  });
+
+  it('leaves a blocked handover when its renewal reports the handover was superseded', async () => {
+    vm = handover('draining');
+    host.syncRemoteNeedThrough.mockResolvedValue(['src/app.ts']);
+    host.handoverRenew.mockRejectedValue(refused('GIT_HOME_WRITE_SUPERSEDED'));
+    const superseded = jest.fn();
+    await expect(service.handover({ ...context(vm), superseded })).rejects.toMatchObject({
+      hostCode: 'GIT_HOME_WRITE_SUPERSEDED',
+    });
+    expect(superseded).toHaveBeenCalledTimes(1);
+    expect(host.handoverAbort).not.toHaveBeenCalled();
+    expect(guard.remove).not.toHaveBeenCalled();
+  });
+
+  it('renews after the flip with the published generation until handover completes', async () => {
+    jest.useFakeTimers();
+    vm = handover('draining');
+    let releaseSending!: () => void;
+    let releaseComplete!: () => void;
+    const sending = new Promise<void>((resolve) => (releaseSending = resolve));
+    const completing = new Promise<void>((resolve) => (releaseComplete = resolve));
+    const runPhase = host.handoverPhase.getMockImplementation()!;
+    const complete = host.handoverComplete.getMockImplementation()!;
+    host.handoverPhase.mockImplementation(async (...args) => {
+      if (args[2].phase === 'home-sending') await sending;
+      return runPhase(...args);
+    });
+    host.handoverComplete.mockImplementation(async (...args) => {
+      await completing;
+      return complete(...args);
+    });
+    const work = service.handover(context(structuredClone(vm)));
+    try {
+      await jest.advanceTimersByTimeAsync(5);
+      expect(vm.transition?.phase).toBe('vm-receiving');
+      expect(host.handoverRenew).toHaveBeenLastCalledWith('r', 'p', {
+        expectedGeneration: 0,
+        transitionId: 'h1',
+      });
+      releaseSending();
+      await jest.advanceTimersByTimeAsync(5);
+      expect(vm.transition?.phase).toBe('published');
+      expect(host.handoverRenew).toHaveBeenLastCalledWith('r', 'p', {
+        expectedGeneration: 1,
+        transitionId: 'h1',
+      });
+      releaseComplete();
+      await work;
+      const renewals = host.handoverRenew.mock.calls.length;
+      await jest.advanceTimersByTimeAsync(10);
+      expect(host.handoverRenew).toHaveBeenCalledTimes(renewals);
+    } finally {
+      releaseSending();
+      releaseComplete();
+      jest.useRealTimers();
+      await work;
+    }
   });
 
   it('renews the lease of the new handover after a reread', async () => {
@@ -380,19 +447,47 @@ describe('HomeGitHandoverService', () => {
     ]);
     expect(existsSync(join(directory, '.devchain', 'backups'))).toBe(false);
     expect(files.override).not.toHaveBeenCalled();
+    expect(host.syncOverride).not.toHaveBeenCalled();
   });
 
-  it('backs up refs and objects before going receive-only when Git changed after the checkpoint', async () => {
+  it('backs up divergent Git before going receive-only and overriding from the VM', async () => {
     jest.mocked(refsDigest).mockResolvedValue('changed by an unshimmed git');
     const backups = join(directory, '.devchain', 'backups', 'git', 'p');
-    files.updateFolder.mockImplementation(async () => {
+    files.updateFolder.mockImplementation(async (_id, { type }) => {
       const [backup] = await readdir(backups);
-      calls.push(`home:receiveonly after ${backup ? 'backup' : 'nothing'}`);
       expect(existsSync(join(backups, backup, 'refs', 'heads', 'main'))).toBe(true);
       expect(existsSync(join(backups, backup, 'objects', 'ab', 'cd'))).toBe(true);
+      calls.push(`home:${type} after backup`);
     });
     await service.stepDown(context({ ...vmOwned(), generation: 4 }));
-    expect(calls).toContain('home:receiveonly after backup');
+    expect(calls).toEqual([
+      'guard-on',
+      'home:receiveonly after backup',
+      'vm:override',
+      'settle',
+      'index-from-head',
+      'cache:vm:4',
+    ]);
+    expect(host.syncOverride).toHaveBeenCalledWith('r', 'git:p', {
+      expectedGeneration: 4,
+      transitionId: null,
+    });
+  });
+
+  it('preserves the index of superseded Git even when the refs match and a retry is needed', async () => {
+    const reclaimed = {
+      ...context({ ...vmOwned(), generation: 4 }),
+      preserveSuperseded: true,
+      startedAt: 1_000,
+    };
+    files.waitForComplete.mockRejectedValueOnce(new Error('connection lost'));
+    await expect(service.stepDown(reclaimed)).rejects.toThrow('connection lost');
+    await service.stepDown(reclaimed);
+
+    const backups = join(directory, '.devchain', 'backups', 'git', 'p');
+    expect(await readdir(backups)).toEqual(['1970-01-01T00-00-01-000Z']);
+    expect(exportIndexSnapshot).toHaveBeenCalledTimes(1);
+    expect(host.syncOverride).toHaveBeenCalledTimes(2);
   });
 
   it('reverts receive-only Git changes only after the VM index has fully arrived', async () => {

@@ -266,7 +266,7 @@ export type SubscribedPayload = z.infer<typeof SubscribedPayloadSchema>;
  */
 export const SessionStatePayloadSchema = z.object({
   sessionId: z.string(),
-  status: z.enum(['started', 'ended', 'crashed', 'timeout']),
+  status: z.enum(['started', 'ended', 'crashed', 'timeout', 'restarted']),
   message: z.string().optional(),
 });
 

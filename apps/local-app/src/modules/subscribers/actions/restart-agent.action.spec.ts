@@ -10,6 +10,7 @@ describe('RestartAgentAction', () => {
   let mockSessionRuntime: {
     launch: jest.Mock;
     restore: jest.Mock;
+    verifyAgentProvider: jest.Mock;
   };
   let mockSessionCoordinator: {
     withAgentLock: jest.Mock;
@@ -32,6 +33,7 @@ describe('RestartAgentAction', () => {
     mockSessionRuntime = {
       launch: jest.fn().mockResolvedValue({ id: 'new-session-123' }),
       restore: jest.fn(),
+      verifyAgentProvider: jest.fn().mockResolvedValue(undefined),
     };
 
     mockSessionCoordinator = {
@@ -116,11 +118,28 @@ describe('RestartAgentAction', () => {
 
         const result = await restartAgentAction.execute(mockContext, inputs);
 
-        expect(mockStorage.getAgentByName).toHaveBeenCalledWith('project-789', 'MyAgent');
+        expect(mockStorage.getAgentByName).toHaveBeenCalledWith('project-789', 'MyAgent', {
+          excludeDisabled: true,
+        });
         expect(result.success).toBe(true);
         const data = result.data as RestartAgentResultData;
         expect(data.resolvedAgentId).toBe('resolved-agent-id');
         expect(data.resolvedBy).toBe('agentName');
+      });
+
+      it('does not find a disabled agent by name and restarts nothing', async () => {
+        mockStorage.getAgentByName.mockImplementation(
+          async (_projectId: string, _name: string, options?: { excludeDisabled?: boolean }) => {
+            if (options?.excludeDisabled) throw new Error('Agent not found');
+            return { id: 'parked-agent', name: 'Parked', projectId: 'project-789', disabled: true };
+          },
+        );
+
+        const result = await restartAgentAction.execute(mockContext, { agentName: 'Parked' });
+
+        expect(result.success).toBe(false);
+        expect(result.error).toContain('Agent not found');
+        expect(mockStorage.getAgent).not.toHaveBeenCalled();
       });
 
       it('should return error when agent name is not found', async () => {
@@ -139,7 +158,9 @@ describe('RestartAgentAction', () => {
 
         await restartAgentAction.execute(mockContext, inputs);
 
-        expect(mockStorage.getAgentByName).toHaveBeenCalledWith('project-789', 'MyAgent');
+        expect(mockStorage.getAgentByName).toHaveBeenCalledWith('project-789', 'MyAgent', {
+          excludeDisabled: true,
+        });
       });
     });
 
@@ -189,10 +210,14 @@ describe('RestartAgentAction', () => {
 
       const result = await restartAgentAction.execute(mockContext, inputs);
 
-      expect(mockSessionsService.terminateSession).toHaveBeenCalledWith('existing-session', {
-        source: 'subscriber',
-        reason: 'restart',
-      });
+      expect(mockSessionsService.terminateSession).toHaveBeenCalledWith(
+        'existing-session',
+        {
+          source: 'subscriber',
+          reason: 'restart',
+        },
+        { expectedAgentId: 'agent-456' },
+      );
       expect(result.success).toBe(true);
       const data = result.data as RestartAgentResultData;
       expect(data.previousSessionId).toBe('existing-session');
@@ -246,6 +271,26 @@ describe('RestartAgentAction', () => {
 
       expect(result.success).toBe(false);
       expect(result.error).toContain('Failed to restart agent');
+    });
+
+    it('refuses before the terminate when the provider check fails, so the session keeps running', async () => {
+      mockSessionsService.listActiveSessions.mockResolvedValue([
+        { id: 'existing-session', agentId: 'agent-456' },
+      ]);
+      mockSessionRuntime.verifyAgentProvider.mockRejectedValue(
+        new Error('Provider codex failed the binary check: codex binary not accessible'),
+      );
+
+      const result = await restartAgentAction.execute(mockContext, {});
+
+      expect(mockSessionRuntime.verifyAgentProvider).toHaveBeenCalledWith(
+        'agent-456',
+        'project-789',
+      );
+      expect(mockSessionsService.terminateSession).not.toHaveBeenCalled();
+      expect(mockSessionRuntime.launch).not.toHaveBeenCalled();
+      expect(result.success).toBe(false);
+      expect(result.error).toContain('failed the binary check');
     });
 
     it('should handle launchSession errors', async () => {
@@ -318,10 +363,14 @@ describe('RestartAgentAction', () => {
       await restartAgentAction.execute(mockContext, inputs);
 
       expect(mockSessionsService.terminateSession).toHaveBeenCalledTimes(1);
-      expect(mockSessionsService.terminateSession).toHaveBeenCalledWith('session-target', {
-        source: 'subscriber',
-        reason: 'restart',
-      });
+      expect(mockSessionsService.terminateSession).toHaveBeenCalledWith(
+        'session-target',
+        {
+          source: 'subscriber',
+          reason: 'restart',
+        },
+        { expectedAgentId: 'agent-456' },
+      );
     });
 
     it('should handle empty agentName input', async () => {

@@ -1,4 +1,11 @@
 import { test, expect, type Locator, type Page } from '@playwright/test';
+import type {
+  FileSyncStatusFolder,
+  FileSyncStatusResponse,
+  FileSyncStatusScope,
+} from '@/ui/pages/cloud/lib/remote-vm-contracts';
+import { syncScope as baseSyncScope } from '@/ui/pages/cloud/testing/file-sync-status.fixture';
+import { WHITE, contrast, tint, type Rgb } from '@/ui/styles/testing/theme-colors';
 
 /**
  * Visual and narrow-width lock for the Remote VMs page in the light, dark and
@@ -244,6 +251,8 @@ async function installRoutes(page: Page, rejectedKey = false): Promise<void> {
   await page.route('**/health', (route) => route.fulfill(json({ status: 'ok' })));
   // The app shell lists this PC's sessions as a plain array.
   await page.route('**/api/sessions*', (route) => route.fulfill(json([])));
+  // The app-wide Vault request modal reads a plain array.
+  await page.route('**/api/vault/requests', (route) => route.fulfill(json([])));
 
   await page.route('**/api/runtime', (route) =>
     route.fulfill(
@@ -342,7 +351,153 @@ async function installRoutes(page: Page, rejectedKey = false): Promise<void> {
   });
 }
 
-async function openPage(page: Page, theme: Theme, query = '', rejectedKey = false): Promise<void> {
+/** Scene-only routes, registered after the shared ones so they win over them. */
+type ExtraRoutes = (page: Page) => Promise<void>;
+
+const FILE_SYNC_BINDINGS = [
+  // Web app stays in its shared Connect: the app selects it, and a selected project on a VM
+  // switches the backend view, which re-applies the stored theme after `openPage` cleared it.
+  BINDINGS[0],
+  {
+    projectId: 'p-api',
+    remoteId: 'r-lab',
+    state: 'remote',
+    hostCursor: NOW,
+    fileSyncFailed: { home: 2, vm: 0 },
+  },
+  { projectId: 'p-docs', remoteId: 'r-old', state: 'remote', hostCursor: NOW },
+  { projectId: 'p-cli', remoteId: 'r-lab', state: 'remote', hostCursor: NOW },
+  { projectId: 'p-ops', remoteId: 'r-old', state: 'remote', hostCursor: NOW },
+];
+
+const FILE_SYNC_PROJECTS = [
+  ...PROJECTS,
+  ...[
+    { id: 'p-cli', name: 'CLI tools' },
+    { id: 'p-ops', name: 'Ops scripts' },
+  ].map((project) => ({
+    ...PROJECTS[0],
+    ...project,
+    rootPath: `/home/devchain/src/${project.id}`,
+  })),
+];
+
+function syncFolder(id: string, partial: Partial<FileSyncStatusFolder> = {}): FileSyncStatusFolder {
+  return {
+    id,
+    kind: id.startsWith('git:') ? 'git' : 'code',
+    type: 'sendreceive',
+    paused: false,
+    state: 'idle',
+    remoteState: 'valid',
+    files: 120,
+    bytes: 4_200_000,
+    toVm: { items: 0, bytes: 0 },
+    fromVm: { items: 0, bytes: 0 },
+    errors: 0,
+    error: null,
+    watchError: null,
+    lastReceived: null,
+    pending: [],
+    ...partial,
+  };
+}
+
+function syncScope(
+  projectId: string,
+  remoteId: string,
+  partial: Partial<FileSyncStatusScope> = {},
+): FileSyncStatusScope {
+  return baseSyncScope({
+    projectId,
+    remoteId,
+    files: 1_240,
+    bytes: 52_000_000,
+    lastReceived: { path: 'README.md', deleted: false, at: '2026-09-28T09:41:00.000Z' },
+    folders: [syncFolder(`code:${projectId}`), syncFolder(`git:${projectId}`)],
+    ...partial,
+  });
+}
+
+const FILE_SYNC_STATUS: FileSyncStatusResponse = {
+  checkedAt: NOW,
+  syncthing: { running: true, version: 'v2.0.9', error: null },
+  links: [
+    {
+      remoteId: 'r-lab',
+      connected: true,
+      since: '2026-09-28T08:00:00.000Z',
+      address: '192.168.1.20:22000',
+      sentBytes: 18_400_000,
+      receivedBytes: 9_100_000,
+    },
+    {
+      remoteId: 'r-old',
+      connected: true,
+      since: '2026-09-28T07:30:00.000Z',
+      address: '192.168.1.21:22000',
+      sentBytes: 2_300_000,
+      receivedBytes: 640_000,
+    },
+  ],
+  scopes: [
+    syncScope('p-api', 'r-lab', {
+      verdict: 'problem',
+      reason: '2 files on this PC fail to sync.',
+      failed: { home: 2, vm: 0 },
+      lastReceived: { path: 'src/app.tsx', deleted: false, at: '2026-09-27T17:12:00.000Z' },
+      folders: [
+        syncFolder('code:p-api', {
+          errors: 2,
+          pending: [{ direction: 'toVm', path: 'src/generated/schema.ts' }],
+        }),
+        syncFolder('git:p-api'),
+      ],
+    }),
+    syncScope('p-cli', 'r-lab', {
+      verdict: 'syncing',
+      toVm: { items: 4, bytes: 182_000 },
+      lastReceived: { path: 'src/routes.ts', deleted: false, at: '2026-09-28T09:58:00.000Z' },
+    }),
+    syncScope('p-docs', 'r-old'),
+    syncScope('p-ops', 'r-old'),
+  ],
+};
+
+/** Syncthing is stopped on this PC and the problem project also has a watch error. */
+const FILE_SYNC_STOPPED_STATUS: FileSyncStatusResponse = {
+  ...FILE_SYNC_STATUS,
+  syncthing: { running: false, version: null, error: 'Syncthing does not answer on this PC.' },
+  scopes: [
+    {
+      ...FILE_SYNC_STATUS.scopes[0],
+      folders: [syncFolder('code:p-api', { watchError: 'too many files' })],
+    },
+    ...FILE_SYNC_STATUS.scopes.slice(1),
+  ],
+};
+
+/** The File sync tab's answers: API gateway has failed files, so Fix file sync shows. */
+async function installFileSyncRoutes(
+  page: Page,
+  status: FileSyncStatusResponse = FILE_SYNC_STATUS,
+): Promise<void> {
+  await page.route('**/api/projects?*', (route) =>
+    route.fulfill(json({ items: FILE_SYNC_PROJECTS, total: FILE_SYNC_PROJECTS.length })),
+  );
+  await page.route('**/api/remotes/bindings', (route) =>
+    route.fulfill(json({ items: FILE_SYNC_BINDINGS })),
+  );
+  await page.route('**/api/remotes/file-sync/status*', (route) => route.fulfill(json(status)));
+}
+
+async function openPage(
+  page: Page,
+  theme: Theme,
+  query = '',
+  rejectedKey = false,
+  extraRoutes?: ExtraRoutes,
+): Promise<void> {
   await page.clock.setFixedTime(new Date(NOW));
   await page.addInitScript(
     ([stored]) => {
@@ -353,6 +508,7 @@ async function openPage(page: Page, theme: Theme, query = '', rejectedKey = fals
     [theme === 'light' ? 'ocean' : theme],
   );
   await installRoutes(page, rejectedKey);
+  await extraRoutes?.(page);
   await page.goto(`/cloud?section=remote-vm${query}`);
   // A drawer opened from the URL hides the page from the accessibility tree.
   // The drawer has its own Overview tab; the page's tab comes first.
@@ -375,6 +531,32 @@ async function openPage(page: Page, theme: Theme, query = '', rejectedKey = fals
 }
 
 const SHOT = { animations: 'disabled', caret: 'hide' } as const;
+
+/**
+ * The WCAG contrast ratio of an element's text against the surface painted behind it: the
+ * backgrounds of the element and its ancestors, composited up to the first opaque one.
+ */
+async function textContrast(target: Locator): Promise<number> {
+  // Only the computed colors need the browser: [red, green, blue, alpha], channels 0-255.
+  const colors = await target.evaluate((node) => {
+    const parse = (value: string) => {
+      if (!value.startsWith('rgb')) throw new Error(`Unexpected color "${value}"`);
+      const parts = (value.match(/[\d.]+/g) ?? []).map(Number);
+      return [parts[0], parts[1], parts[2], parts[3] ?? 1];
+    };
+    const layers: number[][] = [];
+    for (let element: Element | null = node; element; element = element.parentElement) {
+      const background = parse(getComputedStyle(element).backgroundColor);
+      if (background[3] > 0) layers.push(background);
+      if (background[3] === 1) break;
+    }
+    return { text: parse(getComputedStyle(node).color), layers };
+  });
+  const over = ([r, g, b, alpha]: number[], below: Rgb) =>
+    tint([r / 255, g / 255, b / 255], alpha, below);
+  const surface = colors.layers.reduceRight<Rgb>((below, layer) => over(layer, below), WHITE);
+  return contrast(over(colors.text, surface), surface);
+}
 
 /** Neither the document nor `element` scrolls sideways. */
 async function expectNoHorizontalOverflow(page: Page, element?: Locator): Promise<void> {
@@ -469,6 +651,54 @@ test.describe('Remote VMs page — themes and narrow width', () => {
         );
       });
 
+      test('File sync tab', async ({ page }) => {
+        await openPage(page, theme, '&tab=file-sync', false, installFileSyncRoutes);
+        const problem = page.getByRole('row', { name: 'API gateway' });
+        await problem.getByRole('button', { name: 'API gateway' }).click();
+        const details = page.getByRole('region', { name: 'API gateway details' });
+        await expect(details.getByRole('heading', { name: 'Project files' })).toBeVisible();
+        await expect(problem.getByRole('button', { name: 'Fix file sync' })).toBeVisible();
+        await expect(page.getByRole('region', { name: '1 project needs attention' })).toBeVisible();
+        await expect(
+          page.getByRole('list', { name: 'VM connections' }).getByRole('listitem'),
+        ).toHaveCount(2);
+        await expect(page.getByRole('main')).toHaveScreenshot(
+          `remote-vms-file-sync-${theme}.png`,
+          SHOT,
+        );
+      });
+
+      // Layer: Playwright. Only a browser resolves the theme tokens and the tint of the row
+      // behind the text, so jsdom cannot measure these pairs.
+      test('File sync diagnostics are readable on their surface', async ({ page }) => {
+        await openPage(page, theme, '&tab=file-sync', false, (routed) =>
+          installFileSyncRoutes(routed, FILE_SYNC_STOPPED_STATUS),
+        );
+        // A row fades to its hover color; measure the final color.
+        await page.addStyleTag({ content: '* { transition: none !important; }' });
+        const problem = page.getByRole('row', { name: 'API gateway', exact: true });
+        await problem.getByRole('button', { name: 'API gateway' }).click();
+        const details = page.getByRole('region', { name: 'API gateway details' });
+        const texts: Array<[string, Locator]> = [
+          [
+            'the Syncthing error in the strip',
+            page
+              .getByRole('region', { name: 'Connections' })
+              .getByText('Syncthing does not answer on this PC.'),
+          ],
+          ['the VM of an attention row', problem.getByText('lab-vm', { exact: true })],
+          ['the status of an attention row', problem.getByText('2 files on this PC fail to sync.')],
+          ['the watch error', details.getByText(/does not watch this folder/)],
+        ];
+        for (const hovered of [false, true]) {
+          if (hovered) await problem.hover();
+          for (const [name, text] of texts)
+            expect
+              .soft(await textContrast(text), `${name}${hovered ? ', row hovered' : ''}`)
+              .toBeGreaterThanOrEqual(4.5);
+        }
+      });
+
       test('Proxmox tab', async ({ page }) => {
         await openPage(page, theme, '&tab=proxmox');
         await expect(page.getByText('All required Proxmox rights are present.')).toBeVisible();
@@ -487,12 +717,20 @@ test.describe('Remote VMs page — themes and narrow width', () => {
 
     test('the page and its tabs do not scroll sideways', async ({ page }) => {
       await openPage(page, 'dark');
-      await expect(page.getByRole('list', { name: 'VMs' })).toBeVisible();
+      await expect(page.getByRole('list', { name: 'VMs', exact: true })).toBeVisible();
       await expectNoHorizontalOverflow(page);
-      for (const tab of ['VMs', 'Logins', 'Proxmox']) {
+      for (const tab of ['Projects', 'VMs', 'Logins', 'Proxmox']) {
         await page.getByRole('tab', { name: new RegExp(`^${tab}`) }).click();
         await expectNoHorizontalOverflow(page);
       }
+    });
+
+    test('the File sync tab and its table do not scroll sideways', async ({ page }) => {
+      await openPage(page, 'dark', '&tab=file-sync', false, installFileSyncRoutes);
+      const problem = page.getByRole('row', { name: 'API gateway' });
+      await problem.getByRole('button', { name: 'API gateway' }).click();
+      await expect(page.getByRole('region', { name: 'API gateway details' })).toBeVisible();
+      await expectNoHorizontalOverflow(page, page.getByRole('table'));
     });
 
     /** Each opener leaves exactly one new dialog open, named `dialog`. */
@@ -513,7 +751,7 @@ test.describe('Remote VMs page — themes and narrow width', () => {
         name: 'VM details drawer',
         open: async (page) => {
           await page
-            .getByRole('list', { name: 'VMs' })
+            .getByRole('list', { name: 'VMs', exact: true })
             .getByRole('button', { name: 'lab-vm', exact: true })
             .click();
         },
@@ -530,6 +768,7 @@ test.describe('Remote VMs page — themes and narrow width', () => {
       },
       {
         name: 'Connect',
+        query: '&tab=projects',
         open: async (page) => {
           await page
             .getByRole('listitem', { name: 'Release notes' })
@@ -540,6 +779,7 @@ test.describe('Remote VMs page — themes and narrow width', () => {
       },
       {
         name: 'Disconnect',
+        query: '&tab=projects',
         open: async (page) => {
           await page
             .getByRole('listitem', { name: 'API gateway' })

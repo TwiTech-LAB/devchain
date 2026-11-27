@@ -90,6 +90,7 @@ describe('Git owner persistence', () => {
             owner,
             {} as never,
             { pushNow: async () => undefined } as never,
+            { pushNow: async () => undefined } as never,
           )
         : new DetachOperation(
             unused,

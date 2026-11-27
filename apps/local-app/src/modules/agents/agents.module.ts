@@ -4,9 +4,10 @@ import { StorageModule } from '../storage/storage.module';
 import { SessionsModule } from '../sessions/sessions.module';
 import { EventsCoreModule } from '../events/events-core.module';
 import { SettingsModule } from '../settings/settings.module';
+import { TeamsModule } from '../teams/teams.module';
 
 @Module({
-  imports: [StorageModule, EventsCoreModule, SessionsModule, SettingsModule],
+  imports: [StorageModule, EventsCoreModule, SessionsModule, SettingsModule, TeamsModule],
   controllers: [AgentsController],
 })
 export class AgentsModule {}

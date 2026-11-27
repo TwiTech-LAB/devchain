@@ -25,6 +25,8 @@ import {
   SkillsSettingsDelegate,
 } from '../local/delegates/skills-settings.delegate';
 import { ProviderCliSettingsDelegate } from '../local/delegates/provider-cli-settings.delegate';
+import { GithubStarSettingsDelegate } from '../local/delegates/github-star-settings.delegate';
+import type { GithubStarState } from '../../github-star/github-star.dto';
 import type {
   ProviderCliVersionEntry,
   ProviderCliVersionSettingsMap,
@@ -67,6 +69,7 @@ export class SettingsService {
   private readonly registryDelegate: RegistrySettingsDelegate;
   private readonly skillsDelegate: SkillsSettingsDelegate;
   private readonly providerCliDelegate: ProviderCliSettingsDelegate;
+  private readonly githubStarDelegate: GithubStarSettingsDelegate;
 
   constructor(
     @Inject(DB_CONNECTION) private readonly db: BetterSQLite3Database,
@@ -78,6 +81,7 @@ export class SettingsService {
     this.presetDelegate = new PresetSettingsDelegate({ sqlite, gate });
     this.skillsDelegate = new SkillsSettingsDelegate({ sqlite });
     this.providerCliDelegate = new ProviderCliSettingsDelegate({ sqlite });
+    this.githubStarDelegate = new GithubStarSettingsDelegate({ sqlite });
     this.messagePoolDelegate = new MessagePoolSettingsDelegate({
       getSettings: () => this.getSettings(),
       updateSettings: (s) => this.updateSettings(s),
@@ -149,6 +153,16 @@ export class SettingsService {
   }
   setProviderCliVersion(provider: string, entry: ProviderCliVersionEntry): ProviderCliVersionEntry {
     return this.providerCliDelegate.setProviderCliVersion(provider, entry);
+  }
+
+  // --- GitHub star prompt (raw settings row; not part of PUT /api/settings) ---
+  getGithubStarState(): GithubStarState {
+    return this.githubStarDelegate.getGithubStarState();
+  }
+  updateGithubStarState(
+    mutate: (state: GithubStarState) => GithubStarState,
+  ): Promise<GithubStarState> {
+    return this.githubStarDelegate.updateGithubStarState(mutate);
   }
 
   // --- Auto-clean ---

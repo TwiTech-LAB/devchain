@@ -6,17 +6,12 @@ import { FILE_SYNC_PATHS } from '../../file-sync/file-sync-paths';
 import type { FileSyncPaths } from '../../file-sync/file-sync-paths';
 import { FileSyncService } from '../../file-sync/file-sync.service';
 import { ProcessExecutor } from '../../terminal/services/process-executor/process-executor.port';
-import { internalGitEnv } from './git-checkpoint';
-
-/** Root sequencer markers, in check order, and the unfinished operation each stands for. */
-const SEQUENCER_MARKERS = new Map([
-  ['MERGE_HEAD', 'a merge'],
-  ['CHERRY_PICK_HEAD', 'a cherry-pick'],
-  ['REVERT_HEAD', 'a revert'],
-  ['rebase-merge', 'a rebase'],
-  ['rebase-apply', 'a rebase'],
-  ['sequencer', 'a cherry-pick or revert sequence'],
-]);
+import {
+  internalGitEnv,
+  parseGitBaseline,
+  SEQUENCER_MARKERS,
+  type GitBaseline,
+} from './git-checkpoint';
 
 /** The unfinished operation a root sequencer marker stands for, as a user reads it. */
 export function describeSequencer(marker: string): string {
@@ -42,6 +37,29 @@ export class GitCoordinatorIndexService {
     for (const name of SEQUENCER_MARKERS.keys())
       if (await statIfExists(join(gitDir, name))) return name;
     return null;
+  }
+
+  async saveBaseline(
+    projectId: string,
+    baseline: GitBaseline,
+  ): Promise<Pick<GitBaseline, 'generation' | 'refsDigest'>> {
+    const directory = this.directory(projectId);
+    await mkdir(directory, { recursive: true, mode: 0o700 });
+    const temp = join(directory, `baseline-${randomUUID()}`);
+    try {
+      await usingFile(temp, (file) => file.writeFile(JSON.stringify(baseline)), 'wx');
+      await rename(temp, join(directory, 'baseline.json'));
+      await syncDirectory(directory);
+    } finally {
+      await rm(temp, { force: true });
+    }
+    return { generation: baseline.generation, refsDigest: baseline.refsDigest };
+  }
+
+  async readBaseline(projectId: string): Promise<GitBaseline> {
+    return parseGitBaseline(
+      await readFile(join(this.directory(projectId), 'baseline.json'), 'utf8'),
+    );
   }
 
   /** `verify` sees the complete snapshot file before it replaces the saved one. */

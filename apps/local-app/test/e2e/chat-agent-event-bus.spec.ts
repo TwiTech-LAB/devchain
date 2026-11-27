@@ -6,6 +6,7 @@ import { EVENT_BUS_ROUTE_DURATION_MS } from '@/ui/components/chat/agent-event-bu
 // colors, and live SVG motion because jsdom does not implement those behaviors.
 const PROJECT_ID = '55555555-5555-4555-8555-555555555555';
 const TEAM_ID = 'event-bus-team';
+const WORKSPACE_ID = 'event-bus-workspace';
 const NOW = '2024-01-01T00:00:00.000Z';
 
 const AGENTS = [
@@ -52,30 +53,54 @@ function json(body: unknown) {
   };
 }
 
-async function installRoutes(page: Page) {
+async function installRoutes(page: Page, agents: readonly object[] = AGENTS) {
   await page.addInitScript(
-    ({ projectId, teamId }) => {
+    ({ projectId }) => {
       window.localStorage.setItem('devchain:selectedProjectId', projectId);
-      window.localStorage.setItem(`devchain:chat:agentTab:${projectId}`, 'teams');
-      window.localStorage.setItem(
-        'devchain:chatSidebar:teamGroups',
-        JSON.stringify({ [teamId]: false }),
-      );
       window.localStorage.setItem('devchain:theme', 'dark');
       window.localStorage.removeItem('devchain:chatSidebar:eventBusReduceMotion');
     },
-    { projectId: PROJECT_ID, teamId: TEAM_ID },
+    { projectId: PROJECT_ID },
   );
 
+  // Nothing here may reach whatever API listens on the dev proxy port. The app
+  // socket stays unconnected (frames are injected by emitEventBusFrame), and the
+  // catch-all below is registered first so every later route takes precedence.
+  await page.routeWebSocket(/\/socket\.io\//, () => {});
+  await page.route('**/api/**', (route) =>
+    route.fulfill({
+      status: 404,
+      contentType: 'application/json',
+      body: JSON.stringify({ message: 'Not mocked in this spec' }),
+    }),
+  );
+  await page.route('**/api/remotes/bindings', (route) => route.fulfill(json({ items: [] })));
   await page.route('**/api/runtime', (route) =>
     route.fulfill(json({ mode: 'main', version: '1.0.0' })),
   );
-  await page.route('**/api/projects', (route) =>
+  await page.route('**/api/workspaces', (route) =>
+    route.fulfill(
+      json([
+        {
+          id: WORKSPACE_ID,
+          name: 'Event Bus Workspace',
+          isDefault: true,
+          position: 0,
+          projectCount: 1,
+          deviceGrantCount: 0,
+          createdAt: NOW,
+          updatedAt: NOW,
+        },
+      ]),
+    ),
+  );
+  await page.route(/\/api\/projects(\?.*)?$/, (route) =>
     route.fulfill(
       json({
         items: [
           {
             id: PROJECT_ID,
+            workspaceId: WORKSPACE_ID,
             name: 'Event Bus Project',
             description: '',
             rootPath: '/tmp/event-bus',
@@ -94,7 +119,7 @@ async function installRoutes(page: Page) {
     if (!route.request().url().includes(`projectId=${PROJECT_ID}`)) {
       return route.continue();
     }
-    return route.fulfill(json({ items: AGENTS, total: AGENTS.length, limit: 50, offset: 0 }));
+    return route.fulfill(json({ items: agents, total: agents.length, limit: 50, offset: 0 }));
   });
   await page.route('**/api/sessions/agents/presence**', (route) =>
     route.fulfill(
@@ -161,20 +186,6 @@ async function installRoutes(page: Page) {
       }),
     ),
   );
-  await page.route('**/api/chat/threads/direct', async (route) => {
-    const payload = route.request().postDataJSON() as { projectId: string; agentId: string };
-    await route.fulfill(
-      json({
-        id: `thread-${payload.agentId}`,
-        projectId: payload.projectId,
-        title: null,
-        isGroup: false,
-        members: [payload.agentId],
-        createdAt: NOW,
-        updatedAt: NOW,
-      }),
-    );
-  });
 }
 
 async function emitEventBusFrame(
@@ -201,6 +212,12 @@ async function emitEventBusFrame(
     },
     { projectId: PROJECT_ID, ...frame },
   );
+}
+
+// The installed clock keeps running between reading the page time and pausing,
+// so pause a little ahead of it; pausing at the read value can land in the past.
+async function pauseClock(page: Page) {
+  await page.clock.pauseAt((await page.evaluate(() => Date.now())) + 1_000);
 }
 
 type StoryboardPhase = 'launch' | 'mid-flight' | 'arrival';
@@ -412,7 +429,7 @@ test.describe('Chat agent event bus', () => {
     const wrapper = page.getByTestId('chat-main-agents-wrapper');
     const lane = page.getByTestId('agent-event-bus-control-lane');
     const overlay = page.getByTestId('agent-event-bus-svg');
-    const row = page.getByRole('listitem', { name: /Chat with Epic Manager/i });
+    const row = page.getByRole('listitem', { name: /Open terminal for Epic Manager/i });
     await expect(wrapper).toBeVisible();
     await expect(row).toBeVisible();
     await expect(overlay.locator('.agent-event-bus__idle-anchor')).toHaveCount(3);
@@ -471,6 +488,7 @@ test.describe('Chat agent event bus', () => {
     await page.keyboard.press('Shift+F10');
     await expect(reduceMotion).toBeVisible();
     await page.keyboard.press('Escape');
+    await expect(reduceMotion).not.toBeVisible();
 
     await row.click({ button: 'right', position: { x: 5, y: 20 } });
     await expect(page.getByRole('menuitem', { name: 'Overrides…' })).toBeVisible();
@@ -478,8 +496,141 @@ test.describe('Chat agent event bus', () => {
     await page.keyboard.press('Escape');
 
     await row.click({ position: { x: 5, y: 20 } });
-    await expect(page).toHaveURL(/\/chat\?thread=thread-agent-lead$/);
+    await expect(page).toHaveURL(/\/chat\?agent=agent-lead$/);
   });
+
+  test('truncates a long model override without widening the agent list', async ({ page }) => {
+    const longOverride = 'gemini-pro-orchestrator-neon';
+    await installRoutes(
+      page,
+      AGENTS.map((agent) =>
+        agent.id === 'agent-coder'
+          ? { ...agent, modelOverride: longOverride, effortOverride: 'high' }
+          : agent,
+      ),
+    );
+    await page.goto('/chat');
+
+    const sidebar = page.getByTestId('chat-sidebar');
+    const wrapper = page.getByTestId('chat-main-agents-wrapper');
+    const viewport = page.locator('[data-radix-scroll-area-viewport]').filter({ has: wrapper });
+    const row = page.getByRole('listitem', { name: /Open terminal for Coder/i });
+    const label = row.getByTitle(`model: ${longOverride} · effort: high`);
+    await expect(label).toBeVisible();
+
+    const [sidebarBox, rowBox] = await Promise.all([sidebar.boundingBox(), row.boundingBox()]);
+    expect(sidebarBox).not.toBeNull();
+    expect(rowBox).not.toBeNull();
+    expect(rowBox!.x + rowBox!.width).toBeLessThanOrEqual(sidebarBox!.x + sidebarBox!.width);
+
+    const labelWidths = await label.evaluate((el) => ({
+      scroll: el.scrollWidth,
+      client: el.clientWidth,
+    }));
+    expect(labelWidths.scroll).toBeGreaterThan(labelWidths.client);
+    const viewportWidths = await viewport.evaluate((el) => ({
+      scroll: el.scrollWidth,
+      client: el.clientWidth,
+    }));
+    expect(viewportWidths.scroll).toBeLessThanOrEqual(viewportWidths.client);
+  });
+
+  // Layer: Playwright browser E2E. Flex wrapping, truncation and hit-testing need real
+  // layout, which jsdom does not compute. Dot selection is proven in ChatSidebar.spec.tsx,
+  // so this test stops at actionability.
+  for (const layout of [
+    { name: 'with a lead', leadId: 'agent-lead' as string | null },
+    { name: 'without a lead', leadId: null },
+  ]) {
+    test(`fits the status dots of a full team ${layout.name} next to a long name`, async ({
+      page,
+    }) => {
+      const teamName = 'Platform Reliability and Infrastructure Builders';
+      const members = Array.from({ length: 10 }, (_, index) => ({
+        ...AGENTS[1],
+        id: `agent-member-${index + 1}`,
+        name: `Member ${index + 1}`,
+      }));
+      const teamAgents = [AGENTS[0], ...members];
+      const team = {
+        id: TEAM_ID,
+        projectId: PROJECT_ID,
+        name: teamName,
+        description: null,
+        teamLeadAgentId: layout.leadId,
+        teamLeadAgentName: layout.leadId ? 'Epic Manager' : null,
+        maxMembers: 10,
+        maxConcurrentTasks: 3,
+        allowTeamLeadCreateAgents: false,
+        createdAt: NOW,
+        updatedAt: NOW,
+      };
+      await installRoutes(page, teamAgents);
+      await page.route(`**/api/teams?projectId=${PROJECT_ID}`, (route) =>
+        route.fulfill(
+          json({
+            items: [{ ...team, memberCount: teamAgents.length }],
+            total: 1,
+            limit: 50,
+            offset: 0,
+          }),
+        ),
+      );
+      await page.route(`**/api/teams/${TEAM_ID}`, (route) =>
+        route.fulfill(
+          json({
+            ...team,
+            members: teamAgents.map((agent) => ({
+              agentId: agent.id,
+              agentName: agent.name,
+              isLead: agent.id === layout.leadId,
+              createdAt: NOW,
+            })),
+            profileIds: ['profile-1'],
+            profileConfigSelections: [],
+          }),
+        ),
+      );
+      await page.goto('/chat');
+
+      const sidebar = page.getByTestId('chat-sidebar');
+      const foldToggle = page.getByRole('button', { name: `Toggle ${teamName} members` });
+      // Only a folded team shows dots. An online agent unfolds the team without a lead.
+      await expect(foldToggle).toBeVisible();
+      if ((await foldToggle.getAttribute('aria-expanded')) === 'true') await foldToggle.click();
+      const dots = page.getByTestId('team-status-dots').getByRole('button');
+      // The lead has no dot; a team with no lead shows all 11 agents.
+      await expect(dots).toHaveCount(layout.leadId ? 10 : 11);
+      const dotRows = await dots.evaluateAll(
+        (elements) =>
+          new Set(elements.map((el) => Math.round(el.getBoundingClientRect().top))).size,
+      );
+      expect(dotRows).toBeLessThanOrEqual(2);
+
+      const quickAdd = page.getByRole('button', { name: `Add agent to ${teamName}` });
+      // A team without a lead disables quick-add; its tooltip wrapper stays reachable.
+      const quickAddTarget = layout.leadId ? quickAdd : quickAdd.locator('xpath=..');
+      const nameText = layout.leadId
+        ? page.getByTestId('team-status-dots').locator('xpath=preceding-sibling::span')
+        : foldToggle.getByText(teamName);
+
+      const sidebarBox = (await sidebar.boundingBox())!;
+      for (const control of [dots.last(), quickAddTarget, foldToggle]) {
+        const box = (await control.boundingBox())!;
+        expect(box.x).toBeGreaterThanOrEqual(sidebarBox.x);
+        expect(box.x + box.width).toBeLessThanOrEqual(sidebarBox.x + sidebarBox.width);
+        await control.click({ trial: true });
+      }
+
+      await expect(nameText).toBeVisible();
+      const name = await nameText.evaluate((el) => ({
+        width: el.getBoundingClientRect().width,
+        truncated: el.scrollWidth > el.clientWidth,
+      }));
+      expect(name.truncated).toBe(true);
+      expect(name.width).toBeGreaterThanOrEqual(24);
+    });
+  }
 
   test('records one deterministic dark-theme pulse storyboard', async ({ page, browserName }) => {
     test.skip(browserName !== 'chromium', 'The approved visual baseline is Chromium-only.');
@@ -489,7 +640,7 @@ test.describe('Chat agent event bus', () => {
     // Wait for all three seeded agents to have registered a bus anchor. (This replaced a
     // count of 'Idle' badges, which no longer exist — see ChatSidebar.spec.tsx:536-537.)
     await expect(storyboard.overlay.locator('.agent-event-bus__idle-anchor')).toHaveCount(3);
-    await page.clock.pauseAt(await page.evaluate(() => Date.now()));
+    await pauseClock(page);
     await storyboard.emitNestedTeamMessage();
 
     const ignition = storyboard.overlay.locator(
@@ -572,7 +723,7 @@ test.describe('Chat agent event bus', () => {
     await page.clock.install({ time: new Date(NOW) });
     const storyboard = new EventBusStoryboard(page);
     await storyboard.open();
-    await page.clock.pauseAt(await page.evaluate(() => Date.now()));
+    await pauseClock(page);
 
     const localAgent = page.locator('[data-agent-event-bus-agent-id="agent-coder"]');
     const beforeBox = await localAgent.boundingBox();

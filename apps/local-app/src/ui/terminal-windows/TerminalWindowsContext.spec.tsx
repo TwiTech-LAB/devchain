@@ -1,21 +1,85 @@
 import React from 'react';
-import { renderHook, act, waitFor } from '@testing-library/react';
+import { render, renderHook, act, waitFor } from '@testing-library/react';
 import {
   MAX_MOUNTED_TERMINAL_WINDOWS,
   MAX_PERSISTED_TERMINAL_LAYOUTS,
   TerminalWindowsProvider,
+  useLowerTerminalWindows,
   useTerminalWindows,
 } from './TerminalWindowsContext';
+import { TerminalWindowsLayer } from './TerminalWindowsLayer';
+import { bumpTerminalAttachRevision } from '@/ui/lib/terminal-attach-revision';
 
 const mockToast = jest.fn();
 
 jest.mock('@/ui/lib/toast-helpers', () => ({
   useToastHelpers: () => ({ toast: mockToast }),
 }));
+jest.mock('./SessionSwitcher', () => ({ SessionSwitcher: () => null }));
 
 function wrapper({ children }: { children: React.ReactNode }) {
   return <TerminalWindowsProvider>{children}</TerminalWindowsProvider>;
 }
+
+function LowerWindows({ active }: { active: boolean }) {
+  useLowerTerminalWindows(active);
+  return null;
+}
+
+// Rendering the actual portal verifies that competing requests update the same layer node.
+it('lowers the window layer until the last caller releases it', () => {
+  const layer = (first: boolean, second: boolean) => (
+    <>
+      <LowerWindows active={first} />
+      {second && <LowerWindows active />}
+      <TerminalWindowsLayer />
+    </>
+  );
+  const { rerender } = render(layer(false, false), { wrapper });
+  const portal = document.body.querySelector(':scope > .fixed.inset-0.pointer-events-none');
+  expect(portal).toHaveClass('z-[80]');
+
+  rerender(layer(true, true));
+  expect(portal).toHaveClass('z-30');
+  expect(portal).not.toHaveClass('z-[80]');
+
+  rerender(layer(false, true));
+  expect(portal).toHaveClass('z-30');
+
+  rerender(layer(false, false));
+  expect(portal).toHaveClass('z-[80]');
+  expect(portal).not.toHaveClass('z-30');
+});
+
+// The layer renders the window content, so it is the cheapest layer that shows the remount.
+it("remounts a window's content only when its session's attach revision increases", () => {
+  function OpenWindow() {
+    const { openWindow } = useTerminalWindows();
+    React.useEffect(() => {
+      openWindow({
+        id: 'window-1',
+        sessionId: 'session-1',
+        title: 'Session 1',
+        content: <div data-testid="window-terminal" />,
+      });
+    }, [openWindow]);
+    return null;
+  }
+  const { getByTestId } = render(
+    <>
+      <OpenWindow />
+      <TerminalWindowsLayer />
+    </>,
+    { wrapper },
+  );
+  const terminal = getByTestId('window-terminal');
+
+  act(() => bumpTerminalAttachRevision('session-2'));
+  expect(getByTestId('window-terminal')).toBe(terminal);
+
+  act(() => bumpTerminalAttachRevision('session-1'));
+  expect(getByTestId('window-terminal')).not.toBe(terminal);
+});
 
 // Context unit tests are the cheapest layer that proves ordering and the mounted-count invariant.
 describe('TerminalWindowsContext — mounted window LRU cap', () => {

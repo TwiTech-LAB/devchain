@@ -1,5 +1,6 @@
 import React from 'react';
-import { fireEvent, render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen } from '@testing-library/react';
+import { bumpTerminalAttachRevision } from '@/ui/lib/terminal-attach-revision';
 import { InlineTerminalPanel } from './InlineTerminalPanel';
 
 const closeWindowMock = jest.fn();
@@ -112,6 +113,18 @@ describe('InlineTerminalPanel', () => {
     expect(lastTerminalHandle?.fit).toHaveBeenCalled();
     expect(lastTerminalHandle?.focus).toHaveBeenCalled();
     jest.useRealTimers();
+  });
+
+  // A session that restarts on the same ID needs a new terminal mount to subscribe again.
+  it("remounts the terminal only when its own session's attach revision increases", () => {
+    render(<InlineTerminalPanel sessionId="session-1" isWindowOpen={false} />);
+    const terminal = screen.getByTestId('inline-terminal');
+
+    act(() => bumpTerminalAttachRevision('session-2'));
+    expect(screen.getByTestId('inline-terminal')).toBe(terminal);
+
+    act(() => bumpTerminalAttachRevision('session-1'));
+    expect(screen.getByTestId('inline-terminal')).not.toBe(terminal);
   });
 
   it('keeps terminal mounted when switching to session tab (no unmount)', () => {

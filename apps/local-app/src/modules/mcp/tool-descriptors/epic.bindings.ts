@@ -16,6 +16,7 @@ import {
 } from '../services/handlers/epic-tools';
 import { createNullAdapter } from '../services/handlers/null-adapter';
 import { defineToolGroup, type McpBindingRuntime } from './binding-types';
+import { createExternalTaskReadDeps } from './external-task.bindings';
 
 function createEpicContext(runtime: McpBindingRuntime): EpicToolContext {
   return {
@@ -25,6 +26,7 @@ function createEpicContext(runtime: McpBindingRuntime): EpicToolContext {
       runtime.epicRelationsService ??
       createNullAdapter<EpicRelationsService>('EpicRelationsService'),
     resolveSessionContext: runtime.resolveSessionContext,
+    ...createExternalTaskReadDeps(runtime),
   };
 }
 

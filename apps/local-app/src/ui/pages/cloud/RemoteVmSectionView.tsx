@@ -18,6 +18,7 @@ import { ConnectDialog } from './ConnectDialog';
 import { DisconnectProjectDialog } from './DisconnectProjectDialog';
 import { DisconnectAllDialog } from './DisconnectAllDialog';
 import { FileSyncSettingsDialog } from './FileSyncSettingsDialog';
+import { FileSyncTab } from './FileSyncTab';
 import { FirstRunChecklist } from './FirstRunChecklist';
 import { FixFileSyncDialog } from './FixFileSyncDialog';
 import { ForceSyncDialog } from './ForceSyncDialog';
@@ -48,6 +49,7 @@ export function RemoteVmSectionView({
     activityButton,
     overview,
     projects,
+    fileSync,
     projectActions,
     vms,
     logins,
@@ -140,6 +142,7 @@ export function RemoteVmSectionView({
               VMs
               <CountBadge count={tabs.counts.vms} />
             </TabsTrigger>
+            <TabsTrigger value="file-sync">File sync</TabsTrigger>
             <TabsTrigger value="logins">
               Logins
               <CountBadge count={tabs.counts.logins} />
@@ -173,6 +176,9 @@ export function RemoteVmSectionView({
         </TabsContent>
         <TabsContent value="vms">
           <VmList {...vms} />
+        </TabsContent>
+        <TabsContent value="file-sync">
+          <FileSyncTab {...fileSync} actions={projectActions} />
         </TabsContent>
         <TabsContent value="logins">
           <LoginsTab {...logins} />

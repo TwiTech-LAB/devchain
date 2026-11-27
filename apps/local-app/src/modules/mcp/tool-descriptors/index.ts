@@ -12,6 +12,7 @@ import { reviewMetadata } from './review.metadata';
 import { projectMetadata } from './project.metadata';
 import { worktreeMetadata } from './worktree.metadata';
 import { vaultMetadata } from './vault.metadata';
+import { externalTaskMetadata } from './external-task.metadata';
 
 export const allMetadata: ToolMetadataEntry[] = [
   ...sessionMetadata,
@@ -26,6 +27,7 @@ export const allMetadata: ToolMetadataEntry[] = [
   ...reviewMetadata,
   ...worktreeMetadata,
   ...vaultMetadata,
+  ...externalTaskMetadata,
 ];
 
 export type { ToolMetadataEntry } from './types';

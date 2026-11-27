@@ -274,13 +274,16 @@ export class TerminalStreamService implements OnModuleInit, OnModuleDestroy {
    */
   scheduleClear(sessionId: string, delayMs: number): void {
     this.cancelScheduledClear(sessionId);
-    const timer = setTimeout(() => {
-      this.scheduledClears.delete(sessionId);
-      this.clearBuffer(sessionId);
-      this.clearExpiryHandler?.(sessionId);
-    }, delayMs);
+    const timer = setTimeout(() => this.retireReplay(sessionId), delayMs);
     timer.unref();
     this.scheduledClears.set(sessionId, { timer, delayMs });
+  }
+
+  /** Retires the session's replay now, with the same steps as an expired scheduled clear. */
+  retireReplay(sessionId: string): void {
+    this.cancelScheduledClear(sessionId);
+    this.clearBuffer(sessionId);
+    this.clearExpiryHandler?.(sessionId);
   }
 
   /**

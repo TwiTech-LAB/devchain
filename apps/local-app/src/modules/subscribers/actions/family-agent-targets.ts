@@ -17,7 +17,7 @@ export function compareText(left: string, right: string): number {
  * Resolve every agent in one project whose profile carries the given family slug.
  * Slugs compare case-insensitively after trimming. The 10k list window is the
  * resolved contract; callers that outgrow it must page, not widen silently.
- * Returns agents sorted by normalized name then ID with duplicates removed;
+ * Disabled agents are skipped. Returns agents sorted by normalized name then ID with duplicates removed;
  * an empty array means no profile matched — failure policy belongs to callers.
  */
 export async function resolveFamilyAgentTargets(
@@ -28,7 +28,7 @@ export async function resolveFamilyAgentTargets(
   const normalizedSlug = normalize(familySlug);
   const [profilesResult, agentsResult] = await Promise.all([
     storage.listAgentProfiles({ projectId, limit: 10_000, offset: 0 }),
-    storage.listAgents(projectId, { limit: 10_000, offset: 0 }),
+    storage.listAgents(projectId, { limit: 10_000, offset: 0, excludeDisabled: true }),
   ]);
   const matchingProfileIds = new Set(
     profilesResult.items

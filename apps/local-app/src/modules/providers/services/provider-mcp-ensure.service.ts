@@ -1,5 +1,6 @@
 import { Injectable, Inject } from '@nestjs/common';
 import { isAbsolute, normalize, sep } from 'path';
+import { createHash } from 'node:crypto';
 import { createLogger } from '../../../common/logging/logger';
 import { getEnvConfig } from '../../../common/config/env.config';
 import { HostResolver } from '@devchain/shared';
@@ -22,6 +23,7 @@ import {
   type ProjectStorage,
 } from '../../storage/interfaces/storage.interface';
 import type { Provider, UpdateProviderMcpMetadata } from '../../storage/models/domain.models';
+import { KeyedSerialQueue } from '../../../common/keyed-serial-queue';
 
 const logger = createLogger('ProviderMcpEnsureService');
 
@@ -67,6 +69,7 @@ export interface EnsureProjectProvisioningResult {
 @Injectable()
 export class ProviderMcpEnsureService {
   private ensureLocks = new Map<string, Promise<EnsureMcpResult>>();
+  private readonly ensureQueue = new KeyedSerialQueue();
   private provisionLocks = new Map<string, Promise<EnsureProjectProvisioningResult>>();
 
   constructor(
@@ -95,40 +98,31 @@ export class ProviderMcpEnsureService {
       };
     }
 
-    // Validate projectPath if provided
-    if (projectPath) {
-      const validationResult = await this.validateProjectPath(projectPath);
-      if (!validationResult.valid) {
-        return {
-          success: false,
-          action: 'error',
-          message: validationResult.message,
-        };
-      }
-      if (validationResult.remoteOwner) {
-        return {
-          success: true,
-          action: 'skipped',
-          message: `Skipped MCP configuration: the project runs on remote "${validationResult.remoteOwner.remoteName ?? validationResult.remoteOwner.remoteId}"; its project config files would carry home's MCP URL to the VM's agents.`,
-        };
-      }
-    }
+    // Also checked here, so a project that is already invalid or remote-owned does not wait.
+    const refused = await this.refuseProject(projectPath);
+    if (refused) return refused;
 
-    // Key by provider + project to ensure project-specific side effects run
-    const lockKey = `${provider.id}:${projectPath ?? 'global'}`;
+    // Joins an ensure in flight only for the same provider, project and environment: another
+    // environment (for example another CODEX_HOME) has other registrations, so it runs its own
+    // ensure. The key holds a digest of the environment, never its values.
+    const lockKey = `${provider.id}:${projectPath ?? 'global'}:${envDigest(context?.env)}`;
 
-    // Check for existing lock on this provider+project combination
     const existingLock = this.ensureLocks.get(lockKey);
     if (existingLock) {
-      logger.debug(
-        { providerId: provider.id, projectPath, lockKey },
-        'Awaiting existing ensure lock',
-      );
+      logger.debug({ providerId: provider.id, projectPath }, 'Awaiting existing ensure lock');
       return existingLock;
     }
 
-    // Create new lock and execute
-    const promise = this.doEnsureMcp(provider, projectPath, context);
+    // Ensures that do not join still run one at a time per provider: a registration target (a
+    // CLI's user config, agy's HOME file, a project config file) can be shared across projects
+    // and environments, and two writers would interleave their read, modify and write.
+    // The root and the owner are checked again when this ensure's turn comes, immediately before
+    // its first write: the project can become remote-owned while the ensure waits in the queue.
+    const promise = this.ensureQueue.run(
+      provider.id,
+      async () =>
+        (await this.refuseProject(projectPath)) ?? this.doEnsureMcp(provider, projectPath, context),
+    );
     this.ensureLocks.set(lockKey, promise);
 
     try {
@@ -338,7 +332,7 @@ export class ProviderMcpEnsureService {
     const ensureResult = await this.mcpRegistration.ensureRegistration(
       provider,
       { endpoint: expectedEndpoint, alias: expectedAlias },
-      { cwd: projectPath },
+      { cwd: projectPath, env: context?.env },
     );
 
     if (!ensureResult.success) {
@@ -373,6 +367,26 @@ export class ProviderMcpEnsureService {
       alias: expectedAlias,
       warnings: warnings.length > 0 ? warnings : undefined,
     };
+  }
+
+  /**
+   * The result that refuses an ensure for `projectPath`: an error for a path that is not a
+   * registered project root, `skipped` for a project a remote owns. Null when the ensure may write.
+   */
+  private async refuseProject(projectPath: string | undefined): Promise<EnsureMcpResult | null> {
+    if (!projectPath) return null;
+    const validationResult = await this.validateProjectPath(projectPath);
+    if (!validationResult.valid) {
+      return { success: false, action: 'error', message: validationResult.message };
+    }
+    if (validationResult.remoteOwner) {
+      return {
+        success: true,
+        action: 'skipped',
+        message: `Skipped MCP configuration: the project runs on remote "${validationResult.remoteOwner.remoteName ?? validationResult.remoteOwner.remoteId}"; its project config files would carry home's MCP URL to the VM's agents.`,
+      };
+    }
+    return null;
   }
 
   /**
@@ -440,4 +454,10 @@ export class ProviderMcpEnsureService {
     );
     return { valid: true, remoteOwner };
   }
+}
+
+function envDigest(env: Readonly<Record<string, string>> | undefined): string {
+  if (!env) return 'process';
+  const entries = Object.entries(env).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+  return createHash('sha256').update(JSON.stringify(entries)).digest('hex');
 }

@@ -272,8 +272,18 @@ describe('DetachOperation preflight', () => {
       {} as never,
     );
     const step = detach.steps.find((definition) => definition.id === 'preflight')!;
-    return (details: Record<string, unknown>) =>
-      step.run({ operation: operation([], details), details } as Parameters<typeof step.run>[0]);
+    const saved: Record<string, unknown> = {};
+    const run = (details: Record<string, unknown>) =>
+      step.run({
+        operation: operation([], details),
+        details,
+        // Only a durable report reaches storage when DevChain stops inside the step.
+        progress: async (patch: Record<string, unknown>, options?: { durable?: boolean }) => {
+          Object.assign(details, patch);
+          if (options?.durable) Object.assign(saved, details);
+        },
+      } as Parameters<typeof step.run>[0]);
+    return Object.assign(run, { detach, bindings, fileSync, liveSync, saved });
   }
 
   it("refuses a VM that rejects this PC's API key unless the disconnect is forced", async () => {
@@ -282,4 +292,44 @@ describe('DetachOperation preflight', () => {
     await expect(run({})).rejects.toMatchObject({ code: 'HOST_API_KEY_REJECTED' });
     await expect(run({ force: true })).resolves.toBeUndefined();
   });
+
+  // DevChain 0.28 wrote the binding before the flag, so its stopped Disconnect has no flag.
+  it.each([
+    ['', (saved: Record<string, unknown>) => ({ ...saved })],
+    [' in DevChain 0.28', ({ markedDetaching: _, ...saved }: Record<string, unknown>) => saved],
+  ])(
+    'gives the project back on cancel after DevChain stopped right after the binding write%s',
+    async (_release, stored) => {
+      const run = preflightWith({});
+      const { detach, bindings, fileSync, liveSync, saved } = run;
+      const binding = { remoteId: 'remote-1', state: 'remote', hostCursor: null };
+      bindings.get.mockImplementation(async () => ({ ...binding }));
+      bindings.update.mockImplementation(async (_: string, patch: { state: string }) => {
+        Object.assign(binding, patch);
+      });
+      const pending = Object.assign(new Error('cancel the Disconnect'), {
+        code: 'GIT_RECOVERY_PENDING',
+      });
+      Object.assign(fileSync, {
+        prepareGitDisconnect: jest.fn(async (_p: string, _r: string, detaching: boolean) => {
+          if (detaching) throw pending;
+        }),
+      });
+      const start = jest.fn();
+      Object.assign(liveSync, { start });
+      Object.assign(detach, {
+        dockerCopyBack: { partialGroups: async () => [], finish: async () => undefined },
+      });
+
+      // The stop loses the step's outcome: the retry starts from what storage has.
+      await run({});
+      expect(binding.state).toBe('detaching');
+      const retried = stored(saved);
+      await expect(run(retried)).rejects.toBe(pending);
+      await detach.rollback(operation([{ id: 'preflight', state: 'failed' }], retried));
+
+      expect(binding.state).toBe('remote');
+      expect(start).toHaveBeenCalledWith('A', 'remote-1', { full: true });
+    },
+  );
 });

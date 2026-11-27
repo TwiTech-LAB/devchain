@@ -1,4 +1,3 @@
-import { useState } from 'react';
 import {
   Collapsible,
   CollapsibleContent,
@@ -13,6 +12,8 @@ import {
   truncateText,
 } from '@/ui/utils/session-reader-formatters';
 import { useSessionViewMode } from '@/ui/hooks/useSessionViewMode';
+import { useTranscriptDisclosure } from '@/ui/hooks/useTranscriptDisclosure';
+import { ClampedContent } from './ClampedContent';
 
 const TRUNCATE_THRESHOLD = 5000;
 
@@ -22,18 +23,27 @@ const TRUNCATE_THRESHOLD = 5000;
 
 export interface ThinkingBlockProps {
   step: SerializedSemanticStep;
+  /** Scopes the open-state keys; step ids repeat across chunks. */
+  chunkId?: string;
   isStepHot?: boolean;
   percentOfChunk?: number;
 }
 
-export function ThinkingBlock({ step, isStepHot, percentOfChunk }: ThinkingBlockProps) {
+export function ThinkingBlock({
+  step,
+  chunkId = '',
+  isStepHot,
+  percentOfChunk,
+}: ThinkingBlockProps) {
   const { mode } = useSessionViewMode();
   const text = step.content.thinkingText ?? '';
   const estimatedTokens = step.estimatedTokens ?? 0;
   const previewText = text ? truncateText(text, 80) : '';
   const isLong = text.length > TRUNCATE_THRESHOLD;
-  const [showFull, setShowFull] = useState(false);
+  const [open, setOpen] = useTranscriptDisclosure(`${chunkId}:${step.id}:section`);
+  const [showFull, setShowFull] = useTranscriptDisclosure(`${chunkId}:${step.id}:content`);
 
+  // The character cap bounds the DOM size of the collapsed preview.
   const displayText = isLong && !showFull ? text.slice(0, TRUNCATE_THRESHOLD) + '…' : text;
 
   return (
@@ -41,7 +51,7 @@ export function ThinkingBlock({ step, isStepHot, percentOfChunk }: ThinkingBlock
       className={cn(isStepHot && 'border-l-2 border-status-warn pl-1.5')}
       data-testid="thinking-block-wrapper"
     >
-      <Collapsible>
+      <Collapsible open={open} onOpenChange={setOpen}>
         <CollapsibleTrigger
           className="group flex items-center gap-1.5 text-[11px] text-muted-foreground hover:text-foreground transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring rounded-sm"
           data-testid="thinking-block-trigger"
@@ -88,25 +98,22 @@ export function ThinkingBlock({ step, isStepHot, percentOfChunk }: ThinkingBlock
           </span>
         </CollapsibleTrigger>
         <CollapsibleContent>
-          <pre
-            className="mt-1 max-h-64 overflow-auto whitespace-pre-wrap rounded-md bg-muted/40 p-2 text-[11px] text-foreground leading-relaxed"
-            data-testid="thinking-block-content"
+          <ClampedContent
+            disclosureKey={`${chunkId}:${step.id}:content`}
+            expanded={showFull}
+            onExpandedChange={setShowFull}
+            maxHeight={256}
+            truncated={isLong}
+            className="mt-1"
+            fadeClassName="from-muted"
           >
-            {displayText}
-          </pre>
-          {isLong && (
-            <button
-              type="button"
-              onClick={(e) => {
-                e.stopPropagation();
-                setShowFull((prev) => !prev);
-              }}
-              className="mt-1 text-[10px] text-primary hover:underline"
-              data-testid="thinking-show-more"
+            <pre
+              className="overflow-x-auto whitespace-pre-wrap rounded-md bg-muted/40 p-2 text-[11px] text-foreground leading-relaxed"
+              data-testid="thinking-block-content"
             >
-              {showFull ? 'Show less' : 'Show more'}
-            </button>
-          )}
+              {displayText}
+            </pre>
+          </ClampedContent>
         </CollapsibleContent>
       </Collapsible>
     </div>

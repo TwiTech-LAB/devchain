@@ -3,18 +3,35 @@ import { MarkdownRenderer } from '@/ui/components/shared/MarkdownRenderer';
 import { CopyTextButton } from '@/ui/components/shared/CopyTextButton';
 import { formatTimestamp } from '@/ui/utils/session-reader-formatters';
 import type { LastOutput } from '@/ui/utils/ai-group-enhancer';
+import { useTranscriptDisclosure } from '@/ui/hooks/useTranscriptDisclosure';
+import { ClampedContent } from './ClampedContent';
+import { FullToolResultStatus, useFullToolResult } from './useFullToolResult';
 
 export interface LastOutputDisplayProps {
+  sessionId?: string | null;
   lastOutput: LastOutput | null;
+  /** Scopes the expand state key; step ids repeat across chunks. */
+  chunkId?: string;
   isLive?: boolean;
   hideTimestamp?: boolean;
 }
 
 export const LastOutputDisplay = memo(function LastOutputDisplay({
+  sessionId,
   lastOutput,
+  chunkId,
   isLive = false,
   hideTimestamp = false,
 }: LastOutputDisplayProps) {
+  const disclosureKey = `${chunkId ?? ''}:last-output:${lastOutput?.stepId ?? ''}`;
+  const [expanded, setExpanded] = useTranscriptDisclosure(disclosureKey);
+  const fullResult = useFullToolResult({
+    sessionId,
+    toolCallId: lastOutput?.toolCallId,
+    isTruncated: lastOutput?.type === 'tool_result' && lastOutput.isTruncated,
+    expanded: expanded && !!lastOutput,
+  });
+
   if (!lastOutput) {
     if (!isLive) return null;
     return (
@@ -26,6 +43,8 @@ export const LastOutputDisplay = memo(function LastOutputDisplay({
       </div>
     );
   }
+
+  const text = fullResult.fullText ?? lastOutput.text;
 
   return (
     <div
@@ -40,14 +59,24 @@ export const LastOutputDisplay = memo(function LastOutputDisplay({
             <span>{formatTimestamp(lastOutput.timestamp.toISOString())}</span>
           </>
         )}
-        <CopyTextButton text={lastOutput.text} label="Copy output" className="ml-auto" />
+        <CopyTextButton text={text} label="Copy output" className="ml-auto" />
       </div>
-      <div className="max-h-96 overflow-y-auto px-3 py-2" data-testid="last-output-content">
+      <ClampedContent
+        disclosureKey={disclosureKey}
+        expanded={expanded}
+        onExpandedChange={setExpanded}
+        truncated={fullResult.canLoad && fullResult.fullText === null}
+        className="px-3 py-2"
+        data-testid="last-output-content"
+      >
         <MarkdownRenderer
-          content={lastOutput.text}
+          content={text}
           className="text-sm leading-relaxed [&_p]:my-1 [&_pre]:text-[11px]"
           copyableCode
         />
+      </ClampedContent>
+      <div className="px-3 empty:hidden">
+        <FullToolResultStatus isLoading={fullResult.isLoading} error={fullResult.error} />
       </div>
     </div>
   );

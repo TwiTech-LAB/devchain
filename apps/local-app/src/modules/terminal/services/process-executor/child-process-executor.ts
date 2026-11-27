@@ -13,6 +13,9 @@ import {
 
 @Injectable()
 export class ChildProcessExecutor extends ProcessExecutor {
+  /** Time between SIGTERM and SIGKILL after a timeout; a timed-out run settles by its end. */
+  protected readonly killGraceMs: number = 2000;
+
   async run(options: ProcessExecutorOptions): Promise<ExecutorResult> {
     options.signal?.throwIfAborted();
     if (options.env) validateEnv(options.env);
@@ -54,12 +57,16 @@ export class ChildProcessExecutor extends ProcessExecutor {
         shell: false,
       });
 
-      const abort = () => {
-        child.kill('SIGKILL');
-        // A descendant can inherit a pipe. Wait for this child's exit without waiting for that pipe.
+      // A descendant can inherit a pipe and keep it open after this child exits, so `close`
+      // would wait for it. Destroying the streams lets `close` fire. The descendant keeps running.
+      const releaseStdio = () => {
         child.stdin?.destroy();
         child.stdout?.destroy();
         child.stderr?.destroy();
+      };
+      const abort = () => {
+        child.kill('SIGKILL');
+        releaseStdio();
       };
       options.signal?.addEventListener('abort', abort, { once: true });
       child.stdout!.on('data', (data: Buffer) => {
@@ -100,12 +107,16 @@ export class ChildProcessExecutor extends ProcessExecutor {
         stderrBytes += chunk.length;
       });
 
-      const cleanup = () => {
+      let settled = false;
+      const settle = (result: Omit<ExecutorResult, 'stdout' | 'stderr'>) => {
+        if (settled) return;
+        settled = true;
         options.signal?.removeEventListener('abort', abort);
         if (timeoutTimer) clearTimeout(timeoutTimer);
         if (killTimer) clearTimeout(killTimer);
         stdout += stdoutDecoder.end();
         stderr += stderrDecoder.end();
+        resolve({ ...result, stdout, stderr });
       };
 
       if (options.input && child.stdin) {
@@ -120,6 +131,10 @@ export class ChildProcessExecutor extends ProcessExecutor {
       if (options.timeout && options.timeout > 0) {
         timeoutTimer = setTimeout(() => {
           timedOut = true;
+          if (child.exitCode !== null || child.signalCode !== null) {
+            releaseStdio();
+            return;
+          }
           try {
             child.kill('SIGTERM');
           } catch {}
@@ -127,29 +142,27 @@ export class ChildProcessExecutor extends ProcessExecutor {
             try {
               child.kill('SIGKILL');
             } catch {}
-          }, 2000);
+            releaseStdio();
+            settle({ success: false, exitCode: null, timedOut: true, truncated });
+          }, this.killGraceMs);
         }, options.timeout);
       }
 
+      child.on('exit', () => {
+        if (timedOut) releaseStdio();
+      });
+
       child.on('error', () => {
-        cleanup();
-        resolve({
-          success: false,
-          exitCode: null,
-          stdout,
-          stderr,
-          timedOut: false,
-          truncated,
-        });
+        // `kill` reports a failed signal (such as EPERM) here, synchronously. After a timeout,
+        // the exit and kill-grace path settles the run, so the timeout result stays.
+        if (timedOut) return;
+        settle({ success: false, exitCode: null, timedOut: false, truncated });
       });
 
       child.on('close', (code) => {
-        cleanup();
-        resolve({
+        settle({
           success: !timedOut && !inputFailed && !options.signal?.aborted && code === 0,
           exitCode: timedOut ? null : code,
-          stdout,
-          stderr,
           timedOut,
           truncated,
         });

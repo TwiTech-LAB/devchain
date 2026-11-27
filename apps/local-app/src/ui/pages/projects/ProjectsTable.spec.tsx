@@ -57,6 +57,7 @@ function row(overrides: Partial<ProjectTableRowModel> = {}): ProjectTableRowMode
     actionsButtonId: 'project-actions-project-1',
     remoteLock: null,
     upgradeLock: null,
+    importLock: null,
     moveTargets: [],
     ...overrides,
   };
@@ -319,30 +320,39 @@ describe('ProjectsTable', () => {
     expect(requestMove).toHaveBeenCalled();
   });
 
-  it('disables delete and import on a remote-owned project and says why', () => {
+  it('disables delete on a remote-owned project and says why, but keeps Import on importLock', () => {
     const message = 'Connected to remote "vm-1"; change this project there.';
     const lockedRow = row({
       remoteLock: { message },
       upgradeLock: {
         message: 'Connecting to remote "vm-1"; changes are paused. Cancel it in Cloud.',
       },
+      importLock: null,
       upgrade: undefined,
       moveTargets: [],
     });
     render(<ProjectsTable model={ready([group({ rows: [lockedRow] })])} />);
 
     const deleteButton = screen.getByRole('button', { name: 'Delete Project One' });
-    const importItem = screen.getByRole('button', { name: 'Import' });
     expect(deleteButton).toBeDisabled();
     expect(deleteButton).toHaveAttribute('title', message);
-    expect(importItem).toBeDisabled();
     expect(screen.getByText('Remote')).toHaveAttribute('title', message);
     expect(screen.getByRole('button', { name: /2\.0\.0/ })).toBeDisabled();
     expect(screen.queryByTestId('project-drag-handle-project-1')).not.toBeInTheDocument();
 
     fireEvent.click(deleteButton);
-    fireEvent.click(importItem);
+    fireEvent.click(screen.getByRole('button', { name: 'Import' }));
     expect(lockedRow.requestDelete).not.toHaveBeenCalled();
+    expect(lockedRow.startImport).toHaveBeenCalledTimes(1);
+  });
+
+  it('disables Import while importLock is set', () => {
+    const lockedRow = row({ importLock: { message: 'Checking remote connections…' } });
+    render(<ProjectsTable model={ready([group({ rows: [lockedRow] })])} />);
+
+    const importItem = screen.getByRole('button', { name: 'Import' });
+    expect(importItem).toBeDisabled();
+    fireEvent.click(importItem);
     expect(lockedRow.startImport).not.toHaveBeenCalled();
   });
 

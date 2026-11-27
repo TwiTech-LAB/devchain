@@ -156,7 +156,9 @@ describe('SendMessageAction', () => {
         text: 'Epic completed',
       });
 
-      expect(mockStorage.getAgentByName).toHaveBeenCalledWith('project-789', 'Planner');
+      expect(mockStorage.getAgentByName).toHaveBeenCalledWith('project-789', 'Planner', {
+        excludeDisabled: true,
+      });
       expect(mockAmd.deliver).toHaveBeenCalledWith(
         ['resolved-agent-id'],
         expect.objectContaining({ body: 'Epic completed', projectId: 'project-789' }),
@@ -182,6 +184,24 @@ describe('SendMessageAction', () => {
         expect.objectContaining({ outsideText }),
         expect.any(Object),
       );
+    });
+
+    it('does not find a disabled recipient by name and delivers nothing', async () => {
+      mockStorage.getAgentByName.mockImplementation(
+        async (_projectId: string, _name: string, options?: { excludeDisabled?: boolean }) => {
+          if (options?.excludeDisabled) throw new Error('Agent not found');
+          return { id: 'parked-agent', name: 'Parked', projectId: 'project-789', disabled: true };
+        },
+      );
+
+      const result = await sendMessageAction.execute(mockContext, {
+        agentName: 'Parked',
+        text: 'Epic completed',
+      });
+
+      expect(result.success).toBe(false);
+      expect(result.error).toBe('Agent not found: "Parked" in project project-789');
+      expect(mockAmd.deliver).not.toHaveBeenCalled();
     });
 
     it('should fail when the named recipient does not exist in the project', async () => {

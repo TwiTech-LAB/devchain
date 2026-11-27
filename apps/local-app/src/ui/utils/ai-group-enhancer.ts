@@ -5,6 +5,10 @@ export interface LastOutput {
   text: string;
   timestamp: Date;
   stepId: string;
+  /** Tool results only: lets the reader fetch the full body of a server-truncated result. */
+  toolCallId?: string;
+  isTruncated?: boolean;
+  fullLength?: number;
 }
 
 export type EnhancerStep = Omit<UnifiedSemanticStep, 'startTime'> & {
@@ -92,6 +96,9 @@ export function findLastOutput(steps: EnhancerStep[]): LastOutput | null {
       text: normalizeToolResultContent(step.content.toolResultContent),
       timestamp: toDate(step.startTime),
       stepId: step.id,
+      toolCallId: step.content.toolCallId,
+      isTruncated: step.content.isTruncated,
+      fullLength: step.content.fullLength,
     };
   }
 

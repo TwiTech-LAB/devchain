@@ -2,7 +2,11 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { AlertTriangle, Loader2 } from 'lucide-react';
 import { providerConfigQueries, type ProfileProviderConfig } from '@/ui/lib/provider-configs';
-import { providerEffortQueries, selectProviderEffortOptions } from '@/ui/lib/provider-efforts';
+import {
+  launchModelOf,
+  providerEffortQueries,
+  selectProviderEffortOptions,
+} from '@/ui/lib/provider-efforts';
 import {
   Dialog,
   DialogContent,
@@ -23,7 +27,7 @@ import { Button } from '@/ui/components/ui/button';
 import { providerModelQueryKeys } from '@/ui/lib/provider-model-query-keys';
 import { shortModelName } from '@/ui/lib/model-utils';
 import type { AgentOrGuest } from '@/ui/hooks/useChatQueries';
-import { useFetchFactory } from '@/ui/hooks/useFetchFactory';
+import { useAmbientBackend, useFetchFactory } from '@/ui/hooks/useFetchFactory';
 
 // ============================================
 // Types
@@ -61,6 +65,11 @@ interface AgentOverridesDialogProps {
 }
 
 const DEFAULT_VALUE = '__default__';
+
+/** Save is blocked: the provider applies an effort only with a model, and none is left. */
+function modelRequiredForEffortReason(effort: string): string {
+  return `Select a model: this provider needs one to apply the effort "${effort}".`;
+}
 
 // Provider-model query keys are shared across UI surfaces, so normalize both
 // fetched responses and values supplied by another cache producer.
@@ -114,9 +123,11 @@ interface OverridesController {
   effortDisabledReason: string | null;
   effortHidden: boolean;
   hasChanges: boolean;
+  /** Why Save is off although something changed; null when Save may run. */
+  saveBlockedReason: string | null;
   showRestartWarning: boolean;
   handleConfigChange: (configId: string) => void;
-  setModelValue: (value: string) => void;
+  handleModelChange: (value: string) => void;
   setEffortValue: (value: string) => void;
   buildSavePayload: () => AgentOverridesSavePayload;
 }
@@ -127,6 +138,7 @@ function useOverridesController(
   isOnline: boolean,
 ): OverridesController {
   const fetchFn = useFetchFactory();
+  const backend = useAmbientBackend();
   const currentConfigId = agent.providerConfigId ?? '';
   const currentModel = agent.modelOverride ?? null;
   const currentEffort = agent.effortOverride ?? null;
@@ -150,7 +162,7 @@ function useOverridesController(
   const providerId = selectedConfig?.providerId ?? null;
 
   const { data: modelsData, isLoading: modelsLoading } = useQuery({
-    queryKey: providerModelQueryKeys.byContext('main', providerId ?? 'none'),
+    queryKey: providerModelQueryKeys.main(providerId ?? 'none', backend),
     queryFn: async () => {
       const res = await fetchFn(`/api/providers/${providerId}/models`);
       if (!res.ok) {
@@ -172,7 +184,7 @@ function useOverridesController(
     isLoading: effortsLoading,
     isError: effortsError,
   } = useQuery({
-    ...providerEffortQueries.catalog(fetchFn, providerId),
+    ...providerEffortQueries.catalog(fetchFn, providerId, backend),
     select: selectProviderEffortOptions,
     enabled: open && Boolean(providerId),
     staleTime: 5 * 60 * 1000,
@@ -194,10 +206,12 @@ function useOverridesController(
     setEffortValue(DEFAULT_VALUE);
   }, []);
 
-  // Effective model for the requiresModelForEffort (opencode) gate: the in-dialog
-  // model override if set, otherwise the selected config's structured default.
-  const effectiveModel =
-    modelValue !== DEFAULT_VALUE ? modelValue : (selectedConfig?.model ?? null);
+  const normalizedModel = modelValue === DEFAULT_VALUE ? null : modelValue;
+  const normalizedEffort = effortValue === DEFAULT_VALUE ? null : effortValue;
+
+  // The model the launch uses, for the requiresModelForEffort (opencode) gate.
+  const effectiveModel = launchModelOf(normalizedModel, selectedConfig);
+  const effectiveEffort = normalizedEffort ?? selectedConfig?.effort ?? null;
 
   const effortHidden = !efforts.isLoading && !efforts.supportsEffort;
 
@@ -210,23 +224,41 @@ function useOverridesController(
     }
   }
 
-  const normalizedModel = modelValue === DEFAULT_VALUE ? null : modelValue;
-  const normalizedEffort = effortValue === DEFAULT_VALUE ? null : effortValue;
-
   const hasChanges =
     selectedConfigId !== currentConfigId ||
     normalizedModel !== currentModel ||
     normalizedEffort !== currentEffort;
+
+  const saveBlockedReason =
+    hasChanges &&
+    efforts.supportsEffort &&
+    efforts.requiresModelForEffort &&
+    effectiveEffort &&
+    !effectiveModel
+      ? modelRequiredForEffortReason(effectiveEffort)
+      : null;
+
+  // A model change that leaves no model clears the effort pick: the effort select locks then.
+  const handleModelChange = useCallback(
+    (value: string) => {
+      setModelValue(value);
+      const model = value === DEFAULT_VALUE ? null : value;
+      if (efforts.requiresModelForEffort && !launchModelOf(model, selectedConfig)) {
+        setEffortValue(DEFAULT_VALUE);
+      }
+    },
+    [efforts.requiresModelForEffort, selectedConfig],
+  );
 
   const showRestartWarning = isOnline && hasChanges;
 
   const buildSavePayload = useCallback(
     (): AgentOverridesSavePayload => ({
       providerConfigId: selectedConfigId,
-      modelOverride: modelValue === DEFAULT_VALUE ? null : modelValue,
-      effortOverride: effortValue === DEFAULT_VALUE ? null : effortValue,
+      modelOverride: normalizedModel,
+      effortOverride: normalizedEffort,
     }),
-    [selectedConfigId, modelValue, effortValue],
+    [selectedConfigId, normalizedModel, normalizedEffort],
   );
 
   return {
@@ -243,9 +275,10 @@ function useOverridesController(
     effortDisabledReason,
     effortHidden,
     hasChanges,
+    saveBlockedReason,
     showRestartWarning,
     handleConfigChange,
-    setModelValue,
+    handleModelChange,
     setEffortValue,
     buildSavePayload,
   };
@@ -291,9 +324,10 @@ export function AgentOverridesDialog({
     effortDisabledReason,
     effortHidden,
     hasChanges,
+    saveBlockedReason,
     showRestartWarning,
     handleConfigChange,
-    setModelValue,
+    handleModelChange,
     setEffortValue,
     buildSavePayload,
   } = controller;
@@ -365,7 +399,7 @@ export function AgentOverridesDialog({
             <Label htmlFor="overrides-model">Model</Label>
             <Select
               value={modelValue}
-              onValueChange={setModelValue}
+              onValueChange={handleModelChange}
               disabled={!selectedConfig || modelsLoading}
             >
               <SelectTrigger id="overrides-model">
@@ -407,6 +441,12 @@ export function AgentOverridesDialog({
             </div>
           )}
 
+          {saveBlockedReason && (
+            <p className="text-xs text-status-warn" role="status">
+              {saveBlockedReason}
+            </p>
+          )}
+
           {/* Restart warning */}
           {showRestartWarning && (
             <div
@@ -428,7 +468,11 @@ export function AgentOverridesDialog({
           <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
             Cancel
           </Button>
-          <Button type="button" onClick={handleSave} disabled={!hasChanges || isSaving}>
+          <Button
+            type="button"
+            onClick={handleSave}
+            disabled={!hasChanges || Boolean(saveBlockedReason) || isSaving}
+          >
             {isSaving && <Loader2 className="mr-2 h-4 w-4 animate-spin" aria-hidden="true" />}
             Save
           </Button>

@@ -38,6 +38,8 @@ import { ProcessExecutor } from '../../terminal/services/process-executor/proces
 import { RemoteHostClient, RemoteHostRequestError } from './remote-host.client';
 import type { RemoteOperationStepRun } from './remote-operation.types';
 import type { GitFence } from '../git-coordinator/git-coordinator.dto';
+import { HomeGitWriteService } from '../git-writes/home-git-write.service';
+import { RemoteOperationStepRefusedError } from './remote-operation.errors';
 import { deleteSyncthingTempFiles } from './syncthing-temp-cleanup';
 
 const logger = createLogger('FileSyncHandoff');
@@ -49,6 +51,10 @@ export const SHARE_STALL_TIMEOUT_MS = 10 * 60_000;
 const CONNECT_TIMEOUT_MS = 60_000;
 const POLL_MS = 500;
 const GIT_SETTLE_TIMEOUT_MS = 2 * 60_000;
+const GIT_RECOVERY_PENDING = 'GIT_RECOVERY_PENDING';
+const GIT_RECOVERY_MESSAGE = 'This PC is saving Git work that the VM replaced.';
+const DISCONNECT_RETRY_AFTER_RECOVERY = `${GIT_RECOVERY_MESSAGE} Run the Disconnect again after the recovery finishes.`;
+const CANCEL_DISCONNECT_FOR_RECOVERY = `${GIT_RECOVERY_MESSAGE} Cancel the Disconnect, then try again after the recovery finishes.`;
 
 /** What the file-sync steps keep in `operation.details.fileSync`. */
 export interface FileSyncDetails {
@@ -152,6 +158,7 @@ export class FileSyncHandoff {
     private readonly guard: HomeGitGuardService,
     private readonly processExecutor: ProcessExecutor,
     private readonly gitOwner: GitOwnerStore,
+    private readonly homeGit: HomeGitWriteService,
   ) {}
 
   /** Stops an in-flight Connect or Git settlement at its next cancellation boundary. */
@@ -738,6 +745,34 @@ export class FileSyncHandoff {
       );
   }
 
+  /** Reconciliation needs a connected binding so its backup can be recovered through the shim. */
+  async prepareGitDisconnect(
+    projectId: string,
+    remoteId: string,
+    detaching: boolean,
+  ): Promise<void> {
+    const folders = await this.fileSync.projectFolders(projectId);
+    if (!folders.some(({ kind }) => kind === 'git')) return;
+    const record = await this.host.gitCoordinatorStatus(remoteId, projectId);
+    if (!detaching) {
+      try {
+        await this.homeGit.stepDownIfReclaimed(projectId, remoteId);
+      } catch (error) {
+        if (await this.homeGit.hasPendingRecovery(projectId, remoteId, record))
+          throw new RemoteOperationStepRefusedError(
+            GIT_RECOVERY_PENDING,
+            DISCONNECT_RETRY_AFTER_RECOVERY,
+          );
+        throw error;
+      }
+    }
+    if (await this.homeGit.hasPendingRecovery(projectId, remoteId, record))
+      throw new RemoteOperationStepRefusedError(
+        GIT_RECOVERY_PENDING,
+        detaching ? CANCEL_DISCONNECT_FOR_RECOVERY : DISCONNECT_RETRY_AFTER_RECOVERY,
+      );
+  }
+
   /** Disconnect preserves both code copies; only receive-only git changes may be reverted. */
   async final(run: RemoteOperationStepRun, projectId: string): Promise<void> {
     const { remoteId } = run.operation;
@@ -1143,6 +1178,8 @@ export class FileSyncHandoff {
       await sleep(POLL_MS);
       record = await this.host.gitCoordinatorStatus(remoteId, projectId);
     }
+    if (await this.homeGit.hasPendingRecovery(projectId, remoteId, record))
+      throw new AppError(CANCEL_DISCONNECT_FOR_RECOVERY, GIT_RECOVERY_PENDING, 409);
     this.gitOwner.remember(projectId, record);
     return record.owner;
   }

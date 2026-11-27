@@ -28,6 +28,9 @@ const FIELD_WARN_LENGTH = 2000;
 
 @Injectable()
 export class HooksService {
+  /** Each session's last rollback time (epoch ms). It needs no cleanup: one number per session. */
+  private readonly runtimeFences = new Map<string, number>();
+
   constructor(
     @Inject(STORAGE_SERVICE) private readonly storage: AgentStorage,
     private readonly events: EventsService,
@@ -48,6 +51,15 @@ export class HooksService {
     const { hookEventName } = data;
     logger.info({ hookEventName, sessionId: data.sessionId }, 'Processing hook event');
 
+    const firedAtMs = 'firedAtMs' in data ? data.firedAtMs : undefined;
+    if (this.firedBeforeFence(data.sessionId, firedAtMs)) {
+      logger.debug(
+        { hookEventName, sessionId: data.sessionId, firedAtMs },
+        'Hook event from a replaced runtime ignored',
+      );
+      return { ok: true, handled: false, data: {} };
+    }
+
     this.warnOversizedFields(data);
 
     switch (hookEventName) {
@@ -67,6 +79,24 @@ export class HooksService {
         logger.info({ hookEventName }, 'Unhandled hook event type — returning ok');
         return { ok: true, handled: false, data: {} };
     }
+  }
+
+  /** Marks the session's runtime as replaced: hooks that it fired before now are dropped. */
+  fenceRuntime(sessionId: string): void {
+    this.runtimeFences.set(sessionId, Date.now());
+  }
+
+  /**
+   * True for a hook that a runtime fired before the session's last rollback. The new runtime
+   * has the same session ID, so the relay's fire time is the only way to tell the two apart.
+   * A hook with no fire time passes. Each effect that runs after an await checks it again in
+   * the same synchronous step as its write; the turn signal needs no second check, because
+   * it is applied synchronously from the entry.
+   */
+  firedBeforeFence(sessionId: string | null | undefined, firedAtMs: number | undefined): boolean {
+    if (!sessionId || firedAtMs === undefined) return false;
+    const fence = this.runtimeFences.get(sessionId);
+    return fence !== undefined && firedAtMs < fence;
   }
 
   private handleStatusLine(data: StatusLineHookEvent): HookEventResponse {
@@ -246,6 +276,7 @@ export class HooksService {
         agentId: data.agentId,
         agentName,
         sessionId: data.sessionId,
+        firedAtMs: data.firedAtMs,
       });
     } catch (error) {
       logger.error(

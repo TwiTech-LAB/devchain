@@ -70,13 +70,13 @@ function createAccessHarness(options?: {
 }
 
 describe('MobileRpcWorkspaceAccessService classification', () => {
-  it('classifies every one of the 45 non-E2EE methods exactly once', () => {
+  it('classifies every one of the 48 non-E2EE methods exactly once', () => {
     const nonE2eeMethods = MOBILE_RPC_METHODS.filter((method) => !method.startsWith('e2ee.'));
     expect(Object.keys(MOBILE_RPC_WORKSPACE_SCOPES)).toEqual(nonE2eeMethods);
-    expect(nonE2eeMethods).toHaveLength(45);
+    expect(nonE2eeMethods).toHaveLength(48);
 
     const scopes = Object.values(MOBILE_RPC_WORKSPACE_SCOPES);
-    expect(scopes.filter((scope) => scope === 'projectId')).toHaveLength(34);
+    expect(scopes.filter((scope) => scope === 'projectId')).toHaveLength(37);
     expect(
       scopes.filter((scope) =>
         [
@@ -148,6 +148,24 @@ describe('MobileRpcWorkspaceAccessService classification', () => {
     const directCalls = [
       ['board.listStatuses', { projectId: PROJECT_A }],
       ['chat.listAgents', { projectId: PROJECT_A }],
+      [
+        'chat.setAgentDisabled',
+        { projectId: PROJECT_A, agentId: '00000000-0000-4000-8000-0000000000a1', disabled: true },
+      ],
+      [
+        'chat.getAgentOverrides',
+        { projectId: PROJECT_A, agentId: '00000000-0000-4000-8000-0000000000a1' },
+      ],
+      [
+        'chat.setAgentOverrides',
+        {
+          projectId: PROJECT_A,
+          agentId: '00000000-0000-4000-8000-0000000000a1',
+          providerConfigId: '00000000-0000-4000-8000-0000000000b1',
+          modelOverride: null,
+          effortOverride: null,
+        },
+      ],
       ['terminal.sendKey', { projectId: PROJECT_A }],
     ] as const;
 

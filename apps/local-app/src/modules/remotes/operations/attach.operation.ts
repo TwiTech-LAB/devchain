@@ -37,6 +37,7 @@ import {
   type RemoteOperationStepRun,
 } from './remote-operation.types';
 import { RemoteVaultPushService } from '../services/remote-vault-push.service';
+import { RemoteIntegrationPushService } from '../services/remote-integration-push.service';
 
 const logger = createLogger('AttachOperation');
 
@@ -102,6 +103,7 @@ export class AttachOperation implements RemoteOperationDefinition {
     private readonly gitOwner: GitOwnerStore,
     private readonly worktrees: RemoteWorktreeGuard,
     private readonly vaultPush: RemoteVaultPushService,
+    private readonly integrationPush: RemoteIntegrationPushService,
     @Optional() private readonly sharedFolders?: SharedFoldersLifecycle,
   ) {
     const noDocker = (details: Record<string, unknown>) => !dockerSelection(details);
@@ -180,6 +182,12 @@ export class AttachOperation implements RemoteOperationDefinition {
         // Before the unlock, so agents that start on the VM have their values. It never
         // fails Connect: a locked Vault sends nothing, and the health poll retries.
         run: ({ operation }) => this.vaultPush.pushNow(operation.remoteId),
+      },
+      {
+        id: 'integrations_push',
+        label: 'Send ClickUp and Jira connections to the VM',
+        // Never fails Connect: a locked Vault sends metadata only, and the poll retries.
+        run: ({ operation }) => this.integrationPush.pushNow(operation.remoteId),
       },
       { id: 'thaw_host', label: 'Unlock the project on the VM', run: (c) => this.thawHost(c) },
       {

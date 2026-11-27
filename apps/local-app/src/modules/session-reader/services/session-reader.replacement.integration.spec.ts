@@ -118,7 +118,7 @@ describe('SessionReaderService file replacement cursor integration', () => {
       {} as SessionReaderAdapterFactory,
       {} as TranscriptPathValidator,
       cache,
-      {} as SessionsService,
+      { getSession: () => ({ transcriptPath: filePath }) } as unknown as SessionsService,
     );
 
     const sourceRef: SessionSourceRef = {

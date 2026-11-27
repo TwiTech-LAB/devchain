@@ -101,6 +101,17 @@ const timestamp = z.string().min(1);
 const sqliteBool = z.union([z.literal(0), z.literal(1)]);
 const int = z.number().int();
 const text = z.string();
+/**
+ * `sessions.inherited_session_ids`: the save point SQL appends to this JSON array, and the
+ * row store reads only full 36-character session ids from it.
+ */
+const sessionIdListJson = text.refine((value) => {
+  try {
+    return z.array(z.string().length(36)).safeParse(JSON.parse(value)).success;
+  } catch {
+    return false;
+  }
+}, 'Expected a JSON array of full session ids');
 
 // ---------------------------------------------------------------------------
 // Row shapes (one per stored table)
@@ -265,6 +276,8 @@ export const ReplicaAgentRowSchema = z
     effort_override: text.nullable(),
     name: text,
     description: text.nullable(),
+    // Optional so a replica from a home without the column still parses.
+    disabled: sqliteBool.optional(),
     created_at: timestamp,
     updated_at: timestamp,
   })
@@ -506,6 +519,9 @@ export const ReplicaEpicTimeSegmentRowSchema = z
 export const ReplicaSessionRowSchema = z
   .object({
     id,
+    parent_session_id: id.nullable(),
+    inherited_session_ids: sessionIdListJson.nullable(),
+    kind: z.enum(['session', 'save_point']),
     epic_id: id.nullable(),
     agent_id: id.nullable(),
     tmux_session_id: text.nullable(),
@@ -555,6 +571,57 @@ export const ReplicaSourceProjectEnabledRowSchema = z
   })
   .strict();
 
+/**
+ * An ordinary link (no `managedProjectionId` in `source_snapshot`). Managed-sync
+ * recognition links never travel: only home projects sub-epics to the vendor.
+ */
+export const ReplicaExternalTaskLinkRowSchema = z
+  .object({
+    id,
+    epic_id: id,
+    project_id: id,
+    connection_id: id.nullable(),
+    provider: z.enum(['clickup', 'jira']),
+    remote_scope_key: id,
+    remote_task_id: id,
+    source_snapshot: text.refine(isOrdinarySourceSnapshot, {
+      message: 'Expected the JSON object of an ordinary link',
+    }),
+    created_at: timestamp,
+    updated_at: timestamp,
+  })
+  .strict();
+
+/** A VM link set or unlink that home has not acknowledged yet; `seq` orders them. */
+export const ReplicaExternalLinkReceiptRowSchema = z
+  .object({
+    id,
+    seq: int.positive(),
+    kind: z.enum(['set', 'release']),
+    project_id: id,
+    epic_id: id,
+    link_id: id,
+    provider: z.enum(['clickup', 'jira']),
+    remote_scope_key: id,
+    remote_task_id: id,
+    created_at: timestamp,
+  })
+  .strict();
+
+function isOrdinarySourceSnapshot(value: string): boolean {
+  try {
+    const parsed: unknown = JSON.parse(value);
+    return (
+      typeof parsed === 'object' &&
+      parsed !== null &&
+      !Array.isArray(parsed) &&
+      (parsed as Record<string, unknown>).managedProjectionId == null
+    );
+  } catch {
+    return false;
+  }
+}
+
 export const ReplicaWorkspaceSchema = z
   .object({
     id,
@@ -582,6 +649,9 @@ const liveTablesShape = {
   epic_time_segments: z.array(ReplicaEpicTimeSegmentRowSchema),
   // Absent on older hosts. Attach and detach override it with the required field.
   project_settings: z.array(ReplicaProjectSettingEntrySchema).optional(),
+  // A claimed VM sends both, whole, once home seeded the project's links; absent otherwise.
+  external_task_links: z.array(ReplicaExternalTaskLinkRowSchema).optional(),
+  external_link_receipts: z.array(ReplicaExternalLinkReceiptRowSchema).optional(),
 };
 
 /** Configuration and history tables that live tier pulls leave out. */
@@ -680,6 +750,16 @@ export const ProjectReplicaV1Schema = z
       .strict(),
   ])
   .superRefine((replica, ctx) => {
+    if (
+      (replica.tables.external_task_links === undefined) !==
+      (replica.tables.external_link_receipts === undefined)
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['tables', 'external_link_receipts'],
+        message: 'Links and link receipts must be provided together',
+      });
+    }
     if (replica.scope !== 'attach') return;
     const grants = replica.tables.paired_device_workspace_grants;
     const authority = replica.tables.authorityKids;
@@ -718,6 +798,8 @@ export type ProjectReplicaOfScope<S extends ProjectReplicaScope> = Extract<
 export type ProjectReplicaLiveTables = z.infer<typeof ProjectReplicaLiveTablesSchema>;
 export type ProjectReplicaAttachTables = z.infer<typeof ProjectReplicaAttachTablesSchema>;
 export type ProjectReplicaDetachTables = z.infer<typeof ProjectReplicaDetachTablesSchema>;
+export type ReplicaExternalTaskLinkRow = z.infer<typeof ReplicaExternalTaskLinkRowSchema>;
+export type ReplicaExternalLinkReceiptRow = z.infer<typeof ReplicaExternalLinkReceiptRowSchema>;
 export type ReplicaSkillProjectDisabledRow = z.infer<typeof ReplicaSkillProjectDisabledRowSchema>;
 export type ReplicaSourceProjectEnabledRow = z.infer<typeof ReplicaSourceProjectEnabledRowSchema>;
 

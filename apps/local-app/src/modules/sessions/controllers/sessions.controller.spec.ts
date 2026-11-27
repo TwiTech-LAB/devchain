@@ -66,6 +66,7 @@ describe('SessionsController', () => {
       mockMessagePoolService as unknown as SessionsMessagePoolService,
       mockSessionRuntime as SessionRuntime,
       createProjectWriteGateStub() as never,
+      {} as never,
     );
   });
 
@@ -249,10 +250,14 @@ describe('SessionsController', () => {
       const result = await controller.terminateSession('session-1');
 
       expect(result).toEqual({ message: 'Session terminated successfully' });
-      expect(mockSessionsService.terminateSession).toHaveBeenCalledWith('session-1', {
-        source: 'web-api',
-        reason: 'user-requested',
-      });
+      expect(mockSessionsService.terminateSession).toHaveBeenCalledWith(
+        'session-1',
+        {
+          source: 'web-api',
+          reason: 'user-requested',
+        },
+        { expectedAgentId: undefined },
+      );
     });
   });
 

@@ -13,7 +13,8 @@ export interface SubscriberExecutionResult {
     | 'filter_not_matched'
     | 'cooldown'
     | 'action_not_found'
-    | 'session_error';
+    | 'session_error'
+    | 'superseded_runtime';
 }
 
 export interface ScheduledTask {

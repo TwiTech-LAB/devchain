@@ -35,7 +35,10 @@ import type { TranscriptPathValidator } from '../session-reader/services/transcr
 import type { SessionReaderAdapterFactory } from '../session-reader/adapters/session-reader-adapter.factory';
 import type { StorageService } from '../storage/interfaces/storage.interface';
 import type { ProviderAdapterFactory } from '../providers/adapters';
-import type { ClaudeHooksSessionStartedEventPayload } from '../events/catalog/claude.hooks.session.started';
+import {
+  claudeHooksSessionStartedEvent,
+  type ClaudeHooksSessionStartedEventPayload,
+} from '../events/catalog/claude.hooks.session.started';
 import type { SessionRowStore } from '../storage/sessions/session-row.store';
 
 type HookSessionStore = jest.Mocked<
@@ -179,6 +182,7 @@ describe('Copilot lifecycle seam: relay → HookEventSchema → HooksService →
       {} as StorageService,
       mockProviderAdapterFactory() as unknown as ProviderAdapterFactory as never,
       sessionStore as unknown as SessionRowStore,
+      service,
     );
   });
 
@@ -234,6 +238,7 @@ describe('Copilot lifecycle seam: relay → HookEventSchema → HooksService →
 });
 
 describe('Claude regression seam: the same pipeline binds the transcript FROM the hook (byte-identical path)', () => {
+  let hooks: ReturnType<typeof createHooksService>;
   let service: HooksService;
   let serviceEvents: jest.Mocked<EventsService>;
   let listener: TranscriptPersistenceListener;
@@ -244,7 +249,8 @@ describe('Claude regression seam: the same pipeline binds the transcript FROM th
   beforeEach(() => {
     serviceEvents = eventsStub();
     listenerEvents = eventsStub();
-    service = createHooksService(serviceEvents).service;
+    hooks = createHooksService(serviceEvents);
+    service = hooks.service;
 
     sessionStore = {
       getTranscriptMetadata: jest.fn(),
@@ -270,6 +276,7 @@ describe('Claude regression seam: the same pipeline binds the transcript FROM th
       {} as StorageService,
       mockProviderAdapterFactory() as unknown as ProviderAdapterFactory as never,
       sessionStore as unknown as SessionRowStore,
+      service,
     );
   });
 
@@ -313,6 +320,70 @@ describe('Claude regression seam: the same pipeline binds the transcript FROM th
         providerName: 'claude',
         providerSessionId: 'claude-sess-e2e-1',
       }),
+    );
+  });
+
+  // A rollback restarts the session under the same ID, so only the relay stamp separates a hook
+  // of the stopped runtime from a hook of the new one. The seam covers every consumer, and a
+  // SessionStart that passed the entry before the fence and is still in flight when it is set.
+  it('ignores hooks that the replaced runtime fired before a rollback and applies later ones', async () => {
+    const { eventEmitter, storage } = hooks;
+    const before = Date.now() - 1000;
+    const deliver = async (payload: Record<string, unknown>) => {
+      serviceEvents.publish.mockClear();
+      const result = await service.handleHookEvent(HookEventSchema.parse(payload) as HookEventData);
+      // EventsService parses the payload with the catalog schema before the listener gets it.
+      for (const [, published] of serviceEvents.publish.mock.calls) {
+        await listener.handleHookSessionStarted(
+          claudeHooksSessionStartedEvent.schema.parse(published),
+        );
+      }
+      return result.handled;
+    };
+    const prompt = {
+      hookEventName: 'UserPromptSubmit',
+      claudeSessionId: 'claude-sess-e2e-1',
+      tmuxSessionName: 'devchain-e2e',
+      projectId: PROJECT_ID,
+      agentId: AGENT_ID,
+      sessionId: SESSION_ID,
+    };
+
+    let releaseAgent!: () => void;
+    storage.getAgent.mockReturnValueOnce(
+      new Promise((resolve) => {
+        releaseAgent = () => resolve({ id: AGENT_ID, name: 'E2EAgent' });
+      }),
+    );
+    const held = deliver({ ...CLAUDE_RELAY_SESSION_START, firedAtMs: before });
+    service.fenceRuntime(SESSION_ID);
+    const after = Date.now() + 1000;
+    releaseAgent();
+    expect(await held).toBe(true);
+
+    expect(await deliver({ ...CLAUDE_RELAY_SESSION_START, firedAtMs: before })).toBe(false);
+    expect(await deliver({ ...prompt, firedAtMs: before })).toBe(false);
+    expect(sessionStore.bindTranscriptFromHook).not.toHaveBeenCalled();
+    expect(eventEmitter.emit).not.toHaveBeenCalled();
+
+    const cleared = {
+      ...CLAUDE_RELAY_SESSION_START,
+      claudeSessionId: 'claude-sess-e2e-2',
+      source: 'clear',
+      transcriptPath: '/home/user/.claude/projects/-home-user-proj/claude-sess-e2e-2.jsonl',
+      firedAtMs: after,
+    };
+    expect(await deliver(cleared)).toBe(true);
+    expect(sessionStore.bindTranscriptFromHook).toHaveBeenCalledTimes(1);
+    expect(sessionStore.bindTranscriptFromHook).toHaveBeenCalledWith(
+      expect.objectContaining({ sessionId: SESSION_ID, providerSessionId: 'claude-sess-e2e-2' }),
+    );
+
+    // A relay from before the stamp existed sends none; such a hook is applied as before.
+    expect(await deliver(prompt)).toBe(true);
+    expect(eventEmitter.emit).toHaveBeenCalledWith(
+      'session.turn.hook',
+      expect.objectContaining({ sessionId: SESSION_ID, kind: 'prompt-submitted' }),
     );
   });
 });

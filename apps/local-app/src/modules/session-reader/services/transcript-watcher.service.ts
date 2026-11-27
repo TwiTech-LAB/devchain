@@ -241,19 +241,33 @@ export class TranscriptWatcherService implements OnModuleDestroy {
     providerName: string,
     providerSessionId?: string,
   ): Promise<void> {
-    if (this.watchers.has(sessionId)) {
+    const adapter = this.adapterFactory.getAdapter(providerName);
+    const sourceKind = adapter?.sourceKind ?? 'file';
+    const existing = this.watchers.get(sessionId);
+    if (
+      existing &&
+      existing.filePath === filePath &&
+      (sourceKind !== 'db' || existing.sourceRef?.providerSessionId === providerSessionId)
+    ) {
       this.logger.debug({ sessionId }, 'Watcher already active — skipping');
       return;
     }
-
-    const adapter = this.adapterFactory.getAdapter(providerName);
-    const sourceKind = adapter?.sourceKind ?? 'file';
     if (sourceKind === 'db' && !providerSessionId) {
       this.logger.warn(
         { sessionId, filePath, providerName },
         'DB-backed watcher requires providerSessionId — skipping watcher',
       );
       return;
+    }
+    // The session has another transcript source now (a rollback, for example). The session did
+    // not end, so the old watcher is released without a final parse or an ended event; its
+    // running passes stop at their ownership checks once the new state owns the session.
+    if (existing) {
+      this.logger.log(
+        { sessionId, from: existing.filePath, to: filePath },
+        'Transcript source changed — replacing watcher',
+      );
+      this.cleanupResources(sessionId);
     }
     const sourceRef: SessionSourceRef | undefined =
       sourceKind === 'db' ? { filePath, providerName, providerSessionId, kind: 'db' } : undefined;

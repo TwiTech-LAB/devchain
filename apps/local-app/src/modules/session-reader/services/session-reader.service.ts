@@ -1,6 +1,7 @@
 import { Inject, Injectable, Logger, OnModuleDestroy, Optional } from '@nestjs/common';
 import { OnEvent } from '@nestjs/event-emitter';
 import { SessionReaderAdapterFactory } from '../adapters/session-reader-adapter.factory';
+import { findToolResult } from '../adapters/utils/tool-result-fold';
 import { TranscriptPathValidator } from './transcript-path-validator.service';
 import { SessionCacheService, type SourceChangeKind } from './session-cache.service';
 import { SessionsService } from '../../sessions/services/sessions.service';
@@ -17,7 +18,12 @@ import {
 import { checkAppendProof, type AppendProofOutcome } from './bounded-anchor-proof';
 import { truncateMessages, truncateChunks } from './transcript-truncation';
 import type { SessionSourceRef } from '../adapters/session-reader-adapter.interface';
-import type { UnifiedSession, UnifiedMetrics, UnifiedMessage } from '../dtos/unified-session.types';
+import type {
+  UnifiedSession,
+  UnifiedMetrics,
+  UnifiedMessage,
+  UnifiedToolResult,
+} from '../dtos/unified-session.types';
 import type { UnifiedChunk } from '../dtos/unified-chunk.types';
 import type { CacheStats } from '../../metrics/types/metrics.types';
 import { TranscriptWatcherService } from './transcript-watcher.service';
@@ -119,7 +125,10 @@ export interface TranscriptToolResult {
   toolCallId: string;
   content: string | unknown[];
   isError: boolean;
+  /** Length of the whole result at its source. */
   fullLength: number;
+  /** False when only the capped part of the result could be read: `content` is shorter than `fullLength`. */
+  isComplete: boolean;
 }
 
 export interface TranscriptTailDeltaResponse {
@@ -233,6 +242,22 @@ interface PendingAdapterResolution {
 }
 
 type AdapterResolution = ReadyAdapterResolution | PendingAdapterResolution;
+
+/**
+ * A reread completes the capped result only when it is the same result: it extends the
+ * parsed prefix to the recorded original length. A positional id (Antigravity) can name
+ * other content after the source was rewritten.
+ */
+function completesCappedResult(capped: UnifiedToolResult, full: UnifiedToolResult): boolean {
+  return (
+    !full.isTruncated &&
+    full.isError === capped.isError &&
+    typeof capped.content === 'string' &&
+    typeof full.content === 'string' &&
+    full.content.length === capped.fullLength &&
+    full.content.startsWith(capped.content)
+  );
+}
 
 @Injectable()
 export class SessionReaderService implements OnModuleDestroy {
@@ -818,25 +843,51 @@ export class SessionReaderService implements OnModuleDestroy {
   }
 
   /**
-   * Get full (untruncated) tool result content by tool call id.
+   * Get full (untruncated) tool result content by tool call id. The parsed session keeps a
+   * result that its parser capped; that one result is read again from its source.
    */
   async getToolResult(sessionId: string, toolCallId: string): Promise<TranscriptToolResult> {
     const { session } = await this.getParsedSession(sessionId);
+    const match = findToolResult(session.messages, toolCallId);
+    if (!match) throw new NotFoundError('ToolResult', toolCallId);
 
-    for (const message of session.messages) {
-      const match = message.toolResults.find((result) => result.toolCallId === toolCallId);
-      if (!match) continue;
-
+    const full = match.isTruncated ? await this.readFullToolResult(sessionId, toolCallId) : match;
+    if (full && (full === match || completesCappedResult(match, full))) {
       return {
         sessionId,
         toolCallId,
-        content: match.content,
-        isError: match.isError,
-        fullLength: this.getToolResultContentLength(match.content),
+        content: full.content,
+        isError: full.isError,
+        fullLength: this.getToolResultContentLength(full.content),
+        isComplete: true,
       };
     }
+    return {
+      sessionId,
+      toolCallId,
+      content: match.content,
+      isError: match.isError,
+      fullLength: match.fullLength ?? this.getToolResultContentLength(match.content),
+      isComplete: false,
+    };
+  }
 
-    throw new NotFoundError('ToolResult', toolCallId);
+  /** Null when the adapter cannot read the result again or its source no longer holds it. */
+  private async readFullToolResult(
+    sessionId: string,
+    toolCallId: string,
+  ): Promise<UnifiedToolResult | null> {
+    try {
+      const resolution = await this.resolveAdapter(sessionId);
+      if (resolution.pending || !resolution.adapter.readFullToolResult) return null;
+      return await resolution.adapter.readFullToolResult(resolution.sourceRef, toolCallId);
+    } catch (error) {
+      this.logger.warn(
+        { error, sessionId, toolCallId },
+        'Full tool result unavailable from its source — returning the capped content',
+      );
+      return null;
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -844,17 +895,26 @@ export class SessionReaderService implements OnModuleDestroy {
   // ---------------------------------------------------------------------------
 
   private getParsedSession(sessionId: string): Promise<ParsedSessionResult> {
-    const existing = this.parsedSessionFlights.get(sessionId);
+    // A rollback binds the same row (or its `Before rollback` record) to another conversation,
+    // so a request joins only a parse of the conversation that the row names now.
+    // `loadParsedSession` reads the row in this tick, so key and parse name the same conversation.
+    const row = this.sessionsService.getSession(sessionId);
+    const key = JSON.stringify([
+      sessionId,
+      row?.transcriptPath ?? null,
+      row?.providerSessionId ?? null,
+    ]);
+    const existing = this.parsedSessionFlights.get(key);
     if (existing) return existing;
 
     // One flight owns the complete cache freshness check. Removing it at settlement
     // ensures the next request rechecks the source instead of pinning a stale result.
     const flight = this.loadParsedSession(sessionId).finally(() => {
-      if (this.parsedSessionFlights.get(sessionId) === flight) {
-        this.parsedSessionFlights.delete(sessionId);
+      if (this.parsedSessionFlights.get(key) === flight) {
+        this.parsedSessionFlights.delete(key);
       }
     });
-    this.parsedSessionFlights.set(sessionId, flight);
+    this.parsedSessionFlights.set(key, flight);
     return flight;
   }
 

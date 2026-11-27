@@ -1,7 +1,8 @@
-import { mkdtemp, rm, utimes, writeFile } from 'fs/promises';
+import { mkdir, mkdtemp, rm, symlink, utimes, writeFile } from 'fs/promises';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { ValidationError } from '../../../common/errors/error-types';
+import { ChildProcessExecutor } from '../../terminal/services/process-executor/child-process-executor';
 import { FakeProcessExecutor } from '../../terminal/services/process-executor/fake-process-executor';
 import {
   PROVIDER_CLI_VERSION_PROBE_TTL_MS,
@@ -51,11 +52,68 @@ describe('ProviderCliVersionProbe', () => {
     expect(executor.calls).toHaveLength(3);
   });
 
+  // A temporary launcher at the probe service boundary is the smallest test that
+  // observes the real invocation name, environment, and working directory.
+  it('reuses fork versions only for the same invocation path and helper context', async () => {
+    now.mockReturnValue(1_000_000);
+    const oldProject = join(dir, 'old-project');
+    const alternateEntry = join(dir, 'other-launcher');
+    await mkdir(oldProject);
+    await writeFile(join(oldProject, 'use-old-cli'), '');
+    await writeFile(
+      bin,
+      [
+        '#!/bin/sh',
+        'if [ "${0##*/}" != opencode ] || [ -f use-old-cli ]; then',
+        '  printf "opencode v1.19.0\\n"',
+        'else',
+        '  printf "opencode v%s\\n" "$TEST_FORK_CLI_VERSION"',
+        'fi',
+      ].join('\n'),
+      { mode: 0o755 },
+    );
+    await symlink(bin, alternateEntry);
+    const runner = new ChildProcessExecutor();
+    const run = jest.spyOn(runner, 'run');
+    const forkProbe = new ProviderCliVersionProbe(runner);
+    const helperEnv = { PATH: dir, TEST_FORK_CLI_VERSION: '2.0.31' };
+
+    await expect(forkProbe.probeForFork('opencode', bin, helperEnv, dir)).resolves.toMatchObject({
+      cliVersion: 'opencode v2.0.31',
+    });
+    await expect(
+      forkProbe.probeForFork('opencode', bin, { TEST_FORK_CLI_VERSION: '2.0.31', PATH: dir }, dir),
+    ).resolves.toMatchObject({ cliVersion: 'opencode v2.0.31' });
+    expect(run).toHaveBeenCalledTimes(1);
+
+    await expect(
+      forkProbe.probeForFork(
+        'opencode',
+        bin,
+        { ...helperEnv, TEST_FORK_CLI_VERSION: '1.19.0' },
+        dir,
+      ),
+    ).resolves.toMatchObject({ cliVersion: 'opencode v1.19.0' });
+    await expect(
+      forkProbe.probeForFork('opencode', bin, helperEnv, oldProject),
+    ).resolves.toMatchObject({ cliVersion: 'opencode v1.19.0' });
+    await expect(
+      forkProbe.probeForFork('opencode', alternateEntry, helperEnv, dir),
+    ).resolves.toEqual({ providerBinPath: alternateEntry, cliVersion: 'opencode v1.19.0' });
+    expect(run).toHaveBeenCalledTimes(4);
+  });
+
   it('rejects a missing binary and does not cache a failed probe', async () => {
     await expect(probe.probe('opencode', join(dir, 'missing'))).rejects.toThrow(ValidationError);
 
     executor.enqueueResponse({ type: 'failure', stderr: 'boom' });
     await expect(probe.probe('opencode', bin)).rejects.toThrow(ValidationError);
+    executor.enqueueResponse({ type: 'success', stdout: ' \n' });
+    await expect(probe.probe('opencode', bin)).rejects.toThrow(ValidationError);
+    executor.enqueueResponse({ type: 'timeout' });
+    await expect(probe.probe('opencode', bin)).rejects.toMatchObject({
+      details: { reason: 'version_probe_timeout' },
+    });
     await expect(probe.probe('opencode', bin)).resolves.toBe('opencode v2.0.31');
   });
 });

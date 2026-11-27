@@ -367,6 +367,7 @@ describe('TranscriptPersistenceListener', () => {
       mockStorage as unknown as StorageService,
       mockProviderAdapterFactory as unknown as never,
       mockStore as unknown as SessionRowStore,
+      { firedBeforeFence: () => false } as never,
     );
   });
 

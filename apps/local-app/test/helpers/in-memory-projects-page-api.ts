@@ -44,6 +44,7 @@ export interface InMemoryProjectsPageApiOverrides {
   updateProject?: Override<[string, UpdateProjectInput], UpdateProjectResponse>;
   deleteProject?: Override<[string], void>;
   loadSetupPreview?: Override<[SetupPreviewRequest], SetupPreviewResponse>;
+  readHomeTemplateContent?: Override<[string, string | null | undefined], Record<string, unknown>>;
   loadUpgradePreview?: Override<[string, string], SetupPreviewResponse>;
   runImportDryRun?: Override<[string, Record<string, unknown>], ImportDryRunResponse>;
   loadProjectExport?: Override<[string], ExportData>;
@@ -62,6 +63,8 @@ export interface InMemoryProjectsPageApiSeed {
   pathStats?: Record<string, PathStatResult>;
   templateManifests?: Record<string, TemplateManifest | null>;
   setupPreview?: SetupPreviewResponse;
+  /** Home's template content by slug, for `readHomeTemplateContent`. */
+  templateContents?: Record<string, Record<string, unknown>>;
   upgradePreview?: SetupPreviewResponse;
   createResult?: CreateFromTemplateResponse;
   importDryRunResult?: ImportDryRunResponse;
@@ -89,6 +92,7 @@ export class InMemoryProjectsPageApi implements ProjectsPageApi {
     updateProject: [] as Array<readonly [string, UpdateProjectInput]>,
     deleteProject: [] as Array<readonly [string]>,
     loadSetupPreview: [] as Array<readonly [SetupPreviewRequest]>,
+    readHomeTemplateContent: [] as Array<readonly [string, string | null | undefined]>,
     loadUpgradePreview: [] as Array<readonly [string, string]>,
     runImportDryRun: [] as Array<readonly [string, Record<string, unknown>]>,
     loadProjectExport: [] as Array<readonly [string]>,
@@ -98,8 +102,10 @@ export class InMemoryProjectsPageApi implements ProjectsPageApi {
     pullRemoteProject: [] as Array<readonly [string]>,
   };
 
-  /** Backend each upgrade call named, in call order; calls keep their home-shaped tuples. */
-  readonly upgradeBackends = {
+  /** Backend each routed call named, in call order; calls keep their home-shaped tuples. */
+  readonly backends = {
+    loadSetupPreview: [] as string[],
+    commitImport: [] as string[],
     loadUpgradePreview: [] as string[],
     runImportDryRun: [] as string[],
     loadProjectExport: [] as string[],
@@ -115,6 +121,7 @@ export class InMemoryProjectsPageApi implements ProjectsPageApi {
   private readonly pathStats: Record<string, PathStatResult>;
   private readonly templateManifests: Record<string, TemplateManifest | null>;
   private readonly setupPreview?: SetupPreviewResponse;
+  private readonly templateContents: Record<string, Record<string, unknown>>;
   private readonly upgradePreview?: SetupPreviewResponse;
   private readonly createResult?: CreateFromTemplateResponse;
   private readonly importDryRunResult?: ImportDryRunResponse;
@@ -152,6 +159,7 @@ export class InMemoryProjectsPageApi implements ProjectsPageApi {
     this.pathStats = seed.pathStats ?? {};
     this.templateManifests = seed.templateManifests ?? {};
     this.setupPreview = seed.setupPreview;
+    this.templateContents = seed.templateContents ?? {};
     this.upgradePreview = seed.upgradePreview;
     this.createResult = seed.createResult;
     this.importDryRunResult = seed.importDryRunResult;
@@ -365,13 +373,30 @@ export class InMemoryProjectsPageApi implements ProjectsPageApi {
     };
   }
 
-  async loadSetupPreview(request: SetupPreviewRequest): Promise<SetupPreviewResponse> {
+  async loadSetupPreview(
+    request: SetupPreviewRequest,
+    backend: BackendId = HOME_BACKEND,
+  ): Promise<SetupPreviewResponse> {
     this.calls.loadSetupPreview.push([request]);
+    this.backends.loadSetupPreview.push(backend);
     return this.resolveRequired(
       this.overrides.loadSetupPreview,
       [request],
       this.setupPreview,
       'setup preview',
+    );
+  }
+
+  async readHomeTemplateContent(
+    slug: string,
+    version?: string | null,
+  ): Promise<Record<string, unknown>> {
+    this.calls.readHomeTemplateContent.push([slug, version]);
+    return this.resolveRequired(
+      this.overrides.readHomeTemplateContent,
+      [slug, version],
+      this.templateContents[slug],
+      `template content of ${slug}`,
     );
   }
 
@@ -381,7 +406,7 @@ export class InMemoryProjectsPageApi implements ProjectsPageApi {
     backend: BackendId = HOME_BACKEND,
   ): Promise<SetupPreviewResponse> {
     this.calls.loadUpgradePreview.push([projectId, targetVersion]);
-    this.upgradeBackends.loadUpgradePreview.push(backend);
+    this.backends.loadUpgradePreview.push(backend);
     return this.resolveRequired(
       this.overrides.loadUpgradePreview,
       [projectId, targetVersion],
@@ -395,7 +420,7 @@ export class InMemoryProjectsPageApi implements ProjectsPageApi {
     backend: BackendId = HOME_BACKEND,
   ): Promise<ExportData> {
     this.calls.loadProjectExport.push([projectId]);
-    this.upgradeBackends.loadProjectExport.push(backend);
+    this.backends.loadProjectExport.push(backend);
     return this.resolveRequired(
       this.overrides.loadProjectExport,
       [projectId],
@@ -410,7 +435,7 @@ export class InMemoryProjectsPageApi implements ProjectsPageApi {
     backend: BackendId = HOME_BACKEND,
   ): Promise<ImportDryRunResponse> {
     this.calls.runImportDryRun.push([projectId, input]);
-    this.upgradeBackends.runImportDryRun.push(backend);
+    this.backends.runImportDryRun.push(backend);
     return this.resolveRequired(
       this.overrides.runImportDryRun,
       [projectId, input],
@@ -422,8 +447,10 @@ export class InMemoryProjectsPageApi implements ProjectsPageApi {
   async commitImport(
     projectId: string,
     input: Record<string, unknown>,
+    backend: BackendId = HOME_BACKEND,
   ): Promise<ImportProjectResponse> {
     this.calls.commitImport.push([projectId, input]);
+    this.backends.commitImport.push(backend);
     return this.resolveRequired(
       this.overrides.commitImport,
       [projectId, input],
@@ -438,7 +465,7 @@ export class InMemoryProjectsPageApi implements ProjectsPageApi {
     backend: BackendId = HOME_BACKEND,
   ): Promise<UpgradeProjectResponse> {
     this.calls.commitUpgrade.push([projectId, input]);
-    this.upgradeBackends.commitUpgrade.push(backend);
+    this.backends.commitUpgrade.push(backend);
     return this.resolveRequired(
       this.overrides.commitUpgrade,
       [projectId, input],

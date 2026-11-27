@@ -1,5 +1,5 @@
 import { Test, TestingModule } from '@nestjs/testing';
-import { PreflightService } from './preflight.service';
+import { PreflightService, type PreflightResult } from './preflight.service';
 import type { StorageService } from '../../storage/interfaces/storage.interface';
 import { access } from 'fs/promises';
 import { McpProviderRegistrationService } from '../../providers/services/mcp-provider-registration.service';
@@ -9,6 +9,7 @@ import { ProcessExecutor } from '../../terminal/services/process-executor/proces
 import { FakeProcessExecutor } from '../../terminal/services/process-executor/fake-process-executor';
 import type { ProfileProviderConfig } from '../../storage/models/domain.models';
 import { createMockAgent, createMockProject, createMockProvider } from '../../../../test/factories';
+import { ensureMcpReadiness } from '../../sessions/services/session-runtime/ensure-mcp-readiness';
 
 type ExecCallback = (error: Error | null, stdout: string, stderr: string) => void;
 
@@ -1824,6 +1825,156 @@ describe('PreflightService', () => {
       expect(claudeCheck?.mcpStatus).toBe('pass');
       expect(codexCheck?.mcpStatus).toBe('fail');
       expect(codexCheck?.mcpMessage).toContain('codex exploded');
+    });
+  });
+
+  // The real preflight is the cheapest layer that shows which providers a project-scoped run
+  // checks; the MCP registration list is the only process boundary faked.
+  describe('MCP readiness for a provider that no project agent uses', () => {
+    const claude = createMockProvider({ id: 'p-claude', name: 'claude', binPath: null });
+    const codex = createMockProvider({ id: 'p-codex', name: 'codex', binPath: null });
+    let repaired: boolean;
+    const ensureMcp = jest.fn();
+
+    beforeEach(() => {
+      repaired = false;
+      ensureMcp.mockImplementation(async () => {
+        repaired = true;
+      });
+      mockStorage.findProjectByPath.mockResolvedValue(createMockProject({ id: 'project-1' }));
+      mockStorage.listAgents.mockResolvedValue({
+        items: [createMockAgent({ providerConfigId: 'config-claude' })],
+        total: 1,
+        limit: 100,
+        offset: 0,
+      });
+      mockStorage.listProfileProviderConfigsByIds.mockResolvedValue([
+        createProfileProviderConfig({ id: 'config-claude', providerId: claude.id }),
+      ]);
+      mockStorage.listProvidersByIds.mockImplementation(async (ids: string[]) =>
+        [claude, codex].filter((provider) => ids.includes(provider.id)),
+      );
+      mockAccess.mockResolvedValue(undefined);
+      mockMcpRegistration.resolveBinary.mockResolvedValue({ success: false, message: 'none' });
+      mockMcpRegistration.listRegistrations.mockImplementation(
+        async (provider: { name: string }) => ({
+          success: true,
+          message: 'OK',
+          entries:
+            provider.name === 'codex' && !repaired
+              ? [{ alias: 'devchain', endpoint: 'http://127.0.0.1:4000/mcp' }]
+              : [{ alias: 'devchain', endpoint: 'http://127.0.0.1:3000/mcp' }],
+        }),
+      );
+    });
+
+    const readiness = (requireProviderCheck?: boolean, provider = codex) =>
+      ensureMcpReadiness({
+        storage: mockStorage,
+        preflightService: service,
+        mcpEnsureService: { ensureMcp } as never,
+        launchRules: { providerName: 'codex' },
+        provider,
+        projectId: 'project-1',
+        projectRootPath: '/test',
+        configEnv: null,
+        requireProviderCheck,
+      });
+
+    it('repairs drifted MCP registration of the requested provider and rechecks only it', async () => {
+      const runChecks = jest.spyOn(service, 'runChecks');
+
+      await readiness();
+
+      expect(ensureMcp).toHaveBeenCalledWith(codex, '/test', { env: {} });
+      const [check, recheck] = (await Promise.all(
+        runChecks.mock.results.map(({ value }) => value),
+      )) as PreflightResult[];
+      expect(check.providers.map(({ id }) => id)).toEqual([claude.id, codex.id]);
+      expect(recheck.providers.map(({ id }) => id)).toEqual([codex.id]);
+      expect(recheck.checks.map(({ name }) => name)).not.toContain('tmux');
+    });
+
+    it('checks the requested provider when the check of a provider before it throws', async () => {
+      const listed = mockMcpRegistration.listRegistrations.getMockImplementation()!;
+      mockMcpRegistration.listRegistrations.mockImplementation(
+        async (provider: { name: string }, options: unknown) => {
+          if (provider.name === 'claude') throw new Error('EACCES: permission denied');
+          return listed(provider, options);
+        },
+      );
+
+      const { preflightResult } = await readiness(true);
+
+      expect(ensureMcp).toHaveBeenCalledWith(codex, '/test', { env: {} });
+      expect(preflightResult.providers.map((check) => check.id)).toEqual([codex.id]);
+      expect(preflightResult.checks).toContainEqual(
+        expect.objectContaining({
+          name: 'providers',
+          status: 'warn',
+          message: 'Failed to check provider claude',
+        }),
+      );
+    });
+
+    it('refuses when the repair does not fix the registration', async () => {
+      ensureMcp.mockResolvedValue(undefined);
+
+      await expect(readiness()).rejects.toMatchObject({
+        message: 'MCP configuration failed after auto-ensure',
+        details: { providerId: codex.id, mcpStatus: 'warn' },
+      });
+    });
+
+    it('refuses an inaccessible absolute binary before any repair', async () => {
+      const missing = { ...codex, binPath: '/nonexistent/bin/codex' };
+      mockStorage.listProvidersByIds.mockImplementation(async (ids: string[]) =>
+        [claude, missing].filter((provider) => ids.includes(provider.id)),
+      );
+      mockAccess.mockImplementation(async (target) => {
+        if (target === missing.binPath) throw new Error('ENOENT');
+      });
+
+      await expect(readiness(undefined, missing)).rejects.toMatchObject({
+        message: 'Provider codex failed the binary check: codex binary not accessible',
+        details: { providerId: codex.id, binaryStatus: 'fail' },
+      });
+      expect(ensureMcp).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      {
+        name: 'a required check filtered out',
+        env: { ENABLED_PROVIDERS: 'claude' },
+        require: true,
+        refused: true,
+      },
+      {
+        name: 'an optional check filtered out',
+        env: { ENABLED_PROVIDERS: 'claude' },
+        require: false,
+        refused: false,
+      },
+      {
+        name: 'a required check under SKIP_PREFLIGHT',
+        env: { SKIP_PREFLIGHT: '1' },
+        require: true,
+        refused: false,
+      },
+    ])('with $name, refused is $refused', async ({ env, require, refused }) => {
+      const saved = { ...process.env };
+      Object.assign(process.env, env);
+      try {
+        const result = readiness(require);
+        if (refused) {
+          await expect(result).rejects.toThrow('Preflight returned no check for the provider');
+        } else {
+          await expect(result).resolves.toMatchObject({ provisioningContext: { env: {} } });
+        }
+        expect(ensureMcp).not.toHaveBeenCalled();
+      } finally {
+        process.env = saved;
+      }
     });
   });
 });

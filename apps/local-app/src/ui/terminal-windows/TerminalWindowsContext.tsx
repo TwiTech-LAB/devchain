@@ -87,6 +87,8 @@ export interface TerminalWindowMenuItem {
 
 interface TerminalWindowsContextValue {
   windows: TerminalWindowState[];
+  lowerWindowLayer: boolean;
+  requestLowerWindowLayer: () => () => void;
   focusedWindowId: string | null;
   openWindow: (config: TerminalWindowConfig) => void;
   closeWindow: (id: string) => void;
@@ -231,6 +233,12 @@ export function TerminalWindowsProvider({ children }: { children: ReactNode }) {
   );
   const layoutCacheRef = useRef(layoutCache);
   const [windows, setWindows] = useState<TerminalWindowState[]>([]);
+  const [lowerLayerRequests, setLowerLayerRequests] = useState(0);
+  const lowerWindowLayer = lowerLayerRequests > 0;
+  const requestLowerWindowLayer = useCallback(() => {
+    setLowerLayerRequests((count) => count + 1);
+    return () => setLowerLayerRequests((count) => count - 1);
+  }, []);
   const [focusedWindowId, setFocusedWindowId] = useState<string | null>(null);
   const lastAutoMinimizeNoticeRef = useRef(0);
 
@@ -622,6 +630,8 @@ export function TerminalWindowsProvider({ children }: { children: ReactNode }) {
   const value = useMemo<TerminalWindowsContextValue>(
     () => ({
       windows,
+      lowerWindowLayer,
+      requestLowerWindowLayer,
       focusedWindowId,
       openWindow,
       closeWindow,
@@ -636,6 +646,8 @@ export function TerminalWindowsProvider({ children }: { children: ReactNode }) {
     }),
     [
       windows,
+      lowerWindowLayer,
+      requestLowerWindowLayer,
       focusedWindowId,
       openWindow,
       closeWindow,
@@ -661,4 +673,11 @@ export function useTerminalWindows() {
     throw new Error('useTerminalWindows must be used within a TerminalWindowsProvider');
   }
   return context;
+}
+
+export function useLowerTerminalWindows(active: boolean) {
+  const { requestLowerWindowLayer } = useTerminalWindows();
+  useEffect(() => {
+    if (active) return requestLowerWindowLayer();
+  }, [active, requestLowerWindowLayer]);
 }

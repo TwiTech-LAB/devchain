@@ -71,6 +71,7 @@ describe('RemoteHealthService', () => {
   let usageSettings: { pushIfChanged: jest.Mock };
   let providerSettings: { pushIfChanged: jest.Mock };
   let vaultPush: { pushIfChanged: jest.Mock; useHealth: jest.Mock };
+  let integrationPush: { pushIfChanged: jest.Mock; useHealth: jest.Mock; noteReport: jest.Mock };
   let cliVersions: { registerRemoteCheck: jest.Mock };
   let sharedVm: ReturnType<typeof sharedVmGuardStub>;
 
@@ -98,6 +99,11 @@ describe('RemoteHealthService', () => {
     usageSettings = { pushIfChanged: jest.fn().mockResolvedValue(undefined) };
     providerSettings = { pushIfChanged: jest.fn().mockResolvedValue(undefined) };
     vaultPush = { pushIfChanged: jest.fn().mockResolvedValue(undefined), useHealth: jest.fn() };
+    integrationPush = {
+      pushIfChanged: jest.fn().mockResolvedValue(undefined),
+      useHealth: jest.fn(),
+      noteReport: jest.fn(),
+    };
     cliVersions = { registerRemoteCheck: jest.fn().mockReturnValue(jest.fn()) };
     let key = 'first';
     apiKeys = new RemoteApiKeyService({
@@ -124,6 +130,7 @@ describe('RemoteHealthService', () => {
       sharedVm,
       { poll: async () => undefined, prune: () => undefined } as never,
       vaultPush as never,
+      integrationPush as never,
     );
   });
 
@@ -342,8 +349,9 @@ describe('RemoteHealthService', () => {
     expect(service.getState('remote-1').online).toBe(true);
   });
 
-  it('pushes CLI policy, usage settings and the Vault, checks CLIs and tells poll listeners, only for online version-matched VMs', async () => {
+  it('pushes CLI policy, usage settings and the Vault, checks CLIs and tells poll listeners only for online version-matched VMs; integrations also during version skew', async () => {
     const vault = { appliedRevision: 'a'.repeat(64), cacheReady: false, cacheUnavailable: null };
+    const integrations = { ...vault, appliedRevision: 'b'.repeat(64) };
     storage.listRemotes.mockResolvedValue({
       items: [
         makeRemote(),
@@ -355,7 +363,7 @@ describe('RemoteHealthService', () => {
       if (url.startsWith('https://offline')) throw new Error('offline');
       return jsonResponse(
         url.endsWith('/api/runtime')
-          ? { version: url.startsWith('https://old') ? '0.0.1' : '1.2.3', vault }
+          ? { version: url.startsWith('https://old') ? '0.0.1' : '1.2.3', vault, integrations }
           : HOST_STATS,
       );
     });
@@ -370,6 +378,14 @@ describe('RemoteHealthService', () => {
     expect(usageSettings.pushIfChanged.mock.calls).toEqual([['remote-1']]);
     expect(providerSettings.pushIfChanged.mock.calls).toEqual([['remote-1']]);
     expect(vaultPush.pushIfChanged.mock.calls).toEqual([['remote-1', vault]]);
+    expect(integrationPush.pushIfChanged.mock.calls.sort()).toEqual([
+      ['old', integrations],
+      ['remote-1', integrations],
+    ]);
+    expect(integrationPush.noteReport.mock.calls.sort()).toEqual([
+      ['old', { kind: 'status', status: integrations }],
+      ['remote-1', { kind: 'status', status: integrations }],
+    ]);
     await cliVersions.registerRemoteCheck.mock.calls[0][0]();
     expect(cliSettings.checkNow.mock.calls).toEqual([['remote-1']]);
     await tick();

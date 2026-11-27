@@ -41,6 +41,7 @@ describe('McpFullModule', () => {
       'WorktreesModule',
       'VaultModule',
       'VaultRequestsModule',
+      'ExternalIntegrationsModule',
     ]);
     expect(imports.filter(isForwardReference).map(moduleName)).toEqual([
       'SessionsModule',

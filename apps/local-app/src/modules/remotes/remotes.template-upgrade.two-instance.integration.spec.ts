@@ -1,9 +1,11 @@
 /**
- * A bundled-template upgrade of a connected project: the VM runs it through
- * home's `/r` proxy, and home's mirror learns the new version from the pull route.
- * Test layer: two-instance integration. The proxy, the VM upgrade, the live template
+ * A bundled-template upgrade and a template-file import of a connected project: the
+ * VM runs each through home's `/r` proxy, and home's mirror learns the result from
+ * the pull route.
+ * Test layer: two-instance integration. The proxy, the VM write, the live template
  * settings and the pull route only prove themselves together in two booted apps.
  */
+import { randomUUID } from 'crypto';
 import {
   seedRemoteProject,
   type SeededRemoteProject,
@@ -23,8 +25,9 @@ const TEMPLATE_SLUG = 'teams-dev';
 const INSTALLED_VERSION = '0.0.1';
 
 interface BundledTemplate {
-  _manifest: { version: string };
-  agents: Array<{ name: string }>;
+  _manifest: { slug: string; version: string; [key: string]: unknown };
+  agents: Array<{ id: string; name: string; isProjectOwner?: boolean; [key: string]: unknown }>;
+  [key: string]: unknown;
 }
 
 describe('template upgrade of a connected project', () => {
@@ -70,6 +73,15 @@ describe('template upgrade of a connected project', () => {
     }, 20_000);
   }
 
+  const agentNames = (instance: TestInstance): Set<string> =>
+    new Set(
+      (
+        instance.sqlite
+          .prepare('SELECT name FROM agents WHERE project_id = ?')
+          .all(seed.projectId) as Array<{ name: string }>
+      ).map((row) => row.name),
+    );
+
   const homeListedVersion = async (): Promise<string | null> => {
     const { body } = await api<{
       items: Array<{ id: string; templateMetadata: { version: string | null } | null }>;
@@ -85,6 +97,23 @@ describe('template upgrade of a connected project', () => {
       syncIntervalMs: 600_000,
       reconcileIntervalMs: 600_000,
     });
+    remote = await instances.registerRemote('vm-1');
+    await waitForValue(async () => {
+      const { body } = await api<{ items: Array<{ online: boolean }> }>(
+        `${home().url}/api/remotes`,
+        'GET',
+      );
+      return body.items[0]?.online === true;
+    }, 10_000);
+  }, 90_000);
+
+  // Each case gets its own connected project on the shared pair of apps.
+  beforeEach(async () => {
+    // The seed always names its workspace 'Handoff', and workspace names are unique.
+    for (const instance of [home(), host()])
+      instance.sqlite
+        .prepare("UPDATE project_workspaces SET name = 'Previous ' || id WHERE name = 'Handoff'")
+        .run();
     seed = seedRemoteProject(home().sqlite);
     ensureProvider(host().sqlite, 'host-claude', seed.providerName, null);
     await home().app.get(SettingsService).setProjectTemplateMetadata(seed.projectId, {
@@ -94,16 +123,8 @@ describe('template upgrade of a connected project', () => {
       registryUrl: null,
       installedAt: new Date().toISOString(),
     });
-    remote = await instances.registerRemote('vm-1');
-    await waitForValue(async () => {
-      const { body } = await api<{ items: Array<{ online: boolean }> }>(
-        `${home().url}/api/remotes`,
-        'GET',
-      );
-      return body.items[0]?.online === true;
-    }, 10_000);
     await connectProject();
-  }, 90_000);
+  }, 30_000);
 
   afterAll(async () => {
     await instances?.close();
@@ -144,5 +165,82 @@ describe('template upgrade of a connected project', () => {
     expect(pull.status).toBe(200);
 
     expect(await homeListedVersion()).toBe(targetVersion);
+  }, 60_000);
+
+  it('imports a template file on the VM through the proxy, then mirrors it at home after the pull', async () => {
+    const bundled = host().app.get(UnifiedTemplateService).getBundledTemplate(TEMPLATE_SLUG)
+      .content as unknown as BundledTemplate;
+    const [ownerAgent] = bundled.agents;
+    // A slug with no bundled template, so the VM records the import as source `registry`.
+    const file: BundledTemplate = {
+      ...bundled,
+      _manifest: { ...bundled._manifest, slug: 'file-import', version: '9.0.0' },
+      agents: [
+        ...bundled.agents,
+        { ...ownerAgent, id: randomUUID(), name: 'File Importer', isProjectOwner: false },
+      ],
+    };
+    const fileAgentNames = new Set(file.agents.map((agent) => agent.name));
+    const expectedMetadata = {
+      templateSlug: 'file-import',
+      installedVersion: '9.0.0',
+      source: 'registry',
+    };
+
+    const hostSettings = host().app.get(SettingsService);
+    expect(hostSettings.getProjectTemplateMetadata(seed.projectId)).not.toMatchObject(
+      expectedMetadata,
+    );
+    expect(agentNames(host())).not.toEqual(fileAgentNames);
+
+    const proxied = `${home().url}/r/${remote.id}/api/projects`;
+    // The wizard's configured body: the file plus the providers chosen for it.
+    const importBody = { ...file, selectedProviderNames: [seed.providerName] };
+    const preview = await api<{ payload: { _manifest: { slug: string; version: string } } }>(
+      `${proxied}/setup-preview`,
+      'POST',
+      { rawContent: file },
+    );
+    expect(preview).toEqual({
+      status: 200,
+      body: expect.objectContaining({
+        payload: expect.objectContaining({
+          _manifest: expect.objectContaining({ slug: 'file-import', version: '9.0.0' }),
+        }),
+      }),
+    });
+
+    const dryRun = await api<{
+      dryRun: boolean;
+      error?: string;
+      readiness: { ready: boolean };
+      counts: { toImport: { agents: number } };
+    }>(`${proxied}/${seed.projectId}/import?dryRun=true`, 'POST', importBody);
+    expect(dryRun.status).toBe(201);
+    expect(dryRun.body).toMatchObject({
+      dryRun: true,
+      readiness: { ready: true },
+      counts: { toImport: { agents: file.agents.length } },
+    });
+    expect(dryRun.body.error).toBeUndefined();
+
+    const commit = await api<{ success: boolean }>(
+      `${proxied}/${seed.projectId}/import`,
+      'POST',
+      importBody,
+    );
+    expect(commit).toEqual({ status: 201, body: expect.objectContaining({ success: true }) });
+
+    expect(hostSettings.getProjectTemplateMetadata(seed.projectId)).toMatchObject(expectedMetadata);
+    expect(agentNames(host())).toEqual(fileAgentNames);
+
+    const pull = await api(`${home().url}/api/remotes/bindings/${seed.projectId}/pull`, 'POST');
+    expect(pull.status).toBe(200);
+
+    expect(
+      home().app.get(SettingsService).getProjectTemplateMetadata(seed.projectId),
+    ).toMatchObject(expectedMetadata);
+    expect(agentNames(home())).toEqual(fileAgentNames);
+    expect(await homeListedVersion()).toBe('9.0.0');
   }, 60_000);
 });

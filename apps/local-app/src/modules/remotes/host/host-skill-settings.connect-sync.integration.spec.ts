@@ -29,9 +29,12 @@ import { SkillCategoryService } from '../../skills/services/skill-category.servi
 import { SKILL_SOURCE_ADAPTERS } from '../../skills/adapters/skill-source.adapter';
 import { HostSkillSettingsService } from './host-skill-settings.service';
 import { GitCoordinatorService } from '../git-coordinator/git-coordinator.service';
+import { IntegrationVmCacheService } from '../../external-integrations/vm-cache/integration-vm-cache.service';
 import { HostService } from './host.service';
+import { EventsService } from '../../events/services/events.service';
 import { ProjectFreezeService } from './project-freeze.service';
 import { ProjectReplicaBuilder } from '../replica/project-replica.builder';
+import { ManagedProjectionLock } from '../../external-integrations/subscribers/managed-projection-lock';
 import { ProjectReplicaApplier } from '../replica/project-replica.applier';
 import { ProjectSessionsStopper } from '../services/project-sessions-stopper.service';
 import { ProjectTimeSettler } from '../time/project-time-settler.service';
@@ -105,21 +108,27 @@ describe('Host skill settings Connect enablement', () => {
         {
           provide: ProjectReplicaApplier,
           useFactory: (storage: StorageService) =>
-            new ProjectReplicaApplier(storage, {
-              prepareCommitted: (name, payload) => ({
-                id: randomUUID(),
-                name,
-                payload,
-                requestId: null,
-                publishedAt: new Date().toISOString(),
-              }),
-              emitCommitted: () => undefined,
-            }),
+            new ProjectReplicaApplier(
+              storage,
+              {
+                prepareCommitted: (name, payload) => ({
+                  id: randomUUID(),
+                  name,
+                  payload,
+                  requestId: null,
+                  publishedAt: new Date().toISOString(),
+                }),
+                emitCommitted: () => undefined,
+              },
+              new ManagedProjectionLock(),
+            ),
           inject: [STORAGE_SERVICE],
         },
         { provide: ProjectSessionsStopper, useValue: { stop: async () => undefined } },
         { provide: ProjectTimeSettler, useValue: { settle: async () => undefined } },
         { provide: GitCoordinatorService, useValue: { forget: async () => undefined } },
+        { provide: IntegrationVmCacheService, useValue: { isClaimedHost: () => false } },
+        { provide: EventsService, useValue: {} },
       ],
     }).compile();
     module.get(ProjectWriteGate).bindStorage(storage);

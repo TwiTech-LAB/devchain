@@ -33,7 +33,8 @@ export class HostTranscriptsController {
   list(
     @Body() body: unknown,
   ): Promise<HostHandlerResponse<typeof hostRoutes.listTranscripts, 200>> {
-    return this.files.list(hostRoutes.listTranscripts.body.parse(body).refs);
+    const { refs, dependencyProjectId } = hostRoutes.listTranscripts.body.parse(body);
+    return this.files.list(refs, dependencyProjectId);
   }
 
   @Get()

@@ -1,4 +1,7 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Inject, Injectable, Logger } from '@nestjs/common';
+import { AgentDisabledError } from '../../common/errors/error-types';
+import { SessionLaunchError } from '../session-terminal-runtime/dtos/active-session-info.dto';
+import { STORAGE_SERVICE, type AgentStorage } from '../storage/interfaces/storage.interface';
 import { MessageEnqueueService } from '../sessions/services/message-enqueue.service';
 import { SessionLauncherFacade } from '../sessions/services/session-launcher-facade.service';
 import { ActiveSessionLookup } from '../sessions/services/active-session-lookup.service';
@@ -16,6 +19,16 @@ import type {
 } from './dtos/delivery.types';
 import type { TerminalDeliveryResult } from '../terminal/services/terminal-delivery.types';
 import { EventsService } from '../events/services/events.service';
+import { aggregateDeliveryStatus } from './delivery-outcome';
+import { AGENT_DISABLED_DELIVERY_ERROR } from '../sessions/services/message-pool.types';
+
+/** A launch that started after the first check can still find the agent disabled. */
+function isAgentDisabledFailure(error: unknown): boolean {
+  return (
+    error instanceof AgentDisabledError ||
+    (error instanceof SessionLaunchError && error.details.cause instanceof AgentDisabledError)
+  );
+}
 
 @Injectable()
 export class AgentMessageDeliveryService {
@@ -29,6 +42,7 @@ export class AgentMessageDeliveryService {
     private readonly guestDelivery: GuestDeliveryService,
     private readonly activeSessionLookup: ActiveSessionLookup,
     private readonly eventsService: EventsService,
+    @Inject(STORAGE_SERVICE) private readonly storage: Pick<AgentStorage, 'isAgentDisabled'>,
   ) {}
 
   formatMessage(message: DeliveryMessage): string {
@@ -54,7 +68,7 @@ export class AgentMessageDeliveryService {
       results.push(result);
     }
 
-    const status = this.aggregateStatus(results);
+    const status = aggregateDeliveryStatus(results);
     return { status, results };
   }
 
@@ -110,6 +124,12 @@ export class AgentMessageDeliveryService {
     policy: DeliveryPolicy,
   ): Promise<RecipientResult> {
     try {
+      // Read before any session is resolved: the pool refuses the message if Disable advances
+      // the fence meanwhile, so it never reaches a session started after Enable.
+      const admissionFence = this.messageEnqueue.getAdmissionFence(agentId);
+      if (this.storage.isAgentDisabled(agentId)) {
+        return { agentId, status: 'failed', error: AGENT_DISABLED_DELIVERY_ERROR };
+      }
       if (policy.requireActiveSession) {
         // Deliver-only: validate an active session exists but never launch one.
         // Eliminates the pre-check→deliver race where ensureActiveSession would
@@ -142,6 +162,7 @@ export class AgentMessageDeliveryService {
             message.senderType === 'guest',
           humanPromptSubmit: message.senderType === 'user',
           outsideText: message.outsideText === true || message.senderType === 'guest',
+          admissionFence,
           ...(message.kind === 'mcp.project' ? { failureDisclosure: 'project-safe' as const } : {}),
         },
       ]);
@@ -155,6 +176,9 @@ export class AgentMessageDeliveryService {
         ...(poolResult.logEntryId ? { messageId: poolResult.logEntryId } : {}),
       };
     } catch (error) {
+      if (isAgentDisabledFailure(error)) {
+        return { agentId, status: 'failed', error: AGENT_DISABLED_DELIVERY_ERROR };
+      }
       const msg = error instanceof Error ? error.message : String(error);
       return this.deliveryFailure(agentId, message, msg);
     }
@@ -208,26 +232,5 @@ export class AgentMessageDeliveryService {
       ...descriptor,
       status: resultsById.get(descriptor.agentId)!.status,
     }));
-  }
-
-  private aggregateStatus(results: RecipientResult[]): DeliveryOutcome['status'] {
-    if (results.length === 0) return 'delivered';
-
-    const allFailed = results.every((r) => r.status === 'failed');
-    if (allFailed) return 'failed';
-
-    const allDelivered = results.every((r) => r.status === 'delivered');
-    if (allDelivered) return 'delivered';
-
-    const allQueued = results.every((r) => r.status === 'queued');
-    if (allQueued) return 'queued';
-
-    const hasFailure = results.some((r) => r.status === 'failed');
-    if (hasFailure) return 'partial';
-
-    const hasUnconfirmed = results.some((r) => r.status === 'unconfirmed');
-    if (hasUnconfirmed) return 'unconfirmed';
-
-    return 'queued';
   }
 }

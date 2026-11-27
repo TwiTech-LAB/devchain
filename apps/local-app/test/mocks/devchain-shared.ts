@@ -29,6 +29,8 @@ export {
   ProjectReplicaDetachTablesSchema,
   ProjectReplicaPreflightErrorSchema,
   ReplicaProviderSettingsRowSchema,
+  ReplicaExternalTaskLinkRowSchema,
+  ReplicaExternalLinkReceiptRowSchema,
   PROJECT_REPLICA_CONTENT_TYPE,
   ProjectReplicaIdSetsSchema,
   ProjectReplicaChangesSchema,
@@ -173,3 +175,4 @@ export * from '../../../../packages/shared/src/schemas/host-provider-clis';
 export * from '../../../../packages/shared/src/schemas/provider-usage';
 
 export * from '../../../../packages/shared/src/schemas/host-vault';
+export * from '../../../../packages/shared/src/schemas/host-integrations';

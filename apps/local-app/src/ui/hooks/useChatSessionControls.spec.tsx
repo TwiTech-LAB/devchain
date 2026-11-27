@@ -15,6 +15,10 @@ const mockToast = jest.fn();
 jest.mock('@/ui/hooks/use-toast', () => ({
   useToast: () => ({ toast: mockToast }),
 }));
+const mockProjectFetch = jest.fn();
+jest.mock('@/ui/hooks/useFetchFactory', () => ({
+  useFetchFactory: () => mockProjectFetch,
+}));
 
 jest.mock('@/ui/lib/sessions', () => {
   const actual = jest.requireActual('@/ui/lib/sessions');
@@ -24,6 +28,9 @@ jest.mock('@/ui/lib/sessions', () => {
     restartSession: jest.fn(),
     terminateSession: jest.fn().mockResolvedValue(undefined),
     restoreSession: jest.fn(),
+    createSavePoint: jest.fn(),
+    startFromSavePoint: jest.fn(),
+    rollbackSession: jest.fn(),
   };
 });
 
@@ -33,12 +40,25 @@ import {
   restoreSession,
   terminateSession,
   SessionApiError,
+  createSavePoint,
+  startFromSavePoint,
+  rollbackSession,
+  agentSessionTreeKey,
+  agentSessionTreeKeyPrefix,
+  type SessionTreeNode,
+  type SessionTreePage,
 } from '@/ui/lib/sessions';
+import { useTerminalAttachRevision } from '@/ui/lib/terminal-attach-revision';
+import { isRollbackHeld } from '@/ui/lib/rollback-holds';
+import { transcriptQueryKeys } from './useSessionTranscript';
 
 const mockLaunch = launchSession as jest.MockedFunction<typeof launchSession>;
 const mockRestart = restartSession as jest.MockedFunction<typeof restartSession>;
 const mockRestore = restoreSession as jest.MockedFunction<typeof restoreSession>;
 const mockTerminate = terminateSession as jest.MockedFunction<typeof terminateSession>;
+const mockSavePoint = jest.mocked(createSavePoint);
+const mockStartFromSavePoint = jest.mocked(startFromSavePoint);
+const mockRollback = jest.mocked(rollbackSession);
 
 // ============================================
 // Helpers
@@ -90,6 +110,7 @@ function buildOptions(
         id: 'agent-1',
         name: 'Agent One',
         isProjectOwner: false,
+        disabled: false,
         type: 'agent' as const,
       },
       {
@@ -99,6 +120,7 @@ function buildOptions(
         id: 'agent-2',
         name: 'Agent Two',
         isProjectOwner: false,
+        disabled: false,
         type: 'agent' as const,
       },
     ],
@@ -114,6 +136,374 @@ function buildOptions(
 describe('useChatSessionControls', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+  });
+
+  describe('save point lifecycle', () => {
+    const supported = { available: true } as const;
+    const saved: SessionTreeNode = {
+      id: 'save-1',
+      kind: 'save_point',
+      parentSessionId: 'sess-old',
+      status: 'stopped',
+      providerSessionId: 'provider-save',
+      providerNameAtLaunch: 'claude',
+      startedAt: '2026-01-01T12:40:00Z',
+      endedAt: null,
+      lastActivityAt: null,
+      sizeBytes: null,
+      transcriptAvailable: true,
+      beforeRollback: false,
+      name: null,
+    };
+
+    it('gates saving on project, presence, matching activity, and provider eligibility', async () => {
+      const { wrapper } = createWrapper();
+      const { result, rerender } = renderHook((options) => useChatSessionControls(options), {
+        wrapper,
+        initialProps: buildOptions({ projectId: null }),
+      });
+      await act(async () => result.current.handleSavePoint('sess-old', 'agent-1', supported));
+      rerender(
+        buildOptions({
+          agentPresence: {
+            'agent-1': { online: true, sessionId: 'sess-old', activityState: 'busy' },
+          },
+        }),
+      );
+      await act(async () => result.current.handleSavePoint('sess-old', 'agent-1', supported));
+      rerender(buildOptions());
+      await act(async () => {
+        await result.current.handleSavePoint('different-session', 'agent-1', supported);
+        await result.current.handleSavePoint('sess-old', 'agent-1', {
+          available: false,
+          reason: 'TEAM_MEMBER',
+        });
+        await result.current.handleSavePoint('sess-old', 'agent-1', {
+          available: false,
+          reason: 'PROVIDER_UNSUPPORTED',
+        });
+        await result.current.handleSavePoint('sess-old', 'agent-1', undefined);
+      });
+      expect(mockSavePoint).not.toHaveBeenCalled();
+      expect(result.current.savingSessionIds).toEqual({});
+    });
+
+    it('tracks Save point and refreshes the tree while keeping the live terminal attached', async () => {
+      const { wrapper, queryClient } = createWrapper();
+      const attach = jest.fn();
+      const invalidate = jest.spyOn(queryClient, 'invalidateQueries');
+      let complete!: (value: SessionTreeNode) => void;
+      mockSavePoint.mockReturnValueOnce(
+        new Promise((resolve) => {
+          complete = resolve;
+        }),
+      );
+      const { result } = renderHook(
+        () => useChatSessionControls(buildOptions({ onInlineTerminalAttach: attach })),
+        { wrapper },
+      );
+
+      let saving: Promise<void> | undefined;
+      act(() => {
+        saving = result.current.handleSavePoint('sess-old', 'agent-1', supported);
+      });
+      expect(result.current.savingSessionIds).toEqual({ 'sess-old': true });
+      expect(mockSavePoint).toHaveBeenCalledWith('sess-old', 'proj-1', mockProjectFetch);
+      await act(async () => {
+        complete(saved);
+        await saving;
+      });
+
+      expect(result.current.savingSessionIds).toEqual({});
+      expect(invalidate.mock.calls).toEqual([[{ queryKey: agentSessionTreeKeyPrefix }]]);
+      expect(attach).not.toHaveBeenCalled();
+      const time = new Date(saved.startedAt).toLocaleTimeString(undefined, {
+        hour: 'numeric',
+        minute: '2-digit',
+      });
+      expect(mockToast).toHaveBeenCalledWith({ title: `Saved ${time}` });
+    });
+
+    it('requires confirmation for a live replacement and blocks starting for team members', async () => {
+      const { wrapper } = createWrapper();
+      const { result, rerender } = renderHook((options) => useChatSessionControls(options), {
+        wrapper,
+        initialProps: buildOptions({ projectId: null }),
+      });
+      await act(async () => {
+        await result.current.handleStartFromSavePoint(saved.id, 'agent-1', supported, 'sess-old');
+      });
+      rerender(buildOptions());
+      await act(async () => {
+        await result.current.handleStartFromSavePoint(saved.id, 'agent-1', supported);
+        await result.current.handleStartFromSavePoint(
+          saved.id,
+          'agent-1',
+          { available: false, reason: 'TEAM_MEMBER' },
+          'sess-old',
+        );
+      });
+      expect(mockStartFromSavePoint).not.toHaveBeenCalled();
+      expect(result.current.forkingSessionIds).toEqual({});
+    });
+
+    it('tracks a confirmed start, primes the child, and invalidates all four session queries', async () => {
+      const { wrapper, queryClient } = createWrapper();
+      const attach = jest.fn();
+      const invalidate = jest.spyOn(queryClient, 'invalidateQueries');
+      const child = makeSession({ id: 'child-42' });
+      let complete!: (value: typeof child) => void;
+      mockStartFromSavePoint.mockReturnValueOnce(
+        new Promise((resolve) => {
+          complete = resolve;
+        }),
+      );
+      const { result } = renderHook(
+        () => useChatSessionControls(buildOptions({ onInlineTerminalAttach: attach })),
+        { wrapper },
+      );
+
+      let starting: ReturnType<typeof result.current.handleStartFromSavePoint> | undefined;
+      act(() => {
+        starting = result.current.handleStartFromSavePoint(
+          saved.id,
+          'agent-1',
+          supported,
+          'sess-old',
+        );
+      });
+      expect(result.current.forkingSessionIds).toEqual({ [saved.id]: true });
+      expect(mockStartFromSavePoint).toHaveBeenCalledWith(
+        saved.id,
+        { projectId: 'proj-1', expectedAgentId: 'agent-1', replaceRunningSessionId: 'sess-old' },
+        mockProjectFetch,
+      );
+      await act(async () => {
+        complete(child);
+        await starting;
+      });
+
+      expect(result.current.forkingSessionIds).toEqual({});
+      expect(queryClient.getQueryData(chatQueryKeys.activeSessions('proj-1'))).toEqual([child]);
+      expect(queryClient.getQueryData(chatQueryKeys.agentPresence('proj-1'))).toEqual({
+        'agent-1': { online: true, sessionId: child.id },
+      });
+      expect(invalidate.mock.calls.map(([filters]) => filters?.queryKey)).toEqual([
+        chatQueryKeys.agentPresence('proj-1'),
+        chatQueryKeys.activeSessions('proj-1'),
+        agentSessionTreeKeyPrefix,
+      ]);
+      expect(attach).toHaveBeenCalledWith('agent-1', child.id);
+      expect(mockToast).toHaveBeenCalledWith({
+        title: 'Session forked',
+        description: 'Session child-42 is running.',
+      });
+    });
+
+    it.each([
+      { code: 'RUNNING_SESSION_CHANGED', title: 'Running session changed' },
+      { code: 'INVALID_SESSION_STATE', title: 'Invalid session state' },
+    ])('reports $code and resets the pending fork on failure', async ({ code, title }) => {
+      mockStartFromSavePoint.mockRejectedValueOnce(
+        new SessionApiError('Session changed', 409, {
+          statusCode: 409,
+          code: 'CONFLICT',
+          message: 'Session changed',
+          details: { code },
+          timestamp: '',
+          path: '',
+        }),
+      );
+      const { wrapper } = createWrapper();
+      const { result } = renderHook(() => useChatSessionControls(buildOptions()), { wrapper });
+
+      await act(async () => {
+        await result.current.handleStartFromSavePoint(saved.id, 'agent-1', supported, 'sess-old');
+      });
+
+      expect(result.current.forkingSessionIds).toEqual({});
+      expect(mockToast).toHaveBeenCalledWith({
+        title,
+        description: 'Session changed',
+        variant: 'destructive',
+      });
+    });
+
+    const beforeRollback: SessionTreeNode = {
+      ...saved,
+      id: 'record-1',
+      beforeRollback: true,
+    };
+    const transcriptKeys = (id: string) => [
+      transcriptQueryKeys.summary(id),
+      transcriptQueryKeys.index(id),
+      ['transcript-chunk-page', id],
+    ];
+
+    function renderRollback(attach = jest.fn()) {
+      const { wrapper, queryClient } = createWrapper();
+      queryClient.setQueryData(agentSessionTreeKey('agent-1', 'proj-1'), {
+        pages: [{ items: [saved, beforeRollback], nextCursor: null } as unknown as SessionTreePage],
+        pageParams: [null],
+      });
+      const invalidate = jest.spyOn(queryClient, 'invalidateQueries');
+      const view = renderHook(
+        () => ({
+          controls: useChatSessionControls(buildOptions({ onInlineTerminalAttach: attach })),
+          revision: useTerminalAttachRevision('sess-old'),
+        }),
+        { wrapper },
+      );
+      return { ...view, invalidate, attach };
+    }
+
+    it('tracks a rollback on the session and the save point, then shows it with fresh transcripts and leaves the terminal remount to the server', async () => {
+      const { result, invalidate, attach } = renderRollback();
+      const revision = result.current.revision;
+      let complete!: (value: ReturnType<typeof makeSession>) => void;
+      let heldAtRequest: boolean | undefined;
+      mockRollback.mockImplementationOnce(() => {
+        heldAtRequest = isRollbackHeld('sess-old');
+        return new Promise((resolve) => {
+          complete = resolve;
+        });
+      });
+      let heldAtAttach: boolean | undefined;
+      attach.mockImplementation(() => {
+        heldAtAttach = isRollbackHeld('sess-old');
+      });
+
+      let rollingBack: Promise<void> | undefined;
+      act(() => {
+        rollingBack = result.current.controls.handleRollbackSession(
+          'sess-old',
+          saved.id,
+          'agent-1',
+          true,
+          'sess-old',
+          'Ready',
+        );
+      });
+      expect(result.current.controls.rollingBackSessionIds).toEqual({
+        'sess-old': true,
+        [saved.id]: true,
+      });
+      expect(mockRollback).toHaveBeenCalledWith(
+        'sess-old',
+        {
+          projectId: 'proj-1',
+          savePointId: saved.id,
+          keepCurrent: true,
+          expectedAgentId: 'agent-1',
+          replaceRunningSessionId: 'sess-old',
+        },
+        mockProjectFetch,
+      );
+      await act(async () => {
+        await result.current.controls.handleRollbackSession(
+          'sess-old',
+          beforeRollback.id,
+          'agent-1',
+          false,
+          'sess-old',
+          'Other',
+        );
+      });
+      expect(mockRollback).toHaveBeenCalledTimes(1);
+
+      await act(async () => {
+        complete(makeSession({ id: 'sess-old' }));
+        await rollingBack;
+      });
+
+      expect(result.current.controls.rollingBackSessionIds).toEqual({});
+      // The hold covers the request and the success path, and ends with the call.
+      expect(heldAtRequest).toBe(true);
+      expect(heldAtAttach).toBe(true);
+      expect(isRollbackHeld('sess-old')).toBe(false);
+      expect(mockToast).toHaveBeenCalledWith({ title: 'Rolled back to Ready' });
+      expect(attach).toHaveBeenCalledWith('agent-1', 'sess-old');
+      expect(result.current.revision).toBe(revision);
+      const keys = invalidate.mock.calls.map(([filters]) => filters?.queryKey);
+      expect(keys).toEqual(
+        expect.arrayContaining([
+          ...transcriptKeys('sess-old'),
+          ...transcriptKeys(beforeRollback.id),
+          agentSessionTreeKeyPrefix,
+        ]),
+      );
+    });
+
+    it.each([
+      {
+        code: 'ROLLBACK_START_FAILED',
+        title: 'Session rolled back but did not start',
+        description: 'Use Restore to start it.',
+        refreshes: true,
+      },
+      {
+        code: 'SAVE_POINT_NOT_OF_SESSION',
+        title: 'Save point does not belong to this session',
+        description: 'Rollback refused',
+        refreshes: false,
+      },
+      {
+        code: 'RUNNING_SESSION_CHANGED',
+        title: 'Running session changed',
+        description: 'Rollback refused',
+        refreshes: false,
+      },
+    ])(
+      'reports $code and clears both pending IDs and the rollback hold',
+      async ({ code, title, description, refreshes }) => {
+        let heldAtRequest: boolean | undefined;
+        mockRollback.mockImplementationOnce(async () => {
+          heldAtRequest = isRollbackHeld('sess-old');
+          throw new SessionApiError('Rollback refused', 409, {
+            statusCode: 409,
+            code: 'CONFLICT',
+            message: 'Rollback refused',
+            details: { code },
+            timestamp: '',
+            path: '',
+          });
+        });
+        const { result, invalidate, attach } = renderRollback();
+        const revision = result.current.revision;
+
+        await act(async () => {
+          await result.current.controls.handleRollbackSession(
+            'sess-old',
+            saved.id,
+            'agent-1',
+            true,
+            'sess-old',
+            'Ready',
+          );
+        });
+
+        expect(result.current.controls.rollingBackSessionIds).toEqual({});
+        expect(heldAtRequest).toBe(true);
+        expect(isRollbackHeld('sess-old')).toBe(false);
+        expect(mockToast).toHaveBeenCalledWith({ title, description, variant: 'destructive' });
+        expect(attach).not.toHaveBeenCalled();
+        expect(result.current.revision).toBe(revision);
+        const keys = invalidate.mock.calls.map(([filters]) => filters?.queryKey);
+        if (refreshes) {
+          expect(keys).toEqual(
+            expect.arrayContaining([
+              ...transcriptKeys('sess-old'),
+              ...transcriptKeys(beforeRollback.id),
+              agentSessionTreeKeyPrefix,
+              chatQueryKeys.agentPresence('proj-1'),
+              chatQueryKeys.activeSessions('proj-1'),
+            ]),
+          );
+        } else {
+          expect(keys).toEqual([]);
+        }
+      },
+    );
   });
 
   describe('handleRestartSession selected-agent gating', () => {
@@ -296,6 +686,20 @@ describe('useChatSessionControls', () => {
     const sessionId = 'stopped-sess-1';
     const agentId = 'agent-1';
 
+    it('sends the switch config id with the restore request', async () => {
+      mockRestore.mockResolvedValue(makeSession({ id: sessionId, agentId }));
+      const { wrapper } = createWrapper();
+      const { result } = renderHook(() => useChatSessionControls(buildOptions()), { wrapper });
+      await act(async () => {
+        await result.current.handleRestoreSession(sessionId, agentId, undefined, 'cfg-codex');
+      });
+      expect(mockRestore).toHaveBeenCalledWith(
+        sessionId,
+        expect.objectContaining({ switchToProviderConfigId: 'cfg-codex' }),
+        expect.any(Function),
+      );
+    });
+
     it('restores the session, shows success and clears pending state', async () => {
       mockRestore.mockResolvedValue(makeSession({ id: sessionId, agentId }));
       const { wrapper } = createWrapper();
@@ -304,7 +708,11 @@ describe('useChatSessionControls', () => {
         await result.current.handleRestoreSession(sessionId, agentId);
       });
       {
-        expect(mockRestore).toHaveBeenCalledWith(sessionId, 'proj-1', expect.any(Function));
+        expect(mockRestore).toHaveBeenCalledWith(
+          sessionId,
+          { projectId: 'proj-1', targetAgentId: agentId, replaceRunningSessionId: undefined },
+          expect.any(Function),
+        );
       }
       {
         expect(mockToast).toHaveBeenCalledWith(
@@ -458,7 +866,7 @@ describe('useChatSessionControls', () => {
       mockTerminate.mockReset();
     });
 
-    it('calls terminateSession and shows the chat success toast', async () => {
+    it('calls terminateSession with the agent as the expected owner and shows the chat success toast', async () => {
       mockTerminate.mockResolvedValue(undefined);
 
       const { wrapper } = createWrapper();
@@ -468,7 +876,9 @@ describe('useChatSessionControls', () => {
         await result.current.handleTerminateSession('agent-1', 'sess-old');
       });
 
-      expect(mockTerminate).toHaveBeenCalledWith('sess-old', expect.any(Function));
+      expect(mockTerminate).toHaveBeenCalledWith('sess-old', expect.any(Function), {
+        expectedAgentId: 'agent-1',
+      });
       expect(mockToast).toHaveBeenCalledWith({
         title: 'Session terminated',
         description: 'The session was terminated.',
@@ -518,6 +928,24 @@ describe('useChatSessionControls', () => {
         title: 'All agents started',
         description: '2 sessions launched successfully.',
       });
+    });
+
+    it('skips disabled agents in the offline list and Start all', async () => {
+      mockLaunch.mockResolvedValue(makeSession());
+      const base = buildOptions({ agentPresence: offlinePresence });
+      const options = {
+        ...base,
+        agents: base.agents.map((a) => (a.id === 'agent-2' ? { ...a, disabled: true } : a)),
+      };
+
+      const { wrapper } = createWrapper();
+      const { result } = renderHook(() => useChatSessionControls(options), { wrapper });
+
+      expect(result.current.offlineAgents.map((a) => a.id)).toEqual(['agent-1']);
+      await act(async () => {
+        await result.current.handleStartAllAgents();
+      });
+      expect(mockLaunch).toHaveBeenCalledTimes(1);
     });
 
     it('reports partial failure with a destructive toast', async () => {
@@ -571,7 +999,7 @@ describe('useChatSessionControls', () => {
       mockTerminate.mockReset();
     });
 
-    it('terminates every agent-with-session and reports total success', async () => {
+    it('terminates every agent-with-session as its expected owner and reports total success', async () => {
       mockTerminate.mockResolvedValue(undefined);
 
       const { wrapper } = createWrapper();
@@ -581,7 +1009,10 @@ describe('useChatSessionControls', () => {
         await result.current.handleTerminateAllAgents();
       });
 
-      expect(mockTerminate).toHaveBeenCalledTimes(2);
+      expect(mockTerminate.mock.calls).toEqual([
+        ['sess-old', expect.any(Function), { expectedAgentId: 'agent-1' }],
+        ['sess-2-old', expect.any(Function), { expectedAgentId: 'agent-2' }],
+      ]);
       expect(mockToast).toHaveBeenCalledWith({
         title: 'All sessions terminated',
         description: '2 sessions stopped.',

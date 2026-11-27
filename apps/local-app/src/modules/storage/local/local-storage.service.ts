@@ -93,7 +93,8 @@ export class LocalStorageService {
       epic: new EpicStorageDelegate(context, {
         createTag,
         getAgent: (id) => delegates.agent.getAgentSync(id),
-        getAgentByName: (projectId, name) => delegates.agent.getAgentByName(projectId, name),
+        getAgentByName: (projectId, name, options) =>
+          delegates.agent.getAgentByName(projectId, name, options),
         getStatus: (id) => delegates.status.getStatus(id),
         appendEvent: (event) => eventStore.appendInCurrentTransaction(event),
       }),

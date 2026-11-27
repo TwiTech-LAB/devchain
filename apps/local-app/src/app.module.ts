@@ -47,6 +47,7 @@ import { EpicTimeModule } from './modules/epic-time/epic-time.module';
 import { WorktreesModule } from './modules/worktrees/worktrees.module';
 import { ProviderUsageModule } from './modules/provider-usage/provider-usage.module';
 import { VaultModule } from './modules/vault/vault.module';
+import { GithubStarModule } from './modules/github-star/github-star.module';
 
 @Module({
   imports: [
@@ -94,6 +95,7 @@ import { VaultModule } from './modules/vault/vault.module';
     EpicTimeModule,
     WorktreesModule,
     ProviderUsageModule,
+    GithubStarModule,
   ],
   controllers: [],
   providers: [

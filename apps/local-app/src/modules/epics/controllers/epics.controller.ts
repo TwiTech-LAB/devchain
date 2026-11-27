@@ -326,6 +326,17 @@ export class EpicsController {
     return { items: links };
   }
 
+  @Delete(':id/external-sources/:linkId')
+  @UseGuards(IntegrationAdmissionGuard)
+  @HttpCode(HttpStatus.NO_CONTENT)
+  async unlinkExternalSource(
+    @Param('id') id: string,
+    @Param('linkId') linkId: string,
+  ): Promise<void> {
+    logger.info({ id, linkId }, 'DELETE /api/epics/:id/external-sources/:linkId');
+    await this.epicsService.unlinkExternalTaskSource(id, linkId);
+  }
+
   @Post('external-sources/batch')
   @UseGuards(IntegrationAdmissionGuard)
   async getExternalSourcesBatch(

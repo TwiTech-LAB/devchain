@@ -1,4 +1,8 @@
 import type { ProviderAdapter } from '../../../providers/adapters/provider-adapter.interface';
+import type {
+  ProviderSessionTranscript,
+  SessionForkCapability,
+} from '../../../providers/adapters/capabilities/session-fork.capability';
 import type { Provider } from '../../../storage/models/domain.models';
 import type { LaunchConfig } from '../provider-launch-config';
 
@@ -32,12 +36,28 @@ export interface RestoreProviderRuntimePlanInput extends SharedProviderRuntimePl
   readonly initialPrompt?: never;
 }
 
+export interface ForkProviderRuntimePlanInput extends SharedProviderRuntimePlanInput {
+  readonly mode: 'fork';
+  readonly adapter: ProviderAdapter & SessionForkCapability;
+  readonly savePoint: ProviderSessionTranscript;
+  readonly cliVersion?: string;
+  readonly helperEnv: Readonly<Record<string, string>>;
+  readonly providerSessionId?: never;
+  readonly initialPrompt?: never;
+}
+
 export type ProviderRuntimePlanInput =
   | NewProviderRuntimePlanInput
-  | RestoreProviderRuntimePlanInput;
+  | RestoreProviderRuntimePlanInput
+  | ForkProviderRuntimePlanInput;
 
 export abstract class ProviderRuntimePlan {
   declare private readonly providerRuntimePlanBrand: void;
+  abstract readonly fork: Readonly<ProviderSessionTranscript> | null;
+  /** Removes a fork copy that no session row owns yet. Logs a failure and never rejects. */
+  abstract readonly discardUnboundTranscript?: () => Promise<void>;
+  /** Finishes a fork copy after a session row owns it. Logs a failure and never rejects. */
+  abstract readonly commitBoundTranscript?: () => Promise<void>;
 
   protected constructor() {}
 }

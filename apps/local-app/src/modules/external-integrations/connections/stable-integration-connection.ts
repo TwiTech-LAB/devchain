@@ -5,6 +5,10 @@ import type {
   IntegrationCredentials,
   IntegrationProvider,
 } from '../../storage/models/domain.models';
+import {
+  storageCredentialSource,
+  type IntegrationCredentialSource,
+} from './integration-credential-source';
 
 type StableConnectionStorage = Pick<
   StorageService,
@@ -19,6 +23,8 @@ export async function loadStableIntegrationConnection(
     expectedEpoch?: number;
     notConnectedMessage: string;
     connectionChangedMessage: string;
+    /** Defaults to the sealed credentials in storage (home). */
+    credentials?: IntegrationCredentialSource;
   },
 ): Promise<{
   connection: IntegrationConnection;
@@ -26,6 +32,7 @@ export async function loadStableIntegrationConnection(
 }> {
   const { projectId, provider, expectedEpoch, notConnectedMessage, connectionChangedMessage } =
     options;
+  const source = options.credentials ?? storageCredentialSource(storage);
   await storage.getProject(projectId);
   const identity = { projectId, provider } as const;
 
@@ -38,7 +45,7 @@ export async function loadStableIntegrationConnection(
       throw epochMismatch(projectId, provider, expectedEpoch, before.generation);
     }
 
-    const credentials = await storage.getIntegrationConnectionCredentials(identity);
+    const credentials = await source.read(before);
     const after = await storage.getIntegrationConnection(identity);
     if (
       !credentials ||

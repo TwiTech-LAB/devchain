@@ -15,6 +15,18 @@ export const MANAGED_SUBTASK_RETRY_BLOCKED_REASONS = [
 
 const blockedRetryReasons = new Set<string>(MANAGED_SUBTASK_RETRY_BLOCKED_REASONS);
 
+/** Whether `code` keeps Retry refused until verification or manual recovery clears it. */
+export function isManagedSubtaskRetryBlockedReason(code: string | null): boolean {
+  return code !== null && blockedRetryReasons.has(code);
+}
+
+/** A phase whose vendor outcome is not known yet: only a verification may settle it. */
+export function isOutcomeUnknownPhase(
+  phase: ExternalManagedSubtaskLink['operationPhase'],
+): boolean {
+  return phase === 'outcome_unknown' || phase === 'dispatch_admitted';
+}
+
 export interface ManagedSubtaskRetryDecision {
   allowed: boolean;
   reason: string | null;
@@ -23,10 +35,10 @@ export interface ManagedSubtaskRetryDecision {
 export function managedSubtaskRetryDecision(
   row: Pick<ExternalManagedSubtaskLink, 'operationPhase' | 'safeErrorCode'>,
 ): ManagedSubtaskRetryDecision {
-  if (row.operationPhase === 'outcome_unknown' || row.operationPhase === 'dispatch_admitted') {
+  if (isOutcomeUnknownPhase(row.operationPhase)) {
     return { allowed: false, reason: 'verification_required' };
   }
-  if (row.safeErrorCode && blockedRetryReasons.has(row.safeErrorCode)) {
+  if (isManagedSubtaskRetryBlockedReason(row.safeErrorCode)) {
     return { allowed: false, reason: row.safeErrorCode };
   }
   if (row.operationPhase !== 'pre_dispatch' && row.operationPhase !== 'needs_attention') {

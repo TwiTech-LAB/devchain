@@ -21,6 +21,7 @@ describe('ProviderEffortsController', () => {
   let adapterFactory: {
     isSupported: jest.Mock;
     getAdapter: jest.Mock;
+    getEffortSupport: ProviderAdapterFactory['getEffortSupport'];
   };
 
   // Provider fixtures. capability is derived from the adapter via isEffortCapable
@@ -79,6 +80,8 @@ describe('ProviderEffortsController', () => {
     adapterFactory = {
       isSupported: jest.fn((name: string) => name.toLowerCase() in adapters),
       getAdapter: jest.fn((name: string) => adapters[name.toLowerCase()]),
+      // The real capability derivation, over the fake adapter lookup above.
+      getEffortSupport: ProviderAdapterFactory.prototype.getEffortSupport,
     };
 
     const module: TestingModule = await Test.createTestingModule({

@@ -250,6 +250,7 @@ export function AgentsPage() {
           description: newAgent.description,
           isProjectOwner: false,
           type: 'agent',
+          disabled: false,
           providerConfig: null,
         };
         return optimisticAdd(list, optimistic);

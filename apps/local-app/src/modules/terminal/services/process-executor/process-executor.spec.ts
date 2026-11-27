@@ -2,6 +2,7 @@ import { ChildProcessExecutor } from './child-process-executor';
 import { FakeProcessExecutor } from './fake-process-executor';
 import { validateEnv } from './process-executor.port';
 import type { ProcessExecutorOptions } from './process-executor.port';
+import { fixturePid } from '../../../../../test/helpers/fixture-pid';
 
 // ── validateEnv ─────────────────────────────────────────────────────────
 
@@ -119,6 +120,112 @@ describe('ChildProcessExecutor', () => {
       mode: 'pipe',
     });
     expect(result.success).toBe(false);
+  });
+
+  // Real shell wrappers whose background `sleep` inherits stdout and outlives them.
+  describe('timed-out runs while a descendant holds stdout', () => {
+    const TIMEOUT_MS = 200;
+    const GRACE_MS = 300;
+    /** Timeout plus grace, with room for a slow machine; far below the descendant's 30 s. */
+    const BOUND_MS = TIMEOUT_MS + GRACE_MS + 1500;
+
+    class ShortGraceExecutor extends ChildProcessExecutor {
+      protected readonly killGraceMs = GRACE_MS;
+    }
+    const shortGrace = new ShortGraceExecutor();
+    const descendants: number[] = [];
+
+    afterEach(() => {
+      for (const pid of descendants.splice(0)) {
+        try {
+          process.kill(pid, 'SIGKILL');
+        } catch {
+          // Already gone.
+        }
+      }
+    });
+
+    /** Runs `script`, which prints the PID of a descendant that holds stdout, and times it. */
+    async function timedRun(script: string, timeout = TIMEOUT_MS) {
+      const started = Date.now();
+      const result = await shortGrace.run({ argv: ['sh', '-c', script], mode: 'pipe', timeout });
+      const elapsed = Date.now() - started;
+      const pid = fixturePid(result.stdout.trim().split('\n')[0] ?? '');
+      if (pid !== null) descendants.push(pid);
+      return { result, elapsed };
+    }
+
+    const timedOutResult = expect.objectContaining({
+      success: false,
+      exitCode: null,
+      timedOut: true,
+    });
+
+    it('settles when the wrapper exits on SIGTERM', async () => {
+      const { result, elapsed } = await timedRun('sleep 30 & echo $!; wait');
+
+      expect(result).toEqual(timedOutResult);
+      expect(descendants).toHaveLength(1);
+      expect(elapsed).toBeLessThan(BOUND_MS);
+    });
+
+    it('sends SIGKILL after the grace and settles when the wrapper ignores SIGTERM', async () => {
+      const { result, elapsed } = await timedRun('trap "" TERM; sleep 30 & echo $!; wait');
+
+      expect(result).toEqual(timedOutResult);
+      expect(elapsed).toBeGreaterThanOrEqual(TIMEOUT_MS + GRACE_MS - 50);
+      expect(elapsed).toBeLessThan(BOUND_MS);
+    });
+
+    it('settles at the timeout when the wrapper exited before it', async () => {
+      const { result, elapsed } = await timedRun('sleep 30 & echo $!; exit 0');
+
+      expect(result).toEqual(timedOutResult);
+      expect(elapsed).toBeLessThan(BOUND_MS);
+    });
+
+    it('resolves once with a consistent result when the child exits as the timeout fires', async () => {
+      const results = await Promise.all(
+        Array.from({ length: 10 }, (_, index) =>
+          shortGrace.run({
+            argv: ['sh', '-c', `sleep 0.${195 + index}`],
+            mode: 'pipe',
+            timeout: TIMEOUT_MS,
+          }),
+        ),
+      );
+
+      for (const result of results) {
+        expect(result).toEqual(
+          result.timedOut
+            ? timedOutResult
+            : expect.objectContaining({ success: true, exitCode: 0, timedOut: false }),
+        );
+      }
+    });
+
+    it('settles two parallel timed-out runs each at its own timeout', async () => {
+      const [short, long] = await Promise.all([
+        timedRun('sleep 30 & echo $!; wait', TIMEOUT_MS),
+        timedRun('sleep 30 & echo $!; wait', TIMEOUT_MS + 600),
+      ]);
+
+      expect(short.result).toEqual(timedOutResult);
+      expect(long.result).toEqual(timedOutResult);
+      expect(short.elapsed).toBeLessThan(long.elapsed);
+      expect(long.elapsed).toBeGreaterThanOrEqual(TIMEOUT_MS + 600 - 50);
+      expect(long.elapsed).toBeLessThan(BOUND_MS + 600);
+    });
+
+    it('settles a retry after a timed-out run the same way', async () => {
+      const first = await timedRun('sleep 30 & echo $!; wait');
+      const retry = await timedRun('sleep 30 & echo $!; wait');
+
+      for (const { result, elapsed } of [first, retry]) {
+        expect(result).toEqual(timedOutResult);
+        expect(elapsed).toBeLessThan(BOUND_MS);
+      }
+    });
   });
 });
 

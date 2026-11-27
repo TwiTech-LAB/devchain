@@ -62,7 +62,9 @@ describe('terminal crash publication', () => {
     sqlite = new Database(':memory:');
     sqlite.exec(`
       CREATE TABLE sessions (
+        kind TEXT NOT NULL DEFAULT 'session',
         id TEXT PRIMARY KEY,
+        parent_session_id TEXT,
         agent_id TEXT,
         epic_id TEXT,
         tmux_session_id TEXT,
@@ -74,8 +76,10 @@ describe('terminal crash publication', () => {
         ended_at TEXT,
         last_activity_at TEXT,
         created_at TEXT DEFAULT '2026-08-08T18:00:00.000Z',
-        updated_at TEXT NOT NULL
+        updated_at TEXT NOT NULL,
+        inherited_session_ids TEXT
       );
+      CREATE TABLE agents (id TEXT PRIMARY KEY, name TEXT);
       INSERT INTO sessions
         (id, agent_id, tmux_session_id, status, started_at, updated_at)
       VALUES
@@ -219,9 +223,20 @@ describe('terminal crash publication', () => {
       { runChecks: jest.fn().mockResolvedValue({ overall: 'pass' }) } as never,
       {} as never,
       new SessionRowStore(db),
+      // Plain restore does not use the rollback collaborators.
+      {} as never,
+      {} as never,
+      {} as never,
     );
     executor.foregroundGroup = '2345';
-    await expect(restore.restore('session-1', project.id)).resolves.toMatchObject({
+    await expect(
+      restore.restore({
+        sessionId: 'session-1',
+        projectId: project.id,
+        admit: () => undefined,
+        stopReplacement: jest.fn(),
+      }),
+    ).resolves.toMatchObject({
       id: 'session-1',
       status: 'running',
       tmuxSessionId: tmuxName,

@@ -6,9 +6,14 @@ import { SessionViewerPanel } from '@/ui/components/session-reader/SessionViewer
 export interface SessionReadSlideOverProps {
   sessionId: string | null;
   onClose: () => void;
+  onCloseAutoFocus?: (event: Event) => void;
 }
 
-export function SessionReadSlideOver({ sessionId, onClose }: SessionReadSlideOverProps) {
+export function SessionReadSlideOver({
+  sessionId,
+  onClose,
+  onCloseAutoFocus,
+}: SessionReadSlideOverProps) {
   const { metrics, isLive } = useSessionTranscript(sessionId);
 
   return (
@@ -18,6 +23,7 @@ export function SessionReadSlideOver({ sessionId, onClose }: SessionReadSlideOve
         <DialogPrimitive.Content
           className="fixed inset-y-0 left-0 z-50 flex w-full max-w-2xl flex-col border-r border-border bg-background shadow-xl focus:outline-none"
           aria-describedby={undefined}
+          onCloseAutoFocus={onCloseAutoFocus}
         >
           <div className="flex items-center justify-between border-b border-border px-4 py-3">
             <DialogPrimitive.Title className="text-sm font-semibold">

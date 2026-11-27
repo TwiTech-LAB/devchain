@@ -117,6 +117,31 @@ describe('host API between two instances', () => {
       expect(resnapshot.status).toBe(201);
     });
 
+    it('writes no link from an import that carries link tables', async () => {
+      const replica = await attachReplica('A');
+      // Only a VM's own export carries these tables; home's attach replica has none.
+      replica.tables.external_task_links = [
+        {
+          id: 'link-1',
+          epic_id: 'epic-1',
+          project_id: 'A',
+          connection_id: null,
+          provider: 'jira',
+          remote_scope_key: 'acme',
+          remote_task_id: 'ENG-1',
+          source_snapshot: '{}',
+          created_at: T,
+          updated_at: T,
+        },
+      ];
+      replica.tables.external_link_receipts = [];
+
+      const response = await post('/api/host/projects/import?mode=resnapshot', replica);
+
+      expect(response.status).toBe(201);
+      expect(hostCount('SELECT 1 FROM external_task_links')).toBe(0);
+    });
+
     it('rejects a payload that is not an attach replica of one project', async () => {
       const replica = await attachReplica('A');
 

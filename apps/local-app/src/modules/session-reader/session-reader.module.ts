@@ -6,6 +6,7 @@ import { ProviderAdaptersModule } from '../providers/adapters';
 import { SessionsModule } from '../sessions/sessions.module';
 import { SessionReaderAdapterFactory } from './adapters/session-reader-adapter.factory';
 import { TranscriptPathValidator } from './services/transcript-path-validator.service';
+import { HooksModule } from '../hooks/hooks.module';
 import { TranscriptPersistenceListener } from './services/transcript-persistence.listener';
 import { ClaudeSessionReaderAdapter } from './adapters/claude-session-reader.adapter';
 import { CodexSessionReaderAdapter } from './adapters/codex-session-reader.adapter';
@@ -39,6 +40,7 @@ import { RuntimeContextCaptureModule } from '../runtime-context-capture/runtime-
     SessionsModule,
     MetricsModule,
     RuntimeContextCaptureModule,
+    HooksModule,
   ],
   providers: [
     SessionReaderAdapterFactory,

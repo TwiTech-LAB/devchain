@@ -8,13 +8,14 @@ import type { GitCoordinatorRecord } from '../git-coordinator/git-coordinator.dt
 import { RemoteHostClient, RemoteHostRequestError } from '../operations/remote-host.client';
 import { RemoteBindingsService } from '../services/remote-bindings.service';
 import { GitOwnerStore } from '../git-owner.store';
-import { HomeGitTransitions } from './home-git-transitions';
+import { HomeGitTransitions, type HomeGitStepDownContext } from './home-git-transitions';
 import {
   DEFAULT_HOME_GIT_WRITE_TIMINGS,
   HOME_GIT_WRITE_TIMINGS,
   HomeGitWriteService,
 } from './home-git-write.service';
 import { HomeGitWriteStore, type HomeGitWrite } from './home-git-write.store';
+import { HomeGitRecoveryService } from './home-git-recovery.service';
 
 jest.mock('../git-coordinator/git-checkpoint');
 
@@ -53,12 +54,15 @@ const saved = (n: number, overrides: Partial<HomeGitWrite> = {}): HomeGitWrite =
 describe('HomeGitWriteService', () => {
   let service: HomeGitWriteService;
   let writes: Map<string, HomeGitWrite>;
+  let handover: { id: string; remoteId: string } | null;
+  let startedStepDown: { generation: number; remoteId: string; at: number } | null;
   let owners: Map<string, { owner: 'home' | 'vm'; generation: number }>;
   const signal = new AbortController().signal;
   const host = {
     gitCoordinatorStatus: jest.fn(),
     homeWriteBegin: jest.fn(),
     homeWriteEnd: jest.fn(),
+    homeRenew: jest.fn(),
     syncStatus: jest.fn(),
     syncRevert: jest.fn(),
   };
@@ -79,15 +83,22 @@ describe('HomeGitWriteService', () => {
     jest.useFakeTimers({ now: 1_000 });
     jest.resetAllMocks();
     writes = new Map();
+    handover = null;
+    startedStepDown = null;
     jest.mocked(refsDigest).mockResolvedValue('digest');
     jest.mocked(exportIndexSnapshot).mockResolvedValue(Buffer.from('DIRC'));
     owners = new Map([['p', { owner: 'home', generation: 3 }]]);
+    transitions.stepDown.mockImplementation(async (context: HomeGitStepDownContext) => {
+      context.settled?.();
+      owners.set(context.projectId, { owner: 'vm', generation: context.record.generation });
+    });
     bindings.get.mockResolvedValue({ projectId: 'p', remoteId: 'r', state: 'remote' });
     bindings.list.mockResolvedValue([]);
     processes.read.mockResolvedValue('boot:1');
     host.gitCoordinatorStatus.mockResolvedValue(record());
     host.homeWriteBegin.mockResolvedValue(record());
     host.homeWriteEnd.mockResolvedValue(record());
+    host.homeRenew.mockResolvedValue(record());
     host.syncStatus.mockResolvedValue({ fileErrors: [] });
     files.folderPath.mockResolvedValue('/project');
     files.projectFolders.mockResolvedValue([
@@ -96,6 +107,7 @@ describe('HomeGitWriteService', () => {
     ]);
     files.device.mockReturnValue({ deviceId: 'HOME' });
     files.folderConfiguration.mockResolvedValue({
+      type: 'receiveonly',
       devices: [{ deviceID: 'HOME' }, { deviceID: 'VM' }],
     });
     files.status.mockResolvedValue({ sequence: 40 });
@@ -103,6 +115,7 @@ describe('HomeGitWriteService', () => {
     const module = await Test.createTestingModule({
       providers: [
         HomeGitWriteService,
+        { provide: HomeGitRecoveryService, useValue: { schedule: jest.fn() } },
         {
           provide: STORAGE_SERVICE,
           useValue: { getRemote: async () => ({ name: 'vm-01' }) },
@@ -120,6 +133,23 @@ describe('HomeGitWriteService', () => {
             get: (id: string) => writes.get(id) ?? null,
             put: (write: HomeGitWrite) => writes.set(write.writeId, write),
             delete: (id: string) => writes.delete(id),
+            handover: () => handover,
+            rememberHandover: (_id: string, remoteId: string, id: string) => {
+              handover = { remoteId, id };
+            },
+            clearHandover: () => {
+              handover = null;
+            },
+            stepDownStartedAt: (_id: string, remoteId: string, generation: number) =>
+              startedStepDown?.remoteId === remoteId && startedStepDown.generation === generation
+                ? startedStepDown.at
+                : null,
+            rememberStepDown: (_id: string, remoteId: string, generation: number, at: number) => {
+              startedStepDown = { remoteId, generation, at };
+            },
+            clearStepDown: () => {
+              startedStepDown = null;
+            },
           },
         },
         {
@@ -164,6 +194,41 @@ describe('HomeGitWriteService', () => {
     expect(host.gitCoordinatorStatus).not.toHaveBeenCalled();
   });
 
+  it('refuses a recovery write when its project is now bound to a different VM', async () => {
+    await expect(service.acquire('p', 77, signal, 'previous-vm')).rejects.toMatchObject({
+      code: 'GIT_RECOVERY_REMOTE_CHANGED',
+      statusCode: 409,
+    });
+    expect(host.homeWriteBegin).not.toHaveBeenCalled();
+    expect(writes.size).toBe(0);
+  });
+
+  it('renews once per project while writes are saved and retries a failed renewal on the next interval', async () => {
+    writes.set('hw-1', saved(1));
+    writes.set('hw-2', saved(2));
+    host.homeRenew.mockRejectedValueOnce(unreachable());
+    await service.onApplicationBootstrap();
+    await jest.advanceTimersByTimeAsync(29_999);
+    expect(host.homeRenew).not.toHaveBeenCalled();
+    await jest.advanceTimersByTimeAsync(1);
+    expect(host.homeRenew.mock.calls).toEqual([
+      ['r', 'p', { expectedGeneration: 3, transitionId: null }],
+    ]);
+
+    writes.delete('hw-1');
+    owners.set('p', { owner: 'home', generation: 4 });
+    await jest.advanceTimersByTimeAsync(30_000);
+    expect(host.homeRenew).toHaveBeenCalledTimes(2);
+    expect(host.homeRenew).toHaveBeenLastCalledWith('r', 'p', {
+      expectedGeneration: 4,
+      transitionId: null,
+    });
+
+    writes.delete('hw-2');
+    await jest.advanceTimersByTimeAsync(30_000);
+    expect(host.homeRenew).toHaveBeenCalledTimes(2);
+  });
+
   it.each([
     ['the VM owns Git', 'vm', [record({ owner: 'vm' })], ['handover']],
     [
@@ -183,8 +248,9 @@ describe('HomeGitWriteService', () => {
     async (_case, cached, vm, moves) => {
       owners.set('p', { owner: cached, generation: 3 });
       // A cached home owner tries its generation first; the VM refuses it.
-      if (cached === 'home')
+      if (cached === 'home') {
         host.homeWriteBegin.mockRejectedValueOnce(refused('GIT_GENERATION_MISMATCH'));
+      }
       for (const answer of vm) host.gitCoordinatorStatus.mockResolvedValueOnce(answer);
       host.gitCoordinatorStatus.mockResolvedValue(record({ generation: 6 }));
       const order: string[] = [];
@@ -234,6 +300,139 @@ describe('HomeGitWriteService', () => {
     );
   });
 
+  it.each([
+    ['cached home ownership', true, false, false, 'receiveonly', 4, null, true],
+    ['a saved superseded write', false, true, false, 'receiveonly', 4, null, true],
+    ['a locally started handover', false, false, true, 'receiveonly', 4, null, true],
+    ['a send-only Git folder', false, false, false, 'sendonly', 4, null, true],
+    ['no local evidence', false, false, false, 'receiveonly', 4, null, false],
+    ['evidence from another VM', false, true, true, 'receiveonly', 4, 'other', false],
+    ['the cached generation', true, true, true, 'sendonly', 3, null, false],
+    ['an active reclaim', true, true, true, 'sendonly', 4, 'reclaim', false],
+  ] as const)(
+    'checks the authoritative VM record for step-down with %s',
+    async (_case, cachedHome, savedWrite, startedHandover, type, generation, variant, expected) => {
+      owners.set('p', { owner: cachedHome ? 'home' : 'vm', generation: 3 });
+      const remoteId = variant === 'other' ? 'other' : 'r';
+      if (savedWrite) writes.set('hw-1', saved(1, { remoteId }));
+      if (startedHandover) handover = { id: 'h', remoteId };
+      files.folderConfiguration.mockResolvedValue({ type });
+      processes.read.mockResolvedValue(false);
+      host.gitCoordinatorStatus.mockResolvedValue(
+        record({
+          owner: 'vm',
+          generation,
+          supersededWrites: { 'hw-1': { generation: 3, at: 1 } },
+          supersededHandovers: ['h'],
+          transition:
+            variant === 'reclaim'
+              ? { kind: 'reclaim', id: 'r1', phase: 'sending', lease: null }
+              : null,
+        }),
+      );
+      await service.stepDownIfReclaimed('p', 'r');
+      expect(transitions.stepDown).toHaveBeenCalledTimes(Number(expected));
+      if (expected)
+        expect(transitions.stepDown).toHaveBeenCalledWith(
+          expect.objectContaining({ preserveSuperseded: savedWrite || startedHandover }),
+        );
+    },
+  );
+
+  it('stops confirmation on a superseded write and keeps it until step-down completes', async () => {
+    writes.set('hw-1', saved(1));
+    processes.read.mockResolvedValue(false);
+    const reclaimed = record({
+      owner: 'vm',
+      generation: 4,
+      supersededWrites: { 'hw-1': { generation: 3, at: 1 } },
+    });
+    host.gitCoordinatorStatus.mockResolvedValue(reclaimed);
+    host.homeWriteEnd.mockRejectedValue(refused('GIT_HOME_WRITE_SUPERSEDED'));
+    let finish!: () => void;
+    const settle = transitions.stepDown.getMockImplementation()!;
+    transitions.stepDown.mockImplementation(async (context: HomeGitStepDownContext) => {
+      await new Promise<void>((resolve) => (finish = resolve));
+      await settle(context);
+    });
+    await service.onApplicationBootstrap();
+    await jest.advanceTimersByTimeAsync(10_000);
+    expect(host.homeWriteEnd).toHaveBeenCalledTimes(1);
+    expect(transitions.stepDown).toHaveBeenCalledTimes(1);
+    expect(writes.has('hw-1')).toBe(true);
+    finish();
+    await jest.advanceTimersByTimeAsync(0);
+    expect(writes.has('hw-1')).toBe(false);
+    expect(owners.get('p')).toEqual({ owner: 'vm', generation: 4 });
+  });
+
+  it('cancels a stalled change barrier when the poll sees a reclaim and waits for unknown Git processes', async () => {
+    writes.set('hw-1', saved(1));
+    processes.read.mockImplementation(async (pid) => (pid === 72 ? null : false));
+    bindings.list.mockResolvedValue([{ projectId: 'p', remoteId: 'r', state: 'remote' }]);
+    files.remoteNeedThrough.mockResolvedValue(['.git/refs/heads/main']);
+    await service.onApplicationBootstrap();
+    await jest.advanceTimersByTimeAsync(3_500);
+    expect(files.remoteNeedThrough).toHaveBeenCalled();
+    expect(host.homeWriteEnd).not.toHaveBeenCalled();
+    processes.read.mockResolvedValueOnce('boot:1');
+    const { writeId } = await service.acquire('p', 72, signal);
+    host.gitCoordinatorStatus.mockResolvedValue(
+      record({
+        owner: 'vm',
+        generation: 4,
+        supersededWrites: {
+          'hw-1': { generation: 3, at: 1 },
+          [writeId]: { generation: 3, at: 2 },
+        },
+      }),
+    );
+    await jest.advanceTimersByTimeAsync(1_500);
+    files.remoteNeedThrough.mockClear();
+    await jest.advanceTimersByTimeAsync(4_999);
+    expect(files.remoteNeedThrough).not.toHaveBeenCalled();
+    expect(transitions.stepDown).not.toHaveBeenCalled();
+    expect(writes.size).toBe(2);
+
+    processes.read.mockResolvedValue(false);
+    await jest.advanceTimersByTimeAsync(1);
+    expect(transitions.stepDown).toHaveBeenCalledTimes(1);
+    expect(writes.size).toBe(0);
+  });
+
+  it('reconciles a superseded lease renewal immediately', async () => {
+    writes.set('hw-1', saved(1));
+    host.homeRenew.mockRejectedValue(refused('GIT_HOME_WRITE_SUPERSEDED'));
+    host.gitCoordinatorStatus.mockResolvedValue(
+      record({
+        owner: 'vm',
+        generation: 4,
+        supersededWrites: { 'hw-1': { generation: 3, at: 1 } },
+      }),
+    );
+    await service.onApplicationBootstrap();
+    await jest.advanceTimersByTimeAsync(29_999);
+    expect(host.gitCoordinatorStatus).not.toHaveBeenCalled();
+    processes.read.mockResolvedValue(false);
+    await jest.advanceTimersByTimeAsync(1);
+    expect(transitions.stepDown).toHaveBeenCalledTimes(1);
+    expect(writes.size).toBe(0);
+  });
+
+  it('resumes a step-down after changing the only trigger, the folder direction', async () => {
+    owners.set('p', { owner: 'vm', generation: 3 });
+    host.gitCoordinatorStatus.mockResolvedValue(record({ owner: 'vm', generation: 4 }));
+    files.folderConfiguration.mockResolvedValueOnce({ type: 'sendonly' });
+    transitions.stepDown.mockRejectedValueOnce(new Error('settle failed'));
+    await expect(service.stepDownIfReclaimed('p', 'r')).rejects.toThrow('settle failed');
+    const { startedAt } = transitions.stepDown.mock.calls[0][0];
+    await jest.advanceTimersByTimeAsync(5_000);
+    await service.stepDownIfReclaimed('p', 'r');
+    expect(transitions.stepDown).toHaveBeenLastCalledWith(expect.objectContaining({ startedAt }));
+    expect(transitions.stepDown).toHaveBeenCalledTimes(2);
+    expect(owners.get('p')).toEqual({ owner: 'vm', generation: 4 });
+  });
+
   it('keeps the write in flight while its git is alive or unknown, and confirms it once git is gone', async () => {
     const { writeId } = await service.acquire('p', 77, signal);
     processes.read
@@ -247,6 +446,7 @@ describe('HomeGitWriteService', () => {
       expectedGeneration: 3,
       transitionId: null,
       writeId,
+      batch: [writeId],
       refsDigest: 'digest',
       indexBase64: Buffer.from('DIRC').toString('base64'),
     });
@@ -382,6 +582,7 @@ describe('HomeGitWriteService', () => {
           expectedGeneration,
           transitionId: null,
           writeId,
+          batch: ['hw-1', 'hw-2', 'hw-3'],
           refsDigest: 'digest',
           indexBase64: index,
         },
@@ -391,9 +592,9 @@ describe('HomeGitWriteService', () => {
   });
 
   it.each([
-    ['joins the batch once it ends within the settle wait', 1_000, [['hw-1', 'hw-2']]],
-    ['stays out of the batch past the settle wait', 5_000, [['hw-1'], ['hw-2']]],
-  ])('a write whose git still runs %s', async (_case, runsMs, batches) => {
+    ['joins the batch once it ends within the settle wait', 1_000],
+    ['blocks confirmation when it outlasts the settle wait', 5_000],
+  ])('a write whose git still runs %s', async (_case, runsMs) => {
     writes.set('hw-1', saved(1));
     writes.set('hw-2', saved(2));
     const alive = new Set([72]);
@@ -402,11 +603,12 @@ describe('HomeGitWriteService', () => {
     );
     await service.onApplicationBootstrap();
     await jest.advanceTimersByTimeAsync(runsMs);
+    expect(host.homeWriteEnd).not.toHaveBeenCalled();
     alive.clear();
     await jest.advanceTimersByTimeAsync(1_000);
     const confirmed = host.homeWriteEnd.mock.calls.map(([, , body]) => body.writeId);
-    expect(confirmed).toEqual(batches.flat());
-    expect(files.rescan).toHaveBeenCalledTimes(2 * batches.length);
+    expect(confirmed).toEqual(['hw-1', 'hw-2']);
+    expect(files.rescan).toHaveBeenCalledTimes(2);
     expect(writes.size).toBe(0);
   });
 
@@ -417,22 +619,15 @@ describe('HomeGitWriteService', () => {
     'stops the batch at %s, keeps the later members, and retries them with one more sync check',
     async (_case, error) => {
       for (const n of [1, 2, 3, 4]) writes.set(`hw-${n}`, saved(n));
-      const alive = new Set([74]);
-      processes.read.mockImplementation(async (pid: number) =>
-        alive.has(pid) ? 'boot:1' : 'boot:2',
-      );
+      processes.read.mockResolvedValue('boot:2');
       const seen: [string, string[]][] = [];
       host.homeWriteEnd.mockImplementation(async (_r, _p, { writeId }) => {
         seen.push([writeId, [...writes.keys()]]);
-        if (writeId === 'hw-2' && seen.length === 2) {
-          alive.clear();
-          throw error;
-        }
+        if (writeId === 'hw-2' && seen.length === 2) throw error;
         return record();
       });
       await service.onApplicationBootstrap();
       await jest.advanceTimersByTimeAsync(10_000);
-      // hw-4's git outlives the settle wait, then ends while the first batch confirms.
       expect(seen).toEqual([
         ['hw-1', ['hw-1', 'hw-2', 'hw-3', 'hw-4']],
         ['hw-2', ['hw-2', 'hw-3', 'hw-4']],

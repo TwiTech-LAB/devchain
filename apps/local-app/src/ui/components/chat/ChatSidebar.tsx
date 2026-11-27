@@ -14,9 +14,8 @@ import { Badge } from '@/ui/components/ui/badge';
 import { ScrollArea } from '@/ui/components/ui/scroll-area';
 import { Separator } from '@/ui/components/ui/separator';
 import { Skeleton } from '@/ui/components/ui/skeleton';
-import { Tabs, TabsList, TabsTrigger } from '@/ui/components/ui/tabs';
 import { useToast } from '@/ui/hooks/use-toast';
-import { useQueries, useQuery } from '@tanstack/react-query';
+import { useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
 import { PresetPopover } from './PresetPopover';
 import { AgentRow } from './AgentRow';
 import { restartKeyForMain } from '@/ui/lib/restart-keys';
@@ -39,20 +38,31 @@ import {
   getMetricsKey,
   type AgentSessionEntry,
 } from '@/ui/hooks/useAgentSessionMetrics';
-import type { AgentOrGuest } from '@/ui/hooks/useChatQueries';
+import { chatQueryKeys, type AgentOrGuest } from '@/ui/hooks/useChatQueries';
+import { agentQueryKeys } from '@/ui/lib/agents';
 import { compareCanonicalAgents } from '@/ui/lib/agent-ordering';
 import type { PresetAvailability } from '@/ui/lib/preset-validation';
 import { getProviderIconDataUri } from '@/ui/lib/providers';
 import { shortModelName } from '@/ui/lib/model-utils';
-import { Link } from 'react-router-dom';
 import { fetchTeamDetail, fetchTeams, teamsQueryKeys, type TeamDetail } from '@/ui/lib/teams';
 import { TeamQuickAddButton } from './TeamQuickAddButton';
+import { TeamStatusDots } from './TeamStatusDots';
+import { formatBusyDuration } from './team-status-dots';
 import {
   AgentEventBus,
   useAgentEventBusAnchor,
   type AgentEventBusAnchorDescriptor,
 } from './agent-event-bus';
 import { useFetchFactory } from '@/ui/hooks/useFetchFactory';
+import {
+  getTeamMembers,
+  hasActiveMember,
+  isTeamCollapsed,
+  loadTeamFoldOverrides,
+  saveTeamFoldOverride,
+  type TeamFoldOverride,
+  type TeamFoldOverrides,
+} from './team-fold';
 
 function formatSectionCount(count: number, singular: string, plural = `${singular}s`) {
   return `${count} ${count === 1 ? singular : plural}`;
@@ -76,6 +86,8 @@ export interface ChatSidebarData {
   guests: AgentOrGuest[];
   agentPresence: AgentPresenceMap;
   presenceReady: boolean;
+  /** See `UseChatQueriesResult.presenceSettled`; gates deletion of saved team folds. */
+  presenceSettled: boolean;
   offlineAgents: AgentOrGuest[];
   agentsWithSessions: AgentOrGuest[];
   agentsLoading: boolean;
@@ -147,6 +159,9 @@ export interface ChatSidebarAdminActions {
     context?: { teamId: string; teamName: string; isTeamLead: boolean },
   ) => void;
   onDeleteAgent?: (agent: AgentOrGuest) => void;
+  /** Disable asks for confirmation itself when the agent has a running session. */
+  onDisableAgent?: (agent: AgentOrGuest) => void;
+  onEnableAgent?: (agent: AgentOrGuest) => void;
   pendingDeleteAgentId?: string | null;
   onAddTeamAgent?: (payload: import('./TeamQuickAddButton').QuickAddPayload) => void;
   onEditTeam?: (payload: {
@@ -164,10 +179,14 @@ export interface ChatSidebarProps {
   adminActions: ChatSidebarAdminActions;
 }
 
-type AgentGroupMode = 'all' | 'teams';
-
 interface EventBusAgentRowProps extends ComponentProps<typeof AgentRow> {
   eventBusAnchor: AgentEventBusAnchorDescriptor;
+}
+
+/** Canonical order with disabled agents after enabled ones. */
+function compareEnabledFirst(left: AgentOrGuest, right: AgentOrGuest): number {
+  const disabledOrder = Number(left.disabled === true) - Number(right.disabled === true);
+  return disabledOrder !== 0 ? disabledOrder : compareCanonicalAgents(left, right);
 }
 
 function EventBusAgentRow({ eventBusAnchor, ...props }: EventBusAgentRowProps) {
@@ -222,12 +241,14 @@ function getAgentConfigDisplay(agent: AgentOrGuest): AgentConfigDisplay | null {
 
 function ChatSidebarInner({ data, sessionController, adminActions }: ChatSidebarProps) {
   const fetchFn = useFetchFactory();
+  const queryClient = useQueryClient();
   const {
     projectId,
     agents,
     guests,
     agentPresence,
     presenceReady,
+    presenceSettled,
     offlineAgents,
     agentsWithSessions,
     agentsLoading,
@@ -265,8 +286,15 @@ function ChatSidebarInner({ data, sessionController, adminActions }: ChatSidebar
     onSwitchConfig,
     updatingConfigAgentIds,
   } = sessionController;
-  const { onCloneAgent, onDeleteAgent, pendingDeleteAgentId, onAddTeamAgent, onEditTeam } =
-    adminActions;
+  const {
+    onCloneAgent,
+    onDeleteAgent,
+    onDisableAgent,
+    onEnableAgent,
+    pendingDeleteAgentId,
+    onAddTeamAgent,
+    onEditTeam,
+  } = adminActions;
 
   const { toast } = useToast();
 
@@ -281,26 +309,15 @@ function ChatSidebarInner({ data, sessionController, adminActions }: ChatSidebar
     setOverridesTarget(null);
   }, []);
 
-  const [mainExpanded, setMainExpanded] = useState(() => {
-    if (typeof window === 'undefined') return true;
-    const stored = window.localStorage.getItem('devchain:chatSidebar:mainExpanded');
-    return stored !== 'false';
-  });
-  const [agentGroupMode, setAgentGroupMode] = useState<AgentGroupMode>('all');
-  const [collapsedTeamGroups, setCollapsedTeamGroups] = useState<Record<string, boolean>>(() => {
-    if (typeof window === 'undefined') return {};
-    try {
-      const stored = window.localStorage.getItem('devchain:chatSidebar:teamGroups');
-      return stored ? (JSON.parse(stored) as Record<string, boolean>) : {};
-    } catch {
-      return {};
-    }
-  });
+  const [teamFoldOverrides, setTeamFoldOverrides] =
+    useState<TeamFoldOverrides>(loadTeamFoldOverrides);
 
   const shouldFetchTeams = Boolean(projectId);
   const {
     data: teamsResponse,
     isLoading: teamsListLoading,
+    isSuccess: teamsListSuccess,
+    isFetching: teamsListFetching,
     isError: teamsListError,
     error: teamsListErrorValue,
   } = useQuery({
@@ -311,20 +328,6 @@ function ChatSidebarInner({ data, sessionController, adminActions }: ChatSidebar
   });
   const teams = useMemo(() => teamsResponse?.items ?? [], [teamsResponse]);
 
-  useEffect(() => {
-    setCollapsedTeamGroups((previous) => {
-      const next = { ...previous };
-      let changed = false;
-      for (const team of teams) {
-        if (!(team.id in next)) {
-          next[team.id] = false;
-          changed = true;
-        }
-      }
-      return changed ? next : previous;
-    });
-  }, [teams]);
-
   const teamDetailQueries = useQueries({
     queries: shouldFetchTeams
       ? teams.map((team) => ({
@@ -334,44 +337,6 @@ function ChatSidebarInner({ data, sessionController, adminActions }: ChatSidebar
         }))
       : [],
   });
-
-  // Persist collapsed states to localStorage
-  useEffect(() => {
-    if (typeof window === 'undefined') return;
-    window.localStorage.setItem(
-      'devchain:chatSidebar:mainExpanded',
-      mainExpanded ? 'true' : 'false',
-    );
-  }, [mainExpanded]);
-
-  useEffect(() => {
-    if (!projectId || teamsListLoading) return;
-    const key = `devchain:chat:agentTab:${projectId}`;
-    const stored = typeof window !== 'undefined' ? window.localStorage.getItem(key) : null;
-    if (stored === 'all' || stored === 'teams') {
-      setAgentGroupMode(stored);
-    } else {
-      setAgentGroupMode(teams.length > 0 ? 'teams' : 'all');
-    }
-  }, [projectId, teamsListLoading, teams.length]);
-
-  const handleAgentGroupModeChange = useCallback(
-    (value: AgentGroupMode) => {
-      setAgentGroupMode(value);
-      if (projectId && typeof window !== 'undefined') {
-        window.localStorage.setItem(`devchain:chat:agentTab:${projectId}`, value);
-      }
-    },
-    [projectId],
-  );
-
-  useEffect(() => {
-    if (typeof window === 'undefined') return;
-    window.localStorage.setItem(
-      'devchain:chatSidebar:teamGroups',
-      JSON.stringify(collapsedTeamGroups),
-    );
-  }, [collapsedTeamGroups]);
 
   // Per-agent context bar hidden set (persisted to localStorage)
   const [contextBarHidden, setContextBarHidden] = useState<Set<string>>(() => {
@@ -406,13 +371,6 @@ function ChatSidebarInner({ data, sessionController, adminActions }: ChatSidebar
     });
   }, []);
 
-  const toggleTeamGroup = useCallback((teamId: string) => {
-    setCollapsedTeamGroups((previous) => ({
-      ...previous,
-      [teamId]: !previous[teamId],
-    }));
-  }, []);
-
   const renderActivityBadgeForPresence = useCallback((presence?: AgentPresenceMap[string]) => {
     if (!presence?.online) return null;
 
@@ -420,11 +378,7 @@ function ChatSidebarInner({ data, sessionController, adminActions }: ChatSidebar
     const busySince = presence.busySince ?? null;
 
     if (activityState === 'busy') {
-      const since = busySince ? new Date(busySince).getTime() : Date.now();
-      const ms = Math.max(0, Date.now() - since);
-      const mins = Math.floor(ms / 60000);
-      const secs = Math.floor((ms % 60000) / 1000);
-      const label = mins > 0 ? `${mins}m` : `${secs}s`;
+      const label = formatBusyDuration(busySince, Date.now());
       const aria = `Busy for ${label}`;
       return (
         <span
@@ -443,14 +397,15 @@ function ChatSidebarInner({ data, sessionController, adminActions }: ChatSidebar
     return renderActivityBadgeForPresence(agentPresence[agentId]);
   };
 
-  const teamViewLoading =
+  const teamsFirstLoad =
     shouldFetchTeams && (teamsListLoading || teamDetailQueries.some((query) => query.isLoading));
   const teamDetailError = teamDetailQueries.find((query) => query.isError)?.error;
   const teamsViewError = teamsListError || Boolean(teamDetailError);
+  const showTeamsView = !teamsViewError && teams.length > 0;
   const teamsViewErrorHandledRef = useRef(false);
 
   useEffect(() => {
-    if (agentGroupMode !== 'teams' || !teamsViewError) {
+    if (!teamsViewError) {
       teamsViewErrorHandledRef.current = false;
       return;
     }
@@ -466,19 +421,10 @@ function ChatSidebarInner({ data, sessionController, adminActions }: ChatSidebar
           : 'Teams could not be loaded.';
     toast({
       title: 'Unable to load teams view',
-      description: `${message} Falling back to All agents.`,
+      description: `${message} Showing the agent list without teams.`,
       variant: 'destructive',
     });
-    setAgentGroupMode('all');
-  }, [
-    agentGroupMode,
-    teamDetailError,
-    teamsListError,
-    teamsListErrorValue,
-    teamsViewError,
-    toast,
-    teamsViewErrorHandledRef,
-  ]);
+  }, [teamDetailError, teamsListErrorValue, teamsViewError, toast]);
 
   const teamDetailsById = useMemo(() => {
     const map = new Map<string, TeamDetail>();
@@ -510,14 +456,20 @@ function ChatSidebarInner({ data, sessionController, adminActions }: ChatSidebar
         const sectionAgents = detail.members
           .map((member) => agentsById.get(member.agentId))
           .filter((agent): agent is AgentOrGuest => Boolean(agent))
-          .sort(compareCanonicalAgents);
+          .sort(compareEnabledFirst);
         if (sectionAgents.length === 0) {
           return null;
         }
         sectionAgents.forEach((agent) => {
           teamMembership.add(agent.id);
         });
-        return { team, detail, agents: sectionAgents };
+        return {
+          team,
+          detail,
+          agents: sectionAgents,
+          lead: sectionAgents.find((agent) => agent.id === detail.teamLeadAgentId) ?? null,
+          members: getTeamMembers(sectionAgents, detail.teamLeadAgentId),
+        };
       })
       .filter(
         (
@@ -526,6 +478,8 @@ function ChatSidebarInner({ data, sessionController, adminActions }: ChatSidebar
           team: (typeof teams)[number];
           detail: TeamDetail;
           agents: AgentOrGuest[];
+          lead: AgentOrGuest | null;
+          members: AgentOrGuest[];
         } => Boolean(section),
       );
 
@@ -536,6 +490,187 @@ function ChatSidebarInner({ data, sessionController, adminActions }: ChatSidebar
         .sort(compareCanonicalAgents),
     };
   }, [agentsById, canonicalAgents, teamDetailsById, teams]);
+
+  // The team view waits for presence so teams never render open and then fold.
+  // The flat list never waits for it.
+  const listReady =
+    !agentsLoading && !agentsError && !teamsFirstLoad && (!showTeamsView || presenceReady);
+
+  // An agent that leads any team cannot be disabled, also on its member rows in other teams.
+  const teamLeadIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const team of teams) if (team.teamLeadAgentId) ids.add(team.teamLeadAgentId);
+    for (const detail of teamDetailsById.values()) {
+      if (detail.teamLeadAgentId) ids.add(detail.teamLeadAgentId);
+    }
+    return ids;
+  }, [teams, teamDetailsById]);
+
+  const teamFold = useMemo(() => {
+    const byTeamId = new Map<string, { hasActive: boolean; isExpanded: boolean }>();
+    for (const { team, members } of teamSections.items) {
+      // The roster can mark an agent disabled before presence drops its last online record.
+      const hasActive = hasActiveMember(
+        members.filter((member) => !member.disabled),
+        agentPresence,
+      );
+      byTeamId.set(team.id, {
+        hasActive,
+        isExpanded: !isTeamCollapsed(hasActive, teamFoldOverrides[team.id]),
+      });
+    }
+    return byTeamId;
+  }, [agentPresence, teamFoldOverrides, teamSections]);
+
+  // Rows in render order. The string form changes only when the set of mounted
+  // row elements changes, not on every presence poll. A team row's key carries
+  // its place in the team (lead header, member list, or list of a team with no
+  // lead): a lead change remounts the rows in a new place with the same ids.
+  // Every key also marks a disabled row, whose element is not a metrics target;
+  // Enable gives the row one.
+  const renderedRows = useMemo(() => {
+    const metricsMark = (agent: AgentOrGuest) => (agent.disabled ? ':disabled' : '');
+    const rows: Array<{ key: string; agentId: string }> = [];
+    if (!listReady) return rows;
+    if (!showTeamsView) {
+      canonicalAgents.forEach((agent) =>
+        rows.push({ key: `all:${agent.id}${metricsMark(agent)}`, agentId: agent.id }),
+      );
+      return rows;
+    }
+    for (const { team, agents: teamAgents, lead } of teamSections.items) {
+      const isExpanded = teamFold.get(team.id)?.isExpanded ?? false;
+      for (const agent of teamAgents) {
+        const isLead = agent.id === lead?.id;
+        if (isExpanded || isLead) {
+          const place = isLead ? 'lead' : lead ? 'member' : 'no-lead';
+          rows.push({
+            key: `${team.id}:${agent.id}:${place}${metricsMark(agent)}`,
+            agentId: agent.id,
+          });
+        }
+      }
+    }
+    teamSections.noTeamAgents.forEach((agent) =>
+      rows.push({ key: `no-team:${agent.id}${metricsMark(agent)}`, agentId: agent.id }),
+    );
+    return rows;
+  }, [canonicalAgents, listReady, showTeamsView, teamFold, teamSections]);
+  const renderedRowsKey = renderedRows.map((row) => row.key).join('|');
+
+  const teamDataSettled =
+    teamsListSuccess &&
+    !teamsListFetching &&
+    teamDetailQueries.every((query) => query.isSuccess && !query.isFetching);
+
+  // Update counts that an expiry must exceed for presence and for the roster:
+  // each count when the team data last changed, plus one if a request was in
+  // flight then. `rosterRefreshAt` is the presence count at the last roster
+  // refresh that the expiry asked for: at most one per presence response.
+  const expiryFreshnessRef = useRef<{
+    teamData: string;
+    presenceCount: number;
+    rosterCount: number;
+    rosterRefreshAt: number | null;
+  } | null>(null);
+
+  // An override ends once the team's activity differs from when it was set.
+  // Judge that only on a successful, settled snapshot of presence, roster and
+  // teams: a failed presence load reads as "everyone offline". Presence and
+  // the roster arrive as props, so they can commit apart from the team queries
+  // here; the cache checks reject props that are pending or differ from the
+  // cache. Team data refetches on its own (on focus), so presence and roster
+  // count only when requested after the latest team data arrived. Presence
+  // polls; the roster does not, so an expiry that waits on it refreshes it.
+  useEffect(() => {
+    if (!projectId) return;
+    const presenceKey = chatQueryKeys.agentPresence(projectId);
+    const rosterKey = agentQueryKeys.withGuests(projectId);
+    const presenceState = queryClient.getQueryState(presenceKey);
+    const rosterState = queryClient.getQueryState(rosterKey);
+    const countAfter = (state: { dataUpdateCount: number; fetchStatus: string } | undefined) =>
+      (state?.dataUpdateCount ?? 0) + (state?.fetchStatus === 'fetching' ? 1 : 0);
+    const teamData = [
+      queryClient.getQueryState(teamsQueryKeys.teams(projectId))?.dataUpdateCount ?? 0,
+      ...teams.map(
+        (team) =>
+          `${team.id}:${queryClient.getQueryState(teamsQueryKeys.detail(team.id))?.dataUpdateCount ?? 0}`,
+      ),
+    ].join('|');
+    if (expiryFreshnessRef.current?.teamData !== teamData) {
+      expiryFreshnessRef.current = {
+        teamData,
+        presenceCount: countAfter(presenceState),
+        rosterCount: countAfter(rosterState),
+        rosterRefreshAt: null,
+      };
+    }
+    const freshness = expiryFreshnessRef.current;
+
+    if (!listReady || !showTeamsView || !presenceSettled || !teamDataSettled) return;
+    const presenceCount = presenceState?.dataUpdateCount ?? 0;
+    if (
+      presenceCount <= freshness.presenceCount ||
+      queryClient.isFetching({ queryKey: presenceKey }) > 0 ||
+      queryClient.isFetching({ queryKey: rosterKey }) > 0 ||
+      queryClient.getQueryData(presenceKey) !== agentPresence
+    ) {
+      return;
+    }
+    const expired = new Map<string, TeamFoldOverride>();
+    for (const [teamId, fold] of teamFold) {
+      const override = teamFoldOverrides[teamId];
+      if (override && override.whenActive !== fold.hasActive) expired.set(teamId, override);
+    }
+    if (expired.size === 0) return;
+
+    // A roster whose latest request failed still shows its cached rows; it needs
+    // a successful refresh before an expiry, whatever its earlier update count.
+    if (
+      rosterState?.status === 'error' ||
+      (rosterState?.dataUpdateCount ?? 0) <= freshness.rosterCount
+    ) {
+      if (freshness.rosterRefreshAt !== presenceCount) {
+        freshness.rosterRefreshAt = presenceCount;
+        void queryClient.refetchQueries({ queryKey: rosterKey, exact: true, type: 'active' });
+      }
+      return;
+    }
+    const roster = queryClient.getQueryData<{ items?: AgentOrGuest[] }>(rosterKey)?.items ?? [];
+    const rosterAgents = roster.filter((item) => item.type !== 'guest');
+    if (
+      rosterAgents.length !== agentsById.size ||
+      rosterAgents.some((agent) => !agentsById.has(agent.id))
+    ) {
+      return;
+    }
+
+    expired.forEach((_, teamId) => saveTeamFoldOverride(teamId, null));
+    setTeamFoldOverrides((previous) => {
+      const next = { ...previous };
+      expired.forEach((override, teamId) => {
+        if (next[teamId] === override) delete next[teamId];
+      });
+      return next;
+    });
+  }, [
+    agentPresence,
+    agentsById,
+    listReady,
+    presenceSettled,
+    projectId,
+    queryClient,
+    showTeamsView,
+    teamDataSettled,
+    teamFold,
+    teamFoldOverrides,
+    teams,
+  ]);
+
+  const toggleTeamFold = useCallback((teamId: string, override: TeamFoldOverride) => {
+    saveTeamFoldOverride(teamId, override);
+    setTeamFoldOverrides((previous) => ({ ...previous, [teamId]: override }));
+  }, []);
 
   useEffect(() => {
     const root = sidebarRef.current;
@@ -588,34 +723,10 @@ function ChatSidebarInner({ data, sessionController, adminActions }: ChatSidebar
     });
     elements.forEach((element) => observer.observe(element));
     return () => observer.disconnect();
-  }, [
-    agentGroupMode,
-    agents,
-    collapsedTeamGroups,
-    contextBarHidden,
-    mainExpanded,
-    teamSections,
-    teamViewLoading,
-  ]);
+  }, [contextBarHidden, renderedRowsKey]);
 
   const agentSessionEntries = useMemo(() => {
-    const visibleMainAgentIds = new Set<string>();
-    if (mainExpanded) {
-      if (agentGroupMode === 'all') {
-        agents.forEach((agent) => visibleMainAgentIds.add(agent.id));
-      } else if (!teamViewLoading) {
-        for (const { team, detail, agents: teamAgents } of teamSections.items) {
-          const leadAgent = detail.teamLeadAgentId
-            ? teamAgents.find((agent) => agent.id === detail.teamLeadAgentId)
-            : null;
-          if (leadAgent) visibleMainAgentIds.add(leadAgent.id);
-          if (!collapsedTeamGroups[team.id]) {
-            teamAgents.forEach((agent) => visibleMainAgentIds.add(agent.id));
-          }
-        }
-        teamSections.noTeamAgents.forEach((agent) => visibleMainAgentIds.add(agent.id));
-      }
-    }
+    const visibleMainAgentIds = new Set(renderedRows.map((row) => row.agentId));
 
     const entries: AgentSessionEntry[] = [];
     for (const agent of agents) {
@@ -632,17 +743,7 @@ function ChatSidebarInner({ data, sessionController, adminActions }: ChatSidebar
       }
     }
     return entries;
-  }, [
-    agentGroupMode,
-    agentPresence,
-    agents,
-    collapsedTeamGroups,
-    contextBarHidden,
-    mainExpanded,
-    teamSections,
-    teamViewLoading,
-    visibleContextKeys,
-  ]);
+  }, [agentPresence, agents, contextBarHidden, renderedRows, visibleContextKeys]);
 
   const contextMetrics = useAgentSessionMetrics(agentSessionEntries);
 
@@ -744,6 +845,17 @@ function ChatSidebarInner({ data, sessionController, adminActions }: ChatSidebar
                 })
             : undefined
         }
+        isDisabled={agent.disabled === true}
+        canDisable={
+          agent.type !== 'guest' &&
+          agent.disabled !== true &&
+          !agent.isProjectOwner &&
+          !teamLeadIds.has(agent.id) &&
+          Boolean(options?.teamId) &&
+          Boolean(onDisableAgent)
+        }
+        onDisable={onDisableAgent ? () => onDisableAgent(agent) : undefined}
+        onEnable={onEnableAgent ? () => onEnableAgent(agent) : undefined}
         canDelete={options?.canDelete ?? false}
         onDelete={onDeleteAgent ? () => onDeleteAgent(agent) : undefined}
         pendingDelete={pendingDeleteAgentId === agent.id}
@@ -787,13 +899,21 @@ function ChatSidebarInner({ data, sessionController, adminActions }: ChatSidebar
   return (
     <div
       ref={sidebarRef}
-      className="flex h-full min-h-0 w-80 flex-col border-r border-border bg-card text-foreground"
+      className="flex h-full min-h-0 w-80 shrink-0 flex-col border-r border-border bg-card text-foreground"
+      data-testid="chat-sidebar"
     >
-      <div className="border-b border-border/70 bg-muted/20 px-4 py-3">
+      <div className="border-b border-border/70 bg-muted/20 px-4 py-2">
         <div className="flex items-center justify-between gap-2">
           <div className="flex items-center gap-1">
-            <h2 className="text-2xl font-semibold text-foreground">Agents</h2>
+            <h2 className="sr-only">Agents</h2>
             <HelpButton featureId="chat" />
+            <PresetPopover
+              presets={validatedPresets}
+              activePreset={activePreset}
+              applying={applyingPreset}
+              onApply={onApplyPreset}
+              disabled={!hasSelectedProject}
+            />
           </div>
           <div className="flex items-center gap-1">
             <Button
@@ -837,8 +957,10 @@ function ChatSidebarInner({ data, sessionController, adminActions }: ChatSidebar
         — so this is what lets the event bus bloom spill into that gap instead of being cut
         at the panel edge. The agents region below re-adds the 16px as padding, so every row
         stays exactly where it was.
+        Radix wraps the content in a `display: table` div that grows to its widest
+        unbreakable label; `block` keeps it at the viewport width so labels truncate.
       */}
-      <ScrollArea className="-ml-4 flex-1" hideScrollbar>
+      <ScrollArea className="-ml-4 flex-1" hideScrollbar viewportClassName="[&>div]:!block">
         {/* Re-adds the 16px the ScrollArea borrowed, so all content stays put. */}
         <div className="pl-4">
           {/* Agents Section */}
@@ -848,186 +970,139 @@ function ChatSidebarInner({ data, sessionController, adminActions }: ChatSidebar
             data-testid="chat-main-agents-wrapper"
           >
             <AgentEventBus projectId={projectId} containerRef={mainAgentsContainerRef}>
-              <div className="mb-3 flex w-full items-center gap-2 rounded-md border border-border/70 bg-muted/30 px-2 py-1.5">
-                <button
-                  type="button"
-                  className="flex min-w-0 flex-1 items-center gap-1.5 rounded-md px-1.5 py-1 text-left hover:bg-muted/50"
-                  onClick={() => setMainExpanded((previous) => !previous)}
-                  aria-expanded={mainExpanded}
-                  aria-controls="chat-main-agents"
-                >
-                  {mainExpanded ? (
-                    <ChevronDown className="h-4 w-4 shrink-0 text-muted-foreground" />
-                  ) : (
-                    <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground" />
-                  )}
-                  <UsersRound className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-                  <span className="text-sm font-semibold text-muted-foreground">MAIN</span>
-                </button>
-                <Tabs
-                  value={agentGroupMode}
-                  onValueChange={(value) => {
-                    if (value === 'all' || value === 'teams') {
-                      handleAgentGroupModeChange(value);
-                    }
-                  }}
-                  className="shrink-0"
-                >
-                  <TabsList
-                    aria-label="Agent grouping mode"
-                    className="h-8 rounded-md bg-muted/70 p-0.5"
-                  >
-                    <TabsTrigger value="all" className="h-7 px-2.5 text-xs">
-                      All
-                    </TabsTrigger>
-                    <TabsTrigger value="teams" className="h-7 px-2.5 text-xs">
-                      Teams
-                    </TabsTrigger>
-                  </TabsList>
-                </Tabs>
-                <PresetPopover
-                  presets={validatedPresets}
-                  activePreset={activePreset}
-                  applying={applyingPreset}
-                  onApply={onApplyPreset}
-                  disabled={!hasSelectedProject}
-                />
-              </div>
-              {mainExpanded && (
-                <div
-                  id="chat-main-agents"
-                  className="space-y-1"
-                  role={agentGroupMode === 'all' ? 'list' : undefined}
-                  aria-label={agentGroupMode === 'all' ? 'Agents' : undefined}
-                >
-                  {agentGroupMode === 'teams' ? (
-                    <>
-                      {teamViewLoading ? (
-                        <div className="space-y-2" aria-hidden>
-                          {Array.from({ length: 3 }).map((_, index) => (
-                            <Skeleton key={index} className="h-10 w-full" />
-                          ))}
-                        </div>
-                      ) : teams.length === 0 ? (
-                        <>
-                          <div className="rounded-md border border-dashed border-border/70 bg-muted/20 px-3 py-4">
-                            <p className="text-xs text-muted-foreground">
-                              No teams configured.{' '}
-                              <Link
-                                to="/teams"
-                                className="font-medium text-foreground underline underline-offset-2"
-                              >
-                                Open Teams
-                              </Link>
-                            </p>
-                          </div>
-                          {teamSections.noTeamAgents.length > 0 && (
-                            <div className="pt-2">
-                              {renderVisualSectionHeader(
-                                'STANDALONE',
-                                formatSectionCount(teamSections.noTeamAgents.length, 'agent'),
-                                <User className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />,
-                              )}
-                              <div className="space-y-1" role="list" aria-label="Standalone agents">
-                                {teamSections.noTeamAgents.map((agent) =>
-                                  renderMainAgentRow(agent, { keyPrefix: 'no-team' }),
+              <div id="chat-main-agents" className="space-y-1">
+                {/* The roster's own error wins over a team request that is still loading. */}
+                {agentsError && !agentsLoading ? (
+                  <p className="text-xs text-destructive">
+                    Failed to load agents. Please try again.
+                  </p>
+                ) : !listReady ? (
+                  <div className="space-y-2" aria-hidden>
+                    {Array.from({ length: 3 }).map((_, index) => (
+                      <Skeleton key={index} className="h-10 w-full" />
+                    ))}
+                  </div>
+                ) : showTeamsView ? (
+                  <>
+                    {teamSections.items.map(
+                      ({
+                        team,
+                        detail,
+                        agents: teamAgents,
+                        lead: leadAgent,
+                        members: otherMembers,
+                      }) => {
+                        const fold = teamFold.get(team.id);
+                        const isExpanded = fold?.isExpanded ?? false;
+                        // A click stores the opposite of the state on screen.
+                        const onToggleFold = () =>
+                          toggleTeamFold(team.id, {
+                            collapsed: isExpanded,
+                            whenActive: fold?.hasActive ?? false,
+                          });
+                        const hasExpandable = otherMembers.length > 0;
+                        // Same element in both header variants; with no lead the
+                        // dots keep the row order. Only a folded team shows dots: an
+                        // unfolded team shows its rows.
+                        const statusDots = isExpanded ? null : (
+                          <TeamStatusDots
+                            teamName={team.name}
+                            agents={teamAgents}
+                            leadAgentId={leadAgent?.id ?? null}
+                            agentPresence={agentPresence}
+                            onSelectAgent={onSelectAgent}
+                          />
+                        );
+
+                        if (!leadAgent) {
+                          return (
+                            <div
+                              key={team.id}
+                              className="overflow-hidden rounded-md border border-border bg-card/80 shadow-sm"
+                            >
+                              <div className="flex w-full items-center gap-2 border-b border-border/70 bg-muted/20 px-3 py-2 text-xs">
+                                <button
+                                  type="button"
+                                  onClick={onToggleFold}
+                                  className="flex min-w-[6rem] items-center gap-2 rounded px-1 py-0.5 text-left hover:bg-muted/50"
+                                  aria-expanded={isExpanded}
+                                  aria-controls={`chat-team-group-${team.id}`}
+                                  aria-label={`Toggle ${team.name} members`}
+                                >
+                                  {isExpanded ? (
+                                    <ChevronDown className="h-4 w-4 shrink-0 text-muted-foreground" />
+                                  ) : (
+                                    <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground" />
+                                  )}
+                                  <UsersRound className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                                  <span className="min-w-0 flex-1 truncate font-medium text-foreground">
+                                    {team.name}
+                                  </span>
+                                </button>
+                                {statusDots}
+                                {onAddTeamAgent && (
+                                  // `ml-auto` keeps it at the right edge when no dots fill the row.
+                                  <div
+                                    className="ml-auto flex shrink-0 items-center"
+                                    data-testid="team-header-controls"
+                                  >
+                                    <TeamQuickAddButton
+                                      teamId={team.id}
+                                      teamName={team.name}
+                                      teamLeadAgentId={detail.teamLeadAgentId}
+                                      profileIds={detail.profileIds ?? []}
+                                      profilesById={profilesById}
+                                      agents={agents}
+                                      onAddAgent={onAddTeamAgent}
+                                    />
+                                  </div>
                                 )}
                               </div>
-                            </div>
-                          )}
-                        </>
-                      ) : (
-                        <>
-                          {teamSections.items.map(({ team, detail, agents: teamAgents }) => {
-                            const leadAgent = detail.teamLeadAgentId
-                              ? teamAgents.find((a) => a.id === detail.teamLeadAgentId)
-                              : null;
-                            const otherMembers = leadAgent
-                              ? teamAgents.filter((a) => a.id !== detail.teamLeadAgentId)
-                              : teamAgents;
-                            const isExpanded = !collapsedTeamGroups[team.id];
-                            const hasExpandable = otherMembers.length > 0;
-
-                            if (!leadAgent) {
-                              return (
+                              {isExpanded && (
                                 <div
-                                  key={team.id}
-                                  className="overflow-hidden rounded-md border border-border bg-card/80 shadow-sm"
+                                  id={`chat-team-group-${team.id}`}
+                                  className="space-y-1 bg-muted/10 px-2 py-2"
+                                  role="list"
+                                  aria-label={`${team.name} agents`}
                                 >
-                                  <div className="flex w-full items-center gap-2 border-b border-border/70 bg-muted/20 px-3 py-2 text-xs">
-                                    <button
-                                      type="button"
-                                      onClick={() => toggleTeamGroup(team.id)}
-                                      className="flex min-w-0 flex-1 items-center gap-2 rounded px-1 py-0.5 text-left hover:bg-muted/50"
-                                      aria-expanded={isExpanded}
-                                      aria-controls={`chat-team-group-${team.id}`}
-                                      aria-label={`Toggle ${team.name} members`}
-                                    >
-                                      {isExpanded ? (
-                                        <ChevronDown className="h-4 w-4 shrink-0 text-muted-foreground" />
-                                      ) : (
-                                        <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground" />
-                                      )}
-                                      <UsersRound className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-                                      <span className="min-w-0 flex-1 truncate font-medium text-foreground">
-                                        {team.name}
-                                      </span>
-                                    </button>
-                                    {onAddTeamAgent && (
-                                      <TeamQuickAddButton
-                                        teamId={team.id}
-                                        teamName={team.name}
-                                        teamLeadAgentId={detail.teamLeadAgentId}
-                                        profileIds={detail.profileIds ?? []}
-                                        profilesById={profilesById}
-                                        agents={agents}
-                                        onAddAgent={onAddTeamAgent}
-                                      />
-                                    )}
-                                  </div>
-                                  {isExpanded && (
-                                    <div
-                                      id={`chat-team-group-${team.id}`}
-                                      className="space-y-1 bg-muted/10 px-2 py-2"
-                                      role="list"
-                                      aria-label={`${team.name} agents`}
-                                    >
-                                      {teamAgents.map((agent) =>
-                                        renderMainAgentRow(agent, {
-                                          keyPrefix: team.id,
-                                          canDelete: Boolean(onDeleteAgent),
-                                          teamId: team.id,
-                                          teamName: team.name,
-                                        }),
-                                      )}
-                                    </div>
+                                  {teamAgents.map((agent) =>
+                                    renderMainAgentRow(agent, {
+                                      keyPrefix: team.id,
+                                      canDelete: Boolean(onDeleteAgent),
+                                      teamId: team.id,
+                                      teamName: team.name,
+                                    }),
                                   )}
                                 </div>
-                              );
-                            }
+                              )}
+                            </div>
+                          );
+                        }
 
-                            return (
-                              <div
-                                key={team.id}
-                                className="overflow-hidden rounded-md border border-border bg-card/80 shadow-sm"
-                              >
-                                <div className="bg-muted/10">
-                                  {renderMainAgentRow(leadAgent, {
-                                    isTeamLead: true,
-                                    keyPrefix: team.id,
-                                    teamId: team.id,
-                                    teamName: team.name,
-                                    maxMembers: detail.maxMembers,
-                                    maxConcurrentTasks: detail.maxConcurrentTasks,
-                                    allowTeamLeadCreateAgents: detail.allowTeamLeadCreateAgents,
-                                  })}
-                                  <div className="flex min-w-0 items-center gap-1 px-3 pb-1 text-[10px] text-muted-foreground">
-                                    <span className="min-w-0 flex-1 truncate">
-                                      {team.name}
-                                      {otherMembers.length > 0
-                                        ? ` · ${otherMembers.length} member${otherMembers.length !== 1 ? 's' : ''}`
-                                        : ''}
-                                    </span>
+                        return (
+                          <div
+                            key={team.id}
+                            className="overflow-hidden rounded-md border border-border bg-card/80 shadow-sm"
+                          >
+                            <div className="bg-muted/10">
+                              {renderMainAgentRow(leadAgent, {
+                                isTeamLead: true,
+                                keyPrefix: team.id,
+                                teamId: team.id,
+                                teamName: team.name,
+                                maxMembers: detail.maxMembers,
+                                maxConcurrentTasks: detail.maxConcurrentTasks,
+                                allowTeamLeadCreateAgents: detail.allowTeamLeadCreateAgents,
+                              })}
+                              <div className="flex min-w-0 items-center gap-1 px-3 pb-1 text-[10px] text-muted-foreground">
+                                <span className="min-w-[3rem] truncate">{team.name}</span>
+                                {statusDots}
+                                {/* `ml-auto` keeps the controls at the right edge when no dots fill the row. */}
+                                {(onAddTeamAgent || hasExpandable) && (
+                                  <div
+                                    className="ml-auto flex shrink-0 items-center gap-1"
+                                    data-testid="team-header-controls"
+                                  >
                                     {onAddTeamAgent && (
                                       <TeamQuickAddButton
                                         teamId={team.id}
@@ -1044,7 +1119,7 @@ function ChatSidebarInner({ data, sessionController, adminActions }: ChatSidebar
                                         type="button"
                                         onClick={(e) => {
                                           e.stopPropagation();
-                                          toggleTeamGroup(team.id);
+                                          onToggleFold();
                                         }}
                                         className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded hover:bg-muted/50"
                                         aria-expanded={isExpanded}
@@ -1059,69 +1134,56 @@ function ChatSidebarInner({ data, sessionController, adminActions }: ChatSidebar
                                       </button>
                                     )}
                                   </div>
-                                </div>
-                                {hasExpandable && isExpanded && (
-                                  <div
-                                    id={`chat-team-group-${team.id}`}
-                                    className="space-y-1 border-t border-border/70 bg-muted/10 py-2 pl-4 pr-0"
-                                    role="list"
-                                    aria-label={`${team.name} members`}
-                                  >
-                                    {otherMembers.map((agent) =>
-                                      renderMainAgentRow(agent, {
-                                        keyPrefix: team.id,
-                                        canDelete: Boolean(onDeleteAgent),
-                                        teamId: team.id,
-                                        teamName: team.name,
-                                      }),
-                                    )}
-                                  </div>
-                                )}
-                              </div>
-                            );
-                          })}
-                          {teamSections.noTeamAgents.length > 0 && (
-                            <div className="pt-2">
-                              {renderVisualSectionHeader(
-                                'STANDALONE',
-                                formatSectionCount(teamSections.noTeamAgents.length, 'agent'),
-                                <User className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />,
-                              )}
-                              <div className="space-y-1" role="list" aria-label="Standalone agents">
-                                {teamSections.noTeamAgents.map((agent) =>
-                                  renderMainAgentRow(agent, { keyPrefix: 'no-team' }),
                                 )}
                               </div>
                             </div>
-                          )}
-                          {teamSections.items.length === 0 &&
-                            teamSections.noTeamAgents.length === 0 && (
-                              <p className="text-xs text-muted-foreground">No agents yet.</p>
+                            {hasExpandable && isExpanded && (
+                              <div
+                                id={`chat-team-group-${team.id}`}
+                                className="space-y-1 border-t border-border/70 bg-muted/10 py-2 pl-4 pr-0"
+                                role="list"
+                                aria-label={`${team.name} members`}
+                              >
+                                {otherMembers.map((agent) =>
+                                  renderMainAgentRow(agent, {
+                                    keyPrefix: team.id,
+                                    canDelete: Boolean(onDeleteAgent),
+                                    teamId: team.id,
+                                    teamName: team.name,
+                                  }),
+                                )}
+                              </div>
                             )}
-                        </>
-                      )}
-                    </>
-                  ) : (
-                    <>
-                      {agentsLoading ? (
-                        <div className="space-y-2" aria-hidden>
-                          {Array.from({ length: 3 }).map((_, index) => (
-                            <Skeleton key={index} className="h-8 w-full" />
-                          ))}
+                          </div>
+                        );
+                      },
+                    )}
+                    {teamSections.noTeamAgents.length > 0 && (
+                      <div className="pt-2">
+                        {renderVisualSectionHeader(
+                          'STANDALONE',
+                          formatSectionCount(teamSections.noTeamAgents.length, 'agent'),
+                          <User className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />,
+                        )}
+                        <div className="space-y-1" role="list" aria-label="Standalone agents">
+                          {teamSections.noTeamAgents.map((agent) =>
+                            renderMainAgentRow(agent, { keyPrefix: 'no-team' }),
+                          )}
                         </div>
-                      ) : agentsError ? (
-                        <p className="text-xs text-destructive">
-                          Failed to load agents. Please try again.
-                        </p>
-                      ) : agents.length === 0 ? (
-                        <p className="text-xs text-muted-foreground">No agents yet.</p>
-                      ) : (
-                        canonicalAgents.map((agent) => renderMainAgentRow(agent))
-                      )}
-                    </>
-                  )}
-                </div>
-              )}
+                      </div>
+                    )}
+                    {teamSections.items.length === 0 && teamSections.noTeamAgents.length === 0 && (
+                      <p className="text-xs text-muted-foreground">No agents yet.</p>
+                    )}
+                  </>
+                ) : agents.length === 0 ? (
+                  <p className="text-xs text-muted-foreground">No agents yet.</p>
+                ) : (
+                  <div className="space-y-1" role="list" aria-label="Agents">
+                    {canonicalAgents.map((agent) => renderMainAgentRow(agent))}
+                  </div>
+                )}
+              </div>
             </AgentEventBus>
           </div>
 

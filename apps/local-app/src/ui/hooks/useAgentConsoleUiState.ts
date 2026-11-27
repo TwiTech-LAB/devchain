@@ -60,27 +60,56 @@ export function useAgentConsoleUiState({
   );
 
   const canonicalAgents = useMemo(() => [...agents].sort(compareCanonicalAgents), [agents]);
+  /**
+   * Project in which a disabled selection was cleared. While it matches, an
+   * empty selection stays empty: the fallback to the first agent would open
+   * another agent's terminal the user did not choose.
+   */
+  const clearedForDisabledProjectRef = useRef<string | null>(null);
+
+  const selectedRosterAgent = useMemo(
+    () => agents.find((agent) => agent.id === selectedAgentId) ?? null,
+    [agents, selectedAgentId],
+  );
+  const selectedIsDisabled = selectedRosterAgent?.disabled === true;
 
   useEffect(() => {
     if (!projectId || !agentsQuerySuccess) {
       return;
     }
 
-    const validSelection = canonicalAgents.some((agent) => agent.id === selectedAgentId);
-    const nextAgentId = validSelection ? selectedAgentId : (canonicalAgents[0]?.id ?? null);
+    if (selectedIsDisabled) {
+      clearedForDisabledProjectRef.current = projectId;
+      handleSelectAgent(null, { replace: true });
+      return;
+    }
+    if (selectedAgentId === null && clearedForDisabledProjectRef.current === projectId) {
+      return;
+    }
+    clearedForDisabledProjectRef.current = null;
+
+    const selectable = canonicalAgents.filter((agent) => !agent.disabled);
+    const validSelection = selectable.some((agent) => agent.id === selectedAgentId);
+    const nextAgentId = validSelection ? selectedAgentId : (selectable[0]?.id ?? null);
     if (nextAgentId !== selectedAgentId) {
       handleSelectAgent(nextAgentId, { replace: true });
     }
-  }, [agentsQuerySuccess, canonicalAgents, handleSelectAgent, projectId, selectedAgentId]);
+  }, [
+    agentsQuerySuccess,
+    canonicalAgents,
+    handleSelectAgent,
+    projectId,
+    selectedAgentId,
+    selectedIsDisabled,
+  ]);
 
-  const selectedAgent = useMemo(
-    () => agents.find((agent) => agent.id === selectedAgentId) ?? null,
-    [agents, selectedAgentId],
-  );
-  const selectedPresence = selectedAgentId ? agentPresence[selectedAgentId] : undefined;
-  const inlineTerminalState = selectedAgentId
-    ? (inlineTerminalsByAgent[selectedAgentId] ?? {
-        agentId: selectedAgentId,
+  // A disabled agent gets no terminal or launch content, also before the URL clears.
+  const selectedAgent = selectedIsDisabled ? null : selectedRosterAgent;
+  const liveSelectedAgentId = selectedIsDisabled ? null : selectedAgentId;
+  const selectedPresence = liveSelectedAgentId ? agentPresence[liveSelectedAgentId] : undefined;
+  const inlineTerminalState = liveSelectedAgentId
+    ? (inlineTerminalsByAgent[liveSelectedAgentId] ?? {
+        agentId: liveSelectedAgentId,
         sessionId: selectedPresence?.online ? (selectedPresence.sessionId ?? null) : null,
       })
     : null;
@@ -89,10 +118,10 @@ export function useAgentConsoleUiState({
 
   const attachInlineTerminalForAgent = useCallback(
     (agentId: string, sessionId: string | null): boolean => {
-      if (selectedAgentId !== agentId) {
+      if (liveSelectedAgentId !== agentId) {
         console.warn('Rejected inline terminal bind: agent is not selected', {
           agentId,
-          selectedAgentId,
+          selectedAgentId: liveSelectedAgentId,
         });
         return false;
       }
@@ -103,7 +132,7 @@ export function useAgentConsoleUiState({
       }));
       return true;
     },
-    [selectedAgentId],
+    [liveSelectedAgentId],
   );
 
   useEffect(() => {
@@ -123,23 +152,23 @@ export function useAgentConsoleUiState({
   }, [agentPresence]);
 
   useEffect(() => {
-    if (!selectedAgentId) {
+    if (!liveSelectedAgentId) {
       return;
     }
 
-    const presence = agentPresence[selectedAgentId];
+    const presence = agentPresence[liveSelectedAgentId];
     const sessionId = presence?.online ? (presence.sessionId ?? null) : null;
     setInlineTerminalsByAgent((previous) => {
-      if (previous[selectedAgentId]) {
+      if (previous[liveSelectedAgentId]) {
         return previous;
       }
 
       return {
         ...previous,
-        [selectedAgentId]: { agentId: selectedAgentId, sessionId },
+        [liveSelectedAgentId]: { agentId: liveSelectedAgentId, sessionId },
       };
     });
-  }, [selectedAgentId, agentPresence]);
+  }, [liveSelectedAgentId, agentPresence]);
 
   useEffect(() => {
     const previousProjectId = previousProjectIdRef.current;

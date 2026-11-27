@@ -8,6 +8,7 @@ import { HooksConfigService } from './hooks-config.service';
 import { ChildProcessExecutor } from '../../terminal/services/process-executor/child-process-executor';
 import { HookEventSchema } from '../dtos/hook-event.dto';
 import { parseJsonc } from '../../../common/jsonc';
+import { SESSION_START_SOURCE_ENV } from '../../providers/adapters/capabilities/hook.capability';
 
 jest.mock('../../../common/logging/logger', () => {
   const instance = { info: jest.fn(), error: jest.fn(), warn: jest.fn(), debug: jest.fn() };
@@ -331,26 +332,30 @@ esac
       },
     );
 
-    it('posts a SessionStart with providerName=devin and no firedAtMs', async () => {
-      await service.ensureHooksConfig(tempDir);
-      const payload = await runScript(relayPath(), {
-        hook_event_name: 'SessionStart',
-        session_id: 'functional-share',
-        source: 'resume',
-      });
-      if (payload === null) return; // bash/jq unavailable on this platform
-      expect(payload).toBeDefined();
-      if (payload === undefined) throw new Error('expected a captured POST payload');
+    // The installed relay with captured curl output verifies the exact SessionStart payload.
+    it.each(['resume', 'fork'] as const)(
+      'posts a Devin SessionStart with source %s',
+      async (source) => {
+        await service.ensureHooksConfig(tempDir);
+        const payload = await runScript(
+          relayPath(),
+          { hook_event_name: 'SessionStart', session_id: 'functional-share', source: 'resume' },
+          { extraEnv: { [SESSION_START_SOURCE_ENV]: source === 'fork' ? 'fork' : '' } },
+        );
+        if (payload === null) return; // bash/jq unavailable on this platform
+        expect(payload).toBeDefined();
+        if (payload === undefined) throw new Error('expected a captured POST payload');
 
-      expect(payload).toMatchObject({
-        hookEventName: 'SessionStart',
-        providerName: 'devin',
-        providerSessionId: 'functional-share',
-        source: 'resume',
-      });
-      expect(payload).not.toHaveProperty('firedAtMs');
-      expect(HookEventSchema.safeParse(payload).success).toBe(true);
-    });
+        expect(payload).toMatchObject({
+          hookEventName: 'SessionStart',
+          providerName: 'devin',
+          providerSessionId: 'functional-share',
+          source,
+        });
+        expect(payload).not.toHaveProperty('firedAtMs');
+        expect(HookEventSchema.safeParse(payload).success).toBe(true);
+      },
+    );
 
     it('the Claude relay stays silent under DEVCHAIN_HOOK_PROVIDER=devin (no duplicate delivery)', async () => {
       // Materialize the guarded Claude relay in the same project.

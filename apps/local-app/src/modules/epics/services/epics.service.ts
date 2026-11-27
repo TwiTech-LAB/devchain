@@ -1,4 +1,3 @@
-import { createHash } from 'node:crypto';
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import {
@@ -18,6 +17,9 @@ import type {
   EpicComment,
   EpicRelationCandidate,
   ExternalTaskLink,
+  ExternalTaskLinkChangeResult,
+  ExternalTaskLinkInput,
+  ExternalTaskLinkWriteOptions,
   UpdateEpic,
   CreateEpic,
   CreateEpicWithExternalTaskLink,
@@ -33,20 +35,30 @@ import {
   AppError,
   ConflictError,
   NotFoundError,
+  OptimisticLockError,
   StorageError,
   ValidationError,
   IndexedRelationError,
   RelationConfirmationRequiredError,
   RelationRouteConflictError,
   type RelationRouteEffectFacts,
+  ProjectionLockCoverageError,
 } from '../../../common/errors/error-types';
 import { SettingsService } from '../../settings/services/settings.service';
 import { normalizeExternalTaskSourceUrl } from '../../external-integrations/models/external-task-source';
 import type { ExternalTaskSourceSummary } from '../../external-integrations/models/external-provider.models';
 import type { PreparedEvent } from '../../events/services/durable-event-registry.service';
+import { ManagedProjectionLock } from '../../external-integrations/subscribers/managed-projection-lock';
+import { isOrdinaryExternalTaskLink } from '../../storage/models/domain.models';
+import { externalImportIdempotencyKey } from '../../storage/local/helpers/external-import-key';
 import { resolveEpicRelationTarget } from './epic-relation-target-resolver';
 import { ProjectWriteGate } from '../../storage/write-gate/project-write-gate';
-import { RemoteHostClient } from '../../remotes/operations/remote-host.client';
+import {
+  isDefinitiveLinkWriteRefusal,
+  RemoteHostClient,
+} from '../../remotes/operations/remote-host.client';
+import { RemoteLinkWriterService } from '../../remotes/services/remote-link-writer.service';
+import { IntegrationVmCacheService } from '../../external-integrations/vm-cache/integration-vm-cache.service';
 import {
   REMOTE_MIRROR_SYNC_PORT,
   type RemoteMirrorSyncPort,
@@ -109,6 +121,20 @@ export interface UpdateEpicOutcome {
    * text plus context snippets for the response, so callers need no re-read.
    */
   descriptionEdit?: EpicDescriptionEditOutcome;
+  /** Present when the update set or cleared the epic's ordinary external task link. */
+  externalTask?: EpicExternalTaskOutcome;
+}
+
+/**
+ * Sets the epic's one ordinary link to a remote task already read from the
+ * vendor, or clears it (the exact `linkId` when given).
+ */
+export type EpicExternalTaskChange =
+  | { set: ExternalTaskLinkInput }
+  | { clear: true; linkId?: string };
+
+export interface EpicExternalTaskOutcome extends ExternalTaskLinkChangeResult {
+  change: 'set' | 'clear';
 }
 
 /**
@@ -119,6 +145,7 @@ export interface UpdateEpicOutcome {
 export interface UpdateEpicOperationInput extends UpdateEpic {
   descriptionEdits?: EpicDescriptionEdit[];
   appendDescription?: string;
+  externalTask?: EpicExternalTaskChange;
 }
 
 export interface ImportExternalTaskInput {
@@ -140,24 +167,7 @@ export interface ImportExternalTaskInput {
   };
 }
 
-/** The host route's bound on an idempotency key. */
-const MAX_IDEMPOTENCY_KEY_LENGTH = 256;
-
-/**
- * The key a vendor-task import stores in the host epic's `data.idempotencyKey`.
- * Parts are URI-encoded so a `:` inside one cannot collide with the separator;
- * a key past the host's bound falls back to a digest of the same parts.
- */
-export function externalImportIdempotencyKey(
-  provider: IntegrationProvider,
-  remoteScopeKey: string,
-  remoteTaskId: string,
-): string {
-  const key = `import:${provider}:${encodeURIComponent(remoteScopeKey)}:${encodeURIComponent(remoteTaskId)}`;
-  if (key.length <= MAX_IDEMPOTENCY_KEY_LENGTH) return key;
-  const digest = createHash('sha256').update(`${remoteScopeKey}\n${remoteTaskId}`).digest('hex');
-  return `import:${provider}:sha256:${digest}`;
-}
+export { externalImportIdempotencyKey };
 
 /** One relation attachment for atomic Epic creation. */
 export interface EpicRelationInputOperation {
@@ -168,6 +178,8 @@ export interface EpicRelationInputOperation {
 export interface CreateEpicForProjectOperationInput extends CreateEpicForProjectInput {
   relation?: EpicRelationInputOperation;
   relations?: EpicRelationInputOperation[];
+  /** Written in the epic's own create transaction; see `setEpicExternalTaskLink`. */
+  externalTaskLink?: ExternalTaskLinkInput;
 }
 
 @Injectable()
@@ -186,11 +198,17 @@ export class EpicsService {
       Pick<
         StorageService,
         | 'createEpicWithExternalTaskLink'
-        | 'createExternalTaskLink'
+        | 'createRemoteProjectExternalTaskLink'
+        | 'setEpicExternalTaskLink'
+        | 'deleteExternalTaskLink'
         | 'findExternalTaskLink'
         | 'getIntegrationConnection'
         | 'listExternalTaskLinksForEpic'
         | 'listExternalTaskLinksForEpics'
+        | 'listExternalManagedSubtaskLinksForEpicSnapshot'
+        | 'listExternalManagedSubtaskLinksByParentSourceLink'
+        | 'beginExternalLinkRelease'
+        | 'closeExternalLinkReleaseAttempt'
       >,
     private readonly eventsService: EventsService,
     private readonly settingsService: SettingsService,
@@ -198,6 +216,11 @@ export class EpicsService {
     private readonly gate: ProjectWriteGate,
     private readonly hostClient: RemoteHostClient,
     @Inject(REMOTE_MIRROR_SYNC_PORT) private readonly mirrorSync: RemoteMirrorSyncPort,
+    private readonly projectionLock: ManagedProjectionLock,
+    @Inject(IntegrationVmCacheService)
+    private readonly host: Pick<IntegrationVmCacheService, 'isClaimedHost'>,
+    @Inject(RemoteLinkWriterService)
+    private readonly linkWriter: Pick<RemoteLinkWriterService, 'write'>,
   ) {}
 
   async createEpic(data: CreateEpic, context?: EpicOperationContext): Promise<Epic> {
@@ -249,6 +272,7 @@ export class EpicsService {
     const project = await this.storage.getProject(data.epic.projectId);
     await this.eventsService.publish('epic.time.scope.invalidated', {
       workspaceId: project.workspaceId,
+      externalLinks: true,
     });
     return result;
   }
@@ -306,7 +330,10 @@ export class EpicsService {
       },
     };
     if (remoteId) {
-      return this.importExternalTaskThroughHost(remoteId, project, status, input, externalTaskLink);
+      return this.importExternalTaskThroughHost(remoteId, project, status, input, {
+        ...externalTaskLink,
+        connectionGeneration: connection.generation,
+      });
     }
 
     return this.createEpicWithExternalTaskLink(
@@ -329,18 +356,23 @@ export class EpicsService {
   }
 
   /**
-   * The host is the only writer of a remote-owned project's epics; home keeps
-   * the integration connection and the link row. Order: find or create the
-   * host epic by idempotency key, pull it into the mirror, then write the link.
-   * A failure after the host create leaves the host epic behind; the retry
-   * finds it by key, so no attempt creates a second one.
+   * The host is the only writer of a remote-owned project's epics. A VM of this
+   * version also owns the links: it creates the epic and link in one write, or
+   * answers with the task's existing link. Otherwise home keeps the link row:
+   * find or create the host epic by idempotency key, pull it into the mirror,
+   * then write the link. A retry reuses the epic either path created by key.
    */
   private async importExternalTaskThroughHost(
     remoteId: string,
     project: Project,
     status: Status,
     input: ImportExternalTaskInput,
-    link: Omit<CreateExternalTaskLink, 'epicId'>,
+    {
+      connectionGeneration,
+      ...link
+    }: Omit<CreateExternalTaskLink, 'epicId'> & {
+      connectionGeneration: number;
+    },
   ): Promise<CreateEpicWithExternalTaskLinkResult> {
     const idempotencyKey = externalImportIdempotencyKey(
       link.provider,
@@ -360,12 +392,11 @@ export class EpicsService {
       created: false,
     });
 
-    // Serialized per key: the host lookup and create are two requests, so two
-    // concurrent imports of one task would otherwise both miss and both create.
-    const result = await this.serializeHostImport(`${project.id}\n${idempotencyKey}`, async () => {
+    // Home's link rows are current only here; for a VM that owns the links the mirror
+    // can be stale, so `onHost` lets the VM decide whether the task is linked.
+    const atHome = async (): Promise<CreateEpicWithExternalTaskLinkResult> => {
       const linked = await findLink();
       if (linked) return existingImport(linked);
-
       const epicId =
         (await this.hostClient.findEpicByIdempotencyKey(remoteId, project.id, idempotencyKey)) ??
         (
@@ -384,15 +415,51 @@ export class EpicsService {
         const winner = await findLink();
         if (winner) return existingImport(winner);
         const epic = await this.getMirroredEpic(epicId, remoteId, project.id);
-        const externalTaskLink = await this.storage.createExternalTaskLink({ ...link, epicId });
+        const externalTaskLink = await this.storage.createRemoteProjectExternalTaskLink({
+          ...link,
+          epicId,
+        });
         return { epic, externalTaskLink, created: true };
       });
-    });
+    };
+    const onHost = async (): Promise<CreateEpicWithExternalTaskLinkResult> => {
+      const answer = await this.hostClient.importExternalTask(remoteId, project.id, {
+        idempotencyKey,
+        epic: { statusId: status.id, title: input.title, description: input.description },
+        link: {
+          connectionId: link.connectionId ?? '',
+          connectionGeneration,
+          provider: link.provider,
+          remoteScopeKey: link.remoteScopeKey,
+          remoteTaskId: link.remoteTaskId,
+          sourceSnapshot: link.sourceSnapshot,
+        },
+      });
+      await this.mirrorSync.pullNow(project.id);
+      const epic = await this.getMirroredEpic(answer.epicId, remoteId, project.id);
+      const mirrored = await findLink();
+      const externalTaskLink: ExternalTaskLink =
+        mirrored?.id === answer.linkId
+          ? mirrored
+          : {
+              ...link,
+              id: answer.linkId,
+              epicId: answer.epicId,
+              projectId: project.id,
+              createdAt: epic.updatedAt,
+              updatedAt: epic.updatedAt,
+            };
+      return { epic, externalTaskLink, created: answer.created };
+    };
+
+    // Serialized per key: the host lookup and create are two requests, so two
+    // concurrent imports of one task would otherwise both miss and both create.
+    const result = await this.serializeHostImport(`${project.id}\n${idempotencyKey}`, () =>
+      this.linkWriter.write(remoteId, project.id, { home: atHome, host: onHost }),
+    );
 
     if (result.created) {
-      await this.eventsService.publish('epic.time.scope.invalidated', {
-        workspaceId: project.workspaceId,
-      });
+      await this.publishLinkScopeInvalidated(project.id, project.workspaceId);
     }
     return result;
   }
@@ -445,11 +512,70 @@ export class EpicsService {
     }));
   }
 
+  /**
+   * Unlinks exactly `linkId`. A link replaced or removed since the caller read
+   * it fails with `EXTERNAL_TASK_LINK_STALE`, so a newer link is never removed.
+   */
+  async unlinkExternalTaskSource(epicId: string, linkId: string): Promise<void> {
+    const epic = await this.storage.getEpic(epicId);
+    const owner = this.gate.getRemoteOwner(epic.projectId);
+    if (owner?.state === 'remote') {
+      const { remoteId } = owner;
+      const projectId = epic.projectId;
+      // Home keeps the estimate ledger, so before each dispatch, a retry after a reseed
+      // too, it checks the tasks this unlink removes (the parent's and its managed
+      // subtasks') for pending estimates and records the dispatch as an attempt. Until
+      // home's copy drops the link, an attempt the VM has not refused keeps those tasks
+      // from new estimates: the next pull may remove the link resolving one needs.
+      await this.linkWriter.write(remoteId, projectId, {
+        home: () => {
+          throw new ConflictError('Update the VM to unlink tasks in this project.', {
+            code: 'REMOTE_UPDATE_REQUIRED',
+            remoteId,
+            projectId,
+          });
+        },
+        host: async () => {
+          const attempt = await this.storage.beginExternalLinkRelease(epicId, linkId);
+          try {
+            await this.hostClient.unlinkExternalTask(remoteId, projectId, epicId, linkId);
+          } catch (error) {
+            if (attempt && isDefinitiveLinkWriteRefusal(error)) {
+              await this.storage.closeExternalLinkReleaseAttempt(linkId, attempt);
+            }
+            throw error;
+          }
+        },
+      });
+      await this.mirrorSync.pullNow(projectId);
+      await this.storage.closeExternalLinkReleaseAttempt(linkId, null);
+      // The release is confirmed only once home's copy dropped the link: the apply that
+      // drops it also releases its managed subtasks, after any vendor call on them ends.
+      // A pull that failed or did not run leaves the link, and the next pull drops it.
+      const links = await this.storage.listExternalTaskLinksForEpic(epicId);
+      if (links.some((link) => link.id === linkId)) {
+        throw new ConflictError(
+          'The VM removed the link, but home has not caught up yet; it updates after the next sync.',
+          { code: 'REMOTE_UNLINK_PENDING', retryable: false, remoteId, projectId, epicId, linkId },
+        );
+      }
+      await this.publishLinkScopeInvalidated(projectId);
+      return;
+    }
+    await this.updateEpicWithOutcome(
+      epicId,
+      { externalTask: { clear: true, linkId } },
+      epic.version,
+    );
+  }
+
   private projectExternalTaskSourceSummary(link: ExternalTaskLink): ExternalTaskSourceSummary {
     const snapshot = link.sourceSnapshot;
     const bounded = (value: unknown, fallback: string, max: number): string =>
       typeof value === 'string' && value.trim() ? value.trim().slice(0, max) : fallback;
     return {
+      id: link.id,
+      managed: !isOrdinaryExternalTaskLink(link),
       provider: link.provider,
       remoteTaskId: link.remoteTaskId,
       remoteKey: bounded(snapshot.remoteKey, link.remoteTaskId, 256),
@@ -515,7 +641,7 @@ export class EpicsService {
   ): Promise<Epic> {
     // Admit before emitting status/name lookup warnings.
     this.gate.assertWritable(projectId);
-    const { relation, relations, ...epicInput } = input;
+    const { relation, relations, externalTaskLink, ...epicInput } = input;
     const relationList: EpicRelationInputOperation[] = relations ?? (relation ? [relation] : []);
     // Clear agentId if creating in an auto-clean status
     this.applyAutoCleanIfNeeded(projectId, epicInput.statusId, epicInput);
@@ -550,14 +676,17 @@ export class EpicsService {
     );
 
     let prepared: PreparedEvent<'epic.created'> | null = null;
+    let preparedLink: PreparedEvent<'epic.external_link.changed'> | null = null;
     let relationWorkspaceId: string | null = null;
     let epic: Epic;
-    if (relationList.length > 0) {
-      const relationStatusId = createInput.statusId;
-      if (!relationStatusId) {
+    // One transaction of its own; a caller's outer transaction would make the
+    // queued admission below throw.
+    if (relationList.length > 0 || externalTaskLink) {
+      const transactionStatusId = createInput.statusId;
+      if (!transactionStatusId) {
         throw new ValidationError('Project has no statuses configured.', { projectId });
       }
-      const status = await this.storage.getStatus(relationStatusId);
+      const status = await this.storage.getStatus(transactionStatusId);
       if (status.projectId !== projectId) {
         throw new ValidationError('Status must belong to the target project.', {
           statusId: status.id,
@@ -570,7 +699,7 @@ export class EpicsService {
             projectId,
             title: createInput.title,
             description: createInput.description ?? null,
-            statusId: relationStatusId,
+            statusId: transactionStatusId,
             parentId: createInput.parentId ?? null,
             agentId: createInput.agentId ?? null,
             createdBy: createInput.createdBy,
@@ -580,7 +709,21 @@ export class EpicsService {
           },
           (created) => (prepared = this.prepareEpicCreatedEvent(created, context, names)),
           async (created) => {
-            relationWorkspaceId = await this.attachEpicRelations(created.id, relationList, context);
+            if (relationList.length > 0) {
+              relationWorkspaceId = await this.attachEpicRelations(
+                created.id,
+                relationList,
+                context,
+              );
+            }
+            if (externalTaskLink) {
+              await this.storage.setEpicExternalTaskLink(
+                created.id,
+                externalTaskLink,
+                (link) => (preparedLink = this.prepareExternalLinkChanged(link, 'set')),
+                this.linkWriteOptions(),
+              );
+            }
           },
         ),
       );
@@ -593,6 +736,9 @@ export class EpicsService {
     }
 
     this.emitPreparedCreated(prepared);
+    if (preparedLink) {
+      this.eventsService.emitCommitted(preparedLink);
+    }
     if (relationList.length > 0) {
       if (!relationWorkspaceId) {
         throw new StorageError('Epic relation creation did not resolve its workspace scope.');
@@ -601,8 +747,46 @@ export class EpicsService {
         workspaceId: relationWorkspaceId,
       });
     }
+    if (externalTaskLink) {
+      await this.publishLinkScopeInvalidated(projectId);
+    }
 
     return epic;
+  }
+
+  private prepareExternalLinkChanged(
+    link: ExternalTaskLink,
+    change: 'set' | 'clear',
+  ): PreparedEvent<'epic.external_link.changed'> {
+    return this.eventsService.prepareCommitted('epic.external_link.changed', {
+      epicId: link.epicId,
+      projectId: link.projectId,
+      linkId: link.id,
+      change,
+    });
+  }
+
+  /**
+   * A link row changes linked-boundary time rollups; published only after
+   * commit. The link change has already committed, so a failure here is
+   * logged and never fails the caller.
+   */
+  private async publishLinkScopeInvalidated(
+    projectId: string,
+    workspaceId?: string,
+  ): Promise<void> {
+    try {
+      const resolved = workspaceId ?? (await this.storage.getProject(projectId)).workspaceId;
+      await this.eventsService.publish('epic.time.scope.invalidated', {
+        workspaceId: resolved,
+        externalLinks: true,
+      });
+    } catch (error) {
+      this.logger.warn(
+        { projectId, error },
+        'Failed to publish the epic-time scope hint after an external link change',
+      );
+    }
   }
 
   /**
@@ -716,12 +900,16 @@ export class EpicsService {
     data: UpdateEpicOperationInput,
     expectedVersion: number,
     context?: EpicOperationContext,
-  ): Promise<{ epic: Epic; descriptionEdit?: EpicDescriptionEditOutcome }> {
+  ): Promise<{
+    epic: Epic;
+    descriptionEdit?: EpicDescriptionEditOutcome;
+    externalTask?: EpicExternalTaskOutcome;
+  }> {
     const before = await this.storage.getEpic(id);
     // Admit before emitting epic change-name lookup warnings.
     this.gate.assertWritable(before.projectId);
 
-    const { descriptionEdits, appendDescription, ...updateData } = data;
+    const { descriptionEdits, appendDescription, externalTask, ...updateData } = data;
     // Lines already stored stay byte-identical; only new or changed lines are wrapped.
     const wrapNewLines = context?.actor
       ? (text: string) => wrapLongProseLines(text, new Set((before.description ?? '').split('\n')))
@@ -779,33 +967,87 @@ export class EpicsService {
     }
 
     let prepared: PreparedEvent<'epic.updated'> | null = null;
-    const updated = await this.storage.updateEpic(
-      id,
-      updateData,
-      expectedVersion,
-      (current, previous) => {
-        const changes = this.buildEpicChanges(previous, current, updateData, changeNames);
-        const tagsChanged = !this.haveSameExactTags(previous.tags, current.tags);
-        if (Object.keys(changes).length === 0 && !tagsChanged) {
-          return null;
+    let preparedLink: PreparedEvent<'epic.external_link.changed'> | null = null;
+    let linkOutcome: EpicExternalTaskOutcome | undefined;
+    const eventFactory = (current: Epic, previous: Epic) => {
+      const changes = this.buildEpicChanges(previous, current, updateData, changeNames);
+      if (linkOutcome) {
+        const key = this.projectExternalTaskSourceSummary(linkOutcome.link).remoteKey;
+        const { id: linkId } = linkOutcome.link;
+        if (linkOutcome.rebound) {
+          changes.externalTask = {
+            previous: linkId,
+            current: linkId,
+            previousKey: key,
+            currentKey: key,
+          };
+        } else if (linkOutcome.change === 'set') {
+          changes.externalTask = { previous: null, current: linkId, currentKey: key };
+        } else {
+          changes.externalTask = { previous: linkId, current: null, previousKey: key };
         }
-        prepared = this.eventsService.prepareCommitted('epic.updated', {
-          epicId: current.id,
-          projectId: current.projectId,
-          parentId: current.parentId ?? null,
-          version: current.version,
-          epicTitle: current.title,
-          projectName,
-          actor: context?.actor ?? null,
-          recipientIds: this.buildAgentRecipientIds(changes.agentId?.current, context?.actor),
-          changes,
-        });
-        return prepared;
-      },
-    );
+      }
+      const tagsChanged = !this.haveSameExactTags(previous.tags, current.tags);
+      if (Object.keys(changes).length === 0 && !tagsChanged) {
+        return null;
+      }
+      prepared = this.eventsService.prepareCommitted('epic.updated', {
+        epicId: current.id,
+        projectId: current.projectId,
+        parentId: current.parentId ?? null,
+        version: current.version,
+        epicTitle: current.title,
+        projectName,
+        actor: context?.actor ?? null,
+        recipientIds: this.buildAgentRecipientIds(changes.agentId?.current, context?.actor),
+        changes,
+      });
+      return prepared;
+    };
+
+    let updated: Epic;
+    if (externalTask) {
+      updated = await this.withReleasedProjectionsLocked(id, externalTask, async () => {
+        // Version first: a stale unlink must fail as a version conflict,
+        // not on a link another writer already changed.
+        const current = await this.storage.getEpic(id);
+        if (current.version !== expectedVersion) {
+          throw new OptimisticLockError('Epic', id, {
+            expectedVersion,
+            actualVersion: current.version,
+          });
+        }
+        if ('clear' in externalTask) {
+          const result = await this.storage.deleteExternalTaskLink(
+            id,
+            externalTask.linkId ?? null,
+            (link) => (preparedLink = this.prepareExternalLinkChanged(link, 'clear')),
+            this.linkWriteOptions(),
+          );
+          linkOutcome = { change: 'clear', ...result };
+        } else {
+          const result = await this.storage.setEpicExternalTaskLink(
+            id,
+            externalTask.set,
+            (link) => (preparedLink = this.prepareExternalLinkChanged(link, 'set')),
+            this.linkWriteOptions(),
+          );
+          linkOutcome = { change: 'set', ...result };
+        }
+        return this.storage.updateEpic(id, updateData, expectedVersion, eventFactory);
+      });
+    } else {
+      updated = await this.storage.updateEpic(id, updateData, expectedVersion, eventFactory);
+    }
 
     if (prepared) {
       this.eventsService.emitCommitted(prepared);
+    }
+    if (preparedLink) {
+      this.eventsService.emitCommitted(preparedLink);
+    }
+    if (linkOutcome) {
+      await this.publishLinkScopeInvalidated(before.projectId, projectWorkspaceId);
     }
 
     // CASCADE: Clear all sub-epics' agents when parent moves to auto-clean status
@@ -828,7 +1070,68 @@ export class EpicsService {
       });
     }
 
-    return { epic: updated, descriptionEdit };
+    return { epic: updated, descriptionEdit, externalTask: linkOutcome };
+  }
+
+  /**
+   * Runs `write` in one transaction while holding the projection lock of every
+   * managed projection the link change releases, so a release never lands
+   * between a projection's admission and its vendor call. Managed sync creates
+   * a row before it locks it, so the set read before locking can miss one: the
+   * transaction reads the set again and, when a row is not locked, rolls back
+   * and retries with the wider set. Locks are never awaited inside the
+   * transaction.
+   */
+  private async withReleasedProjectionsLocked<T>(
+    epicId: string,
+    change: EpicExternalTaskChange,
+    write: () => Promise<T>,
+  ): Promise<T> {
+    return this.projectionLock.runCovering(
+      await this.projectionIdsReleasedBy(epicId, change),
+      (lockedIds) =>
+        this.storage.runInTransaction(async () => {
+          const locked = new Set(lockedIds);
+          const released = await this.projectionIdsReleasedBy(epicId, change);
+          const unlocked = released.filter((managedLinkId) => !locked.has(managedLinkId));
+          if (unlocked.length > 0) {
+            throw new ProjectionLockCoverageError(unlocked);
+          }
+          return write();
+        }),
+      () =>
+        new AppError(
+          'Managed subtask sync keeps adding subtasks for this epic; try again.',
+          'MANAGED_SUBTASK_SYNC_BUSY',
+          409,
+          { epicId, retryable: true },
+        ),
+    );
+  }
+
+  /** On a claimed VM every project is home's: its link writes leave receipts for home. */
+  private linkWriteOptions(): ExternalTaskLinkWriteOptions {
+    return { vmHosted: this.host.isClaimedHost() };
+  }
+
+  /** Managed projections the link change would release, read from current rows. */
+  private async projectionIdsReleasedBy(
+    epicId: string,
+    change: EpicExternalTaskChange,
+  ): Promise<string[]> {
+    if (!('clear' in change)) {
+      const rows = await this.storage.listExternalManagedSubtaskLinksForEpicSnapshot(epicId);
+      return rows.map((row) => row.id);
+    }
+    const links = await this.storage.listExternalTaskLinksForEpic(epicId);
+    const link = change.linkId
+      ? links.find((candidate) => candidate.id === change.linkId)
+      : links.find(isOrdinaryExternalTaskLink);
+    if (!link) {
+      return [];
+    }
+    const rows = await this.storage.listExternalManagedSubtaskLinksByParentSourceLink(link.id);
+    return rows.map((row) => row.id);
   }
 
   async updateEpicWithOutcome(
@@ -839,12 +1142,11 @@ export class EpicsService {
   ): Promise<{ epic: Epic; outcome: UpdateEpicOutcome }> {
     const before = await this.storage.getEpic(id);
 
-    const { epic: updated, descriptionEdit } = await this.updateEpicWithDescriptionEditOutcome(
-      id,
-      data,
-      expectedVersion,
-      context,
-    );
+    const {
+      epic: updated,
+      descriptionEdit,
+      externalTask,
+    } = await this.updateEpicWithDescriptionEditOutcome(id, data, expectedVersion, context);
 
     const statusChanged = before.statusId !== updated.statusId;
     const agentUnchanged = before.agentId === updated.agentId;
@@ -861,7 +1163,13 @@ export class EpicsService {
 
     return {
       epic: updated,
-      outcome: { statusChanged, agentUnchanged, previousAssigneeAgent, descriptionEdit },
+      outcome: {
+        statusChanged,
+        agentUnchanged,
+        previousAssigneeAgent,
+        descriptionEdit,
+        ...(externalTask ? { externalTask } : {}),
+      },
     };
   }
 

@@ -1,3 +1,4 @@
+import { storageCredentialSource } from '../connections/integration-credential-source';
 import { BusyError, ValidationError } from '../../../common/errors/error-types';
 import type { StorageService } from '../../storage/interfaces/storage.interface';
 import type { IntegrationCredentials } from '../../storage/models/domain.models';
@@ -107,6 +108,7 @@ describe('ExternalMyWorkService', () => {
     service = new ExternalMyWorkService(
       storage as unknown as StorageService,
       new ExternalTaskProviderRegistry([clickup, jira]),
+      storageCredentialSource(storage as unknown as StorageService),
     );
   });
 

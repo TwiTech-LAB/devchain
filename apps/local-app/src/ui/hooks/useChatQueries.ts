@@ -35,6 +35,15 @@ export interface UseChatQueriesResult {
   agentPresence: AgentPresenceMap;
   agentPresenceLoading: boolean;
   presenceReady: boolean;
+  /**
+   * The last presence fetch succeeded, the roster has rows, and neither has a
+   * request in flight, so a team or roster change is never judged against a
+   * presence map that is about to be replaced. Unlike `presenceReady`, this
+   * stays false after a failed presence load, whose empty map would make every
+   * agent look offline. A failed roster refresh keeps its rows and leaves this
+   * true; a consumer that needs a fresh roster checks its update count.
+   */
+  presenceSettled: boolean;
 
   // Active sessions
   activeSessions: ActiveSession[];
@@ -44,6 +53,7 @@ export interface UseChatQueriesResult {
   guests: AgentOrGuest[];
   allAgentsAndGuests: AgentOrGuest[];
   agentsLoading: boolean;
+  /** The roster failed to load and has no rows; a failed refresh keeps the last rows. */
   agentsError: boolean;
   agentsQuerySuccess: boolean;
 
@@ -85,7 +95,12 @@ export function useChatQueries({
   const hasSelectedProject = Boolean(projectId);
 
   // Agent presence query
-  const { data: agentPresence = {}, isLoading: agentPresenceLoading } = useQuery({
+  const {
+    data: agentPresence = {},
+    isLoading: agentPresenceLoading,
+    isSuccess: agentPresenceSuccess,
+    isFetching: agentPresenceFetching,
+  } = useQuery({
     queryKey: chatQueryKeys.agentPresence(projectId),
     queryFn: () => fetchAgentPresence(projectId!, apiFetch),
     enabled: hasSelectedProject,
@@ -104,11 +119,15 @@ export function useChatQueries({
   const {
     data: agentsResponse,
     isLoading: agentsLoading,
-    isError: agentsError,
+    isError: agentsQueryError,
     isSuccess: agentsQuerySuccess,
+    isFetching: agentsFetching,
   } = useQuery({
     ...agentQueries.withGuests(apiFetch, projectId),
     enabled: hasSelectedProject,
+    // The roster does not poll. Another tab can disable, enable or rename an
+    // agent, so a tab that becomes visible again reads the roster again.
+    refetchOnWindowFocus: true,
   });
 
   // Profiles query
@@ -198,6 +217,11 @@ export function useChatQueries({
     agentPresence,
     agentPresenceLoading,
     presenceReady: !agentPresenceLoading,
+    presenceSettled:
+      agentPresenceSuccess &&
+      !agentPresenceFetching &&
+      agentsResponse !== undefined &&
+      !agentsFetching,
 
     // Active sessions
     activeSessions,
@@ -207,7 +231,7 @@ export function useChatQueries({
     guests,
     allAgentsAndGuests,
     agentsLoading,
-    agentsError,
+    agentsError: agentsQueryError && agentsResponse === undefined,
     agentsQuerySuccess,
 
     // Profiles and providers

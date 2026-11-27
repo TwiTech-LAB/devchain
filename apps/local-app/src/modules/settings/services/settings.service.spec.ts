@@ -1358,6 +1358,8 @@ describe('SettingsService — API surface inventory', () => {
       'setSkillSourceEnabled',
       'getProviderCliVersions',
       'setProviderCliVersion',
+      'getGithubStarState',
+      'updateGithubStarState',
       'getAutoCleanStatusIds',
       'getMessagePoolConfig',
       'getMessagePoolConfigForProject',

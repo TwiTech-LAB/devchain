@@ -1,9 +1,16 @@
 import React from 'react';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import { ToolCallItem } from './ToolCallItem';
 import type { SerializedSemanticStep } from '@/ui/hooks/useSessionTranscript';
 import { fetchJsonOrThrow } from '@/ui/lib/sessions';
 import { renderWithMode } from './__tests__/test-utils';
+import { installLayoutMock, type LayoutMock } from './__tests__/layout-mock';
+import { TranscriptDisclosureProvider } from '@/ui/hooks/useTranscriptDisclosure';
+
+/** The block (ClampedContent root) around a `<pre>` found by its test id. */
+function blockOf(testId: string): HTMLElement {
+  return screen.getByTestId(testId).parentElement!.parentElement!.parentElement!;
+}
 
 jest.mock('@/ui/lib/sessions', () => ({
   ...jest.requireActual('@/ui/lib/sessions'),
@@ -117,33 +124,105 @@ describe('ToolCallItem', () => {
     expect(result).toHaveClass('bg-destructive/10');
   });
 
-  it('truncates large input with show more button', () => {
-    const largeInput: Record<string, unknown> = { data: 'X'.repeat(1000) };
-    render(
-      <ToolCallItem
-        step={makeStep({
-          content: { toolName: 'Write', toolInput: largeInput, toolCallId: 'tc-3' },
-        })}
-      />,
-    );
+  describe('preview boxes', () => {
+    let layout: LayoutMock;
+    beforeEach(() => {
+      layout = installLayoutMock();
+    });
+    afterEach(() => layout.restore());
 
-    fireEvent.click(screen.getByTestId('tool-call-trigger'));
-    expect(screen.getByTestId('tool-input-show-more')).toHaveTextContent('Show more');
-  });
+    it('input: one "Show full" reveals the full text past the character cap', () => {
+      const largeInput: Record<string, unknown> = { data: 'X'.repeat(1000) + 'INPUT-END' };
+      render(
+        <ToolCallItem
+          step={makeStep({
+            content: { toolName: 'Write', toolInput: largeInput, toolCallId: 'tc-3' },
+          })}
+        />,
+      );
 
-  it('truncates large result with show more button', () => {
-    const largeResult = 'Y'.repeat(1000);
-    render(
-      <ToolCallItem
-        step={makeStep()}
-        resultStep={makeResultStep({
-          content: { toolCallId: 'tc-1', toolResultContent: largeResult, isError: false },
-        })}
-      />,
-    );
+      fireEvent.click(screen.getByTestId('tool-call-trigger'));
+      expect(screen.getByTestId('tool-call-input')).not.toHaveTextContent('INPUT-END');
+      const toggles = within(blockOf('tool-call-input')).getAllByRole('button');
+      expect(toggles).toHaveLength(1);
 
-    fireEvent.click(screen.getByTestId('tool-call-trigger'));
-    expect(screen.getByTestId('tool-result-show-more')).toHaveTextContent('Show more');
+      fireEvent.click(toggles[0]);
+
+      expect(screen.getByTestId('tool-call-input')).toHaveTextContent('INPUT-END');
+      expect(toggles[0]).toHaveTextContent('Show less');
+    });
+
+    it('result: one "Show full" reveals the full text past the character cap', () => {
+      const largeResult = 'Y'.repeat(1000) + 'RESULT-END';
+      render(
+        <ToolCallItem
+          step={makeStep()}
+          resultStep={makeResultStep({
+            content: { toolCallId: 'tc-1', toolResultContent: largeResult, isError: false },
+          })}
+        />,
+      );
+
+      fireEvent.click(screen.getByTestId('tool-call-trigger'));
+      const result = screen.getByTestId('tool-call-result');
+      expect(result).not.toHaveTextContent('RESULT-END');
+      expect(result.parentElement!.parentElement!.style.maxHeight).toBe('256px');
+
+      fireEvent.click(
+        within(blockOf('tool-call-result')).getByRole('button', { name: 'Show full' }),
+      );
+
+      expect(result).toHaveTextContent('RESULT-END');
+      expect(within(blockOf('tool-call-result')).getByRole('button')).toHaveTextContent(
+        'Show less',
+      );
+    });
+
+    it('short input and result show no toggle', () => {
+      render(<ToolCallItem step={makeStep()} resultStep={makeResultStep()} />);
+      fireEvent.click(screen.getByTestId('tool-call-trigger'));
+      expect(screen.queryByRole('button', { name: /^show (full|less)$/i })).toBeNull();
+    });
+
+    it('keeps the section open and refetches an expanded full result after a remount', async () => {
+      fetchJsonOrThrowMock.mockResolvedValue({
+        sessionId: 'session-1',
+        toolCallId: 'tc-1',
+        content: 'PREFIX…SENTINEL-PAST-PREFIX',
+        isError: false,
+        fullLength: 4096,
+      });
+      const item = (
+        <ToolCallItem
+          sessionId="session-1"
+          chunkId="chunk-1"
+          step={makeStep()}
+          resultStep={makeResultStep({
+            content: {
+              toolCallId: 'tc-1',
+              toolResultContent: 'PREFIX…',
+              isTruncated: true,
+              fullLength: 4096,
+              isError: false,
+            },
+          })}
+        />
+      );
+      const ui = (children: React.ReactNode) => (
+        <TranscriptDisclosureProvider scope="session-1">{children}</TranscriptDisclosureProvider>
+      );
+      const { rerender } = render(ui(item));
+      fireEvent.click(screen.getByTestId('tool-call-trigger'));
+      fireEvent.click(screen.getByRole('button', { name: 'Show full result (4.0 KB)' }));
+      await screen.findByText(/SENTINEL-PAST-PREFIX/);
+
+      rerender(ui(null));
+      rerender(ui(item));
+
+      expect(screen.getByTestId('tool-call-trigger')).toHaveAttribute('data-state', 'open');
+      await screen.findByText(/SENTINEL-PAST-PREFIX/);
+      expect(fetchJsonOrThrowMock).toHaveBeenCalledTimes(2);
+    });
   });
 
   it('renders one-liner with command for Bash tool', () => {
@@ -302,19 +381,23 @@ describe('ToolCallItem', () => {
     );
 
     fireEvent.click(screen.getByTestId('tool-call-trigger'));
-    fireEvent.click(screen.getByTestId('tool-result-load-full'));
+    // A cut result has one control: the toggle, labelled with what it downloads.
+    expect(screen.getAllByRole('button', { name: /^Show full/ })).toHaveLength(1);
+    fireEvent.click(screen.getByRole('button', { name: 'Show full result (4.0 KB)' }));
 
     await waitFor(() => {
       expect(screen.getByText(/FULL TOOL RESULT CONTENT/)).toBeInTheDocument();
     });
+    // The fetched result opens expanded.
+    expect(screen.getByRole('button', { name: 'Show less' })).toBeInTheDocument();
 
     expect(fetchJsonOrThrowMock).toHaveBeenCalledWith(
       '/api/sessions/session-1/transcript/tool-result/tc-1',
-      {},
+      { signal: expect.any(AbortSignal) },
       'Failed to fetch full tool result',
       expect.any(Function),
     );
-    expect(screen.queryByTestId('tool-result-load-full')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Show full/ })).not.toBeInTheDocument();
   });
 
   // ---------------------------------------------------------------------------

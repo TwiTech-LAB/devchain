@@ -12,12 +12,16 @@ export function parseProfileOptions(raw?: string | null): string[] {
 
   const tokens: string[] = [];
   let current = '';
+  // True once the token has a character or a quote, so a quoted empty value ("" or '') stays one
+  // argument. Whitespace alone never starts a token.
+  let started = false;
   let quote: '"' | "'" | null = null;
 
   const finishToken = () => {
-    if (current.length > 0) {
+    if (started) {
       tokens.push(current);
       current = '';
+      started = false;
     }
   };
 
@@ -49,6 +53,7 @@ export function parseProfileOptions(raw?: string | null): string[] {
 
     if (ch === '"' || ch === "'") {
       quote = ch;
+      started = true;
       continue;
     }
 
@@ -56,6 +61,7 @@ export function parseProfileOptions(raw?: string | null): string[] {
       const next = raw[i + 1];
       if (next === '"' || next === "'" || next === '\\' || next === ' ') {
         current += next;
+        started = true;
         i += 1;
         continue;
       }
@@ -67,6 +73,7 @@ export function parseProfileOptions(raw?: string | null): string[] {
     }
 
     current += ch;
+    started = true;
   }
 
   if (quote) {
@@ -157,6 +164,19 @@ export function hasCodexProfileSelector(args: readonly string[]): boolean {
       arg === '-p' ||
       (arg.startsWith('-p') && !arg.startsWith('--')),
   );
+}
+
+/**
+ * The model that a config's raw options pass to the provider, as launch reads it; null when
+ * the options have no model flag or are invalid (an invalid value fails the launch anyway).
+ */
+export function extractModelFromProfileOptions(raw: string | null): string | null {
+  try {
+    return extractModelFromArgs(parseProfileOptions(raw));
+  } catch (error) {
+    if (error instanceof ProfileOptionsError) return null;
+    throw error;
+  }
 }
 
 /**

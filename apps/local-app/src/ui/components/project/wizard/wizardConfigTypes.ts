@@ -18,6 +18,8 @@ export interface WizardConfigState {
   agentPresetModified: boolean;
   /** Per-team panel state: the config options each team lead may use. */
   teamStates: Map<string, TeamPanelState>;
+  /** True once the user edited an agent row or a team row since the rows were last built. */
+  hasManualEdits: boolean;
 }
 
 export interface WizardConfigHandlers {
@@ -25,4 +27,6 @@ export interface WizardConfigHandlers {
   onAgentRowChange: (agentName: string, patch: Partial<AgentRow>) => void;
   onApplyPreset: (name: string) => void;
   onTeamStateChange: (teamName: string, patch: Partial<TeamPanelState>) => void;
+  /** Rebuilds the rows from the applied setup, or from the template defaults when none is applied. */
+  onResetSetup: () => void;
 }

@@ -343,7 +343,7 @@ export class RemoteLiveSyncService
   }
 }
 
-function wholeTablesHash(changes: ProjectReplicaChanges): string {
+export function wholeTablesHash(changes: ProjectReplicaChanges): string {
   const tables: Record<string, unknown> = { ...changes.replica.tables };
   for (const table of PARTIAL_TABLES) delete tables[table];
   return createHash('sha256')

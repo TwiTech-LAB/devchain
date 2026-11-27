@@ -182,6 +182,15 @@ const PARAM_FIXTURES = {
     providerConfigId: CONFIG_ID,
   },
   'chat.deleteAgent': { projectId: PROJECT_ID, agentId: AGENT_ID },
+  'chat.setAgentDisabled': { projectId: PROJECT_ID, agentId: AGENT_ID, disabled: true },
+  'chat.getAgentOverrides': { projectId: PROJECT_ID, agentId: AGENT_ID },
+  'chat.setAgentOverrides': {
+    projectId: PROJECT_ID,
+    agentId: AGENT_ID,
+    providerConfigId: CONFIG_ID,
+    modelOverride: 'opus',
+    effortOverride: null,
+  },
   'chat.getTranscriptSummary': { sessionId: SESSION_ID, projectId: PROJECT_ID },
   'chat.getTranscriptChunks': { sessionId: SESSION_ID, projectId: PROJECT_ID },
   'chat.getTranscriptTail': { sessionId: SESSION_ID, projectId: PROJECT_ID, since: 'cursor' },
@@ -362,6 +371,38 @@ const RESULT_FIXTURES = {
   'chat.createTeamAgent': { ...createdAgent, teamId: TEAM_ID },
   'chat.createIndependentAgent': createdAgent,
   'chat.deleteAgent': { deleted: true },
+  'chat.setAgentDisabled': { agentId: AGENT_ID, disabled: true },
+  'chat.getAgentOverrides': {
+    agentId: AGENT_ID,
+    providerConfigId: CONFIG_ID,
+    modelOverride: null,
+    effortOverride: 'high',
+    configs: [
+      {
+        id: CONFIG_ID,
+        name: 'default',
+        providerId: PROVIDER_ID,
+        providerName: 'claude',
+        model: null,
+        effort: null,
+      },
+    ],
+    providers: [
+      {
+        providerId: PROVIDER_ID,
+        models: ['opus'],
+        efforts: ['high'],
+        supportsEffort: true,
+        requiresModelForEffort: false,
+      },
+    ],
+  },
+  'chat.setAgentOverrides': {
+    agentId: AGENT_ID,
+    providerConfigId: CONFIG_ID,
+    modelOverride: 'opus',
+    effortOverride: null,
+  },
   'chat.getTranscriptSummary': {
     sessionId: SESSION_ID,
     providerName: 'codex',
@@ -500,14 +541,14 @@ const RESULT_FIXTURES = {
 } satisfies Record<MobileRpcMethod, unknown>;
 
 describe('mobile RPC catalog', () => {
-  it('contains exactly 48 methods with the canonical domain counts', () => {
-    expect(MOBILE_RPC_METHODS).toHaveLength(48);
-    expect(new Set(MOBILE_RPC_METHODS).size).toBe(48);
+  it('contains exactly 51 methods with the canonical domain counts', () => {
+    expect(MOBILE_RPC_METHODS).toHaveLength(51);
+    expect(new Set(MOBILE_RPC_METHODS).size).toBe(51);
     expect(Object.keys(MOBILE_RPC_CATALOG)).toEqual(MOBILE_RPC_METHODS);
 
     const counts = Object.groupBy(MOBILE_RPC_METHODS, (method) => method.split('.')[0]);
     expect(counts.board).toHaveLength(12);
-    expect(counts.chat).toHaveLength(25);
+    expect(counts.chat).toHaveLength(28);
     expect(counts.terminal).toHaveLength(3);
     expect(counts.e2ee).toHaveLength(3);
     expect(counts.vault).toHaveLength(5);
@@ -542,7 +583,7 @@ describe('mobile RPC catalog', () => {
     expect(getMobileRpcResultSchema('chat.getProviderUsage').safeParse(result).success).toBe(true);
   });
 
-  it('has eight strict params schemas and 40 passthrough schemas', () => {
+  it('has eight strict params schemas and 43 passthrough schemas', () => {
     const strictMethods = MOBILE_RPC_METHODS.filter(
       (method) => MOBILE_RPC_CATALOG[method].paramsMode === MOBILE_RPC_PARAMS_MODES.strict,
     );
@@ -566,12 +607,12 @@ describe('mobile RPC catalog', () => {
       expect(acceptsAdditiveField, method).toBe(!strictMethods.includes(method));
     }
 
-    expect(MOBILE_RPC_METHODS).toHaveLength(strictMethods.length + 40);
+    expect(MOBILE_RPC_METHODS).toHaveLength(strictMethods.length + 43);
   });
 
-  it('has crypto counts 42/1/5 and the exact exceptional methods', () => {
+  it('has crypto counts 45/1/5 and the exact exceptional methods', () => {
     const byMode = Object.groupBy(MOBILE_RPC_METHODS, getMobileRpcCryptoMode);
-    expect(byMode[MOBILE_RPC_CRYPTO_MODES.conditionalSeal]).toHaveLength(42);
+    expect(byMode[MOBILE_RPC_CRYPTO_MODES.conditionalSeal]).toHaveLength(45);
     expect(byMode[MOBILE_RPC_CRYPTO_MODES.plaintextBootstrap]).toEqual(['e2ee.adoptDeviceKey']);
     expect(byMode[MOBILE_RPC_CRYPTO_MODES.sealedOnly]).toEqual([
       'e2ee.revokeDeviceKey',
@@ -613,6 +654,49 @@ describe('mobile RPC catalog', () => {
     const base = { kid: 'kid', publicKeyB64: 'public-key' };
 
     expect(schema.safeParse({ ...base, ...metadata }).success).toBe(accepted);
+  });
+
+  it.each([
+    {
+      name: 'listSessions with family',
+      method: 'chat.listSessions',
+      extra: { family: true },
+      accepted: true,
+    },
+    {
+      name: 'listSessions with a string family',
+      method: 'chat.listSessions',
+      extra: { family: 'true' },
+      accepted: false,
+    },
+    {
+      name: 'restoreSession with a target',
+      method: 'chat.restoreSession',
+      extra: { targetAgentId: AGENT_ID },
+      accepted: true,
+    },
+    {
+      name: 'restoreSession with a non-UUID target',
+      method: 'chat.restoreSession',
+      extra: { targetAgentId: 'agent' },
+      accepted: false,
+    },
+  ] as const)('validates family session params: $name', ({ method, extra, accepted }) => {
+    const params = { ...PARAM_FIXTURES[method], ...extra };
+    expect(getMobileRpcParamsSchema(method).safeParse(params).success).toBe(accepted);
+  });
+
+  it.each([
+    { name: 'without owner fields (older PC)', owner: {}, accepted: true },
+    { name: 'with an owner', owner: { agentId: AGENT_ID, agentName: 'Coder' }, accepted: true },
+    { name: 'with a deleted owner', owner: { agentId: null, agentName: null }, accepted: true },
+    { name: 'with a non-UUID owner', owner: { agentId: 'agent' }, accepted: false },
+  ])('validates session history items $name', ({ owner, accepted }) => {
+    const page = RESULT_FIXTURES['chat.listSessions'];
+    const items = page.items.map((item) => ({ ...item, ...owner }));
+    expect(
+      getMobileRpcResultSchema('chat.listSessions').safeParse({ ...page, items }).success,
+    ).toBe(accepted);
   });
 
   it('accepts a representative producer-wire fixture for every result schema', () => {

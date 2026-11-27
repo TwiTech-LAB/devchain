@@ -1,4 +1,4 @@
-import { render } from '@testing-library/react';
+import { render, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type { ReactElement } from 'react';
@@ -35,15 +35,25 @@ function renderSidebar(props: ChatSidebarProps) {
 }
 
 describe('ChatSidebar referential stability', () => {
+  const originalFetch = global.fetch;
+
   beforeEach(() => {
     agentRowRenders = 0;
+    global.fetch = jest.fn(async () => ({
+      ok: true,
+      json: async () => ({ items: [], total: 0, limit: 50, offset: 0 }),
+    })) as unknown as typeof fetch;
   });
 
-  it('skips re-render (and AgentRow re-render) when all three bundles keep their references', () => {
+  afterEach(() => {
+    global.fetch = originalFetch;
+  });
+
+  it('skips re-render (and AgentRow re-render) when all three bundles keep their references', async () => {
     const bundles = packChatSidebarProps(makeFlatChatSidebarProps());
     const { rerenderSidebar } = renderSidebar(bundles);
 
-    expect(agentRowRenders).toBeGreaterThan(0);
+    await waitFor(() => expect(agentRowRenders).toBeGreaterThan(0));
     const afterInitial = agentRowRenders;
 
     // Parent re-renders with the exact same bundle references — memo must bail out.
@@ -51,9 +61,10 @@ describe('ChatSidebar referential stability', () => {
     expect(agentRowRenders).toBe(afterInitial);
   });
 
-  it('re-renders AgentRow when a bundle reference changes', () => {
+  it('re-renders AgentRow when a bundle reference changes', async () => {
     const bundles = packChatSidebarProps(makeFlatChatSidebarProps());
     const { rerenderSidebar } = renderSidebar(bundles);
+    await waitFor(() => expect(agentRowRenders).toBeGreaterThan(0));
     const afterInitial = agentRowRenders;
 
     // New `data` reference (same content) — memo can no longer bail out.

@@ -3,7 +3,7 @@ import { stat } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { AppError } from '../../../common/errors/error-types';
 import { createLogger } from '../../../common/logging/logger';
-import { isTransientSyncError, type FolderSyncStatus } from '../../file-sync/file-sync.dto';
+import { failedCount, type FolderSyncStatus } from '../../file-sync/file-sync.dto';
 import { FileSyncService } from '../../file-sync/file-sync.service';
 import { shareFolderId } from '../../file-sync/share-paths';
 import { SyncthingRestError } from '../../file-sync/syncthing-rest.client';
@@ -193,14 +193,6 @@ export function folderState(home: FolderSyncStatus, vm: FolderSyncStatus): Share
   const needItems = home.needTotalItems + vm.needTotalItems;
   if (needItems > 0) return { kind: 'syncing', needItems };
   return { kind: 'in-sync' };
-}
-
-function failedCount(status: FolderSyncStatus): number {
-  const files = status.fileErrors ?? [];
-  if (files.length === 0) return status.errors ?? 0;
-  const failed = files.filter((file) => !isTransientSyncError(file.error)).length;
-  // fileErrors is a sample; scale it to the full count when every sampled file failed for real.
-  return failed === files.length ? Math.max(failed, status.errors ?? 0) : failed;
 }
 
 /** The VM did not answer at all, as opposed to answering with an error. */

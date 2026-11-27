@@ -690,20 +690,23 @@ export class JiraExternalTaskProvider implements ExternalTaskProvider {
     const issueUrl = new URL(`${site.origin}/rest/api/3/issue/${encodeURIComponent(taskId)}`);
     issueUrl.searchParams.set('fields', JIRA_DETAIL_FIELDS.join(','));
     const issue = await this.requestJson(site, `${issueUrl.pathname}${issueUrl.search}`);
+    // Jira accepts a key in any case or a numeric id; every later read and the
+    // returned identity use the canonical key so links never split between forms.
+    const issueKey = this.canonicalIssueKey(issue, taskId);
 
     const [[transitionResult, configurationResult], childResult] = await Promise.all([
       Promise.allSettled([
-        this.loadTransitions(site, taskId),
+        this.loadTransitions(site, issueKey),
         this.requestJson(site, '/rest/api/3/configuration'),
       ]),
-      this.normalizeTaskSubtasks(issue, site, taskId),
+      this.normalizeTaskSubtasks(issue, site, issueKey),
     ]);
     const transitions = transitionResult.status === 'fulfilled' ? transitionResult.value : [];
     const timeTrackingEnabled =
       configurationResult.status === 'fulfilled' &&
       isRecord(configurationResult.value) &&
       configurationResult.value.timeTrackingEnabled === true;
-    const detail = this.normalizeTaskDetail(issue, site, taskId);
+    const detail = this.normalizeTaskDetail(issue, site, issueKey);
     const allowedStatuses = transitions
       .filter((transition) => transition.supported)
       .map((transition) => transition.option);
@@ -1440,6 +1443,19 @@ export class JiraExternalTaskProvider implements ExternalTaskProvider {
       throw new JiraProviderError('invalid_response');
     }
     return seconds * 1_000;
+  }
+
+  private canonicalIssueKey(value: unknown, requestedId: string): string {
+    if (!isRecord(value)) {
+      throw new JiraProviderError('invalid_response');
+    }
+    const key = this.optionalJiraKey(value);
+    const id =
+      typeof value.id === 'string' || typeof value.id === 'number' ? String(value.id).trim() : '';
+    if (key === null || (key.toUpperCase() !== requestedId.toUpperCase() && id !== requestedId)) {
+      throw new JiraProviderError('invalid_response');
+    }
+    return key;
   }
 
   private normalizeTaskDetail(

@@ -60,6 +60,7 @@ describe('EventsService', () => {
     const eventId = await service.publish('session.transcript.updated', payload);
 
     expect(transientEventNames).toEqual([
+      'agent.updated',
       'epic.relations.invalidated',
       'epic.time.scope.invalidated',
       'provider-usage.updated',

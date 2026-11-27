@@ -110,6 +110,7 @@ function setup(git = false) {
     calls.push(`home ${id} ${JSON.stringify(patch)}`);
     await update(id, patch);
   });
+  const homeGit = { hasPendingRecovery: jest.fn(async () => false) };
   const handoff = new FileSyncHandoff(
     home as unknown as FileSyncService,
     host as unknown as RemoteHostClient,
@@ -117,6 +118,7 @@ function setup(git = false) {
     guard as unknown as HomeGitGuardService,
     new FakeProcessExecutor(),
     ownerCache(owner) as never,
+    homeGit as never,
   );
   const reports: Record<string, unknown>[] = [];
   const run: RemoteOperationStepRun = {
@@ -127,7 +129,20 @@ function setup(git = false) {
       reports.push(patch);
     },
   };
-  return { home, peer, host, handoff, run, calls, reports, managed, guard, owner, vmRecord };
+  return {
+    home,
+    peer,
+    host,
+    handoff,
+    run,
+    calls,
+    reports,
+    managed,
+    guard,
+    owner,
+    vmRecord,
+    homeGit,
+  };
 }
 
 describe('FileSyncHandoff', () => {
@@ -1055,6 +1070,7 @@ describe('FileSyncHandoff', () => {
       {} as HomeGitGuardService,
       new FakeProcessExecutor(),
       ownerCache({ value: 'vm' }) as never,
+      {} as never,
     );
     const { run } = setup();
 
@@ -1116,24 +1132,52 @@ describe('split git handoffs', () => {
     expect(home.status).toHaveBeenCalledWith('code:p1', expect.any(String));
   });
 
-  it('closes VM Git admission on Disconnect and takes the owner from the VM once writes finish', async () => {
+  it('closes VM Git admission on Disconnect and waits for PC writes and recovery', async () => {
     jest.useFakeTimers();
     try {
-      const { home, peer, host, handoff, run, owner, vmRecord } = setup(true);
+      const { home, peer, host, handoff, run, owner, vmRecord, homeGit, calls } = setup(true);
       await handoff.initial(run, 'p1');
       await handoff.flipToHost(run, 'p1');
+      const oldOwner = { ...owner };
+      const ensureHome = jest.spyOn(home, 'ensureFolder');
+      host.syncFolders.mockClear();
+      calls.length = 0;
       const busy = { ...vmRecord(), owner: 'home' as const, homeWrites: { write: 1 } };
       host.gitCoordinatorClose.mockResolvedValue(busy);
       host.gitCoordinatorStatus.mockResolvedValue(busy);
-      let finished = false;
-      const final = handoff.final(run, 'p1').then(() => {
-        finished = true;
+      const refused = expect(handoff.final(run, 'p1')).rejects.toMatchObject({
+        code: 'GIT_RECOVERY_PENDING',
+        statusCode: 409,
+        message: expect.stringContaining('Cancel the Disconnect'),
       });
       await jest.advanceTimersByTimeAsync(2_000);
       expect(run.details).toMatchObject({ gitAdmissionClosed: true });
-      expect(finished).toBe(false);
-      expect(owner.value).toBe('vm');
-      host.gitCoordinatorStatus.mockResolvedValue({ ...busy, homeWrites: {} });
+      expect(homeGit.hasPendingRecovery).not.toHaveBeenCalled();
+      expect(owner).toEqual(oldOwner);
+
+      // Step-down cleared the saved write while its recovery marker was still pending.
+      const reclaimed = {
+        ...vmRecord(),
+        generation: busy.generation + 1,
+        supersededWrites: { write: { generation: busy.generation, at: 1 } },
+      };
+      homeGit.hasPendingRecovery.mockResolvedValueOnce(true);
+      host.gitCoordinatorStatus.mockResolvedValue(reclaimed);
+      await jest.advanceTimersByTimeAsync(1_000);
+      await refused;
+      expect(homeGit.hasPendingRecovery).toHaveBeenCalledWith('p1', 'r1', reclaimed);
+      expect(owner).toEqual(oldOwner);
+      expect(run.details.fileSyncPaused).toBeUndefined();
+      expect(ensureHome).not.toHaveBeenCalled();
+      expect(host.syncFolders).not.toHaveBeenCalled();
+      expect(calls).toEqual([]);
+
+      host.gitCoordinatorClose.mockResolvedValue({
+        ...busy,
+        generation: reclaimed.generation + 1,
+        homeWrites: {},
+      });
+      const final = handoff.final(run, 'p1');
       await jest.advanceTimersByTimeAsync(1_000);
       await final;
       expect(owner.value).toBe('home');
@@ -1471,6 +1515,7 @@ describe('FileSyncHandoff.ensureRepository', () => {
       {} as HomeGitGuardService,
       executor,
       { get: () => 'vm' } as never,
+      {} as never,
     );
 
   it.each(['missing', 'empty', 'repository', 'worktree'] as const)(

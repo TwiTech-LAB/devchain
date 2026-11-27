@@ -89,6 +89,7 @@ describe('Disconnect all child lifecycle', () => {
       } as never,
       { stop: async () => undefined, start: () => undefined } as never,
       {
+        prepareGitDisconnect: async () => undefined,
         final: async ({ operation }: RemoteOperationStepRun) => {
           await pause('file_sync_final', operation.projectId!);
           if (operation.projectId === failProject) {

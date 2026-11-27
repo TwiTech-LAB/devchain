@@ -330,6 +330,11 @@ describe('VM Git coordinator persistence and host API', () => {
       },
       {
         method: 'POST',
+        url: '/api/host/projects/p/git-coordinator/home-renew',
+        payload: stale,
+      },
+      {
+        method: 'POST',
         url: '/api/host/projects/p/git-coordinator/handover-begin',
         payload: { ...stale, id: 'h', homeName: 'PC' },
       },
@@ -359,6 +364,15 @@ describe('VM Git coordinator persistence and host API', () => {
 
   it('requires a fence for Git routes, leaves code sync usable, and enforces loopback holds', async () => {
     expect(
+      (
+        await app.inject({
+          method: 'POST',
+          url: '/api/host/projects/p/git-coordinator/home-renew',
+          payload: { expectedGeneration: 0 },
+        })
+      ).statusCode,
+    ).toBe(400);
+    expect(
       (await app.inject({ method: 'POST', url: '/api/host/sync/folders/git:p/revert' })).statusCode,
     ).toBe(400);
     expect(
@@ -385,6 +399,41 @@ describe('VM Git coordinator persistence and host API', () => {
         })
       ).statusCode,
     ).toBe(409);
+  });
+
+  it('answers superseded home writes, renewals and handovers before the usual fence refusal', async () => {
+    store.write('p', {
+      ...store.read('p'),
+      generation: 2,
+      supersededWrites: { pending: { generation: 1, at: 1 } },
+      supersededHandovers: ['abandoned'],
+      forcedReclaim: { at: 1, fromGeneration: 1, homeName: 'PC' },
+    });
+    const oldGeneration = { expectedGeneration: 1, transitionId: null };
+    const oldHandover = { expectedGeneration: 1, transitionId: 'abandoned' };
+    const calls = [
+      [
+        'home-write-end',
+        { ...oldGeneration, writeId: 'pending', refsDigest: 'refs', indexBase64: '' },
+      ],
+      ['home-renew', oldGeneration],
+      ['handover-phase', { ...oldHandover, phase: 'home-sending' }],
+      ['handover-renew', oldHandover],
+      ['handover-complete', oldHandover],
+    ] as const;
+    for (const [route, payload] of calls) {
+      const response = await app.inject({
+        method: 'POST',
+        url: `/api/host/projects/p/git-coordinator/${route}`,
+        payload,
+      });
+      expect({ route, status: response.statusCode, code: response.json().code }).toEqual({
+        route,
+        status: 409,
+        code: 'GIT_HOME_WRITE_SUPERSEDED',
+      });
+    }
+    expect(store.read('p')).toMatchObject({ owner: 'vm', generation: 2, transition: null });
   });
 
   it('journals each handover phase before its effect and publishes home ownership with the write', async () => {
@@ -422,6 +471,18 @@ describe('VM Git coordinator persistence and host API', () => {
     expect(drained.json().transition).toMatchObject({
       phase: 'draining',
       sequences: { 'code:p': 4, 'git:p': 9 },
+    });
+    const digest = await refsDigest(new ChildProcessExecutor(), root);
+    const baseline = { generation: 0, refsDigest: digest };
+    expect(store.read('p').baseline).toEqual(baseline);
+    expect(
+      JSON.parse(await readFile(join(indexes.directory('p'), 'baseline.json'), 'utf8')),
+    ).toEqual({
+      ...baseline,
+      head: execFileSync('git', ['-C', root, 'symbolic-ref', 'HEAD'], { encoding: 'utf8' }).trim(),
+      refs: [],
+      symbolicRefs: {},
+      sequencer: [],
     });
     expect(guard.install).toHaveBeenCalledWith('p', { homeName: 'PC', reason: 'pc-git' });
     expect((await phase({ ...fence, phase: 'home-sending' })).statusCode).toBe(409);
@@ -462,6 +523,13 @@ describe('VM Git coordinator persistence and host API', () => {
       payload: { expectedGeneration: 1, transitionId: 'handover' },
     });
     expect(complete.json()).toMatchObject({ owner: 'home', generation: 1, transition: null });
+    const renewed = await app.inject({
+      method: 'POST',
+      url: '/api/host/projects/p/git-coordinator/home-renew',
+      payload: { expectedGeneration: 1, transitionId: null },
+    });
+    expect(renewed.statusCode).toBe(200);
+    expect(renewed.json()).toEqual(complete.json());
   });
 
   it('takes an index of more than 8 MiB on the checkpoint content type', async () => {
@@ -569,12 +637,27 @@ describe('VM Git coordinator persistence and host API', () => {
     const noObject = await end(write);
     expect([noObject.statusCode, noObject.json().code]).toEqual([409, 'GIT_CHECKPOINT_INCOMPLETE']);
     expect(store.read('p').homeWrites.write).toEqual(expect.any(Number));
+    expect(store.read('p').baseline).toBeUndefined();
+    const baselinePath = join(indexes.directory('p'), 'baseline.json');
+    await expect(readFile(baselinePath, 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
 
     await sync();
     expect((await end(write)).statusCode).toBe(200);
     const vmIndex = execFileSync('git', ['-C', root, 'ls-files', '--stage'], { encoding: 'utf8' });
     expect(vmIndex).toBe(pcGit('ls-files', '--stage'));
     expect(vmIndex).toMatch(/ 1\tmerge\.txt\n.* 2\tmerge\.txt\n.* 3\tmerge\.txt\n/);
+    const baseline = { generation: 0, refsDigest: write.refsDigest };
+    expect(store.read('p').baseline).toEqual(baseline);
+    expect(JSON.parse(await readFile(baselinePath, 'utf8'))).toEqual({
+      ...baseline,
+      head: 'refs/heads/main',
+      refs: ['main', 'other'].map((branch) => ({
+        name: `refs/heads/${branch}`,
+        oid: pcGit('rev-parse', branch).trim(),
+      })),
+      symbolicRefs: {},
+      sequencer: ['MERGE_HEAD'],
+    });
 
     await coordinator.homeWriteBegin('p', { ...initialFence, writeId: 'newer', homeName: 'PC' });
     expect((await end(await capture('newer'))).statusCode).toBe(200);
@@ -587,7 +670,90 @@ describe('VM Git coordinator persistence and host API', () => {
       homeWrites: {},
       checkpoint: { writeId: 'newer', generation: 0 },
       confirmedWrites: { write: expect.any(Object), newer: expect.any(Object) },
+      baseline,
     });
     expect((await indexes.read('p')).subarray(0, 4).toString()).toBe('DIRC');
   });
+
+  it.each(['after replacing the baseline file', 'after installing the live index'] as const)(
+    'keeps a staging-only baseline ineligible when confirmation stops %s',
+    async (interruption) => {
+      const digest = await refsDigest(new ChildProcessExecutor(), root);
+      const baselinePath = join(indexes.directory('p'), 'baseline.json');
+      const liveIndex = () =>
+        execFileSync('git', ['-C', root, 'ls-files', '--stage'], { encoding: 'utf8' });
+      const begin = (writeId: string) =>
+        coordinator.homeWriteBegin('p', { ...initialFence, writeId, homeName: 'PC' });
+      store.write('p', { ...store.read('p'), owner: 'home' });
+      await begin('confirmed');
+      await coordinator.homeWriteEnd('p', {
+        ...initialFence,
+        writeId: 'confirmed',
+        refsDigest: digest,
+        indexBase64: '',
+      });
+      const confirmedBaseline = store.read('p').baseline;
+      expect(confirmedBaseline).toEqual({ generation: 0, refsDigest: digest });
+      expect(JSON.parse(await readFile(baselinePath, 'utf8'))).toMatchObject({
+        ...confirmedBaseline,
+        refs: [],
+        sequencer: [],
+      });
+
+      // The extra index represents the PC's snapshot. The live VM index stays empty until install.
+      const stagedIndex = join(directory, 'staged-index');
+      await writeFile(join(root, 'pending.txt'), 'unconfirmed staging\n');
+      execFileSync('git', ['-C', root, 'add', 'pending.txt'], {
+        env: { ...process.env, GIT_INDEX_FILE: stagedIndex },
+      });
+      const request = {
+        ...initialFence,
+        writeId: 'pending',
+        refsDigest: digest,
+        indexBase64: (await readFile(stagedIndex)).toString('base64'),
+      };
+      await begin(request.writeId);
+      const failure = new Error('confirmation interrupted');
+      if (interruption === 'after replacing the baseline file') {
+        const saveBaseline = indexes.saveBaseline.bind(indexes);
+        jest.spyOn(indexes, 'saveBaseline').mockImplementationOnce(async (...args) => {
+          await saveBaseline(...args);
+          throw failure;
+        });
+      } else {
+        const write = store.write.bind(store);
+        jest.spyOn(store, 'write').mockImplementation((projectId, record) => {
+          if (record.checkpoint?.writeId === request.writeId) throw failure;
+          write(projectId, record);
+        });
+      }
+
+      await expect(coordinator.homeWriteEnd('p', request)).rejects.toThrow(failure);
+      await restart();
+
+      const interrupted = store.read('p');
+      const onDisk = JSON.parse(await readFile(baselinePath, 'utf8'));
+      expect(onDisk.refsDigest).toBe(digest);
+      expect(interrupted.baseline?.refsDigest).not.toBe(onDisk.refsDigest);
+      expect(interrupted.checkpoint?.writeId).toBe('confirmed');
+      expect(interrupted.homeWrites.pending).toEqual(expect.any(Number));
+      if (interruption === 'after replacing the baseline file') expect(liveIndex()).toBe('');
+      else expect(liveIndex()).toContain('\tpending.txt\n');
+      await expect(coordinator.withVmPermit('p', async () => 'admitted')).rejects.toThrow(
+        'a home Git write is unconfirmed',
+      );
+
+      await coordinator.homeWriteEnd('p', request);
+      const repaired = store.read('p');
+      expect(repaired).toMatchObject({
+        baseline: confirmedBaseline,
+        checkpoint: { writeId: 'pending', refsDigest: digest },
+      });
+      expect(repaired.baseline?.refsDigest).toBe(
+        JSON.parse(await readFile(baselinePath, 'utf8')).refsDigest,
+      );
+      expect(repaired.homeWrites).toEqual({});
+      expect(liveIndex()).toContain('\tpending.txt\n');
+    },
+  );
 });

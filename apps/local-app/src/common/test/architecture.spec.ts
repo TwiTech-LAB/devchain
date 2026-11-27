@@ -54,6 +54,7 @@ const MCP_BINDING_FILES = [
   'agent.bindings.ts',
   'chat.bindings.ts',
   'epic.bindings.ts',
+  'external-task.bindings.ts',
   'project.bindings.ts',
   'prompt.bindings.ts',
   'record.bindings.ts',
@@ -656,19 +657,19 @@ describe('Phase 7 architecture invariants', () => {
       ['C', 'y'].join('-'),
       ['M', 'y'].join('-'),
     ];
-    // Lane merges turn off a Git merge option whose name contains promptSaveFragment.
-    // A Git option is not a terminal key, so these two files may contain that fragment.
-    const gitMergeOptionFiles = new Set(
-      ['worktrees.service.ts', 'worktrees.service.external.spec.ts'].map((name) =>
-        join(MODULES_ROOT, 'worktrees', name),
-      ),
-    );
+    // These files use the fragment in Git commands, refs or merge options.
+    const gitFiles = new Set([
+      join(MODULES_ROOT, 'worktrees', 'worktrees.service.ts'),
+      join(MODULES_ROOT, 'worktrees', 'worktrees.service.external.spec.ts'),
+      join(MODULES_ROOT, 'remotes', 'git-writes', 'home-git-recovery-refs.ts'),
+      join(MODULES_ROOT, 'remotes', 'git-writes', 'home-git-recovery-refs.spec.ts'),
+      join(MODULES_ROOT, 'remotes', 'git-writes', 'git-ownership.two-instance.integration.spec.ts'),
+    ]);
     const offenders = listTypeScriptFiles(SRC_ROOT).flatMap((file) => {
       const content = readText(file);
       const hits = forbiddenFragments.filter(
         (fragment) =>
-          content.includes(fragment) &&
-          !(fragment === promptSaveFragment && gitMergeOptionFiles.has(file)),
+          content.includes(fragment) && !(fragment === promptSaveFragment && gitFiles.has(file)),
       );
       return hits.length > 0 ? [`${relative(APP_ROOT, file)} contains ${hits.join(', ')}`] : [];
     });

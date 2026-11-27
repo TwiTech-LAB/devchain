@@ -20,13 +20,14 @@ import {
   REMOTE_MIRROR_SYNC_PORT,
   type RemoteMirrorSyncPort,
 } from '../../remotes/ports/remote-mirror-sync.port';
-import type {
-  Epic,
-  ExternalEstimateLogDailyCheckpoint,
-  ExternalEstimateLogIdentity,
-  ExternalEstimateLogState,
-  ExternalTaskLink,
-  IntegrationConnection,
+import {
+  EXTERNAL_TASK_UNLINK_PENDING,
+  type Epic,
+  type ExternalEstimateLogDailyCheckpoint,
+  type ExternalEstimateLogIdentity,
+  type ExternalEstimateLogState,
+  type ExternalTaskLink,
+  type IntegrationConnection,
 } from '../../storage/models/domain.models';
 import {
   EXTERNAL_ESTIMATE_TIME_ENTRY_NOTE,
@@ -289,9 +290,15 @@ export class EpicEstimateLoggingService {
           operationId,
         );
       } catch (error) {
-        // A CAS race between the continuity read and this prepare means a
-        // competing write landed mid-loop: no provider write happens.
-        if (error instanceof OptimisticLockError && entriesLogged > 0) {
+        // A CAS race between the continuity read and this prepare, or a home
+        // unlink of the task begun since, means a competing write landed
+        // mid-loop: no provider write happens.
+        if (
+          (error instanceof OptimisticLockError ||
+            (error instanceof BusyError &&
+              error.details?.reason === EXTERNAL_TASK_UNLINK_PENDING)) &&
+          entriesLogged > 0
+        ) {
           return this.createOutcome(
             'partially_logged',
             entriesLogged,

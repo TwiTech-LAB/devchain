@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { mkdir, readFile, writeFile, rename, unlink, chmod } from 'fs/promises';
 import { join } from 'path';
 import { createLogger } from '../../../common/logging/logger';
+import { SESSION_START_SOURCE_ENV } from '../../providers/adapters/capabilities/hook.capability';
 
 const logger = createLogger('HooksConfigService');
 
@@ -56,6 +57,12 @@ if [ -z "$HOOK_EVENT_NAME" ]; then
   exit 0
 fi
 
+# A fork resumes a transcript DevChain has already copied for the child.
+SOURCE="$(echo "$INPUT" | jq -r '.source // empty')"
+if [ "$HOOK_EVENT_NAME" = "SessionStart" ] && [ "$SOURCE" = "resume" ] && [ "\${${SESSION_START_SOURCE_ENV}:-}" = "fork" ]; then
+  SOURCE="fork"
+fi
+
 # Capture tmux session name (fallback to env var if tmux unavailable)
 TMUX_SESSION="\${DEVCHAIN_TMUX_SESSION_NAME:-}"
 if [ -z "$TMUX_SESSION" ] && command -v tmux >/dev/null 2>&1; then
@@ -65,7 +72,8 @@ if [ -z "$TMUX_SESSION" ]; then
   exit 0
 fi
 
-# Hook time in epoch ms orders turn hooks that arrive out of order. BSD date has no %N —
+# Hook time in epoch ms orders turn hooks that arrive out of order, and lets the server drop
+# hooks from a runtime that a rollback replaced. BSD date has no %N —
 # and non-GNU date (e.g. uutils) can emit untruncated nanoseconds for %3N, which is still
 # all digits. Accept only exactly 13 decimal digits, then perl, then whole seconds.
 FIRED_AT_MS="$(date +%s%3N 2>/dev/null || true)"
@@ -80,7 +88,7 @@ FIRED_AT_MS="$(date +%s%3N 2>/dev/null || true)"
 PAYLOAD="$(echo "$INPUT" | jq \\
   --arg hookEventName "$HOOK_EVENT_NAME" \\
   --arg claudeSessionId "$(echo "$INPUT" | jq -r '.session_id // empty')" \\
-  --arg source "$(echo "$INPUT" | jq -r '.source // empty')" \\
+  --arg source "$SOURCE" \\
   --arg model "$(echo "$INPUT" | jq -r '.model // empty')" \\
   --arg permissionMode "$(echo "$INPUT" | jq -r '.permission_mode // empty')" \\
   --arg transcriptPath "$(echo "$INPUT" | jq -r '.transcript_path // empty')" \\
@@ -113,7 +121,9 @@ PAYLOAD="$(echo "$INPUT" | jq \\
   + (if \$toolInput != null then {toolInput: \$toolInput} else {} end)
   + (if \$toolUseId != "" then {toolUseId: \$toolUseId} else {} end)
   + (if \$toolResponse != null then {toolResponse: \$toolResponse} else {} end)
-  + (if (\$hookEventName == "UserPromptSubmit" or \$hookEventName == "Stop")
+  + (if (\$hookEventName == "UserPromptSubmit" or \$hookEventName == "Stop"
+         or \$hookEventName == "SessionStart" or \$hookEventName == "PreToolUse"
+         or \$hookEventName == "PostToolUse")
      then {firedAtMs: \$firedAtMs} else {} end)
   ')" || exit 0
 

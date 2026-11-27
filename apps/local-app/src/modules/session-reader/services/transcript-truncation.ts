@@ -8,13 +8,13 @@ export function truncateToolResult(
   maxLength: number,
 ): UnifiedToolResult {
   if (typeof result.content !== 'string') return result;
-  const fullLength = result.content.length;
-  if (fullLength <= maxLength) return result;
+  if (result.content.length <= maxLength) return result;
   return {
     ...result,
     content: result.content.slice(0, maxLength) + '…',
     isTruncated: true,
-    fullLength,
+    // A parser-capped result keeps the length it had at its source.
+    fullLength: result.fullLength ?? result.content.length,
   };
 }
 

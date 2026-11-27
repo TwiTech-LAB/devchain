@@ -164,7 +164,9 @@ export async function handleSendMessage(
         };
       }
 
-      const fullTeam = await ctx.teamsService.getTeam(matchedTeam.id);
+      const fullTeam = await ctx.teamsService.getTeam(matchedTeam.id, {
+        excludeDisabledMembers: true,
+      });
       if (!fullTeam) {
         return {
           success: false,

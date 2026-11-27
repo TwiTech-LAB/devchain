@@ -23,7 +23,11 @@ import type { RemoteOperation } from '../../storage/models/domain.models';
 import { TranscriptFilesService } from './transcript-files.service';
 import { RemoteHostClient } from '../operations/remote-host.client';
 import { TranscriptHandoff } from '../operations/transcript-handoff';
-import type { TranscriptFile } from './transcript-transfer.dto';
+import {
+  TRANSCRIPT_LIST_REF_LIMIT,
+  type TranscriptFile,
+  type TranscriptRef,
+} from './transcript-transfer.dto';
 
 const uuid = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
 const claude: TranscriptFile = { provider: 'claude', path: `-tmp-A/${uuid}.jsonl` };
@@ -347,6 +351,111 @@ describe('recorded transcript handoff', () => {
     await client().uploadTranscript(remoteId, codex, files(instances.home));
     expect(await readFile(files(instances.host).path(codex))).toEqual(retryBytes);
   });
+
+  // The two-instance harness is the cheapest layer that exercises Fastify's JSON body limit,
+  // the route's reference-count validation, and handoff progress on Connect and Disconnect.
+  it.each([
+    { limit: 'byte', fillerCount: 7_000, padding: 'x'.repeat(145) },
+    { limit: 'count', fillerCount: TRANSCRIPT_LIST_REF_LIMIT - 1, padding: '' },
+  ])(
+    'keeps transcript lists within the $limit limit on Connect and Disconnect',
+    async ({ limit, fillerCount, padding }) => {
+      const { home, host } = instances;
+      const projectId = `list-${limit}`;
+      for (const instance of [home, host]) replicaSeeder(instance.sqlite).seedProject(projectId);
+      const folder = `-tmp-${projectId}`;
+      const first: TranscriptRef = { provider: 'claude', path: `${folder}/${uuid}` };
+      const last: TranscriptRef = {
+        provider: 'claude',
+        path: `${folder}/bbbbbbbb-cccc-dddd-eeee-ffffffffffff`,
+      };
+      const shared: TranscriptFile = {
+        provider: 'claude',
+        path: `${folder}/cccccccc-dddd-eeee-ffff-aaaaaaaaaaaa/tool-results/shared.txt`,
+      };
+      const missing = { ...shared, path: shared.path.replace('shared.txt', 'missing.txt') };
+      const onlyInLast = { ...shared, path: shared.path.replace('shared.txt', 'only-in-last.txt') };
+      const refs: TranscriptRef[] = [
+        first,
+        ...Array.from({ length: fillerCount }, (_, i) => ({
+          provider: 'codex' as const,
+          path: `2099/01/01/rollout-${i}${padding}.jsonl`,
+        })),
+        last,
+      ];
+      const fullBytes = Buffer.byteLength(JSON.stringify({ refs, dependencyProjectId: projectId }));
+      expect(refs.length > TRANSCRIPT_LIST_REF_LIMIT).toBe(limit === 'count');
+      expect(fullBytes > 1024 ** 2).toBe(limit === 'byte');
+
+      const firstFile: TranscriptFile = { ...first, path: `${first.path}.jsonl` };
+      const lastFile: TranscriptFile = { ...last, path: `${last.path}.jsonl` };
+      const writeSender = async (instance: TestInstance, marker: string) => {
+        const toolResult = (file: TranscriptFile) =>
+          JSON.stringify({
+            type: 'user',
+            toolUseResult: { persistedOutputPath: files(instance).path(file) },
+            marker,
+          });
+        await put(instance, firstFile, `${toolResult(shared)}\n${toolResult(missing)}\n`);
+        await put(
+          instance,
+          lastFile,
+          `${toolResult(shared)}\n${toolResult(missing)}\n${toolResult(onlyInLast)}\n`,
+        );
+        await put(instance, shared, marker);
+      };
+      const recorded = jest.spyOn(files(home), 'recordedProjectRefs').mockReturnValue({
+        refs,
+        skipped: 1,
+      });
+      const calls = jest.spyOn(client(), 'listTranscripts');
+      try {
+        const handoff = home.app.get(TranscriptHandoff);
+        for (const [direction, sender, receiver, marker] of [
+          ['push', home, host, 'home'],
+          ['pull', host, home, 'longer host output'],
+        ] as const) {
+          await writeSender(sender, marker);
+          const baseline = await files(sender).list(refs, projectId);
+          expect(baseline.files).toHaveLength(3);
+          expect(baseline.skipped).toBe(2);
+          const progress = jest.fn().mockResolvedValue(undefined);
+          calls.mockClear();
+
+          await handoff.copy(
+            { operation: { id: projectId, remoteId } as RemoteOperation, details: {}, progress },
+            projectId,
+            direction,
+          );
+
+          const requests = calls.mock.calls.map(([, request]) => request);
+          expect(requests.length).toBeGreaterThan(1);
+          for (const request of requests) {
+            expect(request.refs.length).toBeLessThanOrEqual(TRANSCRIPT_LIST_REF_LIMIT);
+            expect(Buffer.byteLength(JSON.stringify(request))).toBeLessThan(1024 ** 2);
+            expect(request.dependencyProjectId).toBe(direction === 'pull' ? projectId : undefined);
+          }
+          const totalBytes = baseline.files.reduce((sum, { size }) => sum + size, 0);
+          expect(progress).toHaveBeenLastCalledWith({
+            transcripts: {
+              filesDone: baseline.files.length,
+              filesTotal: baseline.files.length,
+              bytesDone: totalBytes,
+              bytesTotal: totalBytes,
+              missing: baseline.missing,
+              // The missing dependency referenced by both transcripts is counted
+              // in both pull batches and once in the local push inventory.
+              skipped: 1 + (baseline.skipped ?? 0) + (direction === 'pull' ? 1 : 0),
+            },
+          });
+          expect(await readFile(files(receiver).path(shared), 'utf8')).toBe(marker);
+        }
+      } finally {
+        calls.mockRestore();
+        recorded.mockRestore();
+      }
+    },
+  );
 
   it('rejects missing or excessive Content-Length and invalid path patterns through HTTP', async () => {
     for (const [path, length] of [

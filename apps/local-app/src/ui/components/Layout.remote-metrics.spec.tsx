@@ -1,5 +1,5 @@
 import React from 'react';
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 
@@ -145,6 +145,7 @@ jest.mock('../hooks/useRuntime', () => ({
 }));
 
 import { Layout } from './Layout';
+import { syncScope } from '@/ui/pages/cloud/testing/file-sync-status.fixture';
 
 // The agent-request modal has its own spec; these suites mock fetch with other shapes.
 jest.mock('@/ui/pages/vault/VaultRequestModal', () => ({ VaultRequestModal: () => null }));
@@ -168,6 +169,15 @@ function sampleBody() {
         sampledAt: '2026-09-26T12:00:00Z',
       },
     ],
+  };
+}
+
+function syncStatusBody() {
+  return {
+    checkedAt: '2026-09-26T12:00:00Z',
+    syncthing: { running: true, version: 'v2.1.5', error: null },
+    links: [],
+    scopes: [syncScope({ projectId: 'project-1', remoteId: 'remote-1' })],
   };
 }
 
@@ -199,6 +209,9 @@ beforeEach(() => {
     if (url.includes('/api/remotes/remote-1/stats/history')) {
       return { ok: true, json: async () => sampleBody() };
     }
+    if (url.includes('/api/remotes/file-sync/status')) {
+      return { ok: true, json: async () => syncStatusBody() };
+    }
     return { ok: true, json: async () => ({}) };
   });
   global.fetch = fetchMock as unknown as typeof fetch;
@@ -218,7 +231,12 @@ describe('Layout remote metrics integration', () => {
 
     expect(screen.getByTestId('remote-metrics-strip')).toBeInTheDocument();
     expect(screen.getByTestId('cloud-indicator')).toHaveAttribute('data-compact', 'true');
-    expect(screen.getByTestId('terminal-dock')).toBeInTheDocument();
+    expect(
+      await within(screen.getByTestId('terminal-dock')).findByRole('button', {
+        name: 'File sync: In sync',
+      }),
+    ).toBeInTheDocument();
+    expect(requestedUrls()).toContain('/api/remotes/file-sync/status?projectId=project-1');
 
     await waitFor(() => {
       expect(requestedUrls()).toContain('/api/remotes/remote-1/stats/history');
@@ -231,6 +249,7 @@ describe('Layout remote metrics integration', () => {
 
     expect(await screen.findByTestId('terminal-dock')).toBeInTheDocument();
     expect(screen.queryByTestId('remote-metrics-strip')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('remote-sync-indicator')).not.toBeInTheDocument();
     const indicator = screen.getByTestId('cloud-indicator');
     expect(indicator).toHaveAttribute('data-compact', 'false');
     expect(requestedUrls().some((url) => url.includes('stats/history'))).toBe(false);
@@ -247,6 +266,9 @@ describe('Layout remote metrics integration', () => {
     expect(screen.queryByTestId('terminal-dock')).not.toBeInTheDocument();
     expect(screen.getByTestId('remote-metrics-strip')).toBeInTheDocument();
     expect(screen.getByTestId('cloud-indicator')).toHaveAttribute('data-compact', 'true');
+    expect(
+      await within(row).findByRole('button', { name: 'File sync: In sync' }),
+    ).toBeInTheDocument();
 
     await waitFor(() => {
       expect(requestedUrls()).toContain('/api/remotes/remote-1/stats/history');

@@ -14,10 +14,13 @@ import {
 } from '@/ui/utils/session-reader-formatters';
 import { SemanticStepList } from './SemanticStepList';
 import { useSessionViewMode } from '@/ui/hooks/useSessionViewMode';
+import { useTranscriptDisclosure } from '@/ui/hooks/useTranscriptDisclosure';
 
 export interface ToolGroupItemProps {
   sessionId?: string | null;
   group: ToolGroupDisplayItem;
+  /** Scopes the open-state keys; step ids repeat across chunks. */
+  chunkId?: string;
   isStepHot?: boolean;
   percentOfChunk?: number;
 }
@@ -32,8 +35,17 @@ function buildGroupLabel(group: ToolGroupDisplayItem): string {
   return `${base} (${display})`;
 }
 
-export function ToolGroupItem({ sessionId, group, isStepHot, percentOfChunk }: ToolGroupItemProps) {
+export function ToolGroupItem({
+  sessionId,
+  group,
+  chunkId = '',
+  isStepHot,
+  percentOfChunk,
+}: ToolGroupItemProps) {
   const { mode } = useSessionViewMode();
+  const [open, setOpen] = useTranscriptDisclosure(
+    `${chunkId}:group:${group.items[0]?.step.id ?? ''}:section`,
+  );
   const label = buildGroupLabel(group);
 
   const innerSteps = useMemo(() => {
@@ -52,7 +64,7 @@ export function ToolGroupItem({ sessionId, group, isStepHot, percentOfChunk }: T
       className={cn(isStepHot && 'border-l-2 border-status-warn pl-1.5')}
       data-testid="tool-group-wrapper"
     >
-      <Collapsible>
+      <Collapsible open={open} onOpenChange={setOpen}>
         <CollapsibleTrigger
           className="group flex items-center gap-1.5 text-[11px] text-muted-foreground hover:text-foreground transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring rounded-sm"
           data-testid="tool-group-trigger"
@@ -101,7 +113,7 @@ export function ToolGroupItem({ sessionId, group, isStepHot, percentOfChunk }: T
         </CollapsibleTrigger>
         <CollapsibleContent>
           <div className="mt-1 pl-4">
-            <SemanticStepList sessionId={sessionId} steps={innerSteps} />
+            <SemanticStepList sessionId={sessionId} chunkId={chunkId} steps={innerSteps} />
           </div>
         </CollapsibleContent>
       </Collapsible>

@@ -574,6 +574,14 @@ export interface JiraIntegrationCredentials {
 
 export type IntegrationCredentials = ClickUpIntegrationCredentials | JiraIntegrationCredentials;
 
+/** A connection home delivers to a claimed VM; the VM never holds its sealed credentials. */
+export interface DeliveredIntegrationConnection {
+  id: string;
+  projectId: string;
+  provider: IntegrationProvider;
+  generation: number;
+}
+
 export interface IntegrationConnection {
   id: string;
   projectId: string | null;
@@ -625,6 +633,56 @@ export type CreateExternalTaskLink = Omit<
   ExternalTaskLink,
   'id' | 'projectId' | 'createdAt' | 'updatedAt'
 >;
+
+/**
+ * An ordinary link to a remote task that was read from the vendor before the
+ * write. Storage rechecks the connection id and generation at commit, so a
+ * connection replaced after the read cannot stamp the link.
+ */
+export interface ExternalTaskLinkInput {
+  connectionId: string;
+  connectionGeneration: number;
+  provider: IntegrationProvider;
+  remoteScopeKey: string;
+  remoteTaskId: string;
+  sourceSnapshot: Record<string, unknown>;
+}
+
+/**
+ * Managed sync writes recognition links with a `managedProjectionId`; an
+ * ordinary link (UI import or agent link) has none.
+ */
+export function isOrdinaryExternalTaskLink(
+  link: Pick<ExternalTaskLink, 'sourceSnapshot'>,
+): boolean {
+  return link.sourceSnapshot.managedProjectionId == null;
+}
+
+/** `details.reason` of a projection create refused because its desired source changed. */
+export const MANAGED_PROJECTION_SOURCE_CHANGED = 'managed_projection_source_changed';
+
+/** `details.reason` of an estimate refused while a home unlink of its task is open. */
+export const EXTERNAL_TASK_UNLINK_PENDING = 'external_task_unlink_pending';
+
+/** Result of an ordinary link write or delete. */
+export interface ExternalTaskLinkChangeResult {
+  link: ExternalTaskLink;
+  /** Managed-subtask projections deleted in the same transaction, without vendor calls. */
+  releasedManagedLinkIds: string[];
+  /** The set gave the epic's existing, detached link to the same task the input connection. */
+  rebound?: boolean;
+  /** The receipt a VM-hosted write left for home; home has not acknowledged it yet. */
+  receiptId?: string;
+}
+
+/**
+ * `vmHosted`: this claimed VM holds the project for home. The write is refused
+ * (`PROJECT_NOT_SEEDED`) until home seeded the project's links, and it leaves a receipt
+ * that tells home which managed projections to release.
+ */
+export interface ExternalTaskLinkWriteOptions {
+  vmHosted?: boolean;
+}
 
 /**
  * Reserved owner for migrated checkpoint history whose owner cannot be
@@ -780,6 +838,23 @@ export interface AssignUnassignedExternalEstimateLogCheckpoint {
 export interface CreateEpicWithExternalTaskLink {
   epic: CreateEpic;
   externalTaskLink: Omit<CreateExternalTaskLink, 'epicId'>;
+}
+
+/** A home UI import on the claimed VM that owns the project's links. */
+export interface ImportHostedExternalTask {
+  /** `data` carries `idempotencyKey`; an epic created here keeps it. */
+  epic: CreateEpic;
+  idempotencyKey: string;
+  link: ExternalTaskLinkInput;
+}
+
+export interface ImportHostedExternalTaskResult {
+  epicId: string;
+  link: ExternalTaskLink;
+  /** False when the task was already linked in the project. */
+  created: boolean;
+  /** Set only when this call created the epic. */
+  createdEpic?: Epic;
 }
 
 export interface CreateEpicWithExternalTaskLinkResult {
@@ -1066,6 +1141,8 @@ export interface Agent {
   effortOverride: string | null;
   name: string;
   description: string | null;
+  /** A disabled agent cannot launch, restore or receive messages. Set only by Disable/Enable. */
+  disabled: boolean;
   createdAt: string;
   updatedAt: string;
 }
@@ -1199,6 +1276,7 @@ export type CreateAgent = Omit<
   | 'modelOverride'
   | 'effortOverride'
   | 'isProjectOwner'
+  | 'disabled'
 > & {
   description?: string | null;
   providerConfigId: string;
@@ -1206,7 +1284,7 @@ export type CreateAgent = Omit<
   effortOverride?: string | null;
   isProjectOwner?: boolean;
 };
-export type UpdateAgent = Partial<Omit<Agent, 'id' | 'createdAt' | 'updatedAt'>>;
+export type UpdateAgent = Partial<Omit<Agent, 'id' | 'createdAt' | 'updatedAt' | 'disabled'>>;
 
 export type CreateEpicRecord = Omit<EpicRecord, 'id' | 'version' | 'createdAt' | 'updatedAt'>;
 export type UpdateEpicRecord = Partial<Omit<EpicRecord, 'id' | 'createdAt' | 'updatedAt'>>;

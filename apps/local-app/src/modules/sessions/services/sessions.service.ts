@@ -1,14 +1,37 @@
-import { SessionRowStore } from '../../storage/sessions/session-row.store';
-import { Injectable, Inject, NotFoundException, ForbiddenException } from '@nestjs/common';
+import {
+  SESSION_RECENCY_SORT,
+  isBeforeRollbackRecord,
+  ownerNameColumn,
+  SessionRowStore,
+  type RunningSessionIdentity,
+  type SessionListScope,
+} from '../../storage/sessions/session-row.store';
+import {
+  Injectable,
+  Inject,
+  NotFoundException,
+  ForbiddenException,
+  Optional,
+} from '@nestjs/common';
 import { stat } from 'fs/promises';
-import { ForbiddenError, NotFoundError, ValidationError } from '../../../common/errors/error-types';
+import {
+  ConflictError,
+  ForbiddenError,
+  NotFoundError,
+  ValidationError,
+} from '../../../common/errors/error-types';
 import { TerminalIOService } from '../../terminal/services/terminal-io/terminal-io.service';
 import { createLogger } from '../../../common/logging/logger';
 import { PtyService } from '../../terminal/services/pty.service';
 import { PreflightService } from '../../core/services/preflight.service';
 import { ProviderMcpEnsureService } from '../../providers/services/provider-mcp-ensure.service';
 import { STORAGE_SERVICE, type AgentStorage } from '../../storage/interfaces/storage.interface';
-import { SessionDto, SessionHistoryItemDto, SessionHistoryResponseDto } from '../dtos/sessions.dto';
+import {
+  AgentPresenceDto,
+  SessionDto,
+  SessionHistoryItemDto,
+  SessionHistoryResponseDto,
+} from '../dtos/sessions.dto';
 import { DB_CONNECTION } from '../../storage/db/db.provider';
 import { BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
 import { getRawSqliteClient } from '../../storage/db/sqlite-raw';
@@ -24,11 +47,22 @@ import { EpicTimeStore } from '../../epic-time/services/epic-time.store';
 import { EPIC_TIME_DELIVERY_KEY } from '../../epic-time/services/agent-time-accounting.service';
 import type { SessionTerminationContext } from '../../events/catalog/session.stopped';
 import { ProjectWriteGate } from '../../storage/write-gate/project-write-gate';
+import { PendingAskUserQuestionService } from '../../hooks/services/pending-ask-user-question.service';
 
 const logger = createLogger('SessionsService');
 
+/** Owner changes a stop by session id follows before it gives up. */
+const MAX_TERMINATE_OWNER_CHANGES = 5;
+
+/** A presence entry as the service builds it: the response fields plus the terminal idle start. */
+interface AgentPresenceEntry extends AgentPresenceDto {
+  idleSince?: string | null;
+}
+
 interface HistorySessionRow {
   id: string;
+  agent_id: string | null;
+  agent_name: string | null;
   provider_session_id: string | null;
   provider_name_at_launch: string | null;
   status: 'stopped' | 'failed';
@@ -68,6 +102,7 @@ export class SessionsService {
     private readonly epicTimeStore: EpicTimeStore,
     private readonly gate: ProjectWriteGate,
     private readonly sessionRows: SessionRowStore,
+    @Optional() private readonly pendingQuestions?: PendingAskUserQuestionService,
   ) {
     this.sqlite = getRawSqliteClient(this.db);
     this.txRunner = new TransactionRunner(this.sqlite);
@@ -75,141 +110,204 @@ export class SessionsService {
   }
 
   /**
-   * Terminate a session
+   * Stops a session. With `expectedAgentId` it runs under that agent's lock and stops nothing when
+   * another agent owns the session by then. Without it, it follows the owner: when the owner
+   * changes while it waits for the lock, it waits again for the new owner's lock. `admit` runs
+   * under the held lock right before the stop; when it throws, nothing is stopped.
    */
-  async terminateSession(sessionId: string, termination: SessionTerminationContext): Promise<void> {
+  async terminateSession(
+    sessionId: string,
+    termination: SessionTerminationContext,
+    options: { expectedAgentId?: string; admit?: () => void } = {},
+  ): Promise<void> {
     logger.info({ sessionId }, 'Terminating session');
+    const { expectedAgentId, admit } = options;
+    if (expectedAgentId !== undefined) {
+      await this.sessionCoordinator.withAgentLock(expectedAgentId, () =>
+        this.terminateSessionUnderLock(sessionId, termination, expectedAgentId, admit),
+      );
+      return;
+    }
 
     // Resolve the lock key without performing any lifecycle effects. Launch and
     // restore use the same agent key, so their publication windows finish before
     // termination can inspect or dismantle the session they are creating.
-    const source = this.sqlite
-      .prepare('SELECT id, agent_id FROM sessions WHERE id = ?')
-      .get(sessionId) as { id: string; agent_id: string | null } | undefined;
-    if (!source) {
-      logger.warn({ sessionId }, 'Session not found, treating as already terminated');
+    const lockKeyOf = (): string | null => {
+      const row = this.sqlite
+        .prepare('SELECT id, agent_id FROM sessions WHERE id = ?')
+        .get(sessionId) as { id: string; agent_id: string | null } | undefined;
+      return row ? (row.agent_id ?? row.id) : null;
+    };
+    for (let attempt = 1; ; attempt += 1) {
+      const lockKey = lockKeyOf();
+      if (lockKey === null) {
+        logger.warn({ sessionId }, 'Session not found, treating as already terminated');
+        return;
+      }
+      const stopped = await this.sessionCoordinator.withAgentLock(lockKey, async () => {
+        const session = this.getSession(sessionId);
+        if (!session) {
+          logger.warn({ sessionId }, 'Session disappeared while waiting to terminate');
+          return true;
+        }
+        // The owner changed while this stop waited: wait again for the new owner's lock.
+        if ((session.agentId ?? session.id) !== lockKey) return false;
+        admit?.();
+        await this.stopUnderLock(session, termination);
+        return true;
+      });
+      if (stopped) return;
+      if (attempt === MAX_TERMINATE_OWNER_CHANGES) {
+        throw new ConflictError('The session kept changing owner while it was being stopped', {
+          code: 'SESSION_OWNER_CHANGED',
+          sessionId,
+        });
+      }
+    }
+  }
+
+  /**
+   * Stops a session while the caller holds the lock of `lockedAgentId`. Stops nothing when the
+   * session is gone or another agent owns it.
+   */
+  async terminateSessionUnderLock(
+    sessionId: string,
+    termination: SessionTerminationContext,
+    lockedAgentId: string,
+    admit?: () => void,
+  ): Promise<void> {
+    const session = this.getSession(sessionId);
+    if (!session) {
+      logger.warn({ sessionId }, 'Session disappeared while waiting to terminate');
       return;
     }
+    if (session.agentId !== lockedAgentId) {
+      logger.info(
+        { sessionId, agentId: session.agentId, expectedAgentId: lockedAgentId },
+        'Session belongs to another agent; not stopping it',
+      );
+      return;
+    }
+    admit?.();
+    await this.stopUnderLock(session, termination);
+  }
 
-    await this.sessionCoordinator.withAgentLock(source.agent_id ?? source.id, async () => {
-      const session = this.getSession(sessionId);
-      if (!session) {
-        logger.warn({ sessionId }, 'Session disappeared while waiting to terminate');
-        return;
-      }
-
-      if (session.status !== 'running') {
-        logger.info(
-          { sessionId, status: session.status },
-          'Session already stopped, treating as success',
-        );
-        if (session.tmuxSessionId) {
-          const destroyResult = await this.terminalIO.destroyExpectedSession(
-            { name: session.tmuxSessionId },
-            { onUnknownError: 'retire' },
-          );
-          if (destroyResult.outcome === 'unknown-error') throw destroyResult.error;
-        }
-        this.ptyService.stopStreaming(sessionId);
-        this.terminalSessionRegistry.dispose(sessionId);
-        await this.sessionTerminalRuntime.releaseProviderArtifacts(sessionId);
-        return;
-      }
-
-      // Durable state remains running until tmux destruction is confirmed or
-      // tmux authoritatively reports that the exact session is absent.
+  private async stopUnderLock(
+    session: SessionDto,
+    termination: SessionTerminationContext,
+  ): Promise<void> {
+    const sessionId = session.id;
+    if (session.status !== 'running') {
+      logger.info(
+        { sessionId, status: session.status },
+        'Session already stopped, treating as success',
+      );
       if (session.tmuxSessionId) {
         const destroyResult = await this.terminalIO.destroyExpectedSession(
           { name: session.tmuxSessionId },
-          { onUnknownError: 'rearm', sessionId },
+          { onUnknownError: 'retire' },
         );
         if (destroyResult.outcome === 'unknown-error') throw destroyResult.error;
-        if (destroyResult.outcome === 'known-absent') {
-          logger.warn(
-            { sessionId, tmuxSessionId: session.tmuxSessionId },
-            'Tmux session already gone, cleaning up database record',
-          );
-        }
       }
-
       this.ptyService.stopStreaming(sessionId);
       this.terminalSessionRegistry.dispose(sessionId);
       await this.sessionTerminalRuntime.releaseProviderArtifacts(sessionId);
+      return;
+    }
 
-      // Best-effort: read transcript file size at stop time to avoid per-request stat on history queries.
-      // If transcript_path is NULL or stat fails (deleted file, race with auto-discovery), leave size_bytes NULL.
-      let sizeBytes: number | null = null;
-      if (session.transcriptPath) {
-        try {
-          const fileStat = await stat(session.transcriptPath);
-          sizeBytes = fileStat.size;
-        } catch (error) {
-          logger.warn(
-            { error, sessionId, transcriptPath: session.transcriptPath },
-            'Could not stat transcript file for size_bytes — leaving NULL (best-effort)',
-          );
-        }
+    // Durable state remains running until tmux destruction is confirmed or
+    // tmux authoritatively reports that the exact session is absent.
+    if (session.tmuxSessionId) {
+      const destroyResult = await this.terminalIO.destroyExpectedSession(
+        { name: session.tmuxSessionId },
+        { onUnknownError: 'rearm', sessionId },
+      );
+      if (destroyResult.outcome === 'unknown-error') throw destroyResult.error;
+      if (destroyResult.outcome === 'known-absent') {
+        logger.warn(
+          { sessionId, tmuxSessionId: session.tmuxSessionId },
+          'Tmux session already gone, cleaning up database record',
+        );
       }
+    }
 
-      // The stopped-state write and the unlogged-time reset share one queued
-      // transaction: a database failure rolls both back together, so the
-      // durable row stays running and an explicit retry (tmux now
-      // known-absent) re-runs the whole boundary instead of reporting a
-      // termination whose reset silently failed. When tracking never started,
-      // this runtime never activated accounting and stops lifecycle-only.
-      const stoppedAt = new Date();
-      const stoppedAtIso = stoppedAt.toISOString();
-      const accounting = await this.txRunner.runImmediateQueued(() => {
-        this.sessionRows.stopSession(sessionId, stoppedAtIso, sizeBytes);
-        const settings = this.epicTimeStore.readActivationSettings();
-        if (!settings.trackingStartedAt) {
-          return null;
-        }
-        return this.epicTimeStore.runTerminationResetSync({
-          sessionId,
-          agentId: session.agentId,
-          trackingStartedAt: settings.trackingStartedAt,
-          idleTimeoutMs: settings.idleTimeoutMs,
-          deliveryKey: EPIC_TIME_DELIVERY_KEY,
-          now: stoppedAt,
-          excludedProjectIds: this.gate.listRemoteOwnedProjectIds(),
-        });
+    this.ptyService.stopStreaming(sessionId);
+    this.terminalSessionRegistry.dispose(sessionId);
+    await this.sessionTerminalRuntime.releaseProviderArtifacts(sessionId);
+
+    // Best-effort: read transcript file size at stop time to avoid per-request stat on history queries.
+    // If transcript_path is NULL or stat fails (deleted file, race with auto-discovery), leave size_bytes NULL.
+    let sizeBytes: number | null = null;
+    if (session.transcriptPath) {
+      try {
+        const fileStat = await stat(session.transcriptPath);
+        sizeBytes = fileStat.size;
+      } catch (error) {
+        logger.warn(
+          { error, sessionId, transcriptPath: session.transcriptPath },
+          'Could not stat transcript file for size_bytes — leaving NULL (best-effort)',
+        );
+      }
+    }
+
+    // The stopped-state write and the unlogged-time reset share one queued
+    // transaction: a database failure rolls both back together, so the
+    // durable row stays running and an explicit retry (tmux now
+    // known-absent) re-runs the whole boundary instead of reporting a
+    // termination whose reset silently failed. When tracking never started,
+    // this runtime never activated accounting and stops lifecycle-only.
+    const stoppedAt = new Date();
+    const stoppedAtIso = stoppedAt.toISOString();
+    const accounting = await this.txRunner.runImmediateQueued(() => {
+      this.sessionRows.stopSession(sessionId, stoppedAtIso, sizeBytes);
+      const settings = this.epicTimeStore.readActivationSettings();
+      if (!settings.trackingStartedAt) {
+        return null;
+      }
+      return this.epicTimeStore.runTerminationResetSync({
+        sessionId,
+        agentId: session.agentId,
+        trackingStartedAt: settings.trackingStartedAt,
+        idleTimeoutMs: settings.idleTimeoutMs,
+        deliveryKey: EPIC_TIME_DELIVERY_KEY,
+        now: stoppedAt,
+        excludedProjectIds: this.gate.listRemoteOwnedProjectIds(),
       });
-
-      logger.info({ sessionId }, 'Session terminated');
-
-      // EventsService.publish uses synchronous emission. Keeping publication in
-      // the locked branch cannot acquire the coordinator re-entrantly.
-      await this.eventsService.publish('session.stopped', { sessionId, ...termination });
-
-      if (session.agentId) {
-        try {
-          await this.eventsService.publish('session.presence.changed', {
-            agentId: session.agentId,
-            online: false,
-            sessionId: null,
-          });
-        } catch (error) {
-          logger.warn(
-            { error, agentId: session.agentId, sessionId },
-            'Failed to broadcast presence update',
-          );
-        }
-      }
-
-      if (accounting && accounting.deletedSegments > 0 && accounting.workspaceId) {
-        try {
-          await this.eventsService.publish('epic.time.scope.invalidated', {
-            workspaceId: accounting.workspaceId,
-          });
-        } catch (error) {
-          logger.warn(
-            { error, agentId: session.agentId, sessionId },
-            'Failed to broadcast Epic-time scope invalidation after termination reset',
-          );
-        }
-      }
     });
+
+    logger.info({ sessionId }, 'Session terminated');
+
+    // EventsService.publish uses synchronous emission. Keeping publication in
+    // the locked branch cannot acquire the coordinator re-entrantly.
+    await this.eventsService.publish('session.stopped', { sessionId, ...termination });
+
+    if (session.agentId) {
+      try {
+        await this.eventsService.publish('session.presence.changed', {
+          agentId: session.agentId,
+          online: false,
+          sessionId: null,
+        });
+      } catch (error) {
+        logger.warn(
+          { error, agentId: session.agentId, sessionId },
+          'Failed to broadcast presence update',
+        );
+      }
+    }
+
+    if (accounting && accounting.deletedSegments > 0 && accounting.workspaceId) {
+      try {
+        await this.eventsService.publish('epic.time.scope.invalidated', {
+          workspaceId: accounting.workspaceId,
+        });
+      } catch (error) {
+        logger.warn(
+          { error, agentId: session.agentId, sessionId },
+          'Failed to broadcast Epic-time scope invalidation after termination reset',
+        );
+      }
+    }
   }
 
   async getAgentSessionHistory(
@@ -217,6 +315,7 @@ export class SessionsService {
     projectId: string,
     cursor: string | undefined,
     limit: number,
+    scope: SessionListScope = 'agent',
   ): Promise<SessionHistoryResponseDto> {
     const agent = await this.storage.getAgent(agentId);
     if (agent.projectId !== projectId) {
@@ -224,14 +323,17 @@ export class SessionsService {
     }
 
     const clampedLimit = Math.min(Math.max(1, limit), 100);
-    const sortExpr = `COALESCE(last_activity_at, ended_at, started_at)`;
-    const selectCols = `id, provider_session_id, provider_name_at_launch, status, started_at, ended_at, last_activity_at, size_bytes, transcript_path, name`;
-    const baseStatus = `status IN ('stopped','failed')`;
+    const sortExpr = SESSION_RECENCY_SORT;
+    const selectCols = `id, agent_id, ${ownerNameColumn('sessions')} AS agent_name,
+      provider_session_id, provider_name_at_launch, status, started_at, ended_at, last_activity_at,
+      size_bytes, transcript_path, name`;
+    const owners = this.sessionRows.ownerFilter(agentId, scope);
+    const historyFilter = `${owners.where()} AND kind = 'session' AND status IN ('stopped','failed')`;
 
     // Total count uses base filters only — no cursor predicate (stable across pages)
     const { cnt: total } = this.sqlite
-      .prepare(`SELECT COUNT(*) as cnt FROM sessions WHERE agent_id = ? AND ${baseStatus}`)
-      .get(agentId) as { cnt: number };
+      .prepare(`SELECT COUNT(*) as cnt FROM sessions WHERE ${historyFilter}`)
+      .get(owners.params) as { cnt: number };
 
     // Decode opaque cursor
     let cursorSortKey: string | null = null;
@@ -249,33 +351,20 @@ export class SessionsService {
       }
     }
 
-    let rows: HistorySessionRow[];
-    if (cursorSortKey && cursorId) {
-      rows = this.sqlite
-        .prepare(
-          `SELECT ${selectCols} FROM sessions
-           WHERE agent_id = ? AND ${baseStatus}
-             AND (${sortExpr} < ? OR (${sortExpr} = ? AND id < ?))
-           ORDER BY ${sortExpr} DESC, id DESC
-           LIMIT ?`,
-        )
-        .all(
-          agentId,
-          cursorSortKey,
-          cursorSortKey,
-          cursorId,
-          clampedLimit + 1,
-        ) as HistorySessionRow[];
-    } else {
-      rows = this.sqlite
-        .prepare(
-          `SELECT ${selectCols} FROM sessions
-           WHERE agent_id = ? AND ${baseStatus}
-           ORDER BY ${sortExpr} DESC, id DESC
-           LIMIT ?`,
-        )
-        .all(agentId, clampedLimit + 1) as HistorySessionRow[];
-    }
+    const afterCursor = cursorSortKey && cursorId;
+    const rows = this.sqlite
+      .prepare(
+        `SELECT ${selectCols} FROM sessions
+         WHERE ${historyFilter}
+           ${afterCursor ? `AND (${sortExpr} < @sort OR (${sortExpr} = @sort AND id < @id))` : ''}
+         ORDER BY ${sortExpr} DESC, id DESC
+         LIMIT @take`,
+      )
+      .all({
+        ...owners.params,
+        take: clampedLimit + 1,
+        ...(afterCursor ? { sort: cursorSortKey, id: cursorId } : {}),
+      }) as HistorySessionRow[];
 
     const hasMore = rows.length > clampedLimit;
     const pageRows = hasMore ? rows.slice(0, clampedLimit) : rows;
@@ -305,6 +394,8 @@ export class SessionsService {
 
     const items: SessionHistoryItemDto[] = pageRows.map((row) => ({
       id: row.id,
+      agentId: row.agent_id,
+      agentName: row.agent_name,
       providerSessionId: row.provider_session_id ?? null,
       providerNameAtLaunch: row.provider_name_at_launch,
       status: row.status,
@@ -388,6 +479,10 @@ export class SessionsService {
     return sessions;
   }
 
+  listRunningSessionIdentities(): RunningSessionIdentity[] {
+    return this.sessionRows.listRunningSessionIdentities();
+  }
+
   /**
    * Get active session for a specific agent (fast DB-only check, no tmux validation)
    * Returns the session if found, null otherwise
@@ -408,20 +503,7 @@ export class SessionsService {
    * Get agent presence: map agentId to session info
    * Returns map of agentId → { online: boolean, sessionId?: string }
    */
-  async getAgentPresence(projectId?: string): Promise<
-    Map<
-      string,
-      {
-        online: boolean;
-        sessionId?: string;
-        activityState?: 'idle' | 'busy' | null;
-        lastActivityAt?: string | null;
-        busySince?: string | null;
-        idleSince?: string | null;
-        currentActivityTitle?: string | null;
-      }
-    >
-  > {
+  async getAgentPresence(projectId?: string): Promise<Map<string, AgentPresenceEntry>> {
     let allowedAgentIds: Set<string> | undefined;
     if (projectId) {
       const agents = await this.storage.listAgents(projectId);
@@ -440,18 +522,7 @@ export class SessionsService {
       allowedAgentIds,
     );
 
-    const presenceMap = new Map<
-      string,
-      {
-        online: boolean;
-        sessionId?: string;
-        activityState?: 'idle' | 'busy' | null;
-        lastActivityAt?: string | null;
-        busySince?: string | null;
-        idleSince?: string | null;
-        currentActivityTitle?: string | null;
-      }
-    >();
+    const presenceMap = new Map<string, AgentPresenceEntry>();
 
     for (const session of activeSessions) {
       if (session.agentId) {
@@ -464,6 +535,9 @@ export class SessionsService {
           busySince: agg?.busySince ?? session.busySince ?? null,
           idleSince: agg?.idleSince ?? null,
           currentActivityTitle: null,
+          pendingQuestion: this.pendingQuestions?.hasPendingQuestion(session.id) ?? false,
+          turnActivityState: session.activityState ?? null,
+          turnBusySince: session.busySince ?? null,
         });
       }
     }
@@ -495,7 +569,10 @@ export class SessionsService {
    * Returns the loaded session so callers can layer extra checks (e.g. delete's
    * running-status guard).
    */
-  async validateSessionInProject(sessionId: string, projectId: string): Promise<SessionDto> {
+  async validateSessionInProject(
+    sessionId: string,
+    projectId: string,
+  ): Promise<SessionDto & { agentId: string }> {
     const session = this.getSession(sessionId);
     if (!session) {
       throw new NotFoundError('Session', sessionId);
@@ -514,11 +591,18 @@ export class SessionsService {
         projectId,
       });
     }
-    return session;
+    return { ...session, agentId: session.agentId };
   }
 
   updateName(sessionId: string, name: string | null): SessionDto {
     const trimmed = name?.trim() || null;
+    const row = this.sessionRows.getSessionTreeRow(sessionId);
+    if (row && isBeforeRollbackRecord(row)) {
+      throw new ConflictError('A Before rollback record cannot be renamed', {
+        code: 'BEFORE_ROLLBACK_NOT_RENAMABLE',
+        sessionId,
+      });
+    }
 
     if (trimmed !== null && trimmed.length > 120) {
       throw new ValidationError('Session name must be 120 characters or fewer', {

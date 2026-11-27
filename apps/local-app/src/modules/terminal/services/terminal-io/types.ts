@@ -64,6 +64,11 @@ export interface DeliveryOptions {
   readonly followNote?: boolean;
   /** Line prefix of the provider's input box; enables the after-submit check in `delivery.ts`. */
   readonly inputPromptMarker?: string;
+  /**
+   * Runs synchronously right before the first pane write. When it returns false nothing is
+   * written and the delivery rejects with `DeliveryRefusedError`.
+   */
+  readonly firstMutationGuard?: () => boolean;
 }
 
 export interface DeliveryResult {

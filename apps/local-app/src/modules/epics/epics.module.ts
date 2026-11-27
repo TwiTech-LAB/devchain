@@ -9,6 +9,8 @@ import { SettingsModule } from '../settings/settings.module';
 import { AgentMessageDeliveryModule } from '../agent-message-delivery/agent-message-delivery.module';
 import { TeamsModule } from '../teams/teams.module';
 import { RemotesModule } from '../remotes/remotes.module';
+import { ExternalIntegrationsModule } from '../external-integrations/external-integrations.module';
+import { IntegrationVmCacheModule } from '../external-integrations/vm-cache/integration-vm-cache.module';
 import { EpicAssignmentNotifierSubscriber } from './subscribers/epic-assignment-notifier.subscriber';
 import { SubEpicCreatedNotifierSubscriber } from './subscribers/sub-epic-created-notifier.subscriber';
 
@@ -20,6 +22,8 @@ import { SubEpicCreatedNotifierSubscriber } from './subscribers/sub-epic-created
     AgentMessageDeliveryModule,
     TeamsModule,
     RemotesModule,
+    ExternalIntegrationsModule,
+    IntegrationVmCacheModule,
   ],
   controllers: [EpicsController, EpicCommentsController],
   providers: [

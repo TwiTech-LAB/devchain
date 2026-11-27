@@ -1,12 +1,166 @@
 import { OpencodeAdapter } from './opencode.adapter';
-import { ValidationError } from '../../../common/errors/error-types';
+import { IOError, ValidationError } from '../../../common/errors/error-types';
 import { EnvBuilderError } from '../utils/env-builder';
+import { parseProfileOptions } from '../utils/profile-options';
+import { FakeProcessExecutor } from '../../terminal/services/process-executor/fake-process-executor';
 
 describe('OpencodeAdapter', () => {
   let adapter: OpencodeAdapter;
+  let executor: FakeProcessExecutor;
 
   beforeEach(() => {
-    adapter = new OpencodeAdapter();
+    executor = new FakeProcessExecutor();
+    adapter = new OpencodeAdapter(executor);
+  });
+
+  // A fake process captures the helper command and supplies replies for the adapter to parse.
+  // A canned copy lets the tests compare fork and Restore argv and env at the adapter boundary.
+  // The recorded calls show that the v1 guard runs before any helper starts.
+  describe('session forks', () => {
+    const source = {
+      providerSessionId: 'ses_parent',
+      transcriptPath: '/test/opencode.db',
+      projectPath: '/workspace/プロジェクト with spaces',
+      providerBinPath: '/test/bin/opencode',
+      projectId: 'project-id',
+      sessionId: 'new-row-id',
+      cliVersion: 'opencode v2.0.31',
+      env: {
+        OPENCODE_CONFIG_CONTENT: '{"theme":"system"}',
+        DEVCHAIN_SESSION_ID: 'new-row-id',
+      },
+      helperEnv: { HOME: '/test/home', OPENCODE_DISABLE_AUTOUPDATE: 'true' },
+    };
+    const child = {
+      providerSessionId: 'ses_child',
+      transcriptPath: source.transcriptPath,
+    };
+    const reply = JSON.stringify({ data: { id: child.providerSessionId } });
+
+    // OpenCode 2.0.31 rejects a raw non-ASCII header value; the cwd keeps the real path.
+    it('copies the source through the v2 API and returns the shared container path', async () => {
+      executor.enqueueResponse({ type: 'success', stdout: reply });
+
+      await expect(adapter.createSavePoint(source)).resolves.toEqual({
+        ...child,
+        discardUnboundTranscript: expect.any(Function),
+      });
+      expect(executor.calls).toEqual([
+        expect.objectContaining({
+          argv: [
+            source.providerBinPath,
+            'api',
+            'session.fork',
+            '--param',
+            'sessionID=ses_parent',
+            '--header',
+            'x-opencode-directory:%2Fworkspace%2F%E3%83%97%E3%83%AD%E3%82%B8%E3%82%A7%E3%82%AF%E3%83%88%20with%20spaces',
+            '-d',
+            '{}',
+            '--standalone',
+          ],
+          cwd: source.projectPath,
+          mode: 'pipe',
+          env: source.helperEnv,
+        }),
+      ]);
+    });
+
+    it.each(['--prompt "read the project notes"', '--prompt="read the project notes"'])(
+      'prepares the copied session without %s and preserves the v2 model',
+      async (prompt) => {
+        executor.enqueueResponse({ type: 'success', stdout: reply });
+        const profileOptionArgs = ['--model', 'opencode/beam-free', '--auto'];
+        const restore = adapter.buildLaunchArgs({
+          mode: 'restore',
+          providerSessionId: child.providerSessionId,
+          profileOptionArgs,
+          cliVersion: source.cliVersion,
+          env: source.env,
+        });
+
+        await expect(
+          adapter.prepareForkLaunch({
+            ...source,
+            profileOptionArgs: [...parseProfileOptions(prompt), ...profileOptionArgs],
+          }),
+        ).resolves.toEqual({
+          ...child,
+          ...restore,
+          discardUnboundTranscript: expect.any(Function),
+        });
+        expect(restore.argv).toEqual([
+          '--session',
+          child.providerSessionId,
+          '--auto',
+          '--standalone',
+        ]);
+        expect(restore.env?.OPENCODE_CONFIG_CONTENT).toBe(
+          '{"theme":"system","model":"opencode/beam-free"}',
+        );
+      },
+    );
+
+    // The child exists in OpenCode before DevChain binds it, so each pre-binding failure deletes it.
+    it.each([
+      { failure: 'a failed binding', env: source.env, failsInAdapter: false },
+      {
+        failure: 'a launch argv error',
+        env: { OPENCODE_CONFIG_CONTENT: '[]' },
+        failsInAdapter: true,
+      },
+    ])('deletes only the copied child after $failure', async ({ env, failsInAdapter }) => {
+      executor.enqueueResponse({ type: 'success', stdout: reply }, { type: 'success' });
+      const prepared = adapter.prepareForkLaunch({
+        ...source,
+        env,
+        profileOptionArgs: ['--model', 'opencode/beam-free'],
+      });
+      if (failsInAdapter) {
+        await expect(prepared).rejects.toThrow(EnvBuilderError);
+      } else {
+        await (
+          await prepared
+        ).discardUnboundTranscript!();
+      }
+      expect(executor.calls[1]).toEqual(
+        expect.objectContaining({
+          argv: [source.providerBinPath, 'session', 'delete', 'ses_child', '--standalone'],
+          cwd: source.projectPath,
+          mode: 'pipe',
+          env: source.helperEnv,
+        }),
+      );
+    });
+
+    it('reports no fork support and never starts a helper for a v1 CLI', async () => {
+      const cliVersion = '1.18.32';
+      expect(adapter.supportsForkForVersion(cliVersion)).toBe(false);
+      await expect(adapter.createSavePoint({ ...source, cliVersion })).rejects.toThrow(
+        ValidationError,
+      );
+      expect(executor.calls).toEqual([]);
+    });
+
+    it('reports an empty session as a validation error', async () => {
+      executor.enqueueResponse({
+        type: 'failure',
+        stdout: '{"_tag":"InvalidRequestError","kind":"empty_session"}',
+        stderr: 'HTTP 400 Bad Request',
+      });
+      await expect(adapter.createSavePoint(source)).rejects.toMatchObject({
+        code: 'validation_error',
+        message: 'OpenCode cannot save or fork a session with no messages.',
+      });
+    });
+
+    it.each(['not JSON', '{"data":{"id":"another-id"}}', '{"data":{"id":"ses_parent"}}'])(
+      'rejects an invalid copy response (%s)',
+      async (stdout) => {
+        executor.enqueueResponse({ type: 'success', stdout });
+        await expect(adapter.createSavePoint(source)).rejects.toThrow(IOError);
+      },
+    );
   });
 
   describe('EffortCapability (OPENCODE_CONFIG_CONTENT env overlay)', () => {

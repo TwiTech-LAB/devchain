@@ -53,7 +53,7 @@ import { ConfirmDialog } from '@/ui/components/shared/ConfirmDialog';
 import { MarkdownReferenceInput } from '@/ui/components/shared';
 import { useSelectedProject } from '@/ui/hooks/useProjectSelection';
 import type { FetchFn } from '@/ui/lib/api-transport';
-import { useFetchFactory } from '@/ui/hooks/useFetchFactory';
+import { useAmbientBackend, useFetchFactory } from '@/ui/hooks/useFetchFactory';
 
 // Note: providerId and options removed in Phase 4
 // Provider configuration now managed via ProviderConfigsSection
@@ -214,6 +214,7 @@ export function ProviderConfigDefaultsFields({
   onEffortChange: (value: string | null) => void;
 }) {
   const fetchFn = useFetchFactory();
+  const backend = useAmbientBackend();
   const { data: models } = useQuery({
     queryKey: ['provider-models', providerId],
     queryFn: () => fetchProviderModels(fetchFn, providerId),
@@ -221,7 +222,7 @@ export function ProviderConfigDefaultsFields({
   });
 
   const { data: effortsCatalog } = useQuery({
-    ...providerEffortQueries.catalog(fetchFn, providerId),
+    ...providerEffortQueries.catalog(fetchFn, providerId, backend),
     enabled: !!providerId,
   });
 

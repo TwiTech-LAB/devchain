@@ -16,6 +16,7 @@ import {
   isTranscriptDiscoveryCapable,
   isProviderPluginCapable,
   isSessionCommandCapable,
+  isSessionForkCapable,
   type SessionCommandCapability,
 } from './type-guards';
 
@@ -60,6 +61,22 @@ describe('type-guards', () => {
       expect(isGlobalMcpConfigCapable(codex)).toBe(false);
       expect(isGlobalMcpConfigCapable(opencode)).toBe(false);
       expect(isGlobalMcpConfigCapable(devin)).toBe(false);
+    });
+  });
+
+  describe('isSessionForkCapable', () => {
+    const noFork = { providerName: 'no-fork', buildLaunchArgs: () => ({ argv: [] }) };
+    // Unit coverage checks capability declarations without touching transcripts or launching a CLI.
+    it.each([
+      { adapter: claude, expected: true },
+      { adapter: codex, expected: true },
+      { adapter: opencode, expected: true },
+      { adapter: copilot, expected: true },
+      { adapter: devin, expected: true },
+      { adapter: antigravity, expected: true },
+      { adapter: noFork, expected: false },
+    ])('reports fork support for $adapter.providerName as $expected', ({ adapter, expected }) => {
+      expect(isSessionForkCapable(adapter)).toBe(expected);
     });
   });
 

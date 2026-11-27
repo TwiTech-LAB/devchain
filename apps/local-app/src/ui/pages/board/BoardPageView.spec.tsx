@@ -238,6 +238,8 @@ describe('BoardPageView presentation', () => {
                 [
                   'epic-1',
                   {
+                    id: 'link-1',
+                    managed: false,
                     provider: 'jira',
                     remoteTaskId: 'ENG-1',
                     remoteKey: 'ENG-1',

@@ -58,6 +58,11 @@ export interface ImportWizardTarget {
   backend?: BackendId;
 }
 
+/** The instance that runs the target's import or upgrade: its owner, else home. */
+export function targetBackend(target: ImportWizardTarget | null): BackendId {
+  return target?.backend ?? HOME_BACKEND;
+}
+
 export interface UpgradeWizardTarget extends ImportWizardTarget {
   targetVersion: string;
 }
@@ -126,6 +131,8 @@ interface ConfiguredReplaceWizardResult<TTarget extends ImportWizardTarget> {
   isLoading: boolean;
   isError: boolean;
   isSubmitting: boolean;
+  /** The preview failure's message, when the preview failed with one. */
+  errorMessage: string | null;
   preview: SetupPreviewResponse | null;
   target: TTarget | null;
   preflightFailure: ProjectPreMutationFailure | null;
@@ -136,7 +143,7 @@ interface UseConfiguredReplaceWizardArgs<
   TSuccess extends { success: true },
 > {
   adapter: ReplaceFlowAdapter<TTarget, TSuccess>;
-  onCompleted: (result: TSuccess | UpgradeProjectFailure) => void;
+  onCompleted: (result: TSuccess | UpgradeProjectFailure, target: TTarget) => void;
   onClosed?: () => void;
   toast: ToastFn;
   api: ProjectsPageApi;
@@ -154,7 +161,7 @@ function buildConfiguredReplaceBody(
 
 function currentExportKey(target: ImportWizardTarget | null): QueryKey {
   return target
-    ? projectsQueryKeys.currentExport(target.id, target.backend ?? HOME_BACKEND)
+    ? projectsQueryKeys.currentExport(target.id, targetBackend(target))
     : ['project-current-export', 'closed'];
 }
 
@@ -366,7 +373,7 @@ function useConfiguredReplaceWizard<
           title: `${adapter.name} complete`,
           description: adapter.successDescription(target, result),
         });
-        onCompleted(result);
+        onCompleted(result, target);
         return;
       }
 
@@ -392,7 +399,7 @@ function useConfiguredReplaceWizard<
       if (adapter.isTerminalFailure(result)) {
         setIsOpen(false);
         invalidate(adapter.invalidateOnSuccess);
-        onCompleted(result);
+        onCompleted(result, target);
         return;
       }
       throw new Error(result.error || `${adapter.name} returned an invalid failure result`);
@@ -435,6 +442,7 @@ function useConfiguredReplaceWizard<
     state,
     handlers,
     Review: ReplaceReview,
+    backend: targetBackend(target),
     currentExport: state?.currentExport,
     validateTemplateAgents: !state?.keepCurrentSelected,
   });
@@ -484,6 +492,10 @@ function useConfiguredReplaceWizard<
   );
 
   const isError = previewQuery.isError;
+  const errorMessage =
+    previewQuery.error instanceof Error && previewQuery.error.message
+      ? previewQuery.error.message
+      : null;
   const isLoading = isOpen && !isError && (previewQuery.isLoading || state === null);
 
   return {
@@ -493,6 +505,7 @@ function useConfiguredReplaceWizard<
     controller,
     isLoading,
     isError,
+    errorMessage,
     isSubmitting: isCommitting,
     preview,
     target,
@@ -500,16 +513,34 @@ function useConfiguredReplaceWizard<
   };
 }
 
+/**
+ * The VM previews content, never a slug: the user picked the template from home's list, and the
+ * VM's own template cache may hold another version or none.
+ */
+async function vmPreviewRequest(
+  api: ProjectsPageApi,
+  request: SetupPreviewRequest,
+): Promise<SetupPreviewRequest> {
+  if (request.rawContent !== undefined) return request;
+  if (!request.slug) throw new Error('Import into a connected project needs a file or a template');
+  return { rawContent: await api.readHomeTemplateContent(request.slug, request.version) };
+}
+
 function importAdapter(
   api: ProjectsPageApi,
 ): ReplaceFlowAdapter<ImportWizardTarget, ImportProjectSuccess> {
   return {
     name: 'Import',
-    previewQueryKey: (_target, request) => projectsQueryKeys.setupPreview(request),
+    previewQueryKey: (target, request) =>
+      projectsQueryKeys.setupPreview(request, targetBackend(target)),
     canLoadPreview: (request) => request !== null,
-    loadPreview: (_target, request) => api.loadSetupPreview(request!),
+    loadPreview: async (target, request) => {
+      const backend = targetBackend(target);
+      const routed = backend === HOME_BACKEND ? request! : await vmPreviewRequest(api, request!);
+      return api.loadSetupPreview(routed, backend);
+    },
     buildCommitBody: (_target, preview, state) => buildConfiguredReplaceBody(preview, state),
-    commit: (target, body) => api.commitImport(target.id, body),
+    commit: (target, body) => api.commitImport(target.id, body, target.backend),
     isTerminalFailure: () => false,
     successDescription: (_target, result) => {
       return `${result.message || 'Project replaced.'}${formatPromptSummary(result.promptTransfer)}`;
@@ -526,11 +557,7 @@ function upgradeAdapter(
   return {
     name: actionName,
     previewQueryKey: (target) =>
-      projectsQueryKeys.upgradePreview(
-        target.id,
-        target.targetVersion,
-        target.backend ?? HOME_BACKEND,
-      ),
+      projectsQueryKeys.upgradePreview(target.id, target.targetVersion, targetBackend(target)),
     canLoadPreview: () => true,
     loadPreview: (target) =>
       api.loadUpgradePreview(target.id, target.targetVersion, target.backend),
@@ -549,7 +576,8 @@ function upgradeAdapter(
 }
 
 interface UseImportProjectWizardArgs {
-  onImported: (result: ImportResult) => void;
+  /** `target` is the target of the commit, with the backend that ran it. */
+  onImported: (result: ImportResult, target: ImportWizardTarget) => void;
   toast: ToastFn;
   api?: ProjectsPageApi;
 }
@@ -568,8 +596,8 @@ export function useImportProjectWizard({
   const adapter = useMemo(() => importAdapter(api), [api]);
   const wizard = useConfiguredReplaceWizard({
     adapter,
-    onCompleted: (result) => {
-      if (result.success) onImported(result);
+    onCompleted: (result, target) => {
+      if (result.success) onImported(result, target);
     },
     toast,
     api,
@@ -605,7 +633,7 @@ export function useUpgradeProjectWizard({
   const adapter = useMemo(() => upgradeAdapter(actionName, api), [actionName, api]);
   const wizard = useConfiguredReplaceWizard({
     adapter,
-    onCompleted: onFinished,
+    onCompleted: (result) => onFinished(result),
     onClosed,
     toast,
     api,

@@ -37,6 +37,7 @@ export function makeFlatChatSidebarProps(
     guests: [],
     agentPresence: {},
     presenceReady: true,
+    presenceSettled: true,
     offlineAgents: [agent],
     agentsWithSessions: [],
     agentsLoading: false,

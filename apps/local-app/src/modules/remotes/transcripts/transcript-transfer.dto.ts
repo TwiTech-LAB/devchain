@@ -13,10 +13,11 @@ const claudeCompanions = {
   'tool-results': '[A-Za-z0-9_-][A-Za-z0-9_.-]*',
 };
 export const CLAUDE_COMPANION_FOLDERS = Object.keys(claudeCompanions);
-const claudeFile = Object.entries(claudeCompanions)
+const claudeCompanionPaths = Object.entries(claudeCompanions)
   .map(([folder, name]) => `/${folder}/${name}`)
-  .concat('\\.jsonl')
   .join('|');
+const claudeCompanionSuffix = `(?:${claudeCompanionPaths})`;
+export const CLAUDE_COMPANION_FILE = new RegExp(`^${claudeRef}${claudeCompanionSuffix}$`);
 const devinExport = `${uuid}\\.json`;
 /** A session folder in a project's Devin store; the folder name is Devin's session id. */
 const devinSession = `${DEVIN_SESSION_STORES_DIR}/[A-Za-z0-9-]+/${DEVIN_STORE_SESSIONS_DIR}/[a-z0-9][a-z0-9-]*`;
@@ -38,7 +39,10 @@ const codexSchema = z
 
 export const TranscriptRefSchema = z.discriminatedUnion('provider', [
   z
-    .object({ provider: z.literal('claude'), path: z.string().regex(new RegExp(`^${claudeRef}$`)) })
+    .object({
+      provider: z.literal('claude'),
+      path: z.string().regex(new RegExp(`^${claudeRef}${claudeCompanionSuffix}?$`)),
+    })
     .strict(),
   codexSchema,
   z
@@ -52,7 +56,7 @@ export const TranscriptFileSchema = z.discriminatedUnion('provider', [
   z
     .object({
       provider: z.literal('claude'),
-      path: z.string().regex(new RegExp(`^${claudeRef}(${claudeFile})$`)),
+      path: z.string().regex(new RegExp(`^${claudeRef}(?:\\.jsonl|${claudeCompanionPaths})$`)),
     })
     .strict(),
   codexSchema,
@@ -63,8 +67,12 @@ export const TranscriptFileSchema = z.discriminatedUnion('provider', [
     })
     .strict(),
 ]);
+export const TRANSCRIPT_LIST_REF_LIMIT = 10_000;
 export const TranscriptListRequestSchema = z
-  .object({ refs: z.array(TranscriptRefSchema).max(10000) })
+  .object({
+    refs: z.array(TranscriptRefSchema).max(TRANSCRIPT_LIST_REF_LIMIT),
+    dependencyProjectId: z.string().min(1).optional(),
+  })
   .strict();
 export const TranscriptListingSchema = z.object({
   files: z.array(
@@ -79,7 +87,9 @@ export const TranscriptListingSchema = z.object({
     }),
   ),
   missing: z.number().int().nonnegative(),
+  skipped: z.number().int().nonnegative().optional(),
 });
+export type TranscriptListRequest = z.infer<typeof TranscriptListRequestSchema>;
 export type TranscriptRef = z.infer<typeof TranscriptRefSchema>;
 export type TranscriptFile = z.infer<typeof TranscriptFileSchema>;
 export type TranscriptListing = z.infer<typeof TranscriptListingSchema>;
@@ -90,7 +100,7 @@ export interface TranscriptTransferDetails {
   bytesTotal: number;
   /** Recorded transcripts absent on the side the files are copied from. */
   missing: number;
-  /** Session records whose transcript path cannot be copied (see `projectRefs`). */
+  /** Invalid session paths and unavailable or invalid provider dependencies. */
   skipped: number;
 }
 export const TRANSCRIPT_MAX_BYTES = 1024 ** 3;

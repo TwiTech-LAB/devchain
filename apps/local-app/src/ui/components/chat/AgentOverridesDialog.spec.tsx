@@ -83,6 +83,7 @@ const baseAgent: AgentOrGuest = {
   modelOverride: null,
   effortOverride: null,
   isProjectOwner: false,
+  disabled: false,
 };
 
 const configDefaults = {
@@ -245,7 +246,7 @@ describe('AgentOverridesDialog', () => {
   it('normalizes a string model catalog left in the shared cache by the import wizard', async () => {
     installFetch();
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-    queryClient.setQueryData(providerModelQueryKeys.main('provider-1'), ['anthropic/opus']);
+    queryClient.setQueryData(providerModelQueryKeys.main('provider-1', 'home'), ['anthropic/opus']);
 
     renderDialog({}, CONFIGS, queryClient);
 
@@ -300,6 +301,80 @@ describe('AgentOverridesDialog', () => {
     fireEvent.change(screen.getByLabelText('Model'), { target: { value: 'zed/sonnet' } });
     await waitFor(() => expect(screen.getByLabelText('Reasoning Effort')).not.toBeDisabled());
     expect(screen.queryByText('Select a model first')).not.toBeInTheDocument();
+  });
+
+  const OPENCODE_CATALOG: FetchOptions = {
+    modelsByProvider: { 'provider-1': [{ id: 'm1', name: 'zed/sonnet' }] },
+    effortsByProvider: {
+      'provider-1': {
+        efforts: [{ id: 'e1', name: 'high' }],
+        supportsEffort: true,
+        requiresModelForEffort: true,
+      },
+    },
+  };
+
+  it('enables the effort select for opencode when the raw options carry --model', async () => {
+    installFetch(OPENCODE_CATALOG);
+    renderDialog({}, [{ ...CONFIGS[0], options: '--model zed/sonnet' }]);
+
+    await screen.findByRole('option', { name: 'high' });
+    await waitFor(() => expect(screen.getByLabelText('Reasoning Effort')).not.toBeDisabled());
+    expect(screen.queryByText('Select a model first')).not.toBeInTheDocument();
+  });
+
+  it('blocks Save with a reason when Model -> Default leaves the config effort without a model', async () => {
+    installFetch(OPENCODE_CATALOG);
+    const onSave = jest.fn();
+    renderDialog({ agent: { ...baseAgent, modelOverride: 'zed/sonnet' }, onSave }, [
+      { ...CONFIGS[0], effort: 'high' },
+    ]);
+
+    const modelSelect = (await screen.findByLabelText('Model')) as HTMLSelectElement;
+    await screen.findByRole('option', { name: 'sonnet' });
+    fireEvent.change(modelSelect, { target: { value: '__default__' } });
+
+    expect(
+      await screen.findByText(
+        'Select a model: this provider needs one to apply the effort "high".',
+      ),
+    ).toBeInTheDocument();
+    const save = screen.getByRole('button', { name: 'Save' });
+    expect(save).toBeDisabled();
+    fireEvent.click(save);
+    expect(onSave).not.toHaveBeenCalled();
+
+    // Choosing a model again lifts the block.
+    fireEvent.change(modelSelect, { target: { value: 'zed/sonnet' } });
+    await waitFor(() =>
+      expect(screen.queryByText(/this provider needs one/)).not.toBeInTheDocument(),
+    );
+  });
+
+  it('clears the effort pick when Model -> Default leaves no model, so Save stays valid', async () => {
+    installFetch(OPENCODE_CATALOG);
+    const onSave = jest.fn().mockResolvedValue(undefined);
+    renderDialog({
+      agent: { ...baseAgent, modelOverride: 'zed/sonnet', effortOverride: 'high' },
+      onSave,
+    });
+
+    const effortSelect = (await screen.findByLabelText('Reasoning Effort')) as HTMLSelectElement;
+    await screen.findByRole('option', { name: 'sonnet' });
+    await waitFor(() => expect(effortSelect.value).toBe('high'));
+
+    fireEvent.change(screen.getByLabelText('Model'), { target: { value: '__default__' } });
+
+    await waitFor(() => expect(effortSelect.value).toBe('__default__'));
+    expect(screen.queryByText(/this provider needs one/)).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    await waitFor(() =>
+      expect(onSave).toHaveBeenCalledWith({
+        providerConfigId: 'config-1',
+        modelOverride: null,
+        effortOverride: null,
+      } satisfies AgentOverridesSavePayload),
+    );
   });
 
   it('resets model and effort to Default when the provider config is switched', async () => {

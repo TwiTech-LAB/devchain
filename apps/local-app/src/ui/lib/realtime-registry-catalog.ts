@@ -92,4 +92,10 @@ export const nonRegistryBroadcastCatalog: RegistryCatalogEntry[] = [
 
   // ── System ──
   { topicPattern: 'system', type: 'ping', kind: 'custom-handler', owner: 'socket.ts' },
+  {
+    topicPattern: 'system',
+    type: 'github_star_changed',
+    kind: 'custom-handler',
+    owner: 'useGithubStarPrompt',
+  },
 ];

@@ -1,6 +1,5 @@
-import { memo, useCallback, useMemo, useState } from 'react';
+import { memo, useMemo } from 'react';
 import { cn } from '@/ui/lib/utils';
-import { fetchJsonOrThrow } from '@/ui/lib/sessions';
 import {
   Collapsible,
   CollapsibleContent,
@@ -34,7 +33,9 @@ import { SessionMetricsHeader } from './SessionMetricsHeader';
 import { AIGroupCard } from './AIGroupCard';
 import { SessionViewModeProvider } from '@/ui/hooks/useSessionViewMode';
 import { PagedSessionMessageList, type ChunkRendererProps } from './PagedSessionMessageList';
-import { useFetchFactory } from '@/ui/hooks/useFetchFactory';
+import { ClampedContent } from './ClampedContent';
+import { useTranscriptDisclosure } from '@/ui/hooks/useTranscriptDisclosure';
+import { FullToolResultStatus, loadFullResultLabel, useFullToolResult } from './useFullToolResult';
 
 // ---------------------------------------------------------------------------
 // Text extraction helpers
@@ -67,9 +68,10 @@ export interface SessionViewerPanelProps {
 // Thinking Block
 // ---------------------------------------------------------------------------
 
-function ThinkingBlock({ text }: { text: string }) {
+function ThinkingBlock({ text, disclosureKey }: { text: string; disclosureKey: string }) {
+  const [open, setOpen] = useTranscriptDisclosure(`${disclosureKey}:section`);
   return (
-    <Collapsible>
+    <Collapsible open={open} onOpenChange={setOpen}>
       <CollapsibleTrigger className="group flex items-center gap-1 text-[11px] text-muted-foreground hover:text-foreground transition-colors">
         <ChevronRight className="h-3 w-3 transition-transform group-data-[state=open]:rotate-90" />
         <Brain className="h-3 w-3" />
@@ -79,9 +81,17 @@ function ThinkingBlock({ text }: { text: string }) {
         </span>
       </CollapsibleTrigger>
       <CollapsibleContent>
-        <pre className="mt-1 max-h-48 overflow-auto whitespace-pre-wrap rounded-md bg-muted/40 p-2 text-[11px] text-foreground leading-relaxed">
-          {text}
-        </pre>
+        <ClampedContent
+          disclosureKey={disclosureKey}
+          maxHeight={192}
+          className="mt-1"
+          fadeClassName="from-muted"
+          data-testid="fallback-thinking"
+        >
+          <pre className="overflow-x-auto whitespace-pre-wrap rounded-md bg-muted/40 p-2 text-[11px] text-foreground leading-relaxed">
+            {text}
+          </pre>
+        </ClampedContent>
       </CollapsibleContent>
     </Collapsible>
   );
@@ -93,89 +103,48 @@ function ThinkingBlock({ text }: { text: string }) {
 
 interface ToolCallBlockProps {
   sessionId?: string | null;
+  messageId: string;
   toolCall: UnifiedToolCall;
   result?: UnifiedToolResult;
 }
 
-interface FullToolResultResponse {
-  sessionId: string;
-  toolCallId: string;
-  content: string | unknown[];
-  isError: boolean;
-  fullLength: number;
-}
-
-function formatToolResultSize(fullLength?: number): string {
-  if (!fullLength || fullLength <= 0) return '';
-  return `${(fullLength / 1024).toFixed(fullLength >= 10 * 1024 ? 0 : 1)} KB`;
-}
+const INPUT_PREVIEW_CHARS = 120;
+const RESULT_PREVIEW_CHARS = 500;
 
 const ToolCallBlock = memo(function ToolCallBlock({
   sessionId,
+  messageId,
   toolCall,
   result,
 }: ToolCallBlockProps) {
-  const fetchFn = useFetchFactory();
   const isTask = toolCall.isTask;
-  const [expandedServerResult, setExpandedServerResult] = useState<string | null>(null);
-  const [isFetchingFullResult, setIsFetchingFullResult] = useState(false);
-  const [fetchError, setFetchError] = useState<string | null>(null);
-  const inputPreview = useMemo(
-    () => truncateText(JSON.stringify(toolCall.input), 120),
-    [toolCall.input],
-  );
+  const keyPrefix = `${messageId}:tool:${toolCall.id}`;
+  const [open, setOpen] = useTranscriptDisclosure(`${keyPrefix}:section`);
+  const [inputExpanded, setInputExpanded] = useTranscriptDisclosure(`${keyPrefix}:input`);
+  const [resultExpanded, setResultExpanded] = useTranscriptDisclosure(`${keyPrefix}:result`);
+  const fullResult = useFullToolResult({
+    sessionId,
+    toolCallId: toolCall.id,
+    isTruncated: result?.isTruncated,
+    expanded: resultExpanded,
+  });
+
+  const compactInput = useMemo(() => JSON.stringify(toolCall.input) ?? '', [toolCall.input]);
+  const fullInput = useMemo(() => JSON.stringify(toolCall.input, null, 2) ?? '', [toolCall.input]);
+  const isInputLong = compactInput.length > INPUT_PREVIEW_CHARS;
+
   const toolResultText = useMemo(() => {
     if (!result) return null;
     return typeof result.content === 'string'
       ? result.content
       : JSON.stringify(result.content, null, 2);
   }, [result]);
-  const resultText = expandedServerResult ?? toolResultText;
-  const isServerTruncated = result?.isTruncated === true;
-  const loadFullLabel = useMemo(() => {
-    if (!isServerTruncated) return null;
-    const sizeText = formatToolResultSize(result?.fullLength);
-    return sizeText ? `Show full result (${sizeText})` : 'Show full result';
-  }, [isServerTruncated, result?.fullLength]);
-  const resultPreview = useMemo(() => {
-    if (!resultText) return null;
-    if (isServerTruncated || expandedServerResult) return resultText;
-    return truncateText(resultText, 500);
-  }, [expandedServerResult, isServerTruncated, resultText]);
-
-  const handleLoadFullResult = useCallback(async () => {
-    if (!sessionId || !isServerTruncated || isFetchingFullResult || expandedServerResult) return;
-
-    setFetchError(null);
-    setIsFetchingFullResult(true);
-    try {
-      const response = await fetchJsonOrThrow<FullToolResultResponse>(
-        `/api/sessions/${sessionId}/transcript/tool-result/${encodeURIComponent(toolCall.id)}`,
-        {},
-        'Failed to fetch full tool result',
-        fetchFn,
-      );
-      const fullText =
-        typeof response.content === 'string'
-          ? response.content
-          : JSON.stringify(response.content, null, 2);
-      setExpandedServerResult(fullText);
-    } catch (error) {
-      setFetchError(error instanceof Error ? error.message : 'Failed to fetch full tool result');
-    } finally {
-      setIsFetchingFullResult(false);
-    }
-  }, [
-    expandedServerResult,
-    fetchFn,
-    isFetchingFullResult,
-    isServerTruncated,
-    sessionId,
-    toolCall.id,
-  ]);
+  const resultText = fullResult.fullText ?? toolResultText;
+  const isResultCut = fullResult.canLoad && fullResult.fullText === null;
+  const isResultLong = (resultText?.length ?? 0) > RESULT_PREVIEW_CHARS;
 
   return (
-    <Collapsible>
+    <Collapsible open={open} onOpenChange={setOpen}>
       <CollapsibleTrigger className="group flex items-center gap-1 text-[11px] text-muted-foreground hover:text-foreground transition-colors">
         <ChevronRight className="h-3 w-3 transition-transform group-data-[state=open]:rotate-90" />
         {isTask ? <Layers className="h-3 w-3 text-status-info" /> : <Wrench className="h-3 w-3" />}
@@ -189,40 +158,45 @@ const ToolCallBlock = memo(function ToolCallBlock({
       </CollapsibleTrigger>
       <CollapsibleContent>
         <div className="mt-1 space-y-1">
-          <pre className="max-h-32 overflow-auto whitespace-pre-wrap rounded-md bg-muted/40 p-2 text-[11px] text-foreground leading-relaxed">
-            {inputPreview}
-          </pre>
-          {resultText && (
-            <pre
-              className={cn(
-                'max-h-32 overflow-auto whitespace-pre-wrap rounded-md p-2 text-[11px] leading-relaxed',
-                result?.isError
-                  ? 'bg-destructive/10 text-destructive'
-                  : 'bg-muted/40 text-foreground',
-              )}
-            >
-              {resultPreview}
+          <ClampedContent
+            disclosureKey={`${keyPrefix}:input`}
+            expanded={inputExpanded}
+            onExpandedChange={setInputExpanded}
+            maxHeight={128}
+            truncated={isInputLong}
+            fadeClassName="from-muted"
+            data-testid="fallback-tool-input"
+          >
+            <pre className="overflow-x-auto whitespace-pre-wrap rounded-md bg-muted/40 p-2 text-[11px] text-foreground leading-relaxed">
+              {inputExpanded ? fullInput : truncateText(compactInput, INPUT_PREVIEW_CHARS)}
             </pre>
-          )}
-          {isServerTruncated && !expandedServerResult && sessionId && (
-            <button
-              type="button"
-              onClick={(event) => {
-                event.stopPropagation();
-                void handleLoadFullResult();
-              }}
-              className="mt-0.5 text-[10px] text-primary hover:underline disabled:opacity-60"
-              disabled={isFetchingFullResult}
-              data-testid="tool-result-load-full"
+          </ClampedContent>
+          {resultText && (
+            <ClampedContent
+              disclosureKey={`${keyPrefix}:result`}
+              expanded={resultExpanded}
+              onExpandedChange={setResultExpanded}
+              maxHeight={128}
+              truncated={isResultLong || isResultCut}
+              collapsedLabel={isResultCut ? loadFullResultLabel(result?.fullLength) : undefined}
+              fadeClassName={result?.isError ? 'from-destructive/10' : 'from-muted'}
+              data-testid="fallback-tool-result"
             >
-              {isFetchingFullResult ? 'Loading full result…' : loadFullLabel}
-            </button>
+              <pre
+                className={cn(
+                  'overflow-x-auto whitespace-pre-wrap rounded-md p-2 text-[11px] leading-relaxed',
+                  result?.isError
+                    ? 'bg-destructive/10 text-destructive'
+                    : 'bg-muted/40 text-foreground',
+                )}
+              >
+                {resultExpanded || isResultCut
+                  ? resultText
+                  : truncateText(resultText, RESULT_PREVIEW_CHARS)}
+              </pre>
+            </ClampedContent>
           )}
-          {fetchError && (
-            <p className="text-[10px] text-destructive" data-testid="tool-result-load-error">
-              {fetchError}
-            </p>
-          )}
+          <FullToolResultStatus isLoading={fullResult.isLoading} error={fullResult.error} />
         </div>
       </CollapsibleContent>
     </Collapsible>
@@ -240,7 +214,10 @@ interface MessageCardProps {
   message: SerializedMessage;
 }
 
-const UserMessageCard = memo(function UserMessageCard({ message }: MessageCardProps) {
+const UserMessageCard = memo(function UserMessageCard({
+  message,
+  chunkId,
+}: MessageCardProps & { chunkId?: string }) {
   const text = useMemo(() => extractText(message.content), [message.content]);
   const timestampText = useMemo(() => formatTimestamp(message.timestamp), [message.timestamp]);
 
@@ -255,9 +232,12 @@ const UserMessageCard = memo(function UserMessageCard({ message }: MessageCardPr
           <span className="text-muted-foreground">·</span>
           <span>{timestampText}</span>
         </div>
-        <div className="max-h-96 overflow-y-auto whitespace-pre-wrap text-sm leading-relaxed">
-          {text}
-        </div>
+        <ClampedContent
+          disclosureKey={chunkId ? `${chunkId}:user:${message.id}` : `${message.id}:user`}
+          fadeClassName="from-background"
+        >
+          <div className="whitespace-pre-wrap text-sm leading-relaxed">{text}</div>
+        </ClampedContent>
       </div>
     </div>
   );
@@ -295,7 +275,11 @@ const AIMessageCard = memo(function AIMessageCard({ sessionId, message }: Messag
 
         {/* Thinking blocks (collapsible, dimmed) */}
         {thinkingBlocks.map((thinking, idx) => (
-          <ThinkingBlock key={`thinking-${idx}`} text={thinking} />
+          <ThinkingBlock
+            key={`thinking-${idx}`}
+            text={thinking}
+            disclosureKey={`${message.id}:thinking:${idx}`}
+          />
         ))}
 
         {/* Tool calls (collapsible) */}
@@ -303,6 +287,7 @@ const AIMessageCard = memo(function AIMessageCard({ sessionId, message }: Messag
           <ToolCallBlock
             key={tc.id}
             sessionId={sessionId}
+            messageId={message.id}
             toolCall={tc}
             result={toolResultMap.get(tc.id)}
           />
@@ -362,11 +347,11 @@ function CompactMarker() {
 // Chunk-based rendering
 // ---------------------------------------------------------------------------
 
-function renderMessage(msg: SerializedMessage, sessionId?: string | null) {
+function renderMessage(msg: SerializedMessage, sessionId?: string | null, chunkId?: string) {
   if (msg.isCompactSummary) return <CompactMarker key={msg.id} />;
   switch (msg.role) {
     case 'user':
-      return <UserMessageCard key={msg.id} message={msg} />;
+      return <UserMessageCard key={msg.id} message={msg} chunkId={chunkId} />;
     case 'assistant':
       return <AIMessageCard key={msg.id} sessionId={sessionId} message={msg} />;
     case 'system':
@@ -394,7 +379,7 @@ const ChunkRenderer = memo(function ChunkRenderer({
           onToggle={() => onAiGroupToggle?.(chunk.id)}
         />
       ) : (
-        chunk.messages.map((msg) => renderMessage(msg, sessionId))
+        chunk.messages.map((msg) => renderMessage(msg, sessionId, chunk.id))
       )}
     </div>
   );

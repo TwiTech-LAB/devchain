@@ -56,6 +56,11 @@ const vaultCache = {
   isClaimedHost: () => claimedVm,
   status: async () => VM_VAULT,
 } as never;
+const VM_INTEGRATIONS = { ...VM_VAULT, appliedRevision: 'i'.repeat(64), cacheReady: true };
+const integrationCache = {
+  isClaimedHost: () => claimedVm,
+  status: async () => VM_INTEGRATIONS,
+} as never;
 
 describe('RuntimeController', () => {
   const originalEnv = process.env;
@@ -73,7 +78,13 @@ describe('RuntimeController', () => {
     resetEnvConfig();
     const syncthing = { getState: () => fileSyncState } as unknown as SyncthingManager;
     claimedVm = false;
-    controller = new RuntimeController(syncthing, providerClis, makeStorage(), vaultCache);
+    controller = new RuntimeController(
+      syncthing,
+      providerClis,
+      makeStorage(),
+      vaultCache,
+      integrationCache,
+    );
   });
 
   afterAll(() => {
@@ -180,10 +191,13 @@ describe('RuntimeController', () => {
     });
   });
 
-  it('reports the Vault cache state only on a claimed VM', async () => {
+  it('reports the Vault and integration cache states only on a claimed VM', async () => {
+    expect(await controller.getRuntime()).not.toHaveProperty('integrations');
     claimedVm = true;
 
-    expect((await controller.getRuntime()).vault).toEqual(VM_VAULT);
+    const runtime = await controller.getRuntime();
+    expect(runtime.vault).toEqual(VM_VAULT);
+    expect(runtime.integrations).toEqual(VM_INTEGRATIONS);
   });
 
   it('includes runtimeToken when RUNTIME_TOKEN is set', async () => {
@@ -224,6 +238,7 @@ describe('RuntimeController', () => {
           }),
         }),
         vaultCache,
+        integrationCache,
       );
 
       const result = await controller.getRuntime();

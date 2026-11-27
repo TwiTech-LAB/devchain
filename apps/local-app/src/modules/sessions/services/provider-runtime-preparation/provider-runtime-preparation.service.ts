@@ -11,7 +11,9 @@ import {
 } from '../../../../common/devchain-cli-launcher';
 import { GIT_SHIM_BIN, GIT_SHIM_ON_VM } from '../../../../common/git-shim-paths';
 import { ValidationError } from '../../../../common/errors/error-types';
+import { createLogger } from '../../../../common/logging/logger';
 import { isHookCapable } from '../../../providers/adapters/capabilities';
+import type { ProviderSessionTranscript } from '../../../providers/adapters/capabilities/session-fork.capability';
 import { ProviderPluginPolicyService } from '../../../providers/services/provider-plugin-policy.service';
 import { ProviderCliVersionProbe } from '../../../providers/services/provider-cli-version-probe.service';
 import { ClaudeLaunchSettingsMaterializerService } from '../../../runtime-context-capture/claude-launch-settings-materializer.service';
@@ -36,6 +38,10 @@ import {
   type LaunchConfig,
   type LaunchConfigInput,
 } from '../provider-launch-config';
+import {
+  finalizeLaunchConfig,
+  resolveLaunchOptions,
+} from '../provider-launch-config/provider-launch-config.service';
 import { RuntimeDirectoryService } from '../../../runtime-directory/runtime-directory.service';
 import { LAUNCH_SCRIPT_SHELL, launchScriptPath, writeLaunchScript } from './launch-script';
 import type {
@@ -43,6 +49,8 @@ import type {
   ProviderRuntimePlanInput,
 } from './provider-runtime-preparation.types';
 import { ProviderRuntimePlan } from './provider-runtime-preparation.types';
+
+const logger = createLogger('ProviderRuntimePreparation');
 
 interface ProviderRuntimePlanState {
   readonly mode: ProviderRuntimePlanInput['mode'];
@@ -57,6 +65,10 @@ interface ProviderRuntimePlanState {
   readonly pluginPolicy: ReadonlyArray<ProviderPluginPolicyEntry>;
   readonly baseInput: Readonly<LaunchConfigInput>;
   readonly baseConfig: LaunchConfig;
+  readonly fork: Readonly<ProviderSessionTranscript> | null;
+  readonly forkLaunchEnv?: Readonly<Record<string, string>>;
+  readonly discardUnboundTranscript?: () => Promise<void>;
+  readonly commitBoundTranscript?: () => Promise<void>;
   /** Resolved once per launch, so the CLI launcher and the launch script share one root. */
   readonly runtimeRoot: string;
 }
@@ -65,6 +77,18 @@ class ProviderRuntimePlanValue extends ProviderRuntimePlan {
   constructor(readonly state: ProviderRuntimePlanState) {
     super();
     Object.freeze(this);
+  }
+
+  get fork(): Readonly<ProviderSessionTranscript> | null {
+    return this.state.fork;
+  }
+
+  get discardUnboundTranscript(): (() => Promise<void>) | undefined {
+    return this.state.discardUnboundTranscript;
+  }
+
+  get commitBoundTranscript(): (() => Promise<void>) | undefined {
+    return this.state.commitBoundTranscript;
   }
 }
 
@@ -126,9 +150,7 @@ export class ProviderRuntimePreparationService {
     for (const owner of this.ownersFor(providerName)) {
       owner.assertNoPolicyConflict(profileOptionArgs, pluginPolicy.length > 0);
     }
-    const cliVersion = input.adapter.requiresCliVersion
-      ? await this.probeCliVersion(providerName, input.providerBinPath)
-      : undefined;
+    const cliVersion = await this.resolveCliVersion(input, providerName);
 
     const environment = getEnvConfig();
     const shimBin = await this.connectedShimBin(input.projectId);
@@ -141,13 +163,10 @@ export class ProviderRuntimePreparationService {
     });
     const baseInput: Readonly<LaunchConfigInput> = Object.freeze({
       mode: input.mode,
-      // `sessionId` flows for both modes (see BuildLaunchArgsInput.sessionId).
-      // `initialPrompt` stays new-only; `providerSessionId` stays restore-only.
       sessionId: input.sessionId,
       projectId: input.projectId,
-      ...(input.mode === 'new'
-        ? { initialPrompt: input.initialPrompt }
-        : { providerSessionId: input.providerSessionId }),
+      initialPrompt: input.initialPrompt,
+      providerSessionId: input.providerSessionId,
       adapter: input.adapter,
       profileOptions: input.profileOptions,
       modelOverride: effectiveModel,
@@ -161,10 +180,63 @@ export class ProviderRuntimePreparationService {
       ...(this.cliPath && { cliBin: devchainCliBin(runtimeRoot) }),
       sessionIdentity,
       hookContext: isHookCapable(input.adapter)
-        ? Object.freeze({ ...sessionIdentity, tmuxSessionName: input.tmuxSessionName })
+        ? Object.freeze({
+            ...sessionIdentity,
+            tmuxSessionName: input.tmuxSessionName,
+            ...(input.mode === 'fork' && { sessionStartSource: 'fork' as const }),
+          })
         : undefined,
     });
-    const baseConfig = this.freezeConfig(resolveLaunchConfig(baseInput));
+    let fork: ProviderSessionTranscript | null = null;
+    let forkLaunchEnv: Readonly<Record<string, string>> | undefined;
+    let discardUnboundTranscript: (() => Promise<void>) | undefined;
+    let commitBoundTranscript: (() => Promise<void>) | undefined;
+    let config: LaunchConfig;
+    if (input.mode === 'fork') {
+      const options = resolveLaunchOptions(baseInput);
+      const result = await input.adapter.prepareForkLaunch({
+        ...input.savePoint,
+        projectId: input.projectId,
+        projectPath: input.projectRootPath,
+        providerBinPath: input.providerBinPath,
+        sessionId: input.sessionId,
+        cliVersion,
+        profileOptionArgs: options.profileOptionArgs,
+        env: options.env,
+        helperEnv: input.helperEnv,
+      });
+      fork = Object.freeze({
+        providerSessionId: result.providerSessionId,
+        transcriptPath: result.transcriptPath,
+      });
+      const logFailure = (action: (() => Promise<void>) | undefined, message: string) =>
+        action &&
+        (async () => {
+          try {
+            await action();
+          } catch (error: unknown) {
+            logger.warn({ sessionId: input.sessionId, error }, message);
+          }
+        });
+      discardUnboundTranscript = logFailure(
+        result.discardUnboundTranscript,
+        'Failed to discard unbound fork transcript',
+      );
+      commitBoundTranscript = logFailure(
+        result.commitBoundTranscript,
+        'Failed to commit bound fork transcript',
+      );
+      try {
+        forkLaunchEnv = result.env && Object.freeze({ ...result.env });
+        config = finalizeLaunchConfig(baseInput, options, result);
+      } catch (error) {
+        await discardUnboundTranscript?.();
+        throw error;
+      }
+    } else {
+      config = resolveLaunchConfig(baseInput);
+    }
+    const baseConfig = this.freezeConfig(config);
 
     if (input.mode === 'restore') {
       this.assertRestoreIdentity(baseConfig, input.provider.name, input.providerSessionId);
@@ -186,6 +258,10 @@ export class ProviderRuntimePreparationService {
         ),
         baseInput,
         baseConfig,
+        fork,
+        forkLaunchEnv,
+        discardUnboundTranscript,
+        commitBoundTranscript,
         runtimeRoot,
       } satisfies ProviderRuntimePlanState),
     );
@@ -286,6 +362,26 @@ export class ProviderRuntimePreparationService {
     return (await this.storage.getRemoteProjectBinding(projectId)) ? this.gitShimBin : null;
   }
 
+  private async resolveCliVersion(
+    input: ProviderRuntimePlanInput,
+    providerName: string,
+  ): Promise<string | undefined> {
+    if (input.mode === 'fork' && input.cliVersion !== undefined) return input.cliVersion;
+    if (input.mode !== 'fork' && input.adapter.requiresCliVersion) {
+      return this.probeCliVersion(providerName, input.providerBinPath);
+    }
+    if (!input.adapter.optionalCliVersion) return undefined;
+    try {
+      return await this.probeCliVersion(providerName, input.providerBinPath);
+    } catch (error: unknown) {
+      logger.warn(
+        { providerName, providerBinPath: input.providerBinPath, mode: input.mode, error },
+        'CLI version probe failed; launching without a CLI version',
+      );
+      return undefined;
+    }
+  }
+
   private probeCliVersion(providerName: string, providerBinPath: string): Promise<string> {
     if (!this.cliVersionProbe) {
       throw new ValidationError(
@@ -304,7 +400,10 @@ export class ProviderRuntimePreparationService {
     providerName: string,
     providerSessionId: string,
   ): void {
-    if (!config.argv.includes(providerSessionId)) {
+    if (
+      !config.argv.includes(providerSessionId) &&
+      !config.argv.includes(`--resume=${providerSessionId}`)
+    ) {
       throw new ValidationError(
         'Restore argv does not include provider session ID — adapter contract violation',
         { providerName, providerSessionId },
@@ -324,11 +423,12 @@ export class ProviderRuntimePreparationService {
     }
 
     return this.freezeConfig(
-      resolveLaunchConfig({
-        ...state.baseInput,
-        providerOptionArgs,
-        runtimeEnv,
-      }),
+      resolveLaunchConfig(
+        { ...state.baseInput, providerOptionArgs, runtimeEnv },
+        state.mode === 'fork'
+          ? { argv: state.baseConfig.argv, env: state.forkLaunchEnv }
+          : undefined,
+      ),
     );
   }
 

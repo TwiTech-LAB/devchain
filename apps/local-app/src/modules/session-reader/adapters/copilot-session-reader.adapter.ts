@@ -13,6 +13,7 @@ import { EXACT_SUMMARY_FIELDS } from './session-reader-adapter.interface';
 import type { UnifiedSession } from '../dtos/unified-session.types';
 import { parseCopilotJsonl } from '../parsers/copilot-jsonl.parser';
 import { PRICING_SERVICE, type PricingServiceInterface } from '../services/pricing.interface';
+import { PROVIDER_TRANSCRIPT_SOURCE_KINDS } from '../services/transcript-path-validator.service';
 
 /**
  * Copilot stores one append-only JSONL transcript per session at
@@ -36,7 +37,7 @@ export class CopilotSessionReaderAdapter implements SessionReaderAdapter {
   // authoritative metrics are not incrementally additive). Re-reads the whole file per watcher tick
   // (acceptable for Copilot's file sizes; S3 showed flush is end-loaded anyway).
   readonly incrementalMode = 'snapshot' as const;
-  readonly sourceKind = 'file' as const;
+  readonly sourceKind = PROVIDER_TRANSCRIPT_SOURCE_KINDS[this.providerName];
   readonly allowedRoots: string[];
   private readonly logger = new Logger(CopilotSessionReaderAdapter.name);
   private readonly homeDir: string;

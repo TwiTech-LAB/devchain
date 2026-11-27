@@ -5,7 +5,7 @@ import {
   selectProviderEffortOptions,
   type ProviderEffortOption,
 } from '@/ui/lib/provider-efforts';
-import { useFetchFactory } from '@/ui/hooks/useFetchFactory';
+import { useAmbientBackend, useFetchFactory } from '@/ui/hooks/useFetchFactory';
 import { sameCatalogName } from '@/ui/hooks/useProviderModels';
 
 export interface UseProviderEffortsOptions {
@@ -34,10 +34,11 @@ export interface UseProviderEffortsResult {
  */
 export function useProviderEfforts(options: UseProviderEffortsOptions): UseProviderEffortsResult {
   const fetchFn = useFetchFactory();
+  const backend = useAmbientBackend();
   const { providerId, effortOverride, onStaleSelection } = options;
 
   const { data: catalog } = useQuery({
-    ...providerEffortQueries.catalog(fetchFn, providerId),
+    ...providerEffortQueries.catalog(fetchFn, providerId, backend),
     select: selectProviderEffortOptions,
     enabled: !!providerId,
     staleTime: 5 * 60 * 1000,

@@ -7,6 +7,7 @@ import { useAppSocket } from '@/ui/hooks/useAppSocket';
 import { useRealtimeDispatch } from '@/ui/hooks/useRealtimeDispatch';
 import type { RealtimeInvalidationRegistry } from '@/ui/lib/realtime-invalidation-registry';
 import { teamsQueryKeys } from '@/ui/lib/teams';
+import { agentSessionTreeKeyPrefix } from '@/ui/lib/sessions';
 
 export interface UseChatSocketOptions {
   projectId: string | null;
@@ -35,6 +36,15 @@ export function useChatSocket({ projectId }: UseChatSocketOptions): UseChatSocke
       },
       {
         match: (t: string) => t === stateTopic,
+        type: 'agent.updated',
+        // Turning an agent off stops its session: family trees show its running state.
+        entries: [
+          { kind: 'invalidate', queryKey: [...agentQueryKeys.project(projectId)] },
+          { kind: 'invalidate', queryKey: [...agentSessionTreeKeyPrefix] },
+        ],
+      },
+      {
+        match: (t: string) => t === stateTopic,
         type: 'team.member.added',
         entries: [
           { kind: 'invalidate', queryKey: [...agentQueryKeys.project(projectId)] },
@@ -58,6 +68,8 @@ export function useChatSocket({ projectId }: UseChatSocketOptions): UseChatSocke
           { kind: 'invalidate', queryKey: ['active-sessions', projectId] },
           { kind: 'invalidate', queryKey: ['teams', projectId] },
           { kind: 'invalidate', queryKey: ['teams', 'detail'] },
+          // A deleted agent's stopped sessions move to a family member.
+          { kind: 'invalidate', queryKey: [...agentSessionTreeKeyPrefix] },
         ],
       },
       {

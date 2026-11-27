@@ -34,6 +34,7 @@ import { unpackHomeSkillContent } from '../host/host-skill-content';
 import { Readable } from 'node:stream';
 import { fixtureTls } from '../../../common/test/tls-fixture';
 import { RemoteVaultPushService } from './remote-vault-push.service';
+import { RemoteIntegrationPushService } from './remote-integration-push.service';
 
 jest.mock('../../../common/logging/logger', () => ({
   logger: { debug: jest.fn(), info: jest.fn(), warn: jest.fn(), error: jest.fn() },
@@ -149,6 +150,14 @@ describe('home skill settings push', () => {
         {
           provide: RemoteVaultPushService,
           useValue: { pushIfChanged: async () => undefined, useHealth: () => undefined },
+        },
+        {
+          provide: RemoteIntegrationPushService,
+          useValue: {
+            pushIfChanged: async () => undefined,
+            useHealth: () => undefined,
+            noteReport: () => undefined,
+          },
         },
         {
           provide: ProviderCliVersionsService,

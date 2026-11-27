@@ -87,6 +87,24 @@ export const externalMyWorkQueryKeys = {
     ] as const,
 };
 
+const PROVIDER_FAMILY_INDEX = externalMyWorkQueryKeys.epoch('provider', null).length;
+const PROVIDER_LINK_STATE_FAMILIES: ReadonlySet<unknown> = new Set([
+  externalMyWorkQueryKeys.links('provider', null)[PROVIDER_FAMILY_INDEX],
+  externalMyWorkQueryKeys.taskDetail('provider', null, 'task')[PROVIDER_FAMILY_INDEX],
+]);
+
+/**
+ * Matches every provider, connection epoch and variant of the provider-side
+ * views that show which epic a remote task is linked to: link lookups
+ * (`links`, `linksBatch`) and task detail.
+ */
+export function isProviderLinkStateQueryKey(queryKey: readonly unknown[]): boolean {
+  return (
+    queryKey[0] === externalMyWorkQueryKeys.all[0] &&
+    PROVIDER_LINK_STATE_FAMILIES.has(queryKey[PROVIDER_FAMILY_INDEX])
+  );
+}
+
 export const epicExternalSourceQueryKeys = {
   all: ['epic-external-sources'] as const,
   detail: (epicId: string) => [...epicExternalSourceQueryKeys.all, epicId] as const,

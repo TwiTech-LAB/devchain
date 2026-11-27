@@ -20,7 +20,8 @@ import { TranscriptWatcherService } from './transcript-watcher.service';
  *   ({@link TerminalRegistryRehydrator}); transcript watchers were the missing half.
  *
  * SAFETY: {@link TranscriptWatcherService.startWatching} is idempotent (it skips a
- * session that already has an active watcher) and resolves the source kind itself,
+ * session whose active watcher already reads the same source, and replaces a watcher
+ * of another source) and resolves the source kind itself,
  * so this is safe to run for every provider (file + DB) and safe alongside the
  * normal discovery path.
  */

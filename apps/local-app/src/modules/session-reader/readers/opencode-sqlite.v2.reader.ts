@@ -28,7 +28,6 @@ import type {
   UnifiedSession,
   UnifiedMessage,
   UnifiedMetrics,
-  UnifiedContentBlock,
   UnifiedToolCall,
   UnifiedToolResult,
   TokenUsage,
@@ -262,6 +261,39 @@ export class OpencodeSqliteV2Reader implements OpencodeTranscriptReader {
     });
   }
 
+  readToolResult(
+    dbPath: string,
+    providerSessionId: string,
+    toolCallId: string,
+  ): UnifiedToolResult | null {
+    return withOpencodeDb(dbPath, this.connection, (db) => {
+      assertSchema(db);
+      const rows = db
+        .prepare(
+          `SELECT m.data FROM session_message m
+           WHERE m.session_id = ? AND m.type = 'assistant' AND json_valid(m.data)
+             AND EXISTS (
+               SELECT 1 FROM json_each(m.data, '$.content') b
+               -- A primitive entry's value is decoded text, not JSON; CASE keeps json_extract off it.
+               WHERE CASE WHEN b.type = 'object'
+                 THEN json_extract(b.value, '$.type') = 'tool' AND json_extract(b.value, '$.id') = ?
+               END)
+           ORDER BY m.seq`,
+        )
+        .all(providerSessionId, toolCallId) as { data: string }[];
+      for (const row of rows) {
+        const data = asRecord(parseOpencodeJson(row.data)) as RawMessageData;
+        for (const raw of Array.isArray(data.content) ? data.content : []) {
+          const block = asRecord(raw) as RawContentBlock;
+          if (block.type !== 'tool' || block.id !== toolCallId) continue;
+          const result = toolBlockResult(block, toolCallId, Number.POSITIVE_INFINITY);
+          if (result) return result;
+        }
+      }
+      return null;
+    });
+  }
+
   /** Summary metrics in SQL; the exact fields match {@link readSession}. */
   readSummary(dbPath: string, providerSessionId: string): OpencodeSummaryRead {
     return withOpencodeDb(dbPath, this.connection, (db) => {
@@ -394,7 +426,7 @@ export class OpencodeSqliteV2Reader implements OpencodeTranscriptReader {
     });
   }
 
-  /** Same match as the v1 reader, over `session_v2`. */
+  /** Match unbound launches. The fork path binds its copy before the provider starts. */
   findSessionCandidates(
     dbPath: string,
     params: OpencodeCandidateQuery,
@@ -409,6 +441,7 @@ export class OpencodeSqliteV2Reader implements OpencodeTranscriptReader {
            LEFT JOIN project p ON p.id = s.project_id
            WHERE (s.directory = @dir OR p.worktree = @dir)
              AND abs(s.time_created - @startedAt) <= @window
+             AND s.fork_session_id IS NULL
            ORDER BY abs(s.time_created - @startedAt) ASC`,
         )
         .all({
@@ -691,25 +724,29 @@ function mapAssistantBlock(
       message.content.push({ type: 'tool_call', toolCallId, toolName, input });
       message.toolCalls.push({ id: toolCallId, name: toolName, input, isTask: false });
 
-      if (state.status !== 'completed' && state.status !== 'error') return;
-      const isError = state.status === 'error';
-      const raw = isError ? errorText(state.error) : toolContentText(state.content);
-      const { content, isTruncated, fullLength } = capToolOutput(raw, maxToolOutputChars);
-      const truncation = isTruncated ? { isTruncated, fullLength } : {};
-      const result: UnifiedContentBlock = {
-        type: 'tool_result',
-        toolCallId,
-        content,
-        isError,
-        ...truncation,
-      };
-      message.content.push(result);
-      message.toolResults.push({ toolCallId, content, isError, ...truncation });
+      const result = toolBlockResult(block, toolCallId, maxToolOutputChars);
+      if (!result) return;
+      message.content.push({ type: 'tool_result', ...result });
+      message.toolResults.push(result);
       return;
     }
     default:
       return;
   }
+}
+
+/** The result of a finished tool block; null while the call is still running. */
+function toolBlockResult(
+  block: RawContentBlock,
+  toolCallId: string,
+  maxToolOutputChars: number,
+): UnifiedToolResult | null {
+  const state = asRecord(block.state) as RawToolState;
+  if (state.status !== 'completed' && state.status !== 'error') return null;
+  const isError = state.status === 'error';
+  const raw = isError ? errorText(state.error) : toolContentText(state.content);
+  const { content, isTruncated, fullLength } = capToolOutput(raw, maxToolOutputChars);
+  return { toolCallId, content, isError, ...(isTruncated ? { isTruncated, fullLength } : {}) };
 }
 
 /** Tool output is a list of content parts; text parts are joined, other parts become a placeholder. */

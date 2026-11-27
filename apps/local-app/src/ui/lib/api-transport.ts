@@ -87,13 +87,14 @@ const HOME_ALWAYS_PREFIXES = [
   '/api/epics/import-external-task',
   '/api/epics/external-sources',
   '/api/epics/time-summary',
+  '/api/github-star',
 ] as const;
 
 // Epic time link boundaries live only at home, so time reads for any project go there.
 const HOME_ALWAYS_EPIC_TIME_LOGS = /^\/api\/epics\/[^/]+\/time-logs(?:\/|$)/;
 const HOME_ALWAYS_EPIC_TIME_READ = /^\/api\/epics\/[^/]+\/time(?:\/|$)/;
 // External task links live only at home; a remote rejects every integration route.
-const HOME_ALWAYS_EPIC_EXTERNAL_SOURCES = /^\/api\/epics\/[^/]+\/external-sources$/;
+const HOME_ALWAYS_EPIC_EXTERNAL_SOURCES = /^\/api\/epics\/[^/]+\/external-sources(?:\/|$)/;
 
 // Project-owned routes whose path takes precedence over home-always prefixes.
 const PROJECT_ID_IN_PATH = [

@@ -31,6 +31,8 @@ export interface PoolMessage {
   readonly humanPromptSubmit?: boolean;
   /** Text from outside this DevChain; see `EnqueueOptions.outsideText`. */
   readonly outsideText?: boolean;
+  /** See `EnqueueOptions.admissionFence`. */
+  readonly admissionFence?: number;
 }
 
 export interface MessageEnqueueResult extends EnqueueResult {
@@ -50,6 +52,11 @@ export interface PoolStatus {
 @Injectable()
 export class MessageEnqueueService {
   constructor(private readonly pool: SessionsMessagePoolService) {}
+
+  /** Read before resolving a session; pass back as `PoolMessage.admissionFence`. */
+  getAdmissionFence(agentId: string): number {
+    return this.pool.getAdmissionFence(agentId);
+  }
 
   async enqueue(messages: readonly PoolMessage[]): Promise<MessageEnqueueResult[]> {
     const results: MessageEnqueueResult[] = [];
@@ -71,6 +78,7 @@ export class MessageEnqueueService {
         deferWhileHumanTyping: message.deferWhileHumanTyping,
         humanPromptSubmit: message.humanPromptSubmit,
         outsideText: message.outsideText,
+        admissionFence: message.admissionFence,
       });
 
       results.push({ agentId: message.agentId, ...result });

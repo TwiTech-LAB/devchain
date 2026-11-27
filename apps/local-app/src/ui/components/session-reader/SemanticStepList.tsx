@@ -6,16 +6,22 @@ import { CopyTextButton } from '@/ui/components/shared/CopyTextButton';
 import { ThinkingBlock } from './ThinkingBlock';
 import { ToolCallItem } from './ToolCallItem';
 import { SubagentItem } from './SubagentItem';
+import { ClampedContent } from './ClampedContent';
+import { FullToolResultStatus, useFullToolResult } from './useFullToolResult';
+import { useTranscriptDisclosure } from '@/ui/hooks/useTranscriptDisclosure';
 
 export interface SemanticStepListProps {
   sessionId?: string | null;
   steps: SerializedSemanticStep[];
+  /** Scopes the open-state keys; step ids repeat across chunks. */
+  chunkId?: string;
   stepHotspots?: Map<string, StepHotspotEntry>;
 }
 
 export const SemanticStepList = memo(function SemanticStepList({
   sessionId,
   steps,
+  chunkId = '',
   stepHotspots,
 }: SemanticStepListProps) {
   const toolCallIdSet = useMemo(
@@ -49,6 +55,7 @@ export const SemanticStepList = memo(function SemanticStepList({
               <ThinkingBlock
                 key={step.id}
                 step={step}
+                chunkId={chunkId}
                 isStepHot={thinkingHotspot?.isHot}
                 percentOfChunk={thinkingHotspot?.percentOfChunk}
               />
@@ -61,6 +68,7 @@ export const SemanticStepList = memo(function SemanticStepList({
                 key={step.id}
                 sessionId={sessionId}
                 step={step}
+                chunkId={chunkId}
                 resultStep={
                   step.content.toolCallId ? resultMap.get(step.content.toolCallId) : undefined
                 }
@@ -103,13 +111,13 @@ export const SemanticStepList = memo(function SemanticStepList({
             if (!resultText.trim()) return null;
 
             return (
-              <pre
+              <OrphanToolResult
                 key={step.id}
-                className="max-h-32 overflow-auto whitespace-pre-wrap rounded-md bg-muted/40 p-2 text-[11px] text-foreground leading-relaxed"
-                data-testid="orphan-tool-result"
-              >
-                {resultText}
-              </pre>
+                sessionId={sessionId}
+                chunkId={chunkId}
+                step={step}
+                resultText={resultText}
+              />
             );
           }
           // interruption/other skipped
@@ -122,3 +130,45 @@ export const SemanticStepList = memo(function SemanticStepList({
 });
 
 SemanticStepList.displayName = 'SemanticStepList';
+
+function OrphanToolResult({
+  sessionId,
+  chunkId,
+  step,
+  resultText,
+}: {
+  sessionId?: string | null;
+  chunkId: string;
+  step: SerializedSemanticStep;
+  resultText: string;
+}) {
+  const key = `${chunkId}:orphan:${step.id}`;
+  const [expanded, setExpanded] = useTranscriptDisclosure(key);
+  const fullResult = useFullToolResult({
+    sessionId,
+    toolCallId: step.content.toolCallId,
+    isTruncated: step.content.isTruncated,
+    expanded,
+  });
+
+  return (
+    <div>
+      <ClampedContent
+        disclosureKey={key}
+        expanded={expanded}
+        onExpandedChange={setExpanded}
+        maxHeight={128}
+        truncated={fullResult.canLoad && fullResult.fullText === null}
+        fadeClassName="from-muted"
+      >
+        <pre
+          className="overflow-x-auto whitespace-pre-wrap rounded-md bg-muted/40 p-2 text-[11px] text-foreground leading-relaxed"
+          data-testid="orphan-tool-result"
+        >
+          {fullResult.fullText ?? resultText}
+        </pre>
+      </ClampedContent>
+      <FullToolResultStatus isLoading={fullResult.isLoading} error={fullResult.error} />
+    </div>
+  );
+}

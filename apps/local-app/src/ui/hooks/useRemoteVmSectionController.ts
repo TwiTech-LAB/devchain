@@ -28,6 +28,7 @@ import type {
 import { SharedVmGuardApiError } from '@/ui/pages/cloud/lib/remote-vm-errors';
 import { useSelectedProject } from './useProjectSelection';
 import { useRemoteReadiness } from './useRemoteReadiness';
+import { useSyncStatus } from './useSyncStatus';
 import { useRemoteOperations } from './useRemoteOperations';
 import { useRemoteNotices } from './useRemoteNotices';
 import { useRemotes } from './useRemotes';
@@ -70,7 +71,11 @@ import type {
 } from '@/ui/pages/cloud/remote-vm-section-presentation';
 import { SHARED_VM_GUARD_CODE, isSharedVmGuardedKind } from '@/modules/remotes/dtos/shared-vm.dto';
 
-const TAB_KEYS: RemoteVmTab[] = ['overview', 'projects', 'vms', 'logins', 'proxmox'];
+const TAB_KEYS: RemoteVmTab[] = ['overview', 'projects', 'vms', 'file-sync', 'logins', 'proxmox'];
+/** The section reads the file sync summary of every project on a VM this often while it is open. */
+const SYNC_SUMMARY_POLL_MS = 15_000;
+/** The File sync tab reads the details instead, more often; the details also carry the summary. */
+const SYNC_DETAILS_POLL_MS = 5_000;
 
 export function useRemoteVmSectionController(): RemoteVmSectionPresentation {
   const notices = useRemoteNotices();
@@ -381,6 +386,17 @@ export function useRemoteVmSectionController(): RemoteVmSectionPresentation {
     [bindings],
   );
   const newestProjectOperations = useProjectNewestOperations(projectsNeedingNewest);
+  // One query at a time: switching the tab changes the key, and the unobserved query stops polling.
+  const syncDetails = tab === 'file-sync';
+  const syncStatus = useSyncStatus({
+    details: syncDetails,
+    pollMs: syncDetails ? SYNC_DETAILS_POLL_MS : SYNC_SUMMARY_POLL_MS,
+    keepPrevious: true,
+  });
+  const syncScopes = useMemo(
+    () => new Map((syncStatus.data?.scopes ?? []).map((scope) => [scope.projectId, scope])),
+    [syncStatus.data],
+  );
   const statusContext = useMemo(
     () =>
       createStatusContext({
@@ -390,9 +406,22 @@ export function useRemoteVmSectionController(): RemoteVmSectionPresentation {
         projectNames,
         newestProjectOperations,
         poweredOnAt,
+        syncScopes,
+        // A failed poll keeps the last answer in `data`; the rows must not show it as current.
+        syncReadFailed: syncStatus.isError,
         now,
       }),
-    [remotes, bindings, operations, projectNames, newestProjectOperations, poweredOnAt, now],
+    [
+      remotes,
+      bindings,
+      operations,
+      projectNames,
+      newestProjectOperations,
+      poweredOnAt,
+      syncScopes,
+      syncStatus.isError,
+      now,
+    ],
   );
   const statuses = useMemo(
     () => new Map(remotes.map((remote) => [remote.id, vmStatus(remote, statusContext)] as const)),
@@ -794,6 +823,16 @@ export function useRemoteVmSectionController(): RemoteVmSectionPresentation {
           : null,
     },
     projects: projectData,
+    fileSync: {
+      // A summary kept from another tab has no folders, so it counts as loading here.
+      status: syncStatus.isPlaceholderData ? null : (syncStatus.data ?? null),
+      loading: syncStatus.isPending || syncStatus.isPlaceholderData,
+      error: syncStatus.error ? getErrorMessage(syncStatus.error, 'The request failed.') : null,
+      projectNames,
+      remoteNames: remoteNameById,
+      rows: projectRows,
+      refresh: () => syncStatus.refetch(),
+    },
     projectActions: {
       run: onProjectAction,
       openSettings: (row) => setFileSyncProjectId(row.project.id),

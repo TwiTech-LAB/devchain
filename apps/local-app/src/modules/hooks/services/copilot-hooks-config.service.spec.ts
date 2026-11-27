@@ -4,6 +4,7 @@ import { join } from 'path';
 import { tmpdir } from 'os';
 import { CopilotHooksConfigService } from './copilot-hooks-config.service';
 import { HookEventSchema } from '../dtos/hook-event.dto';
+import { SESSION_START_SOURCE_ENV } from '../../providers/adapters/capabilities/hook.capability';
 
 jest.mock('../../../common/logging/logger', () => ({
   createLogger: () => ({
@@ -241,6 +242,25 @@ exit 0
       if (payload === null || payload === undefined) return;
       expect(payload.source).toBe('startup');
     });
+
+    // Execute the generated relay to verify the source that reaches the hook API.
+    it.each([
+      [undefined, 'resume', 'resume'],
+      ['fork', 'resume', 'fork'],
+      ['fork', 'startup', 'startup'],
+    ])(
+      'relays SessionStart with marker %s and source %s as %s',
+      async (marker, source, expected) => {
+        await service.ensureHooksConfig('/p');
+        const payload = runRelay(
+          'SessionStart',
+          { session_id: 'cp-1', source },
+          { ...DEVCHAIN_ENV, ...(marker && { [SESSION_START_SOURCE_ENV]: marker }) },
+        );
+        if (payload === null) return;
+        expect(HookEventSchema.parse(payload)).toMatchObject({ source: expected });
+      },
+    );
 
     it('normalizes a Stop payload (transcript_path→transcriptPath, stop_reason→stopReason)', async () => {
       await service.ensureHooksConfig('/p');

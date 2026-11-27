@@ -337,6 +337,42 @@ describe('TerminalSeedService', () => {
       );
     });
 
+    it('seeds a standalone terminal, which has no session row, from its registry tmux session', async () => {
+      sessionTerminalRuntime.getDescriptor = jest.fn().mockReturnValue({
+        sessionId: 'login-1',
+        tmuxSessionName: null,
+        normalizeLf: true,
+        usesAlternateScreen: false,
+      }) as jest.Mock;
+      terminalSessionRegistry.get = jest.fn().mockReturnValue({
+        tmuxSessionName: 'devchain-aux_1_login-1',
+        getDimensions: () => ({ cols: 80, rows: 24 }),
+      });
+
+      await seedService.emitSeedToClient({
+        deliver,
+        sessionId: 'login-1',
+        maxBytes: 1024 * 1024,
+        allowEmpty: true,
+        getCurrentSequence: () => 4,
+      });
+
+      expect(terminalIO.captureHistory).toHaveBeenCalledWith(
+        { name: 'devchain-aux_1_login-1' },
+        10000,
+        true,
+        { joinWrappedLines: true },
+      );
+      expect(mockClient.emit).toHaveBeenCalledWith(
+        'message',
+        expect.objectContaining({
+          topic: 'terminal/login-1',
+          type: 'seed_ansi',
+          payload: expect.objectContaining({ data: 'captured-output' }),
+        }),
+      );
+    });
+
     it('emits a non-writing seed_empty completion for a successful empty initial capture', async () => {
       terminalIO.captureHistory = jest.fn().mockResolvedValue({ ok: true, output: '' });
 

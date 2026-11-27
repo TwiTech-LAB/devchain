@@ -12,6 +12,10 @@ import type {
   IntegrationProvider,
 } from '../../storage/models/domain.models';
 import { loadStableIntegrationConnection } from '../connections/stable-integration-connection';
+import {
+  INTEGRATION_CREDENTIAL_SOURCE,
+  type IntegrationCredentialSource,
+} from '../connections/integration-credential-source';
 import { ExternalTaskProviderRegistry } from '../external-task-provider.registry';
 import type {
   ExternalMyWorkCapability,
@@ -55,6 +59,8 @@ export class ExternalMyWorkService {
         | 'listExternalTaskLinksByRemoteScope'
       >,
     private readonly providers: ExternalTaskProviderRegistry,
+    @Inject(INTEGRATION_CREDENTIAL_SOURCE)
+    private readonly credentialSource: IntegrationCredentialSource,
   ) {}
 
   async getMyWork(
@@ -96,13 +102,7 @@ export class ExternalMyWorkService {
     provider: IntegrationProvider,
     remoteTaskId: string,
   ): Promise<ExternalTaskDetail> {
-    const operation = await this.runTaskOperation(
-      projectId,
-      provider,
-      'task_detail',
-      (myWork, credentials, context) => myWork.getTaskDetail(credentials, context, remoteTaskId),
-    );
-    const detail = this.projectTaskDetail(operation.value);
+    const { detail, connection } = await this.readTaskDetail(projectId, provider, remoteTaskId);
     const link = await this.storage.findExternalTaskLink(
       projectId,
       provider,
@@ -110,15 +110,43 @@ export class ExternalMyWorkService {
       detail.remoteId,
     );
     const linkedEpic =
-      link?.connectionId === operation.connection.id
-        ? await this.storage.getEpic(link.epicId)
-        : null;
+      link?.connectionId === connection.id ? await this.storage.getEpic(link.epicId) : null;
     const scopedLink = linkedEpic?.projectId === projectId ? link : null;
     return {
       ...detail,
       linkState: scopedLink
         ? { linked: true, epicId: scopedLink.epicId }
         : { linked: false, epicId: null },
+    };
+  }
+
+  /**
+   * Vendor task read plus the connection epoch that served it, so a caller
+   * can recheck that epoch before it commits anything derived from the read.
+   * `beforeRead` sees the exact credentials the read will use and may throw
+   * to stop it. Never call inside a DB transaction.
+   */
+  async readTaskDetail(
+    projectId: string,
+    provider: IntegrationProvider,
+    remoteTaskId: string,
+    beforeRead?: (credentials: IntegrationCredentials) => void,
+  ): Promise<{
+    detail: ExternalProviderTaskDetail;
+    connection: Pick<IntegrationConnection, 'id' | 'generation'>;
+  }> {
+    const operation = await this.runTaskOperation(
+      projectId,
+      provider,
+      'task_detail',
+      (myWork, credentials, context) => {
+        beforeRead?.(credentials);
+        return myWork.getTaskDetail(credentials, context, remoteTaskId);
+      },
+    );
+    return {
+      detail: this.projectTaskDetail(operation.value),
+      connection: { id: operation.connection.id, generation: operation.connection.generation },
     };
   }
 
@@ -439,6 +467,7 @@ export class ExternalMyWorkService {
       expectedEpoch,
       notConnectedMessage: MY_WORK_NOT_CONNECTED_MESSAGE,
       connectionChangedMessage: MY_WORK_CONNECTION_CHANGED_MESSAGE,
+      credentials: this.credentialSource,
     });
   }
 

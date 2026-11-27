@@ -69,12 +69,50 @@ const RawCompletionSchema = z.object({
   completion: z.number(),
   needItems: z.number(),
   needBytes: z.number(),
+  needDeletes: z.number().optional(),
   remoteState: z.string(),
 });
 
 const ConnectionsSchema = z.object({
   connections: z.record(z.object({ connected: z.boolean() })),
 });
+
+const DeviceConnectionsSchema = z.object({
+  connections: z.record(
+    z.object({
+      connected: z.boolean(),
+      address: z.string(),
+      type: z.string(),
+      startedAt: z.string(),
+      inBytesTotal: z.number(),
+      outBytesTotal: z.number(),
+    }),
+  ),
+});
+
+const FolderConfigurationsSchema = z.array(
+  z.object({
+    id: z.string(),
+    type: z.string(),
+    paused: z.boolean(),
+    devices: z.array(z.object({ deviceID: z.string() })),
+  }),
+);
+
+const FolderStatsSchema = z.record(
+  z.object({
+    lastFile: z.object({ at: z.string(), filename: z.string(), deleted: z.boolean() }),
+    lastScan: z.string(),
+  }),
+);
+
+const NeedItemsSchema = z.array(z.object({ name: z.string(), type: z.string() })).nullish();
+const RawNeedPageSchema = z.object({
+  progress: NeedItemsSchema,
+  queued: NeedItemsSchema,
+  rest: NeedItemsSchema,
+});
+const RawRemoteNeedPageSchema = z.object({ files: NeedItemsSchema });
 
 const ConfiguredFoldersSchema = z.array(z.object({ id: z.string(), path: z.string() }));
 
@@ -107,6 +145,30 @@ export interface FolderNeed {
   id: string;
   needItems: number;
   needBytes: number;
+}
+
+/** One folder of the Syncthing config, as the sync status reads it. */
+export interface FolderConfigurationSummary {
+  id: string;
+  /** Syncthing's folder type; not narrowed, so one unknown type cannot fail the whole list. */
+  type: string;
+  paused: boolean;
+  devices: { deviceID: string }[];
+}
+
+export interface DeviceConnection {
+  connected: boolean;
+  address: string;
+  type: string;
+  startedAt: string;
+  inBytesTotal: number;
+  outBytesTotal: number;
+}
+
+export interface FolderStats {
+  /** The last file this side received; null when it received none. */
+  lastFile: { at: string; filename: string; deleted: boolean } | null;
+  lastScan: string;
 }
 
 export interface SyncProgress {
@@ -319,6 +381,14 @@ export class FileSyncService {
       await this.client().request('GET', '/rest/system/connections'),
     );
     return body.connections[deviceId]?.connected === true;
+  }
+
+  /** Every connection Syncthing reports, by device id. */
+  async connections(): Promise<Record<string, DeviceConnection>> {
+    const { connections } = DeviceConnectionsSchema.parse(
+      await this.client().request('GET', '/rest/system/connections'),
+    );
+    return connections;
   }
 
   getIgnores(projectId: string): string[] {
@@ -609,6 +679,58 @@ export class FileSyncService {
     );
   }
 
+  /** The config of every folder, in one request. */
+  async folderConfigurations(): Promise<FolderConfigurationSummary[]> {
+    return FolderConfigurationsSchema.parse(
+      await this.client().request('GET', '/rest/config/folders'),
+    );
+  }
+
+  /** Last received file and last scan of every folder, by folder id. */
+  async folderStats(): Promise<Record<string, FolderStats>> {
+    const stats = FolderStatsSchema.parse(await this.client().request('GET', '/rest/stats/folder'));
+    return Object.fromEntries(
+      Object.entries(stats).map(([folderId, { lastFile, lastScan }]) => [
+        folderId,
+        {
+          // Syncthing reports "no file yet" as year 1 with an empty name.
+          lastFile: lastFile.filename && !lastFile.at.startsWith('0001-') ? lastFile : null,
+          lastScan,
+        },
+      ]),
+    );
+  }
+
+  /**
+   * Up to `limit` names of files this side still needs, from the first page only: the files in
+   * progress first, then the queued ones, then the rest. Directories are skipped.
+   */
+  async needSample(folderId: string, limit: number): Promise<string[]> {
+    if (limit < 1) return [];
+    const page = RawNeedPageSchema.parse(
+      await this.client().request(
+        'GET',
+        `/rest/db/need?folder=${enc(folderId)}&page=1&perpage=${limit}`,
+      ),
+    );
+    return sampleNames(
+      [...(page.progress ?? []), ...(page.queued ?? []), ...(page.rest ?? [])],
+      limit,
+    );
+  }
+
+  /** Up to `limit` names of files the peer still needs, from the first page only; directories are skipped. */
+  async remoteNeedSample(folderId: string, deviceId: string, limit: number): Promise<string[]> {
+    if (limit < 1) return [];
+    const { files } = RawRemoteNeedPageSchema.parse(
+      await this.client().request(
+        'GET',
+        `/rest/db/remoteneed?folder=${enc(folderId)}&device=${enc(deviceId)}&page=1&perpage=${limit}`,
+      ),
+    );
+    return sampleNames(files ?? [], limit);
+  }
+
   async installedIgnores(folderId: string) {
     return SyncFolderIgnoresSchema.parse(
       await this.client().request('GET', `/rest/db/ignores?folder=${enc(folderId)}`),
@@ -639,7 +761,7 @@ export class FileSyncService {
       : null;
     const fileErrors =
       raw.errors || options.allErrors
-        ? await this.fileErrors(client, folderId, options.allErrors)
+        ? await this.fileErrors(client, folderId, options.allErrors, options.strictErrors)
         : [];
     return {
       folderId,
@@ -727,8 +849,13 @@ export class FileSyncService {
     return captureFileSyncConflictBaseline(await this.folderPath(projectId), ignores, signal);
   }
 
-  /** A full-list read must surface failures rather than looking like an empty list. */
-  private async fileErrors(client: SyncthingRestClient, folderId: string, allErrors = false) {
+  /** A full-list or strict read must surface failures rather than looking like an empty list. */
+  private async fileErrors(
+    client: SyncthingRestClient,
+    folderId: string,
+    allErrors = false,
+    strict = false,
+  ) {
     try {
       const body = FolderErrorsSchema.parse(
         await client.request(
@@ -739,7 +866,7 @@ export class FileSyncService {
       const errors = body.errors ?? [];
       return allErrors ? errors : errors.slice(0, FILE_ERROR_SAMPLE);
     } catch (error) {
-      if (allErrors) throw error;
+      if (allErrors || strict) throw error;
       return [];
     }
   }
@@ -882,6 +1009,13 @@ async function excludeMarkersFromGit(root: string): Promise<void> {
   await mkdir(join(gitDir, 'info'), { recursive: true });
   const prefix = current.length > 0 && !current.endsWith('\n') ? '\n' : '';
   await writeFile(excludePath, `${current}${prefix}${missing.join('\n')}\n`);
+}
+
+function sampleNames(items: { name: string; type: string }[], limit: number): string[] {
+  return items
+    .filter((item) => item.type !== 'FILE_INFO_TYPE_DIRECTORY')
+    .slice(0, limit)
+    .map((item) => item.name);
 }
 
 function enc(value: string): string {

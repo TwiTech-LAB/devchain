@@ -21,6 +21,7 @@ import type {
   DeliveryOutcome,
   RecipientResult,
 } from '../../agent-message-delivery/dtos/delivery.types';
+import { withoutDisabledRecipients } from '../../agent-message-delivery/delivery-outcome';
 
 const TEMPLATE_SETTING_KEY = 'events.epicAssigned.template';
 
@@ -273,9 +274,14 @@ export class EpicAssignmentNotifierSubscriber {
     successMessage: string;
     failureMessage: string;
   }): Promise<void> {
-    const detail = this.buildDeliveryDetail(params.result);
+    const result = withoutDisabledRecipients(params.result);
+    if (result.results.length === 0 && params.result.results.length > 0) {
+      this.logger.debug(params.logContext, 'Skipping notification: recipient agent is disabled');
+      return;
+    }
+    const detail = this.buildDeliveryDetail(result);
     const endedAt = new Date().toISOString();
-    const failed = params.result.status === 'failed' || params.result.status === 'partial';
+    const failed = result.status === 'failed' || result.status === 'partial';
 
     if (params.eventId) {
       const recordParams = {
@@ -297,10 +303,7 @@ export class EpicAssignmentNotifierSubscriber {
       return;
     }
 
-    this.logger.log(
-      { ...params.logContext, poolStatus: params.result.status },
-      params.successMessage,
-    );
+    this.logger.log({ ...params.logContext, poolStatus: result.status }, params.successMessage);
   }
 
   private buildDeliveryDetail(result: DeliveryOutcome): DeliveryHandlerDetail {

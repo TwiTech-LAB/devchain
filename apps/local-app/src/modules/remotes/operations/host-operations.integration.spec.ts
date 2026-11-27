@@ -301,6 +301,11 @@ describe('claim and update_host operations', () => {
       sharedVmGuardStub(),
       { poll: async () => undefined, prune: () => undefined } as never,
       { pushIfChanged: async () => undefined, useHealth: () => undefined } as never,
+      {
+        pushIfChanged: async () => undefined,
+        useHealth: () => undefined,
+        noteReport: () => undefined,
+      } as never,
     );
     host = new RemoteHostClient(storage, apiKeys);
     processExecutor = new FakeProcessExecutor();
@@ -403,6 +408,7 @@ describe('claim and update_host operations', () => {
       health,
       {} as RemotesService,
       { warning: () => null } as never,
+      {} as never,
       {} as never,
     );
     const response = await controller.listRemotes();

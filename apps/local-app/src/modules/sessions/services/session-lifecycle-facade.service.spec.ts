@@ -3,12 +3,14 @@ import { ConflictError } from '../../../common/errors/error-types';
 import type { SessionRuntime } from './session-runtime';
 import type { SessionsService } from './sessions.service';
 import { createProjectWriteGateStub } from '../../storage/write-gate/testing/project-write-gate.stub';
+import { SessionCoordinatorService } from './session-coordinator.service';
 
 function build() {
   const sessionRuntime = {
     launch: jest.fn().mockResolvedValue({ id: 'new-session' }),
     restore: jest.fn().mockResolvedValue({ id: 'restored-session' }),
-  } as unknown as jest.Mocked<Pick<SessionRuntime, 'launch' | 'restore'>>;
+    verifyAgentProvider: jest.fn().mockResolvedValue(undefined),
+  } as unknown as jest.Mocked<Pick<SessionRuntime, 'launch' | 'restore' | 'verifyAgentProvider'>>;
   const sessionsService = {
     listActiveSessions: jest.fn().mockResolvedValue([]),
     terminateSession: jest.fn().mockResolvedValue(undefined),
@@ -36,23 +38,38 @@ function build() {
     sessionRuntime as unknown as SessionRuntime,
     sessionsService as unknown as SessionsService,
     createProjectWriteGateStub() as never,
+    new SessionCoordinatorService(),
+    {
+      advanceDisableFence: jest.fn(),
+      discardPooledMessages: jest.fn().mockResolvedValue(0),
+    } as never,
   );
   return { facade, sessionRuntime, sessionsService };
 }
 
 describe('SessionLifecycleFacade', () => {
   it.each([
-    { options: undefined, source: 'mobile-rpc' },
-    { options: { source: 'team-management' as const }, source: 'team-management' },
+    { options: undefined, source: 'mobile-rpc', expectedAgentId: undefined },
+    {
+      options: { source: 'team-management' as const },
+      source: 'team-management',
+      expectedAgentId: undefined,
+    },
+    {
+      options: { source: 'team-management' as const, expectedAgentId: 'agent-1' },
+      source: 'team-management',
+      expectedAgentId: 'agent-1',
+    },
   ])(
-    'terminate delegates to SessionsService.terminateSession with source=$source',
-    async ({ options, source }) => {
+    'terminate delegates to SessionsService.terminateSession with source=$source and expected owner $expectedAgentId',
+    async ({ options, source, expectedAgentId }) => {
       const { facade, sessionsService } = build();
       await facade.terminate('s1', options);
-      expect(sessionsService.terminateSession).toHaveBeenCalledWith('s1', {
-        source,
-        reason: 'user-requested',
-      });
+      expect(sessionsService.terminateSession).toHaveBeenCalledWith(
+        's1',
+        { source, reason: 'user-requested' },
+        { expectedAgentId },
+      );
     },
   );
 
@@ -72,14 +89,29 @@ describe('SessionLifecycleFacade', () => {
 
         const result = await facade.restart('a1', 'p1', options);
 
-        expect(sessionsService.terminateSession).toHaveBeenCalledWith('old-session', {
-          source,
-          reason: 'restart',
-        });
+        expect(sessionsService.terminateSession).toHaveBeenCalledWith(
+          'old-session',
+          { source, reason: 'restart' },
+          { expectedAgentId: 'a1', admit: expect.any(Function) },
+        );
         expect(sessionRuntime.launch).toHaveBeenCalledWith({ agentId: 'a1', projectId: 'p1' });
         expect(result).toEqual({ id: 'new-session' });
       },
     );
+
+    it('refuses before the terminate when the agent provider check fails', async () => {
+      const { facade, sessionRuntime, sessionsService } = build();
+      (sessionsService.listActiveSessions as jest.Mock).mockResolvedValue([
+        { id: 'old-session', agentId: 'a1' },
+      ]);
+      sessionRuntime.verifyAgentProvider.mockRejectedValue(new Error('binary not accessible'));
+
+      await expect(facade.restart('a1', 'p1')).rejects.toThrow('binary not accessible');
+
+      expect(sessionRuntime.verifyAgentProvider).toHaveBeenCalledWith('a1', 'p1');
+      expect(sessionsService.terminateSession).not.toHaveBeenCalled();
+      expect(sessionRuntime.launch).not.toHaveBeenCalled();
+    });
 
     it('launches even when no existing session is found', async () => {
       const { facade, sessionRuntime, sessionsService } = build();

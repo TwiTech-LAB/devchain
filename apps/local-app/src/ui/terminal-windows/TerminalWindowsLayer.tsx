@@ -1,5 +1,5 @@
 import { createPortal } from 'react-dom';
-import { useEffect, useMemo, useState } from 'react';
+import { Fragment, useEffect, useMemo, useState } from 'react';
 import * as DropdownMenu from '@radix-ui/react-dropdown-menu';
 import { Check, ClipboardCopy, MoreVertical } from 'lucide-react';
 import { Rnd } from 'react-rnd';
@@ -8,6 +8,7 @@ import { useTerminalWindows, type TerminalWindowState } from './TerminalWindowsC
 import { SessionSwitcher } from './SessionSwitcher';
 import { TerminalSessionWindowContent } from './TerminalSessionWindow';
 import { type ActiveSession } from '@/ui/lib/sessions';
+import { useTerminalAttachRevision } from '@/ui/lib/terminal-attach-revision';
 
 const SAFE_MARGIN = 16;
 
@@ -55,6 +56,8 @@ function FloatingWindow({
   onUpdateBounds,
   onSessionSwitch,
 }: FloatingWindowProps) {
+  const attachRevision = useTerminalAttachRevision(window.sessionId);
+
   // Trigger terminal fit when bounds change (maximize/restore/resize)
   useEffect(() => {
     if (window.handle?.fit) {
@@ -277,7 +280,9 @@ function FloatingWindow({
             ) : null}
           </div>
         </header>
-        <div className="flex-1 overflow-hidden bg-card">{window.content}</div>
+        <div className="flex-1 overflow-hidden bg-card">
+          <Fragment key={attachRevision}>{window.content}</Fragment>
+        </div>
       </div>
     </Rnd>
   );
@@ -286,6 +291,7 @@ function FloatingWindow({
 export function TerminalWindowsLayer() {
   const {
     windows,
+    lowerWindowLayer,
     focusedWindowId,
     focusWindow,
     minimizeWindow,
@@ -325,6 +331,12 @@ export function TerminalWindowsLayer() {
       document.body.removeChild(node);
     };
   }, []);
+
+  useEffect(() => {
+    if (!portalNode) return;
+    portalNode.classList.toggle('z-30', lowerWindowLayer);
+    portalNode.classList.toggle('z-[80]', !lowerWindowLayer);
+  }, [portalNode, lowerWindowLayer]);
 
   const sortedWindows = useMemo(
     () => [...windows].filter((window) => !window.minimized).sort((a, b) => a.zIndex - b.zIndex),

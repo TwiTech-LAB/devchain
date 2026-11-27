@@ -1,7 +1,11 @@
 import { processIdsEnv } from '../../../../common/process-ids-env';
 import { CopilotAdapter } from '../../../providers/adapters/copilot.adapter';
 import { AntigravityAdapter } from '../../../providers/adapters/antigravity.adapter';
-import { resolve, type LaunchConfigInput } from './provider-launch-config.service';
+import {
+  buildForkHelperEnv,
+  resolve,
+  type LaunchConfigInput,
+} from './provider-launch-config.service';
 import { ClaudeAdapter } from '../../../providers/adapters/claude.adapter';
 import { CodexAdapter } from '../../../providers/adapters/codex.adapter';
 import { OpencodeAdapter } from '../../../providers/adapters/opencode.adapter';
@@ -452,6 +456,19 @@ describe('ProviderLaunchConfig.resolve', () => {
       // The spawned child env never inherits an ambient COPILOT_HOME.
       expect(result.commandArgs.slice(0, 3)).toEqual(['env', '-u', 'COPILOT_HOME']);
       expect(result.commandArgs).toContain('/usr/bin/copilot');
+    });
+
+    // A direct environment check proves the helper can run without starting the CLI.
+    it('strips inherited COPILOT_HOME from the fork helper environment', () => {
+      const processEnv = jest.replaceProperty(process, 'env', {
+        ...process.env,
+        COPILOT_HOME: '/tmp/inherited-store',
+      });
+      try {
+        expect(buildForkHelperEnv(copilotAdapter(), {})).not.toHaveProperty('COPILOT_HOME');
+      } finally {
+        processEnv.restore();
+      }
     });
 
     it.each(['providerEnv', 'configEnv'] as const)(

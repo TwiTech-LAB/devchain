@@ -36,7 +36,12 @@ export interface ProjectsPageApi {
   createFromTemplate(input: CreateFromTemplateInput): Promise<CreateFromTemplateResponse>;
   updateProject(projectId: string, input: UpdateProjectInput): Promise<UpdateProjectResponse>;
   deleteProject(projectId: string): Promise<void>;
-  loadSetupPreview(request: SetupPreviewRequest): Promise<SetupPreviewResponse>;
+  loadSetupPreview(
+    request: SetupPreviewRequest,
+    backend?: BackendId,
+  ): Promise<SetupPreviewResponse>;
+  /** Home's content of a template from home's list (`GET /api/templates/:slug[/versions/:version]`). */
+  readHomeTemplateContent(slug: string, version?: string | null): Promise<Record<string, unknown>>;
   /** `backend` names the instance that owns the project; it defaults to home. */
   loadUpgradePreview(
     projectId: string,
@@ -50,7 +55,11 @@ export interface ProjectsPageApi {
   ): Promise<ImportDryRunResponse>;
   /** The project's current export (`GET /api/projects/:id/export`) from the instance that owns it. */
   loadProjectExport(projectId: string, backend?: BackendId): Promise<ExportData>;
-  commitImport(projectId: string, input: Record<string, unknown>): Promise<ImportProjectResponse>;
+  commitImport(
+    projectId: string,
+    input: Record<string, unknown>,
+    backend?: BackendId,
+  ): Promise<ImportProjectResponse>;
   commitUpgrade(
     projectId: string,
     input: Record<string, unknown>,

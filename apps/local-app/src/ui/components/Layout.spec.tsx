@@ -1,11 +1,14 @@
 import React from 'react';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { act, render, screen, fireEvent, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 
 const mockSetSelectedWorkspaceId = jest.fn();
 let mockProjectSelection: Record<string, unknown> = {};
+let mockTerminalWindows: Array<{ id: string; sessionId: string }> = [];
+const mockCloseWindow = jest.fn();
+let mockDockProps: { onSessionsChange: (sessions: unknown[]) => void } | undefined;
 
 // Polyfill window.matchMedia
 Object.defineProperty(window, 'matchMedia', {
@@ -41,8 +44,8 @@ jest.mock('../terminal-windows', () => ({
   TerminalWindowsLayer: () => null,
   useTerminalWindowManager: () => jest.fn(),
   useTerminalWindows: () => ({
-    windows: [],
-    closeWindow: jest.fn(),
+    windows: mockTerminalWindows,
+    closeWindow: mockCloseWindow,
     focusedWindowId: null,
     focusWindow: jest.fn(),
     minimizeWindow: jest.fn(),
@@ -51,8 +54,12 @@ jest.mock('../terminal-windows', () => ({
 }));
 
 jest.mock('./terminal-dock', () => ({
-  TerminalDock: () => null,
+  TerminalDock: (props: NonNullable<typeof mockDockProps>) => {
+    mockDockProps = props;
+    return null;
+  },
   OPEN_TERMINAL_DOCK_EVENT: 'devchain:terminal-dock:open',
+  TERMINAL_SESSIONS_QUERY_KEY: ['terminal-dock', 'sessions'],
 }));
 
 jest.mock('../hooks/useProjectSelection', () => ({
@@ -118,6 +125,7 @@ jest.mock('../hooks/useRuntime', () => ({
 }));
 
 import { Layout } from './Layout';
+import { holdRollback } from '../lib/rollback-holds';
 
 // The agent-request modal has its own spec; these suites mock fetch with other shapes.
 jest.mock('@/ui/pages/vault/VaultRequestModal', () => ({ VaultRequestModal: () => null }));
@@ -129,15 +137,17 @@ function renderLayout(initialPath: string) {
     json: async () => ({}),
   }) as jest.Mock;
 
-  return render(
+  const tree = () => (
     <QueryClientProvider client={queryClient}>
       <MemoryRouter initialEntries={[initialPath]}>
         <Layout>
           <div>page content</div>
         </Layout>
       </MemoryRouter>
-    </QueryClientProvider>,
+    </QueryClientProvider>
   );
+  const view = render(tree());
+  return { ...view, rerenderLayout: () => view.rerender(tree()) };
 }
 
 describe('Layout nav-item active state', () => {
@@ -231,4 +241,74 @@ describe('Layout workspace switcher', () => {
     expect(mockSetSelectedWorkspaceId).toHaveBeenCalledWith('workspace-archive');
     expect(screen.getByRole('link', { name: /board/i })).toHaveAttribute('aria-current', 'page');
   });
+});
+
+// The dock stub hands Layout its lists; the collapsed-dock case gets the last list from Layout itself.
+describe('Layout floating windows during a rollback', () => {
+  afterEach(() => {
+    mockProjectSelection = {};
+    mockTerminalWindows = [];
+    mockDockProps = undefined;
+    jest.clearAllMocks();
+  });
+
+  it.each([
+    { outcome: 'succeeds', running: ['rolled-back'], closed: false },
+    { outcome: 'fails', running: [], closed: true },
+    { outcome: 'fails after the user left the project', running: [], closed: false, leave: true },
+  ])(
+    'keeps the window of a session open during its rollback and applies a fresh list when it $outcome',
+    async ({ running, closed, leave }) => {
+      mockProjectSelection = { selectedProjectId: 'project-a' };
+      mockTerminalWindows = [
+        { id: 'rolled-back-window', sessionId: 'rolled-back' },
+        { id: 'other-window', sessionId: 'other' },
+      ];
+      const { rerenderLayout } = renderLayout('/chat');
+      let respond!: () => void;
+      const sessionsFetch = jest.fn(
+        () =>
+          new Promise((resolve) => {
+            respond = () =>
+              resolve({
+                ok: true,
+                json: async () => running.map((id) => ({ id, status: 'running' })),
+              });
+          }),
+      );
+      global.fetch = jest.fn(async (input: RequestInfo | URL) =>
+        /\/api\/sessions\?projectId=project-a$/.test(String(input))
+          ? sessionsFetch()
+          : { ok: true, json: async () => ({}) },
+      ) as jest.Mock;
+      const otherCloses = () => mockCloseWindow.mock.calls.filter(([id]) => id === 'other-window');
+      const release = holdRollback('rolled-back');
+
+      // A poll while the server copies the save point: the row is stopped.
+      act(() => mockDockProps!.onSessionsChange([]));
+      expect(otherCloses()).toHaveLength(1);
+      expect(mockCloseWindow).not.toHaveBeenCalledWith('rolled-back-window');
+
+      act(() => release());
+      await waitFor(() => expect(sessionsFetch).toHaveBeenCalledTimes(1));
+      // The dock sends its cached list from the stopped state again before the fresh list.
+      act(() => mockDockProps!.onSessionsChange([]));
+      expect(otherCloses()).toHaveLength(2);
+      expect(mockCloseWindow).not.toHaveBeenCalledWith('rolled-back-window');
+
+      if (leave) {
+        mockProjectSelection = { selectedProjectId: 'project-b' };
+        rerenderLayout();
+      }
+      await act(async () => respond());
+      // The fresh list also lacks the other session, so a third close marks it as applied.
+      if (leave) {
+        await act(async () => new Promise((resolve) => setTimeout(resolve, 0)));
+        expect(otherCloses()).toHaveLength(2);
+      } else {
+        await waitFor(() => expect(otherCloses()).toHaveLength(3));
+      }
+      expect(mockCloseWindow.mock.calls.some(([id]) => id === 'rolled-back-window')).toBe(closed);
+    },
+  );
 });

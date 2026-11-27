@@ -262,6 +262,26 @@ export class OpencodeSqliteV1Reader implements OpencodeTranscriptReader {
     });
   }
 
+  readToolResult(
+    dbPath: string,
+    providerSessionId: string,
+    toolCallId: string,
+  ): UnifiedToolResult | null {
+    return withOpencodeDb(dbPath, this.connection, (db) => {
+      assertV1Schema(db);
+      const row = db
+        .prepare(
+          `SELECT data FROM part
+           WHERE session_id = ? AND json_valid(data)
+             AND json_extract(data, '$.type') = 'tool' AND json_extract(data, '$.callID') = ?
+           ORDER BY id LIMIT 1`,
+        )
+        .get(providerSessionId, toolCallId) as { data: string } | undefined;
+      const part = row ? parseOpencodeJson<RawPartData>(row.data) : null;
+      return part ? toolPartResult(part, Number.POSITIVE_INFINITY) : null;
+    });
+  }
+
   /** Aggregate summary metrics in SQLite without constructing message or part graphs. */
   readSummary(dbPath: string, providerSessionId: string): OpencodeSummaryRead {
     return withOpencodeDb(dbPath, this.connection, (db) => {
@@ -747,30 +767,24 @@ function mapToolPart(
   const toolCallId = p.callID ?? '';
   const toolName = p.tool ?? 'unknown';
   const input = (p.state?.input ?? {}) as Record<string, unknown>;
-  const isError = p.state?.status === 'error';
 
   content.push({ type: 'tool_call', toolCallId, toolName, input });
   toolCalls.push({ id: toolCallId, name: toolName, input, isTask: false });
 
+  const result = toolPartResult(p, maxToolOutputChars);
+  content.push({ type: 'tool_result', ...result });
+  toolResults.push(result);
+}
+
+function toolPartResult(p: RawPartData, maxToolOutputChars: number): UnifiedToolResult {
+  const isError = p.state?.status === 'error';
   // On error the message lives in `state.error`; otherwise in `state.output`.
   const rawOutput = isError ? (p.state?.error ?? '') : p.state?.output;
-  const {
-    content: outContent,
-    isTruncated,
-    fullLength,
-  } = capToolOutput(rawOutput, maxToolOutputChars);
-
-  content.push({
-    type: 'tool_result',
-    toolCallId,
-    content: outContent,
+  const { content, isTruncated, fullLength } = capToolOutput(rawOutput, maxToolOutputChars);
+  return {
+    toolCallId: p.callID ?? '',
+    content,
     isError,
     ...(isTruncated ? { isTruncated, fullLength } : {}),
-  });
-  toolResults.push({
-    toolCallId,
-    content: outContent,
-    isError,
-    ...(isTruncated ? { isTruncated, fullLength } : {}),
-  });
+  };
 }

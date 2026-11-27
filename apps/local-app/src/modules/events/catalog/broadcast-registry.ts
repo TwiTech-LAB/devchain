@@ -141,7 +141,7 @@ export const broadcastRegistry: Record<string, BroadcastRegistryTopicEntry<P>[]>
         epicTitle: p.epicTitle,
         changes: p.changes,
       }),
-      clientReaction: { kind: 'invalidate', owner: 'useBoardSync' },
+      clientReaction: { kind: 'invalidate', owner: 'useBoardSync, useEpicDetailSync' },
     },
     // Second entry: the event-bus visualization. `epic.updated` fires for every field
     // change, so `shouldBroadcast` keeps status/title/parent edits off this topic and
@@ -186,7 +186,10 @@ export const broadcastRegistry: Record<string, BroadcastRegistryTopicEntry<P>[]>
     {
       topic: (p) => `workspace/${p.workspaceId}/epic-time-scope`,
       type: 'invalidated',
-      payloadProjection: (p) => ({ workspaceId: p.workspaceId }),
+      payloadProjection: (p) =>
+        p.externalLinks
+          ? { workspaceId: p.workspaceId, externalLinks: true }
+          : { workspaceId: p.workspaceId },
       clientReaction: { kind: 'invalidate', owner: 'useEpicTimeScopeSync' },
     },
   ],
@@ -227,7 +230,7 @@ export const broadcastRegistry: Record<string, BroadcastRegistryTopicEntry<P>[]>
       topic: (p) => `project/${p.projectId}/epics`,
       type: 'remote-synced',
       payloadProjection: (p) => ({ projectId: p.projectId }),
-      clientReaction: { kind: 'invalidate', owner: 'useBoardSync' },
+      clientReaction: { kind: 'invalidate', owner: 'useBoardSync, useEpicDetailSync' },
     },
     {
       topic: (p) => `workspace/${p.workspaceId}/epic-relations`,
@@ -313,6 +316,14 @@ export const broadcastRegistry: Record<string, BroadcastRegistryTopicEntry<P>[]>
       clientReaction: { kind: 'invalidate', owner: 'useChatSocket' },
       // Carries agent/team NAMES — real content, withheld on a plaintext push.
       contentBearing: true,
+    },
+  ],
+  'agent.updated': [
+    {
+      topic: (p) => `project/${p.projectId}/state`,
+      type: 'agent.updated',
+      payloadProjection: (p) => ({ agentId: p.agentId }),
+      clientReaction: { kind: 'invalidate', owner: 'useChatSocket' },
     },
   ],
   'team.member.added': [

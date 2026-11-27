@@ -1170,6 +1170,7 @@ describe('ProjectsController', () => {
           id: 'agent-1',
           projectId,
           isProjectOwner: false,
+          disabled: false,
           profileId: 'profile-1',
           providerConfigId: 'config-1',
           modelOverride: null,

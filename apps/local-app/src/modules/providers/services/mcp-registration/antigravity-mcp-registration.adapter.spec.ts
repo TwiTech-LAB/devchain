@@ -69,6 +69,85 @@ describe('AntigravityMcpRegistrationAdapter (HOME-global mcp_config.json)', () =
     expect(config.mcpServers.devchain).toEqual({ serverUrl: endpoint });
   });
 
+  it('uses the HOME of the given environment and names it $HOME in messages', async () => {
+    const sessionHome = await mkdtemp(join(os.tmpdir(), 'agy-mcp-session-home-'));
+    try {
+      const result = await adapter.register(
+        provider,
+        { endpoint, alias: 'devchain' },
+        { env: { HOME: sessionHome } },
+      );
+
+      const written = JSON.parse(
+        await readFile(join(sessionHome, '.gemini', 'config', 'mcp_config.json'), 'utf-8'),
+      );
+      expect(written.mcpServers.devchain).toEqual({ serverUrl: endpoint });
+      await expect(readFile(configPath(), 'utf-8')).rejects.toMatchObject({ code: 'ENOENT' });
+      expect(result.message).toContain(join('$HOME', '.gemini', 'config', 'mcp_config.json'));
+      expect(result.message).not.toContain(sessionHome);
+    } finally {
+      await rm(sessionHome, { recursive: true, force: true });
+    }
+  });
+
+  // agy refuses an empty or relative HOME. Without the check the file lands in the service
+  // directory (relative) or in the service account's home (empty).
+  it.each([
+    ['a relative', '.agent-home'],
+    ['an empty', ''],
+  ])('refuses %s HOME of the given environment before any file access', async (_kind, home) => {
+    const serviceDir = await mkdtemp(join(os.tmpdir(), 'agy-mcp-service-'));
+    const previousCwd = process.cwd();
+    const env = { HOME: home };
+    process.chdir(serviceDir);
+    try {
+      const results = [
+        await adapter.register(provider, { endpoint, alias: 'devchain' }, { env }),
+        await adapter.list(provider, { env }),
+        await adapter.remove(provider, 'devchain', { env }),
+        await adapter.ensure(provider, { endpoint, alias: 'devchain' }, { env }),
+      ];
+
+      for (const result of results) {
+        expect(result.success).toBe(false);
+        expect(result.message).toContain('must be an absolute path');
+        if (home) expect(result.message).not.toContain(home);
+      }
+      const sessionConfig = join(serviceDir, home, '.gemini', 'config', 'mcp_config.json');
+      await expect(readFile(sessionConfig, 'utf-8')).rejects.toMatchObject({ code: 'ENOENT' });
+      await expect(readFile(configPath(), 'utf-8')).rejects.toMatchObject({ code: 'ENOENT' });
+    } finally {
+      process.chdir(previousCwd);
+      await rm(serviceDir, { recursive: true, force: true });
+    }
+  });
+
+  // The endpoint in a config of a session HOME is the session's data: messages and logs leave it out.
+  it('does not log the found endpoint when it fixes a mismatch under a session HOME', async () => {
+    const sessionHome = await mkdtemp(join(os.tmpdir(), 'agy-mcp-session-home-'));
+    const found = `http://127.0.0.1:4000/mcp?token=${'sentinel-session-value'}`;
+    try {
+      await mkdir(join(sessionHome, '.gemini', 'config'), { recursive: true });
+      await writeFile(
+        join(sessionHome, '.gemini', 'config', 'mcp_config.json'),
+        JSON.stringify({ mcpServers: { devchain: { serverUrl: found } } }),
+      );
+      const logger = jest.requireMock('../../../../common/logging/logger').createLogger();
+      logger.info.mockClear();
+
+      const result = await adapter.ensure(
+        provider,
+        { endpoint, alias: 'devchain' },
+        { env: { HOME: sessionHome } },
+      );
+
+      expect(result.action).toBe('fixed_mismatch');
+      expect(JSON.stringify(logger.info.mock.calls)).not.toContain('sentinel-session-value');
+    } finally {
+      await rm(sessionHome, { recursive: true, force: true });
+    }
+  });
+
   it('treats an empty (0-byte) config file as "no servers" and adds', async () => {
     await seedConfig('');
 

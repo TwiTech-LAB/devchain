@@ -1,20 +1,14 @@
 import React from 'react';
 import ReactDOM from 'react-dom/client';
 import { BrowserRouter } from 'react-router-dom';
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { QueryClientProvider } from '@tanstack/react-query';
 import { App } from './App';
 import { ErrorBoundary } from '@/ui/components/ErrorBoundary';
 import { getStoredTheme, applyTheme, DEFAULT_THEME } from '@/ui/components/ThemeSelect';
+import { createAppQueryClient } from '@/ui/lib/query-client';
 import './styles/global.css';
 
-const queryClient = new QueryClient({
-  defaultOptions: {
-    queries: {
-      refetchOnWindowFocus: false,
-      retry: 1,
-    },
-  },
-});
+const queryClient = createAppQueryClient();
 
 // Apply persisted theme before first paint to avoid flicker (default to Dark)
 try {

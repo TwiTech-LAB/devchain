@@ -16,6 +16,47 @@ export interface ActiveSession {
   updatedAt: string;
 }
 
+export interface SessionHistoryItem {
+  id: string;
+  /** The owning agent. A family list mixes owners; a row without it belongs to the viewing agent. */
+  agentId?: string | null;
+  agentName?: string | null;
+  providerSessionId: string | null;
+  providerNameAtLaunch: string | null;
+  status: 'stopped' | 'failed';
+  startedAt: string;
+  endedAt: string | null;
+  lastActivityAt: string | null;
+  sizeBytes: number | null;
+  transcriptAvailable: boolean;
+  name: string | null;
+}
+
+export interface SessionTreeNode extends Omit<SessionHistoryItem, 'status'> {
+  status: ActiveSession['status'];
+  kind: 'session' | 'save_point';
+  parentSessionId: string | null;
+  /** The parent's one `Before rollback` record: it holds the conversation the last rollback left. */
+  beforeRollback: boolean;
+}
+
+export type SavePointAvailability =
+  | { available: true }
+  | { available: false; reason: 'PROVIDER_UNSUPPORTED' | 'TEAM_MEMBER' };
+
+export interface SessionTreePage {
+  items: SessionTreeNode[];
+  hasMore: boolean;
+  nextCursor: string | null;
+  total: number;
+  savePoints: SavePointAvailability;
+}
+
+/** Matches the tree of every agent: for a change that knows the session but not its agent. */
+export const agentSessionTreeKeyPrefix = ['agentSessionTree'] as const;
+export const agentSessionTreeKey = (agentId: string | null, projectId: string | null) =>
+  [...agentSessionTreeKeyPrefix, agentId, projectId] as const;
+
 export { fetchJsonOrThrow, fetchOrThrow, SessionApiError } from './http-json';
 export type { ApiErrorPayload, FetchFn } from './http-json';
 
@@ -75,9 +116,20 @@ export async function fetchActiveSessions(
   return fetchJsonOrThrow<ActiveSession[]>(url, {}, 'Failed to fetch active sessions', fetchFn);
 }
 
-export async function terminateSession(sessionId: string, fetchFn: FetchFn): Promise<void> {
+/**
+ * Stops a session. Pass `expectedAgentId` when the session was chosen through an agent: the
+ * server then stops nothing if the session moved to another agent in the meantime.
+ */
+export async function terminateSession(
+  sessionId: string,
+  fetchFn: FetchFn,
+  options: { expectedAgentId?: string } = {},
+): Promise<void> {
+  const query = options.expectedAgentId
+    ? `?${new URLSearchParams({ expectedAgentId: options.expectedAgentId })}`
+    : '';
   return fetchOrThrow(
-    `/api/sessions/${sessionId}`,
+    `/api/sessions/${sessionId}${query}`,
     { method: 'DELETE' },
     'Failed to terminate session',
     fetchFn,
@@ -153,9 +205,18 @@ export async function restartSession(
   };
 }
 
+export interface RestoreSessionRequest {
+  projectId: string;
+  /** The agent that runs the restored session; a family session moves to it. */
+  targetAgentId: string;
+  replaceRunningSessionId?: string;
+  /** The config of the target agent's profile the restore switches the agent to. */
+  switchToProviderConfigId?: string;
+}
+
 export async function restoreSession(
   sessionId: string,
-  projectId: string,
+  request: RestoreSessionRequest,
   fetchFn: FetchFn,
 ): Promise<ActiveSession> {
   return fetchJsonOrThrow<ActiveSession>(
@@ -163,9 +224,93 @@ export async function restoreSession(
     {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ projectId }),
+      body: JSON.stringify(request),
     },
     'Failed to restore session',
+    fetchFn,
+  );
+}
+
+export function createSavePoint(
+  sessionId: string,
+  projectId: string,
+  fetchFn: FetchFn,
+): Promise<SessionTreeNode> {
+  return fetchJsonOrThrow<SessionTreeNode>(
+    `/api/sessions/${encodeURIComponent(sessionId)}/save-points`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ projectId }),
+    },
+    'Failed to save session',
+    fetchFn,
+  );
+}
+
+export interface StartFromSavePointRequest {
+  projectId: string;
+  /** The server refuses the fork when the source belongs to another agent. */
+  expectedAgentId: string;
+  replaceRunningSessionId?: string;
+}
+
+export function startFromSavePoint(
+  savePointId: string,
+  request: StartFromSavePointRequest,
+  fetchFn: FetchFn,
+): Promise<ActiveSession> {
+  return fetchJsonOrThrow<ActiveSession>(
+    `/api/sessions/${encodeURIComponent(savePointId)}/start`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(request),
+    },
+    'Failed to fork the session',
+    fetchFn,
+  );
+}
+
+export interface RollbackSessionRequest {
+  projectId: string;
+  savePointId: string;
+  keepCurrent: boolean;
+  /** The server refuses the rollback when the session belongs to another agent. */
+  expectedAgentId: string;
+  replaceRunningSessionId?: string;
+}
+
+export function rollbackSession(
+  sessionId: string,
+  request: RollbackSessionRequest,
+  fetchFn: FetchFn,
+): Promise<ActiveSession> {
+  return fetchJsonOrThrow<ActiveSession>(
+    `/api/sessions/${encodeURIComponent(sessionId)}/rollback`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(request),
+    },
+    'Failed to roll back the session',
+    fetchFn,
+  );
+}
+
+export function fetchSessionTree(
+  agentId: string,
+  projectId: string,
+  cursor: string | undefined,
+  fetchFn: FetchFn,
+  signal?: AbortSignal,
+): Promise<SessionTreePage> {
+  const params = new URLSearchParams({ projectId, limit: '20', scope: 'family' });
+  if (cursor) params.set('cursor', cursor);
+  return fetchJsonOrThrow<SessionTreePage>(
+    `/api/sessions/agents/${encodeURIComponent(agentId)}/tree?${params}`,
+    { signal },
+    'Failed to fetch session tree',
     fetchFn,
   );
 }
@@ -296,6 +441,10 @@ export interface AgentPresence {
   lastActivityAt?: string | null;
   busySince?: string | null;
   currentActivityTitle?: string | null;
+  pendingQuestion?: boolean;
+  /** Provider turn state stored on the session; `activityState` follows the terminal output timer. */
+  turnActivityState?: 'idle' | 'busy' | null;
+  turnBusySince?: string | null;
 }
 
 export interface AgentPresenceMap {

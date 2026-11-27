@@ -2,6 +2,7 @@ import type { SQL } from 'drizzle-orm';
 import { and as andSync, eq as eqSync, isNull as isNullSync, or as orSync } from 'drizzle-orm';
 import { randomUUID } from 'node:crypto';
 import {
+  type AgentReadOptions,
   type CreateEpicForProjectInput,
   type ListAssignedEpicsOptions,
   type ListEpicRelationCandidatesOptions,
@@ -84,7 +85,7 @@ interface EpicRelationContextRow {
 export interface EpicStorageDelegateDependencies {
   createTag: (data: CreateTag) => Tag;
   getAgent: (id: string) => Agent;
-  getAgentByName: (projectId: string, name: string) => Promise<Agent>;
+  getAgentByName: (projectId: string, name: string, options?: AgentReadOptions) => Promise<Agent>;
   getStatus: (id: string) => Promise<Status>;
   appendEvent: (event: PreparedEvent) => void;
 }
@@ -426,7 +427,9 @@ export class EpicStorageDelegate extends BaseStorageDelegate implements EpicStor
     const limit = options.limit ?? 100;
     const offset = options.offset ?? 0;
 
-    const agent = await this.dependencies.getAgentByName(projectId, options.agentName);
+    const agent = await this.dependencies.getAgentByName(projectId, options.agentName, {
+      excludeDisabled: options.excludeDisabledAgent,
+    });
 
     const conditions: SQL<unknown>[] = [
       eq(epics.projectId, projectId),
@@ -679,6 +682,21 @@ export class EpicStorageDelegate extends BaseStorageDelegate implements EpicStor
       limit,
       offset,
     };
+  }
+
+  /**
+   * IDs of the parent's direct children in one statement, ordered by id: a
+   * consistent snapshot with no hydration or paging. A missing parent gives [].
+   */
+  async listDirectChildEpicIds(parentId: string): Promise<string[]> {
+    const { epics } = await import('../../db/schema');
+    const { eq, asc } = await import('drizzle-orm');
+    const rows = await this.db
+      .select({ id: epics.id })
+      .from(epics)
+      .where(eq(epics.parentId, parentId))
+      .orderBy(asc(epics.id));
+    return rows.map((row) => row.id);
   }
 
   async listParentChildren(

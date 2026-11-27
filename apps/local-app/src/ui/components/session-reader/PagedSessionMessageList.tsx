@@ -1,6 +1,7 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useQuery, useQueries, useQueryClient } from '@tanstack/react-query';
 import { useVirtualizer } from '@tanstack/react-virtual';
+import type { VirtualItem, Virtualizer } from '@tanstack/react-virtual';
 import { transcriptQueryKeys } from '@/ui/hooks/useSessionTranscript';
 import type {
   SerializedChunk,
@@ -15,8 +16,13 @@ import type {
 } from '@/ui/lib/sessions';
 import { useAppSocket } from '@/ui/hooks/useAppSocket';
 import type { WsEnvelope } from '@/ui/lib/socket';
-import { useAutoScrollBottom } from '@/ui/hooks/useAutoScrollBottom';
+import { BOTTOM_THRESHOLD, useAutoScrollBottom } from '@/ui/hooks/useAutoScrollBottom';
+import {
+  TranscriptDisclosureProvider,
+  TranscriptRowContext,
+} from '@/ui/hooks/useTranscriptDisclosure';
 import { SessionNavigationToolbar } from './SessionNavigationToolbar';
+import { TRANSCRIPT_SCROLL_CONTAINER_ATTR } from './ClampedContent';
 import type { UnifiedMetrics } from '@/modules/session-reader/dtos/unified-session.types';
 import { useFetchFactory } from '@/ui/hooks/useFetchFactory';
 
@@ -73,6 +79,51 @@ export function pruneChunkMap(
   return changed;
 }
 
+export interface RowResizeViewport {
+  scrollOffset: number | null;
+  viewportHeight: number;
+  totalSize: number;
+  /** False when the size change comes from a block the reader opened or closed in this row. */
+  followEnd: boolean;
+}
+
+/**
+ * A row that changes size moves the content below it. Shift the scroll position
+ * with it only when the reader cannot see the row (it ends at or above the
+ * viewport top), or when the reader follows the end of the list. A row the
+ * reader sees, even partly, keeps its top in place and grows downward.
+ * A block the reader opens is read from where it is, so its growth does not follow the end.
+ */
+export function shouldAdjustScrollOnRowResize(
+  rowEnd: number,
+  { scrollOffset, viewportHeight, totalSize, followEnd }: RowResizeViewport,
+): boolean {
+  const offset = scrollOffset ?? 0;
+  if (rowEnd <= offset) return true;
+  return followEnd && totalSize - offset - viewportHeight < BOTTOM_THRESHOLD;
+}
+
+/**
+ * Chunks whose row a change the reader asked for resizes: a block opens or closes, or a
+ * requested full result replaces its preview. A held row keeps the reading position for
+ * every later measurement, however late. A live update stores a new chunk object, which
+ * is not held, so new content follows the end again. Weak: a chunk the list drops is freed.
+ */
+export function createReaderResizeHolds() {
+  let held = new WeakSet<SerializedChunk>();
+  return {
+    hold(chunk: SerializedChunk | undefined) {
+      if (chunk) held.add(chunk);
+    },
+    isHeld(chunk: SerializedChunk | undefined) {
+      return chunk !== undefined && held.has(chunk);
+    },
+    clear() {
+      held = new WeakSet();
+    },
+  };
+}
+
 export interface ChunkRendererProps {
   sessionId?: string | null;
   chunk: SerializedChunk;
@@ -101,6 +152,10 @@ export const PagedSessionMessageList = memo(function PagedSessionMessageList({
   const canonicalRetryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const retentionFrameRef = useRef<number | null>(null);
   const chunksMapRef = useRef<Map<string, SerializedChunk>>(new Map());
+  const readerResizeHoldsRef = useRef(createReaderResizeHolds());
+  const holdRow = useCallback((rowId: string | null) => {
+    if (rowId) readerResizeHoldsRef.current.hold(chunksMapRef.current.get(rowId));
+  }, []);
   const [deltaSeq, setDeltaSeq] = useState(0);
   const canonicalRecoveryRef = useRef({
     epoch: 0,
@@ -280,6 +335,17 @@ export const PagedSessionMessageList = memo(function PagedSessionMessageList({
       return height > 0 ? height : ESTIMATED_CHUNK_HEIGHT;
     },
   });
+  rowVirtualizer.shouldAdjustScrollPositionOnItemSizeChange = (
+    item: VirtualItem,
+    _delta: number,
+    instance: Virtualizer<HTMLDivElement, Element>,
+  ) =>
+    shouldAdjustScrollOnRowResize(item.end, {
+      scrollOffset: instance.scrollOffset,
+      viewportHeight: instance.scrollRect?.height ?? 0,
+      totalSize: instance.getTotalSize(),
+      followEnd: !readerResizeHoldsRef.current.isHeld(chunksMapRef.current.get(String(item.key))),
+    });
 
   // 3. Determine visible batch boundaries
   const virtualItems = rowVirtualizer.getVirtualItems();
@@ -562,13 +628,17 @@ export const PagedSessionMessageList = memo(function PagedSessionMessageList({
   useAppSocket(handlers, [sessionId]);
 
   // 7. Expansion toggles
-  const handleAiGroupToggle = useCallback((chunkId: string) => {
-    setExpandedAiGroups((prev) => {
-      const next = new Map(prev);
-      next.set(chunkId, !(prev.get(chunkId) ?? false));
-      return next;
-    });
-  }, []);
+  const handleAiGroupToggle = useCallback(
+    (chunkId: string) => {
+      holdRow(chunkId);
+      setExpandedAiGroups((prev) => {
+        const next = new Map(prev);
+        next.set(chunkId, !(prev.get(chunkId) ?? false));
+        return next;
+      });
+    },
+    [holdRow],
+  );
 
   // Auto-expand latest AI chunk for live sessions
   const autoExpandedRef = useRef<Set<string>>(new Set());
@@ -594,6 +664,10 @@ export const PagedSessionMessageList = memo(function PagedSessionMessageList({
   const handleNavEnd = useCallback(() => {
     scrollElement?.scrollTo({ top: scrollElement.scrollHeight, behavior: 'smooth' });
   }, [scrollElement]);
+
+  useEffect(() => {
+    readerResizeHoldsRef.current.clear();
+  }, [sessionId]);
 
   const handleScrollContainerRef = useCallback(
     (node: HTMLDivElement | null) => {
@@ -639,76 +713,82 @@ export const PagedSessionMessageList = memo(function PagedSessionMessageList({
         }));
 
   return (
-    <div
-      className="relative flex-1 min-h-0"
-      role="region"
-      aria-label="Session viewer (paged)"
-      data-retained-chunks={chunksMap.size}
-    >
+    <TranscriptDisclosureProvider scope={sessionId} onReaderResize={holdRow}>
       <div
-        ref={handleScrollContainerRef}
-        onScroll={handleScroll}
-        className="h-full overflow-auto"
-        data-testid="paged-session-viewer-scroll"
+        className="relative flex-1 min-h-0"
+        role="region"
+        aria-label="Session viewer (paged)"
+        data-retained-chunks={chunksMap.size}
       >
-        <div className="relative p-3" style={{ height: `${rowVirtualizer.getTotalSize()}px` }}>
-          {itemsToRender.map((virtualItem) => {
-            const idx = virtualItem.index;
-            const chunkId = chunkIds[idx];
-            const chunk = chunkId ? chunksMap.get(chunkId) : undefined;
+        <div
+          ref={handleScrollContainerRef}
+          onScroll={handleScroll}
+          className="h-full overflow-auto"
+          data-testid="paged-session-viewer-scroll"
+          {...{ [TRANSCRIPT_SCROLL_CONTAINER_ATTR]: '' }}
+        >
+          <div className="relative p-3" style={{ height: `${rowVirtualizer.getTotalSize()}px` }}>
+            {itemsToRender.map((virtualItem) => {
+              const idx = virtualItem.index;
+              const chunkId = chunkIds[idx];
+              const chunk = chunkId ? chunksMap.get(chunkId) : undefined;
 
-            return (
-              <div
-                key={getItemKey(idx)}
-                ref={rowVirtualizer.measureElement}
-                data-index={idx}
-                className="absolute left-0 top-0 w-full pb-3"
-                style={{
-                  transform: `translateY(${virtualItem.start}px)`,
-                  minHeight: `${virtualItem.size}px`,
-                }}
-              >
-                {chunk ? (
-                  <ChunkRenderer
-                    sessionId={sessionId}
-                    chunk={chunk}
-                    isLive={isLive}
-                    isAiGroupExpanded={expandedAiGroups.get(chunkId) ?? false}
-                    onAiGroupToggle={handleAiGroupToggle}
-                  />
-                ) : (
-                  <div
-                    className="h-full min-h-16 animate-pulse rounded-lg bg-muted/40"
-                    data-testid="chunk-skeleton"
-                  />
-                )}
-              </div>
-            );
-          })}
-          <div
-            ref={bottomRef}
-            className="pointer-events-none absolute left-0"
-            style={{
-              top: `${rowVirtualizer.getTotalSize()}px`,
-              width: 1,
-              height: 1,
-            }}
-          />
+              return (
+                <div
+                  key={getItemKey(idx)}
+                  ref={rowVirtualizer.measureElement}
+                  data-index={idx}
+                  className="absolute left-0 top-0 w-full pb-3"
+                  style={{
+                    transform: `translateY(${virtualItem.start}px)`,
+                    // A skeleton holds the last measured height; a loaded row must be free to shrink.
+                    minHeight: chunk ? undefined : `${virtualItem.size}px`,
+                  }}
+                >
+                  {chunk ? (
+                    <TranscriptRowContext.Provider value={chunkId}>
+                      <ChunkRenderer
+                        sessionId={sessionId}
+                        chunk={chunk}
+                        isLive={isLive}
+                        isAiGroupExpanded={expandedAiGroups.get(chunkId) ?? false}
+                        onAiGroupToggle={handleAiGroupToggle}
+                      />
+                    </TranscriptRowContext.Provider>
+                  ) : (
+                    <div
+                      className="h-full min-h-16 animate-pulse rounded-lg bg-muted/40"
+                      data-testid="chunk-skeleton"
+                    />
+                  )}
+                </div>
+              );
+            })}
+            <div
+              ref={bottomRef}
+              className="pointer-events-none absolute left-0"
+              style={{
+                top: `${rowVirtualizer.getTotalSize()}px`,
+                width: 1,
+                height: 1,
+              }}
+            />
+          </div>
         </div>
+        <SessionNavigationToolbar
+          onTop={handleNavTop}
+          onEnd={handleNavEnd}
+          onPrevThinking={null}
+          onNextThinking={null}
+          onNextResponse={null}
+          onPrevHotspot={null}
+          onNextHotspot={null}
+          onToggleHotspotFilter={null}
+          hotspotFilterActive={false}
+          hotspotCount={0}
+          hasChunks={true}
+        />
       </div>
-      <SessionNavigationToolbar
-        onTop={handleNavTop}
-        onEnd={handleNavEnd}
-        onPrevThinking={null}
-        onNextThinking={null}
-        onNextResponse={null}
-        onPrevHotspot={null}
-        onNextHotspot={null}
-        onToggleHotspotFilter={null}
-        hotspotFilterActive={false}
-        hotspotCount={0}
-        hasChunks={true}
-      />
-    </div>
+    </TranscriptDisclosureProvider>
   );
 });

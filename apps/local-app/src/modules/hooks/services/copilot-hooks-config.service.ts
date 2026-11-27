@@ -4,6 +4,7 @@ import { join } from 'path';
 import { mkdir, writeFile, rename, unlink, chmod } from 'fs/promises';
 import { randomBytes } from 'crypto';
 import { createLogger } from '../../../common/logging/logger';
+import { SESSION_START_SOURCE_ENV } from '../../providers/adapters/capabilities/hook.capability';
 
 const logger = createLogger('CopilotHooksConfigService');
 
@@ -92,6 +93,9 @@ TRANSCRIPT_PATH="$(echo "$INPUT" | jq -r '.transcript_path // empty')" || exit 0
 SOURCE=""
 if [ "$HOOK_EVENT_NAME" = "SessionStart" ]; then
   SOURCE="$(echo "$INPUT" | jq -r '.source // empty')" || exit 0
+  if [ "$SOURCE" = "resume" ] && [ "\${${SESSION_START_SOURCE_ENV}:-}" = "fork" ]; then
+    SOURCE="fork"
+  fi
   if [ -z "$SOURCE" ]; then SOURCE="startup"; fi
 fi
 

@@ -1,6 +1,6 @@
 import type { IntegrationStorage } from '../../interfaces/storage.interface';
 import { randomUUID } from 'node:crypto';
-import { and, asc, eq, inArray } from 'drizzle-orm';
+import { and, asc, eq, inArray, sql } from 'drizzle-orm';
 import {
   ConflictError,
   NotFoundError,
@@ -20,6 +20,10 @@ import type {
   IntegrationProvider,
   UpdateExternalManagedSubtaskLink,
 } from '../../models/domain.models';
+import {
+  isOrdinaryExternalTaskLink,
+  MANAGED_PROJECTION_SOURCE_CHANGED,
+} from '../../models/domain.models';
 import { isSqliteUniqueConstraint } from '../helpers/storage-helpers';
 import { BaseStorageDelegate, type StorageDelegateContext } from './base-storage.delegate';
 
@@ -33,6 +37,7 @@ export class ExternalManagedSubtaskStorageDelegate
       | 'listExternalManagedSubtaskLinksByProvider'
       | 'listExternalManagedSubtaskLinksByConnection'
       | 'listExternalManagedSubtaskLinksForEpicSnapshot'
+      | 'listExternalManagedSubtaskLinksByParentSourceLink'
       | 'updateExternalManagedSubtaskLink'
       | 'findRecognizedManagedSubtask'
       | 'confirmExternalManagedSubtaskLink'
@@ -122,19 +127,55 @@ export class ExternalManagedSubtaskStorageDelegate
       ) as Promise<ExternalManagedSubtaskLink[]>;
   }
 
+  async listExternalManagedSubtaskLinksByParentSourceLink(
+    parentSourceLinkId: string,
+  ): Promise<ExternalManagedSubtaskLink[]> {
+    return this.db
+      .select()
+      .from(externalManagedSubtaskLinks)
+      .where(eq(externalManagedSubtaskLinks.parentSourceLinkIdSnapshot, parentSourceLinkId))
+      .orderBy(
+        asc(externalManagedSubtaskLinks.createdAt),
+        asc(externalManagedSubtaskLinks.id),
+      ) as Promise<ExternalManagedSubtaskLink[]>;
+  }
+
   async updateExternalManagedSubtaskLink(
     id: string,
     data: UpdateExternalManagedSubtaskLink,
   ): Promise<ExternalManagedSubtaskLink> {
     return this.txRunner.runImmediateQueued(() => {
-      this.getSync(id);
+      const current = this.getSync(id);
       const update = this.normalizeUpdate(data);
+      const updatedAt = new Date().toISOString();
       this.db
         .update(externalManagedSubtaskLinks)
-        .set({ ...update, updatedAt: new Date().toISOString() })
+        .set({ ...update, updatedAt })
         .where(eq(externalManagedSubtaskLinks.id, id))
         .run();
-      return this.getSync(id);
+      const updated = this.getSync(id);
+      if (updated.connectionIdSnapshot !== current.connectionIdSnapshot && updated.remoteTaskId) {
+        // A link names only a live connection; one that is gone leaves it detached.
+        const connection = this.db
+          .select({ id: integrationConnections.id })
+          .from(integrationConnections)
+          .where(eq(integrationConnections.id, updated.connectionIdSnapshot))
+          .get();
+        this.db
+          .update(externalTaskLinks)
+          .set({ connectionId: connection?.id ?? null, updatedAt })
+          .where(
+            and(
+              eq(externalTaskLinks.epicId, updated.epicIdSnapshot),
+              eq(externalTaskLinks.provider, updated.provider),
+              eq(externalTaskLinks.remoteScopeKey, updated.remoteScopeKey),
+              eq(externalTaskLinks.remoteTaskId, updated.remoteTaskId),
+              sql`json_extract(${externalTaskLinks.sourceSnapshot}, '$.managedProjectionId') = ${updated.id}`,
+            ),
+          )
+          .run();
+      }
+      return updated;
     });
   }
 
@@ -406,7 +447,9 @@ export class ExternalManagedSubtaskStorageDelegate
       throw new NotFoundError('Epic', required.epicId);
     }
     if (epic.parentId !== required.parentEpicIdSnapshot) {
-      throw new ValidationError('Managed subtask parent Epic proof does not match current state.');
+      throw new ValidationError('Managed subtask parent Epic proof does not match current state.', {
+        reason: MANAGED_PROJECTION_SOURCE_CHANGED,
+      });
     }
     const parentLink = this.db
       .select()
@@ -424,7 +467,20 @@ export class ExternalManagedSubtaskStorageDelegate
     ) {
       throw new ValidationError(
         'Managed subtask parent source proof does not match the stored link.',
+        { reason: MANAGED_PROJECTION_SOURCE_CHANGED },
       );
+    }
+    // An epic with its own ordinary link is never projected; checked here too
+    // so a link committed after the caller's read still wins.
+    const ownLinks = this.db
+      .select({ sourceSnapshot: externalTaskLinks.sourceSnapshot })
+      .from(externalTaskLinks)
+      .where(eq(externalTaskLinks.epicId, required.epicId))
+      .all() as Array<{ sourceSnapshot: Record<string, unknown> }>;
+    if (ownLinks.some(isOrdinaryExternalTaskLink)) {
+      throw new ValidationError('Managed subtask Epic has its own external task link.', {
+        reason: MANAGED_PROJECTION_SOURCE_CHANGED,
+      });
     }
     const connection = this.db
       .select()

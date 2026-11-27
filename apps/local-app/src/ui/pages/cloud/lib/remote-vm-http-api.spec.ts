@@ -102,6 +102,12 @@ const post = (body?: unknown): RequestInit =>
       };
 const get = (signal: AbortSignal): RequestInit => ({ signal });
 const operationFailure = 'Remote operation request failed (503)';
+const syncStatus = {
+  checkedAt: '2026-01-01T00:00:00.000Z',
+  syncthing: { running: true, version: 'v2.1.5', error: null },
+  links: [],
+  scopes: [],
+};
 
 // The adapter is the cheapest layer that owns exact requests and response/error semantics.
 const cases = {
@@ -914,6 +920,17 @@ const cases = {
     serverMessage: false,
     failureResult: { folders: null },
   },
+  readSyncStatus: {
+    invoke: (api, signal) =>
+      api.readSyncStatus({ projectId: 'project /?#', details: true }, signal),
+    url: '/api/remotes/file-sync/status?projectId=project+%2F%3F%23&details=true',
+    init: get,
+    backend: HOME_BACKEND,
+    response: syncStatus,
+    result: syncStatus,
+    fallback: operationFailure,
+    serverMessage: true,
+  },
   readDockerPlan: {
     invoke: (api, signal) =>
       api.readDockerPlan(
@@ -1409,6 +1426,23 @@ describe('RemoteVmHttpApi', () => {
     expect(transport).toHaveBeenCalledWith(
       '/api/projects/project/docker/plan',
       { ...post({ remoteId: 'vm' }), signal },
+      { backend: HOME_BACKEND },
+    );
+  });
+
+  it.each([{}, null])('rejects a sync status answer without scopes (%j)', async (body) => {
+    transport.mockResolvedValue(response(body));
+    await expect(remoteVmHttpApi.readSyncStatus({}, signal)).rejects.toThrow(
+      'The server returned no file sync status.',
+    );
+  });
+
+  it('reads the sync status of every project without a query when no option is set', async () => {
+    transport.mockResolvedValue(response(syncStatus));
+    await expect(remoteVmHttpApi.readSyncStatus({}, signal)).resolves.toEqual(syncStatus);
+    expect(transport).toHaveBeenCalledWith(
+      '/api/remotes/file-sync/status',
+      { signal },
       { backend: HOME_BACKEND },
     );
   });

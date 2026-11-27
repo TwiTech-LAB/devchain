@@ -5,6 +5,7 @@ import {
   DeleteEpicParamsSchema,
   GetEpicByIdParamsSchema,
   EpicRelationCandidatesListParamsSchema,
+  ExternalTasksGetParamsSchema,
   ProjectsListParamsSchema,
   SendMessageParamsSchema,
   TmuxSessionIdSchema,
@@ -309,6 +310,73 @@ describe('MCP Epic relation DTO schemas', () => {
     ).toMatchObject({ q: 'peer', limit: 10 });
     expect(
       EpicRelationCandidatesListParamsSchema.safeParse({ ...base, q: 'x'.repeat(201) }).success,
+    ).toBe(false);
+  });
+});
+
+describe('external task link fields', () => {
+  const session = { sessionId: 'abcd1234' };
+
+  it('requires a create title unless externalTask is given', () => {
+    expect(CreateEpicParamsSchema.safeParse(session).success).toBe(false);
+    expect(
+      CreateEpicParamsSchema.safeParse({ ...session, externalTask: { ref: 'ENG-1' } }).success,
+    ).toBe(true);
+  });
+
+  it.each([
+    [
+      'create externalTask',
+      () =>
+        CreateEpicParamsSchema.safeParse({
+          ...session,
+          externalTask: { ref: 'ENG-1', scopeKey: 'x' },
+        }),
+    ],
+    [
+      'update externalTask ref',
+      () =>
+        UpdateEpicParamsSchema.safeParse({
+          ...session,
+          id: 'abcd1234',
+          version: 1,
+          externalTask: { ref: 'ENG-1', connectionId: 'x' },
+        }),
+    ],
+    [
+      'update externalTask clear',
+      () =>
+        UpdateEpicParamsSchema.safeParse({
+          ...session,
+          id: 'abcd1234',
+          version: 1,
+          externalTask: { clear: true, linkId: 'x' },
+        }),
+    ],
+    [
+      'external task get',
+      () => ExternalTasksGetParamsSchema.safeParse({ ...session, ref: 'ENG-1', snapshot: {} }),
+    ],
+  ])('rejects unknown keys in %s', (_name, parse) => {
+    expect(parse().success).toBe(false);
+  });
+
+  it('accepts a ref or a clear on update and rejects an unknown provider', () => {
+    const base = { ...session, id: 'abcd1234', version: 1 };
+    expect(
+      UpdateEpicParamsSchema.safeParse({ ...base, externalTask: { clear: true } }).success,
+    ).toBe(true);
+    expect(
+      UpdateEpicParamsSchema.safeParse({
+        ...base,
+        externalTask: { ref: 'abc', provider: 'clickup' },
+      }).success,
+    ).toBe(true);
+    expect(
+      UpdateEpicParamsSchema.safeParse({
+        ...base,
+        externalTask: { ref: 'abc', provider: 'github' },
+      }).success,
     ).toBe(false);
   });
 });

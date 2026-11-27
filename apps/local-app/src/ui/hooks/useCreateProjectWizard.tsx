@@ -8,6 +8,7 @@ import type {
 import { projectsQueryKeys } from '@/ui/pages/projects/lib/project-query-keys';
 import type { ProjectsPageApi } from '@/ui/pages/projects/lib/projects-page-api';
 import { projectsHttpApi } from '@/ui/pages/projects/lib/projects-http-api';
+import { HOME_BACKEND } from '@/ui/lib/api-transport';
 import {
   useProjectSetupWizard,
   type ProjectSetupWizardController,
@@ -72,7 +73,7 @@ export function setupPreviewQueryOptions(
   request: SetupPreviewRequest | null,
 ) {
   return queryOptions({
-    queryKey: projectsQueryKeys.setupPreview(request),
+    queryKey: projectsQueryKeys.setupPreview(request, HOME_BACKEND),
     queryFn: () => api.loadSetupPreview(request!),
     staleTime: Infinity,
     gcTime: Infinity,
@@ -129,7 +130,7 @@ export function useCreateProjectWizard(
         skipped: guide === null,
         render: () => (guide ? <HowItWorks content={guide} /> : null),
       },
-      buildSetupStep({ preview, state, handlers, Review: CreateReview }),
+      buildSetupStep({ preview, state, handlers, Review: CreateReview, backend: HOME_BACKEND }),
     ];
   }, [preview, state, handlers]);
 

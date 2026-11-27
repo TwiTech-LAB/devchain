@@ -11,12 +11,13 @@ import { availableConfigs } from './agentPlan';
 import type { ParsedTemplateTeam, TeamPanelState } from './teamPlan';
 import { providerDisplayList } from './providerDisplay';
 import { useSetupReview } from './SetupReviewContext';
+import { RosterRow, type RosterRole } from './Roster';
 
 /**
  * One row per profile in a configurable team's state: the agents its lead may start, and the
  * providers they may run on. The popover edits the team's config permission.
  */
-export function TeamSetupRows({ team }: { team: ParsedTemplateTeam }) {
+export function TeamSetupRows({ team, role }: { team: ParsedTemplateTeam; role?: RosterRole }) {
   const { preview, state } = useSetupReview();
   const profiles = preview.payload.profiles;
   const selectedProviderNames = state.selectedProviderNames;
@@ -48,6 +49,7 @@ export function TeamSetupRows({ team }: { team: ParsedTemplateTeam }) {
         <TeamProfileRow
           key={selection.profileKey}
           team={team}
+          role={role}
           selection={selection}
           teamState={teamState}
           configsByProfile={configsByProfile}
@@ -59,12 +61,19 @@ export function TeamSetupRows({ team }: { team: ParsedTemplateTeam }) {
 
 interface TeamProfileRowProps {
   team: ParsedTemplateTeam;
+  role?: RosterRole;
   selection: ProfileSelection<string, string>;
   teamState: TeamPanelState;
   configsByProfile: Record<string, ConfigItem<string>[]>;
 }
 
-function TeamProfileRow({ team, selection, teamState, configsByProfile }: TeamProfileRowProps) {
+function TeamProfileRow({
+  team,
+  role,
+  selection,
+  teamState,
+  configsByProfile,
+}: TeamProfileRowProps) {
   const { handlers } = useSetupReview();
   const configs = configsByProfile[selection.profileKey] ?? [];
   const title = `${selection.profileKey} agents`;
@@ -75,18 +84,12 @@ function TeamProfileRow({ team, selection, teamState, configsByProfile }: TeamPr
   ].filter(Boolean);
 
   return (
-    <li
-      className="flex items-start gap-3 py-2"
-      data-testid={`wizard-team-row-${team.name}-${selection.profileKey}`}
+    <RosterRow
+      name={title}
+      role={role}
+      description={details.join(', ')}
+      testId={`wizard-team-row-${team.name}-${selection.profileKey}`}
     >
-      <div className="min-w-0 flex-1 space-y-0.5">
-        <div className="flex items-center gap-2">
-          <span className="text-sm font-medium text-foreground">{title}</span>
-        </div>
-        {details.length > 0 && (
-          <p className="text-xs text-muted-foreground">{details.join(', ')}</p>
-        )}
-      </div>
       {/* Modal: the dialog's scroll lock would otherwise block wheel scrolling in this portal. */}
       <Popover modal>
         <PopoverTrigger asChild>
@@ -94,11 +97,14 @@ function TeamProfileRow({ team, selection, teamState, configsByProfile }: TeamPr
             type="button"
             variant="outline"
             size="sm"
-            className="shrink-0 gap-1.5"
+            className="min-w-0 max-w-full gap-1.5"
             aria-label={`${title}: ${label}`}
           >
-            <span className="max-w-[12rem] truncate">{label}</span>
-            <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" aria-hidden="true" />
+            <span className="min-w-0 max-w-[12rem] truncate">{label}</span>
+            <ChevronDown
+              className="h-3.5 w-3.5 shrink-0 text-muted-foreground"
+              aria-hidden="true"
+            />
           </Button>
         </PopoverTrigger>
         <PopoverContent
@@ -115,7 +121,7 @@ function TeamProfileRow({ team, selection, teamState, configsByProfile }: TeamPr
           />
         </PopoverContent>
       </Popover>
-    </li>
+    </RosterRow>
   );
 }
 

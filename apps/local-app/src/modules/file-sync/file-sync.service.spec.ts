@@ -272,26 +272,29 @@ describe('FileSyncService.status', () => {
     );
   });
 
-  it('rejects an unreadable full error list instead of reporting no failures', async () => {
-    const service = new FileSyncService(
-      {
-        getConnection: () => ({
-          client: {
-            request: async (_method: string, path: string) => {
-              if (path.startsWith('/rest/folder/errors')) throw new Error('errors unavailable');
-              return { ...status(), errors: 5 };
+  it.each([{ allErrors: true }, { strictErrors: true }])(
+    'rejects an unreadable error list with %j instead of reporting no failures',
+    async (options) => {
+      const service = new FileSyncService(
+        {
+          getConnection: () => ({
+            client: {
+              request: async (_method: string, path: string) => {
+                if (path.startsWith('/rest/folder/errors')) throw new Error('errors unavailable');
+                return { ...status(), errors: 5 };
+              },
             },
-          },
-        }),
-      } as never,
-      {} as never,
-      {} as never,
-      {} as never,
-    );
-    await expect(service.status('code:p1', undefined, { allErrors: true })).rejects.toThrow(
-      'errors unavailable',
-    );
-  });
+          }),
+        } as never,
+        {} as never,
+        {} as never,
+        {} as never,
+      );
+      await expect(service.status('code:p1', undefined, options)).rejects.toThrow(
+        'errors unavailable',
+      );
+    },
+  );
 
   it.each<[string, number, () => Promise<unknown>, (typeof FILE_ERROR)[] | undefined]>([
     ['reports no errors', 0, async () => ({ errors: [FILE_ERROR] }), undefined],
@@ -345,6 +348,60 @@ describe('FileSyncService.remoteNeedThrough', () => {
       'GET',
       '/rest/db/remoteneed?folder=git%3Ap1&device=VM&page=2&perpage=1000',
     );
+  });
+});
+
+describe('FileSyncService sync status reads', () => {
+  // Unit: projections of plain REST answers; the answer shapes were checked against Syncthing v2.1.5.
+  const setup = (answer: unknown) => {
+    const request = jest.fn().mockResolvedValue(answer);
+    const files = new FileSyncService(
+      { getConnection: () => ({ client: { request } }) } as never,
+      {} as never,
+      {} as never,
+      {} as never,
+    );
+    return { request, files };
+  };
+  const file = (name: string) => ({ name, type: 'FILE_INFO_TYPE_FILE' });
+  const directory = (name: string) => ({ name, type: 'FILE_INFO_TYPE_DIRECTORY' });
+
+  it('samples needed files in progress, queued, rest order without directories', async () => {
+    const { request, files } = setup({
+      page: 1,
+      perpage: 4,
+      progress: [file('p.txt')],
+      queued: [directory('src'), file('q.txt')],
+      rest: [file('r1.txt'), file('r2.txt')],
+    });
+    expect(await files.needSample('code:p1', 3)).toEqual(['p.txt', 'q.txt', 'r1.txt']);
+    expect(request).toHaveBeenCalledWith('GET', '/rest/db/need?folder=code%3Ap1&page=1&perpage=3');
+  });
+
+  it("samples the peer's needed files from the first page only, without directories", async () => {
+    const { request, files } = setup({ files: [directory('src'), file('a'), file('b')] });
+    expect(await files.remoteNeedSample('code:p1', 'VM', 1)).toEqual(['a']);
+    expect(request).toHaveBeenCalledTimes(1);
+    expect(request).toHaveBeenCalledWith(
+      'GET',
+      '/rest/db/remoteneed?folder=code%3Ap1&device=VM&page=1&perpage=1',
+    );
+  });
+
+  it('reports no last file for a folder that received none', async () => {
+    const lastScan = '2026-11-24T18:56:13Z';
+    const received = { at: '2026-10-14T18:46:38Z', filename: 'a.env', deleted: false };
+    const { files } = setup({
+      'code:none': {
+        lastFile: { at: '0001-01-01T00:00:00Z', filename: '', deleted: false },
+        lastScan,
+      },
+      'code:some': { lastFile: received, lastScan },
+    });
+    expect(await files.folderStats()).toEqual({
+      'code:none': { lastFile: null, lastScan },
+      'code:some': { lastFile: received, lastScan },
+    });
   });
 });
 
@@ -630,6 +687,7 @@ describe('FileSyncService health status projection', () => {
 
   it('reads error and errors and requests peer completion on the home REST client', async () => {
     const { request, files } = setup();
+    const peer = { ...PEER_DONE, needItems: 1, needDeletes: 4 };
     request
       .mockResolvedValueOnce({
         ...status(),
@@ -637,15 +695,21 @@ describe('FileSyncService health status projection', () => {
         errors: 2,
         pullErrors: 99,
         sequence: 42,
+        globalBytes: 2048,
+        needDeletes: 3,
+        watchError: 'too many files',
       })
-      .mockResolvedValueOnce(PEER_DONE);
+      .mockResolvedValueOnce(peer);
     const result = await files.status('code:p1', 'HOSTAAA');
     expect(result).toMatchObject({
       error: 'disk full',
       errors: 2,
       pullErrors: 99,
       sequence: 42,
-      peer: PEER_DONE,
+      globalBytes: 2048,
+      needDeletes: 3,
+      watchError: 'too many files',
+      peer,
     });
     expect(request).toHaveBeenNthCalledWith(
       2,

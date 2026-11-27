@@ -11,6 +11,7 @@ import type { ProjectMcpSettingsCapability } from './project-mcp-settings.capabi
 import type { ProviderPluginCapability } from './provider-plugin.capability';
 import type { TranscriptDiscoveryCapability } from './transcript-discovery.capability';
 import type { SessionCommandCapability } from './session-command.capability';
+import type { SessionForkCapability } from './session-fork.capability';
 export type { AutoCompactCapability, AutoCompactProviderState } from './auto-compact.capability';
 export type { EffortCapability } from './effort.capability';
 export type { HookCapability, HookEnvContext } from './hook.capability';
@@ -28,6 +29,14 @@ export type {
 } from './provider-plugin.capability';
 export type { TranscriptDiscoveryCapability } from './transcript-discovery.capability';
 export type { SessionCommandCapability } from './session-command.capability';
+export type {
+  CreateSessionSavePointInput,
+  PrepareSessionForkLaunchInput,
+  ProviderSessionTranscript,
+  SessionForkCapability,
+  SessionForkLaunchResult,
+  SessionSavePointCopy,
+} from './session-fork.capability';
 
 /**
  * Result of a best-effort, non-blocking authentication probe. `authenticated`
@@ -170,6 +179,17 @@ export function isSessionCommandCapable(
   adapter: ProviderAdapter,
 ): adapter is ProviderAdapter & SessionCommandCapability {
   return 'sessionCommands' in adapter;
+}
+
+export function isSessionForkCapable(
+  adapter: ProviderAdapter,
+): adapter is ProviderAdapter & SessionForkCapability {
+  return (
+    'createSavePoint' in adapter &&
+    typeof adapter.createSavePoint === 'function' &&
+    'prepareForkLaunch' in adapter &&
+    typeof adapter.prepareForkLaunch === 'function'
+  );
 }
 
 export function isProviderPluginCapable(

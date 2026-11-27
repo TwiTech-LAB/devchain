@@ -11,6 +11,17 @@ import { CodexSessionReaderAdapter } from '../adapters/codex-session-reader.adap
 import { CopilotSessionReaderAdapter } from '../adapters/copilot-session-reader.adapter';
 import { AntigravitySessionReaderAdapter } from '../adapters/antigravity-session-reader.adapter';
 import { createAntigravityFixtureDb } from '../__fixtures__/antigravity-fixture-db';
+import { OpenCodeSessionReaderAdapter } from '../adapters/opencode-session-reader.adapter';
+import { createOpencodeFixtureDb } from '../__fixtures__/opencode-fixture-db';
+import {
+  V2_FIXTURE_PROJECT,
+  createOpencodeV2FixtureDb,
+} from '../__fixtures__/opencode-v2-fixture-db';
+import { SessionReaderAdapterFactory } from '../adapters/session-reader-adapter.factory';
+import { SessionCacheService } from '../services/session-cache.service';
+import { SessionReaderService } from '../services/session-reader.service';
+import type { TranscriptPathValidator } from '../services/transcript-path-validator.service';
+import type { SessionsService } from '../../sessions/services/sessions.service';
 
 /**
  * End-to-end integration tests for the multi-provider session reader pipeline.
@@ -93,6 +104,188 @@ describe('Adapter getSummary parity: Antigravity DB fixture', () => {
       await fs.rm(tmpDir, { recursive: true, force: true });
     }
   });
+});
+
+describe('Tool result beyond the parse-time output cap', () => {
+  const CAPPED_RESULT = `${'r'.repeat(100_000)}TAIL`;
+  const TOOL_CALL_ID = 'call_capped';
+
+  interface CappedSource {
+    adapter: SessionReaderAdapter;
+    dbPath: string;
+    providerSessionId: string;
+    toolCallId: string;
+  }
+
+  async function seedAgy(tmpDir: string): Promise<CappedSource> {
+    const convId = 'conv_capped';
+    const dbPath = path.join(tmpDir, 'conversations', `${convId}.db`);
+    const logsDir = path.join(tmpDir, 'brain', convId, '.system_generated', 'logs');
+    await fs.mkdir(path.dirname(dbPath), { recursive: true });
+    await fs.mkdir(logsDir, { recursive: true });
+    createAntigravityFixtureDb(dbPath, convId, [{ input: 10, output: 5 }]);
+    const steps = [
+      { step_index: 0, type: 'USER_INPUT', content: '<USER_REQUEST>run it</USER_REQUEST>' },
+      { step_index: 1, type: 'PLANNER_RESPONSE', tool_calls: [{ name: 'run_command', args: {} }] },
+      { step_index: 2, type: 'RUN_COMMAND', status: 'DONE', content: CAPPED_RESULT },
+    ];
+    await fs.writeFile(
+      path.join(logsDir, 'transcript_full.jsonl'),
+      steps.map((step) => JSON.stringify(step)).join('\n'),
+    );
+    return {
+      adapter: new AntigravitySessionReaderAdapter(mockPricing),
+      dbPath,
+      providerSessionId: convId,
+      toolCallId: 'agy-tc-1-0',
+    };
+  }
+
+  async function seedOpencodeV1(tmpDir: string): Promise<CappedSource> {
+    const dbPath = path.join(tmpDir, 'opencode.db');
+    createOpencodeFixtureDb(dbPath, [
+      {
+        id: 'ses_capped',
+        messages: [
+          {
+            id: 'm_user',
+            data: { role: 'user' },
+            timeCreated: 1_000,
+            parts: [{ id: 'p1', data: { type: 'text', text: 'run it' } }],
+          },
+          {
+            id: 'm_asst',
+            data: { role: 'assistant', modelID: 'glm-5.1' },
+            timeCreated: 2_000,
+            parts: [
+              {
+                id: 'p2',
+                data: {
+                  type: 'tool',
+                  callID: TOOL_CALL_ID,
+                  tool: 'bash',
+                  state: { status: 'completed', input: {}, output: CAPPED_RESULT },
+                },
+              },
+            ],
+          },
+        ],
+      },
+    ]);
+    return {
+      adapter: new OpenCodeSessionReaderAdapter(mockPricing),
+      dbPath,
+      providerSessionId: 'ses_capped',
+      toolCallId: TOOL_CALL_ID,
+    };
+  }
+
+  async function seedOpencodeV2(tmpDir: string): Promise<CappedSource> {
+    const dbPath = path.join(tmpDir, 'opencode.db');
+    createOpencodeV2FixtureDb(dbPath, {
+      projects: [V2_FIXTURE_PROJECT],
+      sessions: [
+        {
+          id: 'ses_capped_v2',
+          projectId: V2_FIXTURE_PROJECT.id,
+          directory: V2_FIXTURE_PROJECT.worktree,
+          timeCreated: 1_000,
+          messages: [
+            { id: 'm_user', type: 'user', seq: 1, timeCreated: 1_000, data: { text: 'run it' } },
+            {
+              id: 'm_asst',
+              type: 'assistant',
+              seq: 2,
+              timeCreated: 2_000,
+              data: {
+                content: [
+                  // The reader skips a non-object entry; the source lookup must too.
+                  'stray text',
+                  {
+                    type: 'tool',
+                    id: TOOL_CALL_ID,
+                    name: 'bash',
+                    state: {
+                      status: 'completed',
+                      input: {},
+                      content: [{ type: 'text', text: CAPPED_RESULT }],
+                    },
+                  },
+                ],
+              },
+            },
+          ],
+        },
+      ],
+    });
+    return {
+      adapter: new OpenCodeSessionReaderAdapter(mockPricing),
+      dbPath,
+      providerSessionId: 'ses_capped_v2',
+      toolCallId: TOOL_CALL_ID,
+    };
+  }
+
+  it.each([
+    ['agy', seedAgy],
+    ['opencode v1', seedOpencodeV1],
+    ['opencode v2', seedOpencodeV2],
+  ] as const)(
+    '%s: Show full reads the whole result from its source; chunks stay capped',
+    async (_label, seed) => {
+      const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'capped-tool-result-'));
+      const cache = new SessionCacheService({
+        registerCacheStatsProvider: jest.fn(),
+        registerStatsProvider: jest.fn(),
+      } as never);
+      try {
+        const { adapter, dbPath, providerSessionId, toolCallId } = await seed(tmpDir);
+        const factory = new SessionReaderAdapterFactory();
+        factory.registerAdapter(adapter);
+        const sessionsService = {
+          getSession: () => ({
+            id: 'sess-1',
+            providerNameAtLaunch: adapter.providerName,
+            transcriptPath: dbPath,
+            providerSessionId,
+            status: 'stopped',
+          }),
+        };
+        const pathValidator = { validateForRead: async (p: string) => p };
+        const service = new SessionReaderService(
+          factory,
+          pathValidator as unknown as TranscriptPathValidator,
+          cache,
+          sessionsService as unknown as SessionsService,
+        );
+
+        const full = await service.getToolResult('sess-1', toolCallId);
+        expect(full).toMatchObject({ fullLength: 100_004, isComplete: true });
+        expect(full.content).toBe(CAPPED_RESULT);
+
+        const { chunks } = await service.getUnifiedTranscriptChunks('sess-1', undefined, 50);
+        const listed = chunks
+          .flatMap((chunk) => chunk.messages)
+          .flatMap((message) => message.toolResults)
+          .find((result) => result.toolCallId === toolCallId);
+        expect(listed).toMatchObject({ isTruncated: true, fullLength: 100_004 });
+        expect((listed?.content as string).length).toBeLessThan(100_000);
+        const parsed = await adapter.parseFullSession(dbPath, {
+          filePath: dbPath,
+          providerName: adapter.providerName,
+          providerSessionId,
+          kind: 'db',
+        });
+        const parsedResult = parsed.messages
+          .flatMap((message) => message.toolResults)
+          .find((result) => result.toolCallId === toolCallId);
+        expect(parsedResult?.content).toHaveLength(100_000);
+      } finally {
+        cache.onModuleDestroy();
+        await fs.rm(tmpDir, { recursive: true, force: true });
+      }
+    },
+  );
 });
 
 // ---------------------------------------------------------------------------

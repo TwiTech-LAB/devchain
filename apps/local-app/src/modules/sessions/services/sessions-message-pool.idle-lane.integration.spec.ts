@@ -7,6 +7,7 @@ import { ProviderAdapterFactory } from '../../providers/adapters/provider-adapte
 import { SessionsMessagePoolService } from './sessions-message-pool.service';
 import { SessionsService } from './sessions.service';
 import { SessionCoordinatorService } from './session-coordinator.service';
+import { SessionLifecycleFacade } from './session-lifecycle-facade.service';
 import { MessageActivityStreamService } from './message-activity-stream.service';
 import { MessageLogService } from './message-log.service';
 import { DeliveryFailureNotifierService } from './delivery-failure-notifier.service';
@@ -119,6 +120,7 @@ describe('SessionsMessagePoolService idle lifecycle integration', () => {
         {
           provide: STORAGE_SERVICE,
           useValue: {
+            isAgentDisabled: jest.fn().mockReturnValue(false),
             getAgent: jest.fn(async () => ({
               id: 'agent-1',
               name: 'Agent One',
@@ -736,6 +738,207 @@ describe('SessionsMessagePoolService idle lifecycle integration', () => {
           status: 'failed',
         }),
       );
+    });
+
+    describe('disabled agent', () => {
+      let storage: { isAgentDisabled: jest.Mock };
+      let writes: number;
+
+      beforeEach(() => {
+        storage = moduleRef.get(STORAGE_SERVICE);
+        writes = 0;
+        terminalIO.deliverGuarded.mockImplementation(
+          async (...[, , , , mutationFence]: Parameters<TerminalIOService['deliverGuarded']>) => {
+            if (mutationFence && !mutationFence.canStartMutation()) {
+              return { deferred: 'human_draft' };
+            }
+            mutationFence?.markMutationStarted();
+            writes += 1;
+            return { confirmed: true, nonce: 'nonce-1', retryCount: 0 };
+          },
+        );
+      });
+
+      /** The stop that follows Disable: the session ends and its lane fails. */
+      const stopSession = async () => {
+        currentSession = { ...currentSession, status: 'stopped' };
+        await service.handleSessionStopped({
+          sessionId: 'session-1',
+          source: 'web-api',
+          reason: 'user-requested',
+        });
+      };
+      const force = (messageIds: string[]) =>
+        service.forceDeferredDelivery('agent-1', 'project-1', 'session-1', messageIds);
+      const deferredIds = () => service.getPoolDetails()[0]?.deferredMessageIds ?? [];
+      const disabledConflict = { status: 'conflict', reason: 'Agent is disabled' };
+
+      it('refuses a Force Send that waited for the lock while Disable ran, and the delayed stop fails the lane', async () => {
+        const { messageIds } = await setupDeferredLane();
+        jest.spyOn(Date, 'now').mockReturnValue(32_000);
+        let releaseStop!: () => void;
+        const stopGate = new Promise<void>((resolve) => (releaseStop = resolve));
+        const sessions = moduleRef.get(SessionsService) as unknown as Record<string, unknown>;
+        sessions.terminateSession = jest.fn(async () => {
+          await stopGate;
+          await stopSession();
+        });
+        const facade = new SessionLifecycleFacade(
+          {} as never,
+          sessions as never,
+          {} as never,
+          coordinator,
+          service,
+        );
+        let release!: () => void;
+        let entered!: () => void;
+        const inside = new Promise<void>((resolve) => (entered = resolve));
+        const holder = coordinator.withAgentLock(
+          'agent-1',
+          () =>
+            new Promise<void>((resolve) => {
+              release = resolve;
+              entered();
+            }),
+        );
+        await inside;
+
+        const forced = force(messageIds);
+        // Disable: the flag write, then the facade's stop, which queues behind Force Send.
+        storage.isAgentDisabled.mockReturnValue(true);
+        const disable = facade.stopDisabledAgent('agent-1', {
+          source: 'web-api',
+          reason: 'user-requested',
+        });
+        release();
+        await holder;
+
+        await expect(forced).resolves.toEqual(disabledConflict);
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        expect(sessions.terminateSession).toHaveBeenCalledTimes(1);
+        expect(terminalIO.deliverGuarded).not.toHaveBeenCalled();
+        expect(deferredIds()).toEqual(messageIds);
+
+        releaseStop();
+        await disable;
+        expect(service.getPoolDetails()).toEqual([]);
+        expect(service.getMessageLog({ agentId: 'agent-1' })).toEqual([
+          expect.objectContaining({ status: 'failed' }),
+        ]);
+      });
+
+      it('stops a forced claim at the pre-paste guard, releases it, and lets the stop finish', async () => {
+        const { messageIds } = await setupDeferredLane();
+        jest.spyOn(Date, 'now').mockReturnValue(32_000);
+        const applyForce = jest.spyOn(humanPromptState, 'applyForceDelivery');
+        terminalIO.deliverGuarded.mockImplementationOnce(
+          async (...[, , , , mutationFence]: Parameters<TerminalIOService['deliverGuarded']>) => {
+            storage.isAgentDisabled.mockReturnValue(true);
+            return mutationFence?.canStartMutation()
+              ? { confirmed: true, nonce: 'nonce-1', retryCount: 0 }
+              : { deferred: 'human_draft' };
+          },
+        );
+
+        await expect(force(messageIds)).resolves.toEqual(disabledConflict);
+        expect(applyForce).not.toHaveBeenCalled();
+        expect(writes).toBe(0);
+
+        // The refused claim released the lane, so a retry meets the flag, not the claim.
+        await expect(force(messageIds)).resolves.toEqual(disabledConflict);
+        await stopSession();
+        await expect(force(messageIds)).resolves.toEqual({ status: 'not_found' });
+      });
+
+      it('lets a paste that started before the flag write complete', async () => {
+        const { messageIds } = await setupDeferredLane();
+        jest.spyOn(Date, 'now').mockReturnValue(32_000);
+        terminalIO.deliverGuarded.mockImplementationOnce(
+          async (...[, , , , mutationFence]: Parameters<TerminalIOService['deliverGuarded']>) => {
+            expect(mutationFence?.canStartMutation()).toBe(true);
+            mutationFence?.markMutationStarted();
+            storage.isAgentDisabled.mockReturnValue(true);
+            return { confirmed: true, nonce: 'nonce-1', retryCount: 0 };
+          },
+        );
+
+        await expect(force(messageIds)).resolves.toEqual({
+          status: 'delivered',
+          deliveredCount: 1,
+        });
+        await stopSession();
+        expect(service.getPoolDetails()).toEqual([]);
+      });
+
+      it('delivers the kept lane with a later Force Send when the stop fails and Enable clears the flag', async () => {
+        const { messageIds } = await setupDeferredLane();
+        jest.spyOn(Date, 'now').mockReturnValue(32_000);
+        storage.isAgentDisabled.mockReturnValue(true);
+        await expect(force(messageIds)).resolves.toEqual(disabledConflict);
+
+        storage.isAgentDisabled.mockReturnValue(false);
+
+        await expect(force(messageIds)).resolves.toEqual({
+          status: 'delivered',
+          deliveredCount: 1,
+        });
+        expect(writes).toBe(1);
+      });
+
+      describe('automatic claim', () => {
+        const enqueueWhileBusy = async () => {
+          currentSession = { ...currentSession, activityState: 'busy' };
+          await service.enqueue('agent-1', 'on_idle message', {
+            source: 'agent-message',
+            deliveryMode: 'on_idle',
+            projectId: 'project-1',
+            agentName: 'Agent One',
+          });
+          await new Promise<void>((resolve) => setImmediate(resolve));
+          currentSession = { ...currentSession, activityState: 'idle', busySince: null };
+        };
+        const becomeIdle = () =>
+          service.handleSessionActivityChanged({
+            sessionId: 'session-1',
+            state: 'idle',
+            lastActivityAt: currentSession.lastActivityAt ?? null,
+            busySince: null,
+          });
+
+        it('starts no claim and arms no retry while the flag is set and the session lives', async () => {
+          await enqueueWhileBusy();
+          storage.isAgentDisabled.mockReturnValue(true);
+
+          await becomeIdle();
+          const checks = storage.isAgentDisabled.mock.calls.length;
+          await jest.advanceTimersByTimeAsync(60_000);
+
+          expect(terminalIO.deliverGuarded).not.toHaveBeenCalled();
+          expect(storage.isAgentDisabled.mock.calls.length).toBe(checks);
+          expect(deferredIds()).toHaveLength(1);
+          await stopSession();
+          expect(service.getPoolDetails()).toEqual([]);
+        });
+
+        it('stops a claim at the pre-paste guard when the flag is written after the claim started', async () => {
+          await enqueueWhileBusy();
+          terminalIO.deliverGuarded.mockImplementationOnce(
+            async (...[, , , , mutationFence]: Parameters<TerminalIOService['deliverGuarded']>) => {
+              storage.isAgentDisabled.mockReturnValue(true);
+              return mutationFence?.canStartMutation()
+                ? { confirmed: true, nonce: 'nonce-1', retryCount: 0 }
+                : { deferred: 'human_draft' };
+            },
+          );
+
+          await becomeIdle();
+          await jest.advanceTimersByTimeAsync(60_000);
+
+          expect(terminalIO.deliverGuarded).toHaveBeenCalledTimes(1);
+          expect(writes).toBe(0);
+          expect(deferredIds()).toHaveLength(1);
+        });
+      });
     });
   });
 });

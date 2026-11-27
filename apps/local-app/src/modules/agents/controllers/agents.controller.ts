@@ -26,8 +26,11 @@ import { SessionRuntime } from '../../sessions/services/session-runtime';
 import { SessionDto } from '../../sessions/dtos/sessions.dto';
 import { EventsService } from '../../events/services/events.service';
 import { SettingsService } from '../../settings/services/settings.service';
+import { TeamsService } from '../../teams/services/teams.service';
+import { AgentDisabledError } from '../../../common/errors/error-types';
 import { z } from 'zod';
 import { createLogger } from '../../../common/logging/logger';
+import { publishAgentsUpdated } from '../../events/catalog/agent.updated';
 import { ProjectWriteGate } from '../../storage/write-gate/project-write-gate';
 
 const logger = createLogger('AgentsController');
@@ -54,6 +57,8 @@ export interface AgentOrGuestItem {
   profileId: string | null;
   description?: string | null;
   type: 'agent' | 'guest';
+  /** Always false for guests */
+  disabled: boolean;
   /** Model override for agents; null for guests */
   modelOverride: string | null;
   /** Effort override for agents; null for guests (mirrors modelOverride) */
@@ -121,6 +126,7 @@ export class AgentsController {
     private readonly sessionRuntime: SessionRuntime,
     private readonly settingsService: SettingsService,
     private readonly gate: ProjectWriteGate,
+    private readonly teamsService: TeamsService,
     @Optional() private readonly eventsService?: EventsService,
   ) {}
 
@@ -201,6 +207,7 @@ export class AgentsController {
         profileId: agent.profileId,
         description: agent.description,
         type: 'agent' as const,
+        disabled: agent.disabled,
         modelOverride: agent.modelOverride,
         effortOverride: agent.effortOverride,
         providerConfigId: agent.providerConfigId,
@@ -225,6 +232,7 @@ export class AgentsController {
       profileId: null,
       description: null,
       type: 'guest' as const,
+      disabled: false,
       modelOverride: null,
       effortOverride: null,
       tmuxSessionId: guest.tmuxSessionId,
@@ -306,21 +314,16 @@ export class AgentsController {
   @Put(':id')
   async updateAgent(@Param('id') id: string, @Body() body: unknown): Promise<Agent> {
     logger.info({ id }, 'PUT /api/agents/:id');
-    const data = UpdateAgentSchema.parse(body);
-
-    // Validate providerConfigId belongs to the correct profile (if being updated)
-    if (data.providerConfigId !== undefined) {
-      // Determine which profile to validate against
-      const profileId = data.profileId ?? (await this.storage.getAgent(id)).profileId;
-      await this.validateConfigOwnership(data.providerConfigId, profileId);
-    }
-
-    return this.storage.updateAgent(id, data as UpdateAgent);
+    return this.applyAgentUpdate(id, body);
   }
 
   @Patch(':id')
   async patchAgent(@Param('id') id: string, @Body() body: unknown): Promise<Agent> {
     logger.info({ id }, 'PATCH /api/agents/:id');
+    return this.applyAgentUpdate(id, body);
+  }
+
+  private async applyAgentUpdate(id: string, body: unknown): Promise<Agent> {
     const data = UpdateAgentSchema.parse(body);
 
     // Validate providerConfigId belongs to the correct profile (if being updated)
@@ -329,7 +332,13 @@ export class AgentsController {
       await this.validateConfigOwnership(data.providerConfigId, profileId);
     }
 
-    return this.storage.updateAgent(id, data as UpdateAgent);
+    const { agent, writtenAgentIds } = await this.storage.updateAgentReportingWrites(
+      id,
+      data as UpdateAgent,
+    );
+    // A project owner change also clears the former owner's flag: publish for each written row.
+    await publishAgentsUpdated(this.eventsService, agent.projectId, writtenAgentIds);
+    return agent;
   }
 
   @Delete(':id')
@@ -363,6 +372,20 @@ export class AgentsController {
     }
   }
 
+  /** Disable a team agent and stop its running session. Repeating it is allowed. */
+  @Post(':id/disable')
+  async disableAgent(@Param('id') agentId: string): Promise<Agent> {
+    logger.info({ agentId }, 'POST /api/agents/:id/disable');
+    return this.teamsService.disableAgent(agentId, 'web-api');
+  }
+
+  /** Clear the disabled flag. Starts no session. */
+  @Post(':id/enable')
+  async enableAgent(@Param('id') agentId: string): Promise<Agent> {
+    logger.info({ agentId }, 'POST /api/agents/:id/enable');
+    return this.teamsService.enableAgent(agentId);
+  }
+
   /**
    * Restart an agent session through sequential terminate and launch operations.
    * Each operation owns its per-agent lock acquisition.
@@ -387,7 +410,11 @@ export class AgentsController {
       throw new BadRequestException(`Agent ${agentId} does not belong to project ${projectId}`);
     }
     // Refuse before the terminate so a refused launch never leaves the agent stopped.
-    this.gate.assertWritable(projectId);
+    if (agent.disabled) {
+      throw new AgentDisabledError(agent);
+    }
+    // Also checks write admission first.
+    await this.sessionRuntime.verifyAgentProvider(agentId, projectId);
 
     // Terminate and launch each acquire the per-agent lock internally and in
     // sequence. Never wrap this restart in an outer/composite lock: the
@@ -405,10 +432,12 @@ export class AgentsController {
           { sessionId: existingSession.id, agentId },
           'Terminating existing session before restart',
         );
-        await this.sessionsService.terminateSession(existingSession.id, {
-          source: 'web-api',
-          reason: 'restart',
-        });
+        await this.sessionsService.terminateSession(
+          existingSession.id,
+          { source: 'web-api', reason: 'restart' },
+          // A project frozen since the check above refuses the stop, and the launch refuses too.
+          { expectedAgentId: agentId, admit: () => this.gate.assertWritable(projectId) },
+        );
         terminateStatus = 'success';
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);

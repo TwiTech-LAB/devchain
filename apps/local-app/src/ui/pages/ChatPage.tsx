@@ -4,7 +4,11 @@ import { Loader2, AlertCircle, Terminal as TerminalIcon } from 'lucide-react';
 import { providerConfigQueries } from '@/ui/lib/provider-configs';
 import { projectPresetQueries } from '@/ui/lib/project-presets';
 import { restartKeyForMain } from '@/ui/lib/restart-keys';
-import { useTerminalWindowManager, useTerminalWindows } from '@/ui/terminal-windows';
+import {
+  useLowerTerminalWindows,
+  useTerminalWindowManager,
+  useTerminalWindows,
+} from '@/ui/terminal-windows';
 import { useToastHelpers } from '@/ui/lib/toast-helpers';
 import { useSelectedProject } from '@/ui/hooks/useProjectSelection';
 import { useActiveSessionConfirm } from '@/ui/hooks/useActiveSessionConfirm';
@@ -27,6 +31,10 @@ import {
 
 // Inline terminal components
 import { InlineTerminalPanel } from '@/ui/components/chat/InlineTerminalPanel';
+import { SessionBar, SessionBarActions, SessionForkAction } from '@/ui/components/chat/SessionBar';
+import { SessionSwitcher } from '@/ui/components/chat/SessionSwitcher';
+import { showSavePointControls } from '@/ui/components/chat/SessionTree';
+import { useAgentSessionTree } from '@/ui/hooks/useAgentSessionTree';
 import {
   CustomPromptPicker,
   type CustomPromptPickerTarget,
@@ -44,7 +52,10 @@ import { useAgentTimeBuffers } from '@/ui/hooks/useAgentTimeBuffers';
 import { epicTimeQueryKeys, formatEpicTimeMinutes } from '@/ui/lib/epic-time';
 
 // Session reader
-import { useSessionTranscript } from '@/ui/hooks/useSessionTranscript';
+import {
+  useLiveSessionBindingRefresh,
+  useSessionTranscript,
+} from '@/ui/hooks/useSessionTranscript';
 import { SessionViewerPanel } from '@/ui/components/session-reader/SessionViewerPanel';
 
 // Extracted hooks
@@ -75,6 +86,7 @@ import {
   type ChatSidebarAdminActions,
 } from '@/ui/components/chat/ChatSidebar';
 import { SessionLifecycleModals } from '@/ui/components/chat/SessionLifecycleModals';
+import { useProfileConfigsForSwitch } from '@/ui/hooks/useProfileConfigsForSwitch';
 import { PreviousSessionsTable } from '@/ui/components/chat/PreviousSessionsTable';
 import { SessionReadSlideOver } from '@/ui/components/chat/SessionReadSlideOver';
 
@@ -109,6 +121,13 @@ export function ChatPage() {
   const { windows: terminalWindows, focusedWindowId } = useTerminalWindows();
   const [mainTerminalHandle, setMainTerminalHandle] = useState<TerminalHandle | null>(null);
   const [customPromptPickerOpen, setCustomPromptPickerOpen] = useState(false);
+  const [sessionsModalOpen, setSessionsModalOpen] = useState(false);
+  const [sessionBarDialogOpen, setSessionBarDialogOpen] = useState(false);
+  /** The live session that the open Fork confirmation forks, captured when it opened. */
+  const [liveForkRequest, setLiveForkRequest] = useState<{
+    agentId: string;
+    sessionId: string;
+  } | null>(null);
   const [humanReleaseTarget, setHumanReleaseTarget] = useState<HumanReleaseTarget | null>(null);
 
   // Tick for relative durations (busy badge)
@@ -364,6 +383,12 @@ export function ChatPage() {
     pendingDeleteHasSession,
     handleConfirmDelete,
     deletingAgent,
+    requestDisableAgent,
+    pendingDisableAgent,
+    cancelDisableAgent,
+    handleConfirmDisable,
+    disablingAgent,
+    enableAgent,
     handleAddTeamAgent,
   } = useAgentAdminActions({
     apiFetch,
@@ -373,6 +398,17 @@ export function ChatPage() {
   });
 
   const [readSlideOverSessionId, setReadSlideOverSessionId] = useState<string | null>(null);
+  /** The Sessions trigger, set when Read was chosen in the Sessions dialog. */
+  const readFromSessionsRef = useRef<HTMLButtonElement | null>(null);
+  const sessionsReopenedRef = useRef(false);
+  const [launchTableDialogOpen, setLaunchTableDialogOpen] = useState(false);
+  const sessionsFlowOpen =
+    sessionsModalOpen ||
+    sessionBarDialogOpen ||
+    launchTableDialogOpen ||
+    liveForkRequest !== null ||
+    !!readSlideOverSessionId;
+  useLowerTerminalWindows(sessionsFlowOpen);
 
   // ── Quick-edit team modal (domain hook) ──
   const quickEdit = useTeamQuickEdit({ projectId });
@@ -388,9 +424,30 @@ export function ChatPage() {
     agentUiState;
 
   const selectedAgentPresence = selectedAgent ? queries.agentPresence[selectedAgent.id] : undefined;
+  // Not configsMap: it turns a failed fetch into an empty list, which reads as "no config".
+  const selectedAgentConfigs = useProfileConfigsForSwitch(selectedAgent?.profileId);
   const isSelectedAgentOnline = Boolean(
     selectedAgentPresence?.online && selectedAgentPresence.sessionId,
   );
+  // Reads the tree that the session bar loads. With no live ID it pages and refetches nothing.
+  const barSessionTree = useAgentSessionTree(
+    isSelectedAgentOnline && inlineTerminalSessionId && selectedAgent ? selectedAgent.id : null,
+    projectId ?? null,
+    undefined,
+    { refetchOnMount: false },
+  );
+  // Presence gives the live ID before the list of sessions loads. The binding can come then.
+  useLiveSessionBindingRefresh(isSelectedAgentOnline ? inlineTerminalSessionId : null);
+
+  useEffect(() => {
+    setSessionsModalOpen(false);
+  }, [inlineTerminalSessionId, isSelectedAgentOnline]);
+
+  // The Fork confirmation belongs to one live session; it closes when the bar shows another
+  // session or goes away, so its Escape guard and window lowering end with it.
+  useEffect(() => {
+    setLiveForkRequest(null);
+  }, [selectedAgent?.id, inlineTerminalSessionId, isSelectedAgentOnline]);
 
   const inlineTerminalAgentName = inlineTerminalState
     ? (queries.agents.find((a) => a.id === inlineTerminalState.agentId)?.name ?? null)
@@ -697,9 +754,7 @@ export function ChatPage() {
   useEffect(() => {
     const handleGlobalEscape = (e: KeyboardEvent) => {
       if (e.key !== 'Escape') return;
-      if (customPromptPickerOpen) {
-        return;
-      }
+      if (customPromptPickerOpen || sessionsFlowOpen) return;
 
       let targetSessionId: string | null = null;
       if (showInlineTerminal && inlineTerminalSessionId) {
@@ -725,6 +780,7 @@ export function ChatPage() {
     return () => document.removeEventListener('keydown', handleGlobalEscape, { capture: true });
   }, [
     customPromptPickerOpen,
+    sessionsFlowOpen,
     showInlineTerminal,
     inlineTerminalSessionId,
     focusedWindowId,
@@ -769,14 +825,38 @@ export function ChatPage() {
         </div>
         {projectId && (
           <PreviousSessionsTable
+            key={`${projectId}:${selectedAgent.id}`}
             agentId={selectedAgent.id}
+            agentName={selectedAgent.name}
             projectId={projectId}
             onRead={setReadSlideOverSessionId}
-            onRestore={(sessionId) =>
-              sessionControls.handleRestoreSession(sessionId, selectedAgent.id)
+            onRestore={(sessionId, switchToProviderConfigId) =>
+              sessionControls.handleRestoreSession(
+                sessionId,
+                selectedAgent.id,
+                undefined,
+                switchToProviderConfigId,
+              )
+            }
+            onStartFromHere={(sessionId, availability) =>
+              sessionControls.handleStartFromSavePoint(sessionId, selectedAgent.id, availability)
+            }
+            onRollback={(sessionId, savePointId, keepCurrent, savePointLabel) =>
+              void sessionControls.handleRollbackSession(
+                sessionId,
+                savePointId,
+                selectedAgent.id,
+                keepCurrent,
+                undefined,
+                savePointLabel,
+              )
             }
             currentProviderName={selectedAgent.providerConfig?.providerName ?? null}
+            providerConfigs={selectedAgentConfigs}
             restoringSessionIds={sessionControls.restoringSessionIds}
+            forkingSessionIds={sessionControls.forkingSessionIds}
+            rollingBackSessionIds={sessionControls.rollingBackSessionIds}
+            onDialogOpenChange={setLaunchTableDialogOpen}
           />
         )}
       </div>
@@ -793,6 +873,7 @@ export function ChatPage() {
       guests: queries.guests,
       agentPresence: queries.agentPresence,
       presenceReady: queries.presenceReady,
+      presenceSettled: queries.presenceSettled,
       offlineAgents: sessionControls.offlineAgents,
       agentsWithSessions: sessionControls.agentsWithSessions,
       agentsLoading: queries.agentsLoading,
@@ -815,6 +896,7 @@ export function ChatPage() {
       queries.guests,
       queries.agentPresence,
       queries.presenceReady,
+      queries.presenceSettled,
       sessionControls.offlineAgents,
       sessionControls.agentsWithSessions,
       queries.agentsLoading,
@@ -888,6 +970,8 @@ export function ChatPage() {
           isTeamLead: ctx?.isTeamLead,
         }),
       onDeleteAgent: setPendingDeleteAgent,
+      onDisableAgent: requestDisableAgent,
+      onEnableAgent: enableAgent,
       pendingDeleteAgentId,
       onAddTeamAgent: handleAddTeamAgent,
       onEditTeam: quickEdit.openEditTeam,
@@ -895,6 +979,8 @@ export function ChatPage() {
     [
       setPendingCloneAgent,
       setPendingDeleteAgent,
+      requestDisableAgent,
+      enableAgent,
       pendingDeleteAgentId,
       handleAddTeamAgent,
       quickEdit.openEditTeam,
@@ -942,8 +1028,39 @@ export function ChatPage() {
     }
 
     if (isSelectedAgentOnline && inlineTerminalSessionId) {
+      const { id: agentId } = selectedAgent;
+      const pendingAction =
+        sessionControls.restartingAgentId === agentId
+          ? 'restart'
+          : sessionControls.launchingAgentIds[agentId]
+            ? 'stop'
+            : sessionControls.forkingSessionIds[inlineTerminalSessionId]
+              ? 'fork'
+              : null;
+      const otherActionPending =
+        (pendingAction !== null && pendingAction !== 'fork') ||
+        sessionControls.savingSessionIds[inlineTerminalSessionId] ||
+        sessionControls.rollingBackSessionIds[inlineTerminalSessionId];
+      const savePoints = barSessionTree.savePoints;
+      const liveNode = barSessionTree.byId.get(inlineTerminalSessionId)?.node;
+      let forkDisabledReason: string | undefined;
+      if (otherActionPending) {
+        forkDisabledReason = 'Wait until the current action completes.';
+      } else if (savePoints?.available === false) {
+        forkDisabledReason = 'Save points are not available for this provider yet.';
+      } else if (selectedAgentPresence?.activityState === 'busy') {
+        forkDisabledReason = 'Wait until the agent completes its turn.';
+      } else if (liveNode && (!liveNode.providerSessionId || !liveNode.transcriptAvailable)) {
+        forkDisabledReason = 'Send a message first so there is a conversation to fork.';
+      }
+      const fork = showSavePointControls(savePoints)
+        ? {
+            disabledReason: forkDisabledReason,
+            onFork: () => setLiveForkRequest({ agentId, sessionId: inlineTerminalSessionId }),
+          }
+        : undefined;
       return (
-        <div className="flex flex-1 min-h-0 flex-col p-4">
+        <div className="flex flex-1 min-h-0 flex-col">
           <div className="flex h-full flex-col overflow-hidden rounded-xl border border-border bg-terminal text-terminal-foreground shadow-sm">
             <InlineTerminalHeader
               agentName={inlineTerminalAgentName}
@@ -984,6 +1101,61 @@ export function ChatPage() {
                 />
               }
               terminalRef={setMainTerminalHandle}
+            />
+            <SessionBar
+              left={
+                <>
+                  {projectId && (
+                    <SessionSwitcher
+                      key={`${projectId}:${agentId}`}
+                      agentId={agentId}
+                      agentName={selectedAgent.name}
+                      projectId={projectId}
+                      liveSessionId={inlineTerminalSessionId}
+                      liveSessionName={inlineTerminalSessionName}
+                      activityState={selectedAgentPresence?.activityState}
+                      currentProviderName={selectedAgent.providerConfig?.providerName}
+                      providerConfigs={selectedAgentConfigs}
+                      controls={sessionControls}
+                      open={sessionsModalOpen}
+                      onOpenChange={setSessionsModalOpen}
+                      onRead={(id, sessionsTrigger) => {
+                        readFromSessionsRef.current = sessionsTrigger;
+                        setReadSlideOverSessionId(id);
+                      }}
+                      onDialogOpenChange={setSessionBarDialogOpen}
+                    />
+                  )}
+                  {fork && <SessionForkAction pendingAction={pendingAction} {...fork} />}
+                </>
+              }
+            >
+              <SessionBarActions
+                pendingAction={pendingAction}
+                onRestart={() => void handleRestartSessionWithClear(agentId)}
+                onStop={() =>
+                  sidebarSessionController.onTerminateConfirm(agentId, inlineTerminalSessionId)
+                }
+              />
+            </SessionBar>
+            <ConfirmDialog
+              open={liveForkRequest !== null}
+              onOpenChange={(open) => {
+                if (!open) setLiveForkRequest(null);
+              }}
+              onConfirm={() => {
+                if (!liveForkRequest) return;
+                const { agentId: forkAgentId, sessionId } = liveForkRequest;
+                void sessionControls.handleStartFromSavePoint(
+                  sessionId,
+                  forkAgentId,
+                  savePoints,
+                  sessionId,
+                );
+              }}
+              title="Fork current session?"
+              description="The current session stops and stays in the list. A new session starts with a copy of this conversation."
+              confirmText="Fork"
             />
           </div>
         </div>
@@ -1120,6 +1292,38 @@ export function ChatPage() {
         </DialogContent>
       </Dialog>
 
+      {/* Disable agent confirmation (shown unless the agent is known to be offline) */}
+      <Dialog
+        open={!!pendingDisableAgent}
+        onOpenChange={(open) => {
+          if (!open) cancelDisableAgent();
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Disable agent</DialogTitle>
+            <DialogDescription>
+              {`Disabling "${pendingDisableAgent?.name}" stops its running session, if it has one. Epics assigned to the agent stay assigned and wait until the agent is enabled.`}
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" onClick={cancelDisableAgent}>
+              Cancel
+            </Button>
+            <Button onClick={handleConfirmDisable} disabled={disablingAgent}>
+              {disablingAgent ? (
+                <>
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  Disabling...
+                </>
+              ) : (
+                'Disable'
+              )}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       {/* Quick-edit team */}
       <Dialog
         open={!!quickEdit.quickEditTeam}
@@ -1205,7 +1409,22 @@ export function ChatPage() {
 
       <SessionReadSlideOver
         sessionId={readSlideOverSessionId}
-        onClose={() => setReadSlideOverSessionId(null)}
+        onClose={() => {
+          const sessionsTrigger = readFromSessionsRef.current;
+          readFromSessionsRef.current = null;
+          setReadSlideOverSessionId(null);
+          // Back to the Sessions dialog the transcript was opened from, while its bar still shows.
+          if (sessionsTrigger?.isConnected) {
+            sessionsReopenedRef.current = true;
+            setSessionsModalOpen(true);
+          }
+        }}
+        onCloseAutoFocus={(event) => {
+          // The reopened Sessions dialog keeps the focus it took.
+          if (!sessionsReopenedRef.current) return;
+          sessionsReopenedRef.current = false;
+          event.preventDefault();
+        }}
       />
       <AssignAgentTimeDialog
         open={assignTimeTarget !== null}

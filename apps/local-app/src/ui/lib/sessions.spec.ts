@@ -233,6 +233,11 @@ describe('ui/lib/sessions helpers', () => {
       expect(global.fetch).not.toHaveBeenCalled();
       expect(fetchFn).toHaveBeenCalledTimes(1);
       expect(fetchFn).toHaveBeenCalledWith('/api/sessions/session-1', { method: 'DELETE' });
+
+      await terminateSession('session-1', fetchFn, { expectedAgentId: 'agent-1' });
+      expect(fetchFn).toHaveBeenLastCalledWith('/api/sessions/session-1?expectedAgentId=agent-1', {
+        method: 'DELETE',
+      });
     });
   });
 

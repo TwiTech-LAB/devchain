@@ -3,6 +3,10 @@ import { render, screen, fireEvent } from '@testing-library/react';
 import { ThinkingBlock } from './ThinkingBlock';
 import type { SerializedSemanticStep } from '@/ui/hooks/useSessionTranscript';
 import { renderWithMode } from './__tests__/test-utils';
+import { installLayoutMock, type LayoutMock } from './__tests__/layout-mock';
+import { TranscriptDisclosureProvider } from '@/ui/hooks/useTranscriptDisclosure';
+
+const toggle = () => screen.queryByRole('button', { name: /^show (full|less)$/i });
 
 function makeStep(overrides: Partial<SerializedSemanticStep> = {}): SerializedSemanticStep {
   return {
@@ -81,53 +85,69 @@ describe('ThinkingBlock', () => {
     expect(screen.getByText('Let me analyze this problem step by step.')).toBeInTheDocument();
   });
 
-  it('truncates long thinking text with show more button', () => {
-    const longText = 'A'.repeat(6000);
-    render(<ThinkingBlock step={makeStep({ content: { thinkingText: longText } })} />);
+  describe('preview box', () => {
+    let layout: LayoutMock;
+    beforeEach(() => {
+      layout = installLayoutMock();
+    });
+    afterEach(() => layout.restore());
 
-    // Expand to see content
-    fireEvent.click(screen.getByTestId('thinking-block-trigger'));
+    it('one "Show full" reveals both the character cap and the height clip', () => {
+      const longText = 'A'.repeat(6000);
+      render(<ThinkingBlock step={makeStep({ content: { thinkingText: longText } })} />);
+      fireEvent.click(screen.getByTestId('thinking-block-trigger'));
 
-    // Should be truncated
-    const content = screen.getByTestId('thinking-block-content');
-    expect(content.textContent!.length).toBeLessThan(longText.length);
+      const content = screen.getByTestId('thinking-block-content');
+      expect(content.textContent).toBe('A'.repeat(5000) + '…');
+      expect(content.parentElement?.parentElement?.style.maxHeight).toBe('256px');
+      expect(screen.getAllByRole('button', { name: /^show/i })).toHaveLength(1);
 
-    // Show more button should be visible
-    const showMore = screen.getByTestId('thinking-show-more');
-    expect(showMore).toHaveTextContent('Show more');
+      fireEvent.click(screen.getByRole('button', { name: 'Show full' }));
 
-    // Click to expand
-    fireEvent.click(showMore);
-    expect(content.textContent).toBe(longText);
-    expect(showMore).toHaveTextContent('Show less');
-  });
+      expect(content.textContent).toBe(longText);
+      expect(content.parentElement?.parentElement?.style.maxHeight).toBe('');
+      expect(toggle()).toHaveTextContent('Show less');
+    });
 
-  it('does not show show-more for short text', () => {
-    render(<ThinkingBlock step={makeStep()} />);
-    fireEvent.click(screen.getByTestId('thinking-block-trigger'));
-    expect(screen.queryByTestId('thinking-show-more')).not.toBeInTheDocument();
-  });
+    it('shows the toggle for text under the character cap that overflows the height', () => {
+      render(<ThinkingBlock step={makeStep({ content: { thinkingText: 'B'.repeat(1000) } })} />);
+      fireEvent.click(screen.getByTestId('thinking-block-trigger'));
+      expect(toggle()).toHaveTextContent('Show full');
+    });
 
-  it('does not truncate text at exactly 5000 chars (boundary)', () => {
-    const text5k = 'C'.repeat(5000);
-    render(<ThinkingBlock step={makeStep({ content: { thinkingText: text5k } })} />);
-    fireEvent.click(screen.getByTestId('thinking-block-trigger'));
+    it('shows no toggle for short text', () => {
+      render(<ThinkingBlock step={makeStep()} />);
+      fireEvent.click(screen.getByTestId('thinking-block-trigger'));
+      expect(toggle()).toBeNull();
+    });
 
-    const content = screen.getByTestId('thinking-block-content');
-    expect(content.textContent).toBe(text5k);
-    expect(screen.queryByTestId('thinking-show-more')).not.toBeInTheDocument();
-  });
+    it.each([
+      { length: 5000, cut: false },
+      { length: 5001, cut: true },
+    ])('character cap boundary: $length chars → cut $cut', ({ length, cut }) => {
+      const text = 'C'.repeat(length);
+      render(<ThinkingBlock step={makeStep({ content: { thinkingText: text } })} />);
+      fireEvent.click(screen.getByTestId('thinking-block-trigger'));
+      expect(screen.getByTestId('thinking-block-content').textContent).toBe(
+        cut ? 'C'.repeat(5000) + '…' : text,
+      );
+    });
 
-  it('truncates text at 5001 chars (just above threshold)', () => {
-    const text5001 = 'D'.repeat(5001);
-    render(<ThinkingBlock step={makeStep({ content: { thinkingText: text5001 } })} />);
-    fireEvent.click(screen.getByTestId('thinking-block-trigger'));
+    it('keeps the section and the expanded text open across a remount', () => {
+      const step = makeStep({ content: { thinkingText: 'E'.repeat(6000) } });
+      const ui = (children: React.ReactNode) => (
+        <TranscriptDisclosureProvider scope="s">{children}</TranscriptDisclosureProvider>
+      );
+      const { rerender } = render(ui(<ThinkingBlock chunkId="chunk-1" step={step} />));
+      fireEvent.click(screen.getByTestId('thinking-block-trigger'));
+      fireEvent.click(screen.getByRole('button', { name: 'Show full' }));
 
-    const content = screen.getByTestId('thinking-block-content');
-    // Truncated: first 5000 chars + ellipsis — content differs from original
-    expect(content.textContent).not.toBe(text5001);
-    expect(content.textContent!.endsWith('…')).toBe(true);
-    expect(screen.getByTestId('thinking-show-more')).toBeInTheDocument();
+      rerender(ui(null));
+      rerender(ui(<ThinkingBlock chunkId="chunk-1" step={step} />));
+
+      expect(screen.getByTestId('thinking-block-trigger')).toHaveAttribute('data-state', 'open');
+      expect(screen.getByTestId('thinking-block-content').textContent).toBe('E'.repeat(6000));
+    });
   });
 
   // ---------------------------------------------------------------------------

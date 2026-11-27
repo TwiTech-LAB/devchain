@@ -1,5 +1,9 @@
 import { Injectable } from '@nestjs/common';
+import { randomUUID } from 'node:crypto';
+import { constants as fsConstants } from 'node:fs';
+import { copyFile, lstat, mkdtemp, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import * as os from 'node:os';
+import { join } from 'node:path';
 import { DEVIN_TRAITS } from './devin.traits';
 import type {
   ProviderAdapter,
@@ -16,8 +20,23 @@ import type {
   HookEnvContext,
   SessionCommandCapability,
 } from './capabilities';
-import { devinSessionStorePath, devinTranscriptPath } from '../../../common/devin-transcript-paths';
+import { SESSION_START_SOURCE_ENV } from './capabilities/hook.capability';
+import type {
+  CreateSessionSavePointInput,
+  PrepareSessionForkLaunchInput,
+  SessionSavePointCopy,
+  SessionForkCapability,
+  SessionForkLaunchResult,
+} from './capabilities/session-fork.capability';
+import {
+  DEVIN_STORE_SESSIONS_DIR,
+  devinSessionStorePath,
+  devinTranscriptPath,
+} from '../../../common/devin-transcript-paths';
+import { IOError, ValidationError } from '../../../common/errors/error-types';
 import { parseJsonc } from '../../../common/jsonc';
+import { isRecord } from './plugin-catalog.utils';
+import { stripPromptFlags } from './fork-profile-options';
 
 /**
  * Adapter for the Devin CLI (`devin`, npm package `devin`, verified
@@ -68,7 +87,8 @@ export class DevinAdapter
     ConfigFileMcpCapability,
     TranscriptDiscoveryCapability,
     HookCapability,
-    SessionCommandCapability
+    SessionCommandCapability,
+    SessionForkCapability
 {
   readonly providerName = 'devin';
   readonly traits = DEVIN_TRAITS;
@@ -86,6 +106,7 @@ export class DevinAdapter
   // The export is written after each turn (and only after the Stop hook).
   readonly transcriptAppearsAfterTurn = true;
   readonly runtimePromptBehavior: RuntimePromptBehavior = { inputPromptMarker: '❭' };
+  readonly forkReadsSavePointTranscript = true;
 
   // ── ConfigFileMcpCapability ──────────────────────────────────────────────
   // `mcpMode = 'project_config'` routes MCP ensure/preflight through
@@ -111,6 +132,7 @@ export class DevinAdapter
   readonly hooksEnabled = true as const;
   // Devin's stdin payload carries no `transcript_path`; the reader derives it.
   readonly hooksProvideTranscriptPath = false;
+  readonly managedHookEnvKeys = [SESSION_START_SOURCE_ENV] as const;
 
   // Same DEVCHAIN_* env contract as Claude, plus a provider tag so relays that
   // run under BOTH providers' hook configs (Devin also executes the project's
@@ -123,6 +145,9 @@ export class DevinAdapter
       DEVCHAIN_SESSION_ID: context.sessionId,
       DEVCHAIN_TMUX_SESSION_NAME: context.tmuxSessionName,
       DEVCHAIN_HOOK_PROVIDER: this.providerName,
+      ...(context.sessionStartSource && {
+        [SESSION_START_SOURCE_ENV]: context.sessionStartSource,
+      }),
     };
   }
 
@@ -174,6 +199,118 @@ export class DevinAdapter
     return { argv, env };
   }
 
+  async createSavePoint(input: CreateSessionSavePointInput): Promise<SessionSavePointCopy> {
+    const { providerSessionId, transcriptPath, discardUnboundTranscript } = await this.copySession(
+      input,
+      false,
+    );
+    return { providerSessionId, transcriptPath, discardUnboundTranscript };
+  }
+
+  async prepareForkLaunch(input: PrepareSessionForkLaunchInput): Promise<SessionForkLaunchResult> {
+    const child = await this.copySession(input, true);
+    try {
+      const separator = input.profileOptionArgs.indexOf('--');
+      const options =
+        separator === -1 ? input.profileOptionArgs : input.profileOptionArgs.slice(0, separator);
+      return {
+        ...child,
+        ...this.buildLaunchArgs({
+          mode: 'restore',
+          providerSessionId: child.providerSessionId,
+          sessionId: input.sessionId,
+          projectId: input.projectId,
+          profileOptionArgs: stripPromptFlags(options, {
+            valueFlags: ['--prompt-file'],
+            optionalValueFlags: ['-p', '--print'],
+            shortFlags: {
+              boolean: ['c', 'h', 'V'],
+              takesValue: ['p', 'r'],
+            },
+          }),
+          env: input.env,
+        }),
+      };
+    } catch (error) {
+      await child.discardUnboundTranscript().catch(() => undefined);
+      throw error;
+    }
+  }
+
+  /**
+   * With `protectExport`, an export that exists at the target path is backed up before the copy
+   * replaces it: discard puts the backup back, commit deletes it.
+   */
+  private async copySession(
+    {
+      providerSessionId: sourceId,
+      projectId,
+      sessionId,
+      transcriptPath: sourceExport,
+    }: CreateSessionSavePointInput,
+    protectExport: boolean,
+  ) {
+    if (!/^[a-z0-9][a-z0-9-]*$/.test(sourceId)) {
+      throw new ValidationError('Invalid Devin source session ID.');
+    }
+    const home = os.homedir();
+    const sessionsDir = join(devinSessionStorePath(home, projectId), DEVIN_STORE_SESSIONS_DIR);
+    const source = join(sessionsDir, sourceId);
+    const sourceMeta = join(source, 'meta.json');
+    const sourceLog = join(source, 'log.jsonl');
+    if (!(await lstat(source)).isDirectory()) {
+      throw new IOError('Devin source session store is not a directory.');
+    }
+    const [metaStat, logStat] = await Promise.all([lstat(sourceMeta), lstat(sourceLog)]);
+    if (!metaStat.isFile() || !logStat.isFile()) {
+      throw new IOError('Devin session metadata and log must be regular files.');
+    }
+
+    const providerSessionId = randomUUID();
+    const transcriptPath = devinTranscriptPath(home, sessionId);
+    const target = join(sessionsDir, providerSessionId);
+    const [meta, transcript] = await Promise.all([
+      readFile(sourceMeta, 'utf8'),
+      readFile(sourceExport, 'utf8'),
+    ]);
+    const copiedMeta = rewriteCopyId(meta, 'id', sourceId, providerSessionId);
+    const copiedTranscript = rewriteCopyId(transcript, 'session_id', sourceId, providerSessionId);
+    const stagedStore = await mkdtemp(join(sessionsDir, '.devchain-copy-'));
+    const stagedExport = `${transcriptPath}.${providerSessionId}.tmp`;
+    let backup: string | null = null;
+    let storePublished = false;
+    try {
+      await copyFile(sourceLog, join(stagedStore, 'log.jsonl'));
+      await writeFile(join(stagedStore, 'meta.json'), copiedMeta, { mode: 0o600 });
+      await writeFile(stagedExport, copiedTranscript, { mode: 0o600, flag: 'wx' });
+      await rename(stagedStore, target);
+      storePublished = true;
+      if (protectExport) backup = await backupExport(transcriptPath, providerSessionId);
+      await rename(stagedExport, transcriptPath);
+    } catch (error) {
+      await Promise.allSettled([
+        rm(storePublished ? target : stagedStore, { recursive: true, force: true }),
+        rm(stagedExport, { force: true }),
+        ...(backup ? [rm(backup, { force: true })] : []),
+      ]);
+      throw error;
+    }
+    const backupPath = backup;
+    return {
+      providerSessionId,
+      transcriptPath,
+      discardUnboundTranscript: async () => {
+        await Promise.all([
+          rm(target, { recursive: true, force: true }),
+          backupPath ? rename(backupPath, transcriptPath) : rm(transcriptPath, { force: true }),
+        ]);
+      },
+      ...(backupPath && {
+        commitBoundTranscript: () => rm(backupPath, { force: true }),
+      }),
+    };
+  }
+
   /**
    * Parse MCP entries from `.devin/mcp_config.local.json` content (JSON with
    * comments). Throws `SyntaxError` on invalid content; the caller handles it.
@@ -216,4 +353,34 @@ export class DevinAdapter
       value: { url: options.endpoint, transport: 'http' },
     };
   }
+}
+
+function rewriteCopyId(
+  content: string,
+  key: 'id' | 'session_id',
+  sourceId: string,
+  targetId: string,
+): string {
+  let record: unknown;
+  try {
+    record = JSON.parse(content);
+  } catch {
+    throw new IOError('Devin session metadata or export is not valid JSON.');
+  }
+  if (!isRecord(record) || record[key] !== sourceId) {
+    throw new IOError('Devin session metadata or export has a different session ID.');
+  }
+  return JSON.stringify({ ...record, [key]: targetId });
+}
+
+/** Returns the backup path, or null when no export exists at `exportPath`. */
+async function backupExport(exportPath: string, copyId: string): Promise<string | null> {
+  const backupPath = `${exportPath}.${copyId}.bak`;
+  try {
+    await copyFile(exportPath, backupPath, fsConstants.COPYFILE_EXCL);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    throw error;
+  }
+  return backupPath;
 }

@@ -11,6 +11,7 @@ import type {
   ProjectFileSyncFailures,
   DockerPlan,
   ProjectFileSyncStatus,
+  FileSyncStatusResponse,
   VmProviderConnectionView,
   RemoteNoticeDto,
   FolderList,
@@ -170,6 +171,12 @@ export class InMemoryRemoteVmApi implements RemoteVmApi {
   providerConnectionsData: VmProviderConnectionView[] = [];
   permissionMissing: string[] = [];
   fileSyncStatus: ProjectFileSyncStatus = { folders: null };
+  syncStatus: FileSyncStatusResponse = {
+    checkedAt: '2026-01-01T00:00:00.000Z',
+    syncthing: { running: true, version: 'v2.1.5', error: null },
+    links: [],
+    scopes: [],
+  };
   availableSshKeys: LocalSshKey[] = [];
   dockerPlanData: unknown = null;
   readiness: RemoteReadinessDto = copy(READY);
@@ -259,6 +266,7 @@ export class InMemoryRemoteVmApi implements RemoteVmApi {
     readFileSyncSuggestions: [],
     previewFileSyncPattern: [],
     readFileSyncStatus: [],
+    readSyncStatus: [],
     readDockerPlan: [],
     applyDockerUserFix: [],
     verifyDockerUserFix: [],
@@ -633,6 +641,12 @@ export class InMemoryRemoteVmApi implements RemoteVmApi {
       vm: { state: 'unavailable', tracked: null, kept: null },
     }),
     readFileSyncStatus: async () => this.fileSyncStatus,
+    readSyncStatus: async ({ projectId }) => ({
+      ...this.syncStatus,
+      scopes: this.syncStatus.scopes.filter(
+        (scope) => projectId === undefined || scope.projectId === projectId,
+      ),
+    }),
     readDockerPlan: async () => {
       if (!this.dockerPlanData) throw new Error('The server returned an invalid Docker plan.');
       return this.dockerPlanData as DockerPlan;
@@ -738,6 +752,7 @@ export class InMemoryRemoteVmApi implements RemoteVmApi {
   readonly readFileSyncSuggestions = this.method('readFileSyncSuggestions');
   readonly previewFileSyncPattern = this.method('previewFileSyncPattern');
   readonly readFileSyncStatus = this.method('readFileSyncStatus');
+  readonly readSyncStatus = this.method('readSyncStatus');
   readonly readDockerPlan = this.method('readDockerPlan');
   readonly applyDockerUserFix = this.method('applyDockerUserFix');
   readonly verifyDockerUserFix = this.method('verifyDockerUserFix');
@@ -895,6 +910,7 @@ export type InMemoryRemoteVmApiSeed = Pick<
   | 'providerConnectionsData'
   | 'permissionMissing'
   | 'fileSyncStatus'
+  | 'syncStatus'
   | 'availableSshKeys'
   | 'dockerPlanData'
   | 'powerOnGate'

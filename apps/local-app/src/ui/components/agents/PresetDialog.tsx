@@ -3,6 +3,7 @@ import { useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
 import { projectPresetQueryKeys } from '@/ui/lib/project-presets';
 import { providerConfigQueries, type ProfileProviderConfig } from '@/ui/lib/provider-configs';
 import {
+  launchModelOf,
   providerEffortQueries,
   selectProviderEffortOptions,
   type ProviderEffortOptionsCatalog,
@@ -34,7 +35,7 @@ import type { Preset, PresetAgentConfig } from '@/ui/lib/preset-types';
 import { providerModelQueryKeys } from '@/ui/lib/provider-model-query-keys';
 import { shortModelName } from '@/ui/lib/model-utils';
 import type { FetchFn } from '@/ui/lib/api-transport';
-import { useFetchFactory } from '@/ui/hooks/useFetchFactory';
+import { useAmbientBackend, useFetchFactory } from '@/ui/hooks/useFetchFactory';
 import { PresetTeamConfigsSection } from './PresetTeamConfigsSection';
 import { usePresetTeamConfigs } from './usePresetTeamConfigs';
 
@@ -151,6 +152,7 @@ export function PresetDialog({
   presetToEdit,
 }: PresetDialogProps) {
   const fetchFn = useFetchFactory();
+  const backend = useAmbientBackend();
   const { toast } = useToast();
   const queryClient = useQueryClient();
   const [isSaving, setIsSaving] = useState(false);
@@ -233,7 +235,7 @@ export function PresetDialog({
 
   const providerModelQueries = useQueries({
     queries: selectedProviderIds.map((providerId) => ({
-      queryKey: providerModelQueryKeys.main(providerId),
+      queryKey: providerModelQueryKeys.main(providerId, backend),
       queryFn: async () => {
         const res = await fetchFn(`/api/providers/${providerId}/models`);
         if (!res.ok) {
@@ -259,7 +261,7 @@ export function PresetDialog({
 
   const providerEffortResults = useQueries({
     queries: selectedProviderIds.map((providerId) => ({
-      ...providerEffortQueries.catalog(fetchFn, providerId),
+      ...providerEffortQueries.catalog(fetchFn, providerId, backend),
       select: selectProviderEffortOptions,
       staleTime: 5 * 60 * 1000,
       enabled: open,
@@ -431,12 +433,21 @@ export function PresetDialog({
     }
   };
 
-  const handleAgentModelSelect = (agentName: string, modelName: string | null) => {
+  /** `clearEffort`: the new model leaves none, so the effort select locks and drops its pick. */
+  const handleAgentModelSelect = (
+    agentName: string,
+    modelName: string | null,
+    clearEffort: boolean,
+  ) => {
     const existingIndex = selectedAgentConfigs.findIndex((ac) => ac.agentName === agentName);
     if (existingIndex < 0) return;
 
     setSelectedAgentConfigs((prev) =>
-      prev.map((ac, i) => (i === existingIndex ? { ...ac, modelOverride: modelName } : ac)),
+      prev.map((ac, i) =>
+        i === existingIndex
+          ? { ...ac, modelOverride: modelName, ...(clearEffort ? { effortOverride: null } : {}) }
+          : ac,
+      ),
     );
   };
 
@@ -550,11 +561,10 @@ export function PresetDialog({
                     const providerEfforts = effortsCatalog?.efforts ?? [];
                     const requiresModelForEffort = effortsCatalog?.requiresModelForEffort ?? false;
                     const selectedEffortOverride = getSelectedEffortOverride(agent.name);
-                    // "Select a model first" gate: resolvable via agent override OR config structured model
-                    const hasResolvableModel = Boolean(
-                      selectedModelOverride || selectedConfigOption?.model,
-                    );
-                    const effortModelRequired = requiresModelForEffort && !hasResolvableModel;
+                    // "Select a model first" gate: no model applies at launch.
+                    const effortModelRequired =
+                      requiresModelForEffort &&
+                      !launchModelOf(selectedModelOverride, selectedConfigOption);
                     const effortEmpty = providerEfforts.length === 0;
                     const effortDisabled = effortModelRequired || effortEmpty;
                     const effortPlaceholder = effortModelRequired
@@ -611,12 +621,15 @@ export function PresetDialog({
                         {isSelected && selectedProviderId && hasProviderModels ? (
                           <Select
                             value={selectedModelOverride ?? DEFAULT_MODEL_OVERRIDE}
-                            onValueChange={(value) =>
+                            onValueChange={(value) => {
+                              const model = value === DEFAULT_MODEL_OVERRIDE ? null : value;
                               handleAgentModelSelect(
                                 agent.name,
-                                value === DEFAULT_MODEL_OVERRIDE ? null : value,
-                              )
-                            }
+                                model,
+                                requiresModelForEffort &&
+                                  !launchModelOf(model, selectedConfigOption),
+                              );
+                            }}
                           >
                             <SelectTrigger
                               className="h-7 w-48 text-xs"

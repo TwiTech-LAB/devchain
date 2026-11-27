@@ -31,6 +31,7 @@ import * as eventFieldsCatalog from '../events/event-fields-catalog';
 import * as eventsService from '../../events/services/events.service';
 import { TeamsService } from '../../teams/services/teams.service';
 import { createProjectWriteGateStub } from '../../storage/write-gate/testing/project-write-gate.stub';
+import { HooksService } from '../../hooks/services/hooks.service';
 import { ProjectWriteGate } from '../../storage/write-gate/project-write-gate';
 
 describe('SubscriberExecutorService', () => {
@@ -49,6 +50,7 @@ describe('SubscriberExecutorService', () => {
   let mockScheduler: jest.Mocked<Pick<AutomationSchedulerService, 'schedule'>>;
   let mockTeamsService: { listTeamsByAgent: jest.Mock };
   let mockModuleRef: { get: jest.Mock };
+  let hooks: HooksService;
 
   const createMockPayload = (
     overrides: Partial<TerminalWatcherTriggeredEventPayload> = {},
@@ -164,6 +166,8 @@ describe('SubscriberExecutorService', () => {
       get: jest.fn().mockReturnValue(mockTeamsService),
     };
 
+    hooks = new HooksService({} as never, {} as never, {} as never, {} as never, {} as never);
+
     // Mock getEventMetadata to return null by default (no eventId)
     jest.spyOn(eventsService, 'getEventMetadata').mockReturnValue(null);
 
@@ -211,6 +215,7 @@ describe('SubscriberExecutorService', () => {
           provide: ModuleRef,
           useValue: mockModuleRef,
         },
+        { provide: HooksService, useValue: hooks },
       ],
     }).compile();
 
@@ -315,6 +320,7 @@ describe('SubscriberExecutorService', () => {
         id: 'agent-456',
         projectId: 'resolved-project-id',
         isProjectOwner: false,
+        disabled: false,
         profileId: 'profile-1',
         providerConfigId: 'config-1',
         modelOverride: null,
@@ -1127,6 +1133,7 @@ describe('SubscriberExecutorService', () => {
           id: 'agent-456',
           projectId: 'resolved-project-id',
           isProjectOwner: false,
+          disabled: false,
           profileId: 'profile-1',
           providerConfigId: 'config-1',
           modelOverride: null,
@@ -1304,28 +1311,37 @@ describe('SubscriberExecutorService', () => {
         jest.useRealTimers();
       });
 
-      it('should retry once after 1s delay when retryOnError is enabled and action fails', async () => {
-        mockExecute
-          .mockResolvedValueOnce({ success: false, error: 'First failure' })
-          .mockResolvedValueOnce({ success: true });
+      // The payload is a stamped hook event, so a rollback during the delay must stop the retry.
+      it.each([
+        { fence: 'no rollback', calls: 2, success: true },
+        { fence: 'a rollback during the delay', calls: 1, success: false },
+      ])(
+        'retries once after 1s delay when retryOnError is enabled and action fails ($fence)',
+        async ({ fence, calls, success }) => {
+          mockExecute
+            .mockResolvedValueOnce({ success: false, error: 'First failure' })
+            .mockResolvedValueOnce({ success: true });
 
-        const subscriber = createMockSubscriber({ retryOnError: true });
-        const payload = createMockPayload();
+          const subscriber = createMockSubscriber({ retryOnError: true });
+          const payload = { ...createMockPayload(), firedAtMs: Date.now() - 1 };
 
-        const executePromise = service.executeSubscriber(subscriber, 'test.event', payload);
+          const executePromise = service.executeSubscriber(subscriber, 'test.event', payload);
 
-        // Let initial async operations complete (projectId resolution, etc.)
-        await jest.advanceTimersByTimeAsync(0);
+          // Let initial async operations complete (projectId resolution, etc.)
+          await jest.advanceTimersByTimeAsync(0);
 
-        // First call should have happened after initial setup
-        expect(mockExecute).toHaveBeenCalledTimes(1);
+          // First call should have happened after initial setup
+          expect(mockExecute).toHaveBeenCalledTimes(1);
+          if (fence !== 'no rollback') hooks.fenceRuntime('session-123');
 
-        // Advance timer for retry delay
-        await jest.advanceTimersByTimeAsync(1000);
-        await executePromise;
+          // Advance timer for retry delay
+          await jest.advanceTimersByTimeAsync(1000);
+          const result = await executePromise;
 
-        expect(mockExecute).toHaveBeenCalledTimes(2);
-      });
+          expect(mockExecute).toHaveBeenCalledTimes(calls);
+          expect(result).toMatchObject({ success });
+        },
+      );
 
       it('should not retry when retryOnError is disabled', async () => {
         mockExecute.mockResolvedValue({ success: false, error: 'Failure' });
@@ -1422,6 +1438,7 @@ describe('SubscriberExecutorService', () => {
         mockTeamsService as unknown as TeamsService,
         mockModuleRef as unknown as ModuleRef,
         createProjectWriteGateStub() as never,
+        hooks,
       );
 
       const mockExecute = jest.fn().mockResolvedValue({ success: true });
@@ -1751,6 +1768,7 @@ describe('SubscriberExecutorService', () => {
           id: 'agent-456',
           projectId: 'project-789',
           isProjectOwner: false,
+          disabled: false,
           profileId: 'profile-1',
           providerConfigId: 'config-1',
           modelOverride: null,
@@ -1857,37 +1875,48 @@ describe('SubscriberExecutorService', () => {
       expect(executeSpy).not.toHaveBeenCalled();
     });
 
-    it('skips with disabled when the subscriber is disabled after scheduling', async () => {
-      const atSchedule = createMockSubscriber({ eventFilter: null });
-      mockStorage.findSubscribersByEventName.mockResolvedValue([atSchedule]);
-      mockStorage.getSubscriber.mockResolvedValue(atSchedule);
+    // A rollback restarts the session under the same ID while a delayed task waits, so the task
+    // re-checks the hook fence when it runs, as it re-checks the subscriber.
+    it.each([
+      { change: 'disabled', skipReason: 'disabled' },
+      { change: 'deleted', skipReason: 'deleted' },
+      { change: 'fenced', skipReason: 'superseded_runtime' },
+      { change: 'newRuntime', skipReason: undefined },
+    ] as const)(
+      'applies the latest state at execution after scheduling ($change)',
+      async ({ change, skipReason }) => {
+        const atSchedule = createMockSubscriber({ eventFilter: null });
+        mockStorage.findSubscribersByEventName.mockResolvedValue([atSchedule]);
+        mockStorage.getSubscriber.mockResolvedValue(atSchedule);
+        // 'newRuntime': the rollback came first and the hook fired after it.
+        if (change === 'newRuntime') hooks.fenceRuntime('session-123');
+        const firedAtMs = Date.now() + (change === 'newRuntime' ? 1000 : -1000);
 
-      await service.handleEvent('terminal.watcher.triggered', createMockPayload());
+        await service.handleEvent('claude.hooks.session.started', {
+          ...createMockPayload(),
+          source: 'clear',
+          firedAtMs,
+        });
+        const task = captureScheduledTask();
 
-      const task = captureScheduledTask();
+        if (change === 'disabled') {
+          mockStorage.getSubscriber.mockResolvedValue(createMockSubscriber({ enabled: false }));
+        } else if (change === 'deleted') {
+          mockStorage.getSubscriber.mockResolvedValue(null);
+        } else if (change === 'fenced') {
+          hooks.fenceRuntime('session-123');
+        }
+        const result = await task.execute();
 
-      mockStorage.getSubscriber.mockResolvedValue(createMockSubscriber({ enabled: false }));
-
-      const result = await task.execute();
-
-      expect(result).toMatchObject({ skipped: true, skipReason: 'disabled' });
-    });
-
-    it('skips with deleted when the subscriber is deleted after scheduling', async () => {
-      const atSchedule = createMockSubscriber({ eventFilter: null });
-      mockStorage.findSubscribersByEventName.mockResolvedValue([atSchedule]);
-      mockStorage.getSubscriber.mockResolvedValue(atSchedule);
-
-      await service.handleEvent('terminal.watcher.triggered', createMockPayload());
-
-      const task = captureScheduledTask();
-
-      mockStorage.getSubscriber.mockResolvedValue(null);
-
-      const result = await task.execute();
-
-      expect(result).toMatchObject({ skipped: true, skipReason: 'deleted' });
-    });
+        if (skipReason) {
+          expect(result).toMatchObject({ skipped: true, skipReason });
+          expect(mockAmd.deliver).not.toHaveBeenCalled();
+        } else {
+          expect(result).toMatchObject({ success: true });
+          expect(mockAmd.deliver).toHaveBeenCalledTimes(1);
+        }
+      },
+    );
   });
 });
 
@@ -1927,6 +1956,8 @@ describe('EventEmitter2 onAny eventName capture (integration)', () => {
         nullModuleRef as unknown as never,
         // moduleRef,
         createProjectWriteGateStub() as never,
+        {} as never,
+        // hooks
       );
 
       expect(() =>

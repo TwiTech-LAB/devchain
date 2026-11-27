@@ -813,6 +813,89 @@ describe('AgentFormDialog', () => {
     expect(screen.queryByText('Select a model first')).not.toBeInTheDocument();
   });
 
+  it('enables the effort selector when requiresModelForEffort and the raw options carry --model', async () => {
+    setupFetchMock(
+      [
+        {
+          id: 'config-1',
+          profileId: 'profile-1',
+          providerId: 'provider-1',
+          name: 'default',
+          options: '--model zed/sonnet',
+          env: null,
+          model: null,
+          effort: null,
+        },
+      ],
+      undefined,
+      {
+        'provider-1': {
+          efforts: [{ name: 'high' }],
+          supportsEffort: true,
+          requiresModelForEffort: true,
+        },
+      },
+    );
+    const user = userEvent.setup();
+    const { Wrapper } = createWrapper();
+    render(<AgentFormDialog {...buildProps()} />, { wrapper: Wrapper });
+
+    await selectProfileAndConfig(user);
+
+    const effortSelect = (await screen.findByLabelText('Effort override')) as HTMLSelectElement;
+    expect(effortSelect).not.toBeDisabled();
+    expect(screen.queryByText('Select a model first')).not.toBeInTheDocument();
+  });
+
+  it('clears the effort override when Model -> Default leaves no model', async () => {
+    setupFetchMock(
+      [
+        {
+          id: 'config-1',
+          profileId: 'profile-1',
+          providerId: 'provider-1',
+          name: 'default',
+          options: null,
+          env: null,
+          model: null,
+          effort: null,
+        },
+      ],
+      { 'provider-1': [{ id: 'm1', name: 'zed/sonnet' }] },
+      {
+        'provider-1': {
+          efforts: [{ name: 'high' }],
+          supportsEffort: true,
+          requiresModelForEffort: true,
+        },
+      },
+    );
+    const onSubmit = jest.fn();
+    const user = userEvent.setup();
+    const { Wrapper } = createWrapper();
+    render(<AgentFormDialog {...buildProps({ onSubmit })} />, { wrapper: Wrapper });
+
+    await selectProfileAndConfig(user);
+    const modelSelect = (await screen.findByLabelText('Model Override')) as HTMLSelectElement;
+    await waitFor(() =>
+      expect([...modelSelect.options].map((o) => o.value)).toContain('zed/sonnet'),
+    );
+    await user.selectOptions(modelSelect, 'zed/sonnet');
+    const effortSelect = (await screen.findByLabelText('Effort override')) as HTMLSelectElement;
+    await waitFor(() => expect(effortSelect).not.toBeDisabled());
+    await waitFor(() => expect([...effortSelect.options].map((o) => o.value)).toContain('high'));
+    await user.selectOptions(effortSelect, 'high');
+
+    await user.selectOptions(modelSelect, modelSelect.options[0]);
+
+    expect(effortSelect).toBeDisabled();
+    expect(effortSelect.value).toBe('__default_effort_override__');
+    await user.click(screen.getByRole('button', { name: /^create$/i }));
+    expect(onSubmit).toHaveBeenCalledWith(
+      expect.objectContaining({ modelOverride: null, effortOverride: null }),
+    );
+  });
+
   it('persists effortOverride on create and clears to null via "Default"', async () => {
     setupFetchMock(
       undefined,

@@ -12,123 +12,38 @@ import { ProjectReplicaApplier } from '../../remotes/replica/project-replica.app
 import { ProjectReplicaBuilder } from '../../remotes/replica/project-replica.builder';
 import type {
   ExternalManagedSubtaskLink,
+  IntegrationConnection,
+  IntegrationCredentials,
   IntegrationProvider,
 } from '../../storage/models/domain.models';
 import { IntegrationCredentialCipher } from '../../storage/local/integration-credential-cipher';
 import { LocalStorageService } from '../../storage/local/local-storage.service';
 import { ExternalProviderError } from '../errors/external-provider.errors';
 import { ExternalTaskProviderRegistry } from '../external-task-provider.registry';
-import type {
-  ExternalSubtaskSnapshot,
-  ExternalSubtaskSyncCapability,
-} from '../models/external-provider.models';
-import type { ExternalTaskProvider } from '../ports/external-task-provider';
+import type { ExternalSubtaskSnapshot } from '../models/external-provider.models';
 import { ProviderOperationGate } from '../sessions/provider-operation-gate';
 import {
   ExternalSubtaskSyncSubscriber,
   MANAGED_SUBTASK_DELIVERY_KEY,
+  REMOTE_SCOPE_MISMATCH,
 } from './external-subtask-sync.subscriber';
 import { MANAGED_SUBTASK_RETRY_BLOCKED_REASONS } from './managed-subtask-recovery-policy';
+import {
+  fakeSubtaskSyncProvider as fakeProvider,
+  type FakeSubtaskSyncProvider as FakeProvider,
+} from '../testing/fake-subtask-sync-provider.fixture';
+import { ManagedProjectionLock } from './managed-projection-lock';
+import { CommittedEventStore } from '../../events/services/committed-event.store';
+import { DurableEventDispatcherService } from '../../events/services/durable-event-dispatcher.service';
+import {
+  DurableEventRegistryService,
+  type DurableEventSubscriber,
+} from '../../events/services/durable-event-registry.service';
 
 jest.mock('node:os', () => {
   const actual = jest.requireActual<typeof import('node:os')>('node:os');
   return { ...actual, homedir: jest.fn(actual.homedir) };
 });
-
-interface FakeProvider {
-  adapter: ExternalTaskProvider;
-  remotes: Map<string, ExternalSubtaskSnapshot>;
-  create: jest.Mock;
-  update: jest.Mock;
-  delete: jest.Mock;
-  listOwned: jest.Mock;
-  calls: string[];
-}
-
-function fakeProvider(provider: IntegrationProvider): FakeProvider {
-  const remotes = new Map<string, ExternalSubtaskSnapshot>();
-  const calls: string[] = [];
-  let sequence = 0;
-  const create = jest.fn(async (_credentials, _context, input) => {
-    calls.push(`${provider}:create`);
-    const remoteTaskId = `${provider}-child-${++sequence}`;
-    const snapshot: ExternalSubtaskSnapshot = {
-      remoteTaskId,
-      remoteKey: remoteTaskId.toUpperCase(),
-      parentRemoteTaskId: input.parentRemoteTaskId,
-      workAreaRemoteId: provider === 'clickup' ? 'list-clickup' : 'board-jira',
-      ownershipToken: input.ownershipToken,
-      title: input.title,
-      description: input.description,
-    };
-    remotes.set(remoteTaskId, snapshot);
-    return snapshot;
-  });
-  const readExact = jest.fn(async (_credentials, _context, remoteTaskId: string) => {
-    const snapshot = remotes.get(remoteTaskId);
-    return snapshot ? { ...snapshot } : null;
-  });
-  const update = jest.fn(async (_credentials, _context, input) => {
-    calls.push(`${provider}:update`);
-    const current = remotes.get(input.remoteTaskId);
-    if (!current || current.ownershipToken !== input.ownershipToken) {
-      throw new ExternalProviderError(provider, 'ownership_mismatch');
-    }
-    remotes.set(input.remoteTaskId, {
-      ...current,
-      ...(input.title !== undefined ? { title: input.title } : {}),
-      ...(input.description !== undefined ? { description: input.description } : {}),
-    });
-  });
-  const remove = jest.fn(async (_credentials, _context, proof) => {
-    calls.push(`${provider}:delete`);
-    const current = remotes.get(proof.remoteTaskId);
-    if (!current) return { outcome: 'already_absent' as const };
-    if (current.ownershipToken !== proof.ownershipToken) {
-      throw new ExternalProviderError(provider, 'ownership_mismatch');
-    }
-    remotes.delete(proof.remoteTaskId);
-    return { outcome: 'deleted' as const };
-  });
-  const listOwned = jest.fn(async (_credentials, _context, parentId, ownershipToken) => ({
-    items: [...remotes.values()].filter(
-      (item) => item.parentRemoteTaskId === parentId && item.ownershipToken === ownershipToken,
-    ),
-    complete: true,
-  }));
-  const capability: ExternalSubtaskSyncCapability = {
-    create,
-    readExact,
-    update,
-    delete: remove,
-    listOwnedDirectChildren: listOwned,
-    assertOwned: jest.fn(async (_credentials, _context, proof) => {
-      const current = remotes.get(proof.remoteTaskId);
-      if (!current || current.ownershipToken !== proof.ownershipToken) {
-        throw new ExternalProviderError(provider, 'ownership_mismatch');
-      }
-      return { ...current };
-    }),
-  };
-  return {
-    adapter: {
-      provider,
-      descriptor: {
-        provider,
-        displayName: provider === 'clickup' ? 'ClickUp' : 'Jira',
-        capabilities: { myWork: false },
-      },
-      subtaskSync: capability,
-      verifyCredentials: jest.fn(),
-    },
-    remotes,
-    create,
-    update,
-    delete: remove,
-    listOwned,
-    calls,
-  };
-}
 
 // Layer: backend integration. Reconciliation correctness depends on real
 // transaction hooks, cascade behavior, recognition joins, and persisted phases.
@@ -177,6 +92,8 @@ describe('ExternalSubtaskSyncSubscriber', () => {
       events as unknown as EventsService,
       new ExternalTaskProviderRegistry([clickup.adapter, jira.adapter]),
       providerGate,
+      new ManagedProjectionLock(),
+      { isClaimedHost: () => false },
     );
 
     const project = await storage.createProject({
@@ -250,7 +167,7 @@ describe('ExternalSubtaskSyncSubscriber', () => {
     hostedProjectId: string;
     hostedStatusId: string;
     hostedParentId: string;
-    pull: () => Promise<void>;
+    pull: (since?: string) => Promise<void>;
   }> {
     const { sqlite: hostSqlite, db: hostDb } = createTestDatabase();
     hostSqlite.pragma('foreign_keys = ON');
@@ -275,18 +192,22 @@ describe('ExternalSubtaskSyncSubscriber', () => {
 
     type ApplierEvents = ConstructorParameters<typeof ProjectReplicaApplier>[1];
     const emitted: Array<Parameters<ApplierEvents['emitCommitted']>[0]> = [];
-    const applier = new ProjectReplicaApplier(storage, {
-      prepareCommitted: ((name, payload) => ({
-        id: randomUUID(),
-        name,
-        payload: remoteProjectSyncedEvent.schema.parse(payload),
-        requestId: null,
-        publishedAt: new Date().toISOString(),
-      })) as ApplierEvents['prepareCommitted'],
-      emitCommitted: (event) => {
-        emitted.push(event);
+    const applier = new ProjectReplicaApplier(
+      storage,
+      {
+        prepareCommitted: ((name, payload) => ({
+          id: randomUUID(),
+          name,
+          payload: remoteProjectSyncedEvent.schema.parse(payload),
+          requestId: null,
+          publishedAt: new Date().toISOString(),
+        })) as ApplierEvents['prepareCommitted'],
+        emitCommitted: (event) => {
+          emitted.push(event);
+        },
       },
-    });
+      new ManagedProjectionLock(),
+    );
     const hostBuilder = new ProjectReplicaBuilder(host);
     const attach = await hostBuilder.build({ projectIds: [project.id], scope: 'attach' });
     if (!attach.ok) throw new Error(JSON.stringify(attach.errors));
@@ -315,13 +236,14 @@ describe('ExternalSubtaskSyncSubscriber', () => {
       hostedProjectId: project.id,
       hostedStatusId,
       hostedParentId: parent.id,
-      pull: async () => {
+      pull: async (since = new Date(Date.now() - 60_000).toISOString()) => {
         emitted.length = 0;
         const live = await hostBuilder.build({
           projectIds: [project.id],
           scope: 'live',
-          changedSince: new Date(Date.now() - 60_000).toISOString(),
+          changedSince: since,
           includeIdSets: true,
+          includeExternalLinks: true,
         });
         if (!live.ok) throw new Error(JSON.stringify(live.errors));
         await applier.apply(live.replica, {
@@ -398,6 +320,70 @@ describe('ExternalSubtaskSyncSubscriber', () => {
     expect(await storage.listExternalManagedSubtaskLinksByProvider('clickup')).toEqual([]);
   });
 
+  it('reconciles the children of a parent the VM relinked, releasing the old projection without a vendor call', async () => {
+    const mirror = await hostedMirror();
+    const child = await mirror.host.createEpic({
+      projectId: mirror.hostedProjectId,
+      statusId: mirror.hostedStatusId,
+      title: 'Hosted child',
+      parentId: mirror.hostedParentId,
+      description: null,
+      data: null,
+      tags: [],
+    });
+    await mirror.pull();
+    const [connection] = await storage.listIntegrationConnections(mirror.hostedProjectId);
+    await mirror.host.replaceDeliveredIntegrationConnections(
+      [
+        {
+          id: connection!.id,
+          projectId: mirror.hostedProjectId,
+          provider: 'clickup',
+          generation: connection!.generation,
+        },
+      ],
+      {
+        seed: [
+          {
+            projectId: mirror.hostedProjectId,
+            links: await storage.listOrdinaryExternalTaskLinkRows(mirror.hostedProjectId),
+          },
+        ],
+      },
+    );
+    const vmHosted = { vmHosted: true };
+    await mirror.host.deleteExternalTaskLink(mirror.hostedParentId, null, undefined, vmHosted);
+    await mirror.host.setEpicExternalTaskLink(
+      mirror.hostedParentId,
+      {
+        connectionId: connection!.id,
+        connectionGeneration: connection!.generation,
+        provider: 'clickup',
+        remoteScopeKey: 'workspace-clickup',
+        remoteTaskId: 'clickup-hosted-parent-2',
+        sourceSnapshot: { workAreaId: 'list-clickup', workAreaName: 'ClickUp List' },
+      },
+      undefined,
+      vmHosted,
+    );
+
+    // No epic changed on the VM: only the link tables move.
+    await mirror.pull('9999-12-31T00:00:00.000Z');
+
+    expect(clickup.delete).not.toHaveBeenCalled();
+    expect(clickup.create).toHaveBeenCalledTimes(2);
+    expect(clickup.create.mock.calls[1]![2]).toMatchObject({
+      parentRemoteTaskId: 'clickup-hosted-parent-2',
+    });
+    expect(await storage.listExternalManagedSubtaskLinksByProvider('clickup')).toEqual([
+      expect.objectContaining({
+        epicIdSnapshot: child.id,
+        parentRemoteTaskId: 'clickup-hosted-parent-2',
+        operationPhase: 'confirmed',
+      }),
+    ]);
+  });
+
   it('ignores remote.project.synced when the instance is the host receiving an attach', async () => {
     const reconcile = jest.spyOn(subscriber, 'reconcileEpic');
 
@@ -421,7 +407,35 @@ describe('ExternalSubtaskSyncSubscriber', () => {
     expect(clickup.delete).not.toHaveBeenCalled();
   });
 
-  it('registers exactly one durable identity for factual Epic, connection and mirror-sync events', () => {
+  it('sends no vendor call on a claimed VM host, where home delivered the connection', async () => {
+    let claimed = true;
+    const vmSubscriber = new ExternalSubtaskSyncSubscriber(
+      storage,
+      events as unknown as EventsService,
+      new ExternalTaskProviderRegistry([clickup.adapter, jira.adapter]),
+      providerGate,
+      new ManagedProjectionLock(),
+      { isClaimedHost: () => claimed },
+    );
+    const event: CommittedEvent = {
+      id: 'child-updated',
+      name: 'epic.updated',
+      payload: { epicId: childId },
+      requestId: null,
+      publishedAt: new Date().toISOString(),
+    } as CommittedEvent;
+
+    await vmSubscriber.handleCommittedEvent(event);
+    expect(clickup.create).not.toHaveBeenCalled();
+    expect(await storage.listExternalManagedSubtaskLinksByProvider('clickup')).toEqual([]);
+
+    // The check runs on each event: the same event projects once the instance is home.
+    claimed = false;
+    await vmSubscriber.handleCommittedEvent(event);
+    expect(clickup.create).toHaveBeenCalledTimes(1);
+  });
+
+  it('registers exactly one durable identity for factual Epic, link, connection and mirror-sync events', () => {
     subscriber.onModuleInit();
 
     expect(events.registerDurableSubscriber).toHaveBeenCalledTimes(1);
@@ -433,6 +447,7 @@ describe('ExternalSubtaskSyncSubscriber', () => {
           'epic.created',
           'epic.updated',
           'epic.deleted',
+          'epic.external_link.changed',
           'integration.connection.created',
           'integration.connection.updated',
           'integration.connection.deleted',
@@ -447,7 +462,10 @@ describe('ExternalSubtaskSyncSubscriber', () => {
 
     await subscriber.reconcileEpic(childId);
     expect(await managed()).toMatchObject({ operationPhase: 'confirmed' });
-    expect(events.publish).toHaveBeenCalledWith('epic.time.scope.invalidated', { workspaceId });
+    expect(events.publish).toHaveBeenCalledWith('epic.time.scope.invalidated', {
+      workspaceId,
+      externalLinks: true,
+    });
 
     events.publish.mockClear();
     const secondParent = await storage.createEpic({
@@ -464,7 +482,10 @@ describe('ExternalSubtaskSyncSubscriber', () => {
     await subscriber.reconcileEpic(childId);
 
     expect(await managed()).toBeUndefined();
-    expect(events.publish).toHaveBeenCalledWith('epic.time.scope.invalidated', { workspaceId });
+    expect(events.publish).toHaveBeenCalledWith('epic.time.scope.invalidated', {
+      workspaceId,
+      externalLinks: true,
+    });
   });
 
   it('uses a factual event only as a wake-up and reconciles current local state', async () => {
@@ -1071,7 +1092,7 @@ describe('ExternalSubtaskSyncSubscriber', () => {
     }
   });
 
-  it('keeps Jira confirmed after a title update with trailing description newlines', async () => {
+  it('keeps Jira confirmed across same-site token rotations and a title update with trailing description newlines', async () => {
     const jiraConnection = await storage.replaceIntegrationConnection(
       {
         provider: 'jira',
@@ -1093,6 +1114,20 @@ describe('ExternalSubtaskSyncSubscriber', () => {
       remoteTaskId: 'JIRA-PARENT',
       sourceSnapshot: { workAreaId: 'board-jira', workAreaName: 'Jira Board' },
     });
+    const rotateToken = (token: string) =>
+      storage.replaceIntegrationConnection(
+        {
+          provider: 'jira',
+          credentials: {
+            provider: 'jira',
+            siteUrl: 'https://ACME.atlassian.net/',
+            email: 'user@example.com',
+            token,
+          },
+        },
+        async () => undefined,
+      );
+    await rotateToken('rotated-before-create');
     const child = await storage.getEpic(childId);
     await storage.updateEpic(childId, { description: 'Line\n\n' }, child.version);
     await subscriber.reconcileEpic(childId);
@@ -1101,6 +1136,7 @@ describe('ExternalSubtaskSyncSubscriber', () => {
     expect(created.operationPhase).toBe('confirmed');
     expect(jira.remotes.get(created.remoteTaskId!)).toMatchObject({ description: 'Line\n\n' });
 
+    const rotated = await rotateToken('rotated-before-update');
     const current = await storage.getEpic(childId);
     await storage.updateEpic(childId, { title: 'Changed title' }, current.version);
     await expect(subscriber.reconcileEpic(childId)).resolves.toEqual(
@@ -1108,7 +1144,10 @@ describe('ExternalSubtaskSyncSubscriber', () => {
     );
 
     expect(jira.update).toHaveBeenCalledTimes(1);
-    expect(await managed('jira')).toMatchObject({ operationPhase: 'confirmed' });
+    expect(await managed('jira')).toMatchObject({
+      operationPhase: 'confirmed',
+      connectionGeneration: rotated.generation,
+    });
     expect(jira.remotes.get(created.remoteTaskId!)).toMatchObject({
       title: 'Changed title',
       description: 'Line\n\n',
@@ -2031,6 +2070,34 @@ describe('ExternalSubtaskSyncSubscriber', () => {
     expect(clickup.update).not.toHaveBeenCalled();
   });
 
+  it('keeps an unknown outcome on its generation when the re-fence read fails permanently', async () => {
+    await subscriber.reconcileEpic(childId);
+    const before = await managed();
+    await storage.replaceIntegrationConnection(
+      {
+        provider: 'clickup',
+        credentials: { provider: 'clickup', token: 'replacement-token' },
+      },
+      async () => undefined,
+    );
+    await storage.updateExternalManagedSubtaskLink(before.id, {
+      operationPhase: 'outcome_unknown',
+      safeErrorCode: 'provider_timeout',
+    });
+    const readExact = clickup.adapter.subtaskSync!.readExact as jest.Mock;
+    readExact.mockClear();
+    readExact.mockRejectedValueOnce(new ExternalProviderError('clickup', 'permission_denied'));
+
+    await subscriber.reconcileEpic(childId);
+
+    expect(readExact).toHaveBeenCalledTimes(1);
+    expect(clickup.update).not.toHaveBeenCalled();
+    expect(await managed()).toMatchObject({
+      operationPhase: 'outcome_unknown',
+      connectionGeneration: before.connectionGeneration,
+    });
+  });
+
   it('blocks writes when the ownership marker disappears', async () => {
     await subscriber.reconcileEpic(childId);
     const row = await managed();
@@ -2091,4 +2158,373 @@ describe('ExternalSubtaskSyncSubscriber', () => {
     expect(clickup.delete).toHaveBeenCalledTimes(1);
     expect(await storage.listExternalManagedSubtaskLinksByProvider('clickup')).toEqual([]);
   });
+});
+
+// Layer: backend integration with the real durable store and dispatcher, so a
+// lost child or an acknowledged-but-unfinished delivery is observable.
+describe('ExternalSubtaskSyncSubscriber direct-child enumeration after a link change', () => {
+  let sqlite: Database.Database;
+  let storage: LocalStorageService;
+  let dispatcher: DurableEventDispatcherService;
+  let vendor: FakeProvider;
+  let secretDirectory: string;
+  let projectId: string;
+  let statusId: string;
+
+  beforeEach(async () => {
+    const database = createTestDatabase();
+    sqlite = database.sqlite;
+    sqlite.pragma('foreign_keys = ON');
+    secretDirectory = mkdtempSync(join(os.tmpdir(), 'devchain-child-enumeration-'));
+    const registry = new DurableEventRegistryService();
+    const store = new CommittedEventStore(database.db, registry);
+    storage = new LocalStorageService(
+      database.db,
+      new IntegrationCredentialCipher({ secretDirectory, machineIdentity: 'children:test' }),
+      store,
+    );
+    vendor = fakeProvider('clickup');
+    new ExternalSubtaskSyncSubscriber(
+      storage,
+      {
+        publish: jest.fn().mockResolvedValue(null),
+        registerDurableSubscriber: (subscriber: DurableEventSubscriber) =>
+          registry.register(subscriber),
+      } as unknown as EventsService,
+      new ExternalTaskProviderRegistry([vendor.adapter]),
+      new ProviderOperationGate(),
+      new ManagedProjectionLock(),
+      { isClaimedHost: () => false },
+    ).onModuleInit();
+    dispatcher = new DurableEventDispatcherService(store, registry);
+
+    const project = await storage.createProject({
+      name: 'Children project',
+      rootPath: '/home/project-owner/children-project',
+      description: null,
+      isTemplate: false,
+    });
+    projectId = project.id;
+    statusId = (await storage.listStatuses(project.id)).items[0]!.id;
+  });
+
+  afterEach(() => {
+    sqlite.close();
+    rmSync(secretDirectory, { recursive: true, force: true });
+  });
+
+  function epic(title: string, parentId: string | null = null) {
+    return storage.createEpic({
+      projectId,
+      statusId,
+      title,
+      description: null,
+      parentId,
+      data: null,
+      tags: [],
+    });
+  }
+
+  function pendingDeliveries(): number {
+    return (
+      sqlite
+        .prepare(`SELECT COUNT(*) AS n FROM event_handlers WHERE status != 'delivered'`)
+        .get() as { n: number }
+    ).n;
+  }
+
+  it('projects the surviving child when a sibling is deleted after the child-id read', async () => {
+    const parent = await epic('Parent');
+    const [first, second] = [await epic('First', parent.id), await epic('Second', parent.id)];
+    const [deleted, survivor] = [first, second].sort((a, b) => a.id.localeCompare(b.id));
+    const connection = await storage.replaceIntegrationConnection(
+      {
+        projectId,
+        provider: 'clickup',
+        credentials: { provider: 'clickup', token: 'clickup-token' },
+        subtaskSyncEnabled: true,
+      },
+      async () => undefined,
+    );
+    await storage.setEpicExternalTaskLink(
+      parent.id,
+      {
+        connectionId: connection.id,
+        connectionGeneration: connection.generation,
+        provider: 'clickup',
+        remoteScopeKey: 'workspace-clickup',
+        remoteTaskId: 'clickup-parent',
+        sourceSnapshot: { workAreaId: 'list-clickup', workAreaName: 'ClickUp List' },
+      },
+      (link) => ({
+        id: randomUUID(),
+        name: 'epic.external_link.changed',
+        payload: { epicId: parent.id, projectId, linkId: link.id, change: 'set' },
+        requestId: null,
+        publishedAt: new Date().toISOString(),
+      }),
+    );
+    const readIds = storage.listDirectChildEpicIds.bind(storage);
+    jest.spyOn(storage, 'listDirectChildEpicIds').mockImplementationOnce(async (parentId) => {
+      const ids = await readIds(parentId);
+      await storage.deleteEpic(deleted.id);
+      return ids;
+    });
+
+    await dispatcher.dispatchAvailable();
+
+    expect(vendor.calls).toEqual(['clickup:create']);
+    const rows = await storage.listExternalManagedSubtaskLinksByProvider('clickup');
+    expect(rows).toEqual([
+      expect.objectContaining({ epicIdSnapshot: survivor.id, operationPhase: 'confirmed' }),
+    ]);
+    expect(pendingDeliveries()).toBe(0);
+  });
+
+  it('reads every direct child id in one unpaged statement, ordered by id', async () => {
+    const parent = await epic('Parent');
+    const children = [await epic('A', parent.id), await epic('B', parent.id)];
+    await epic('Other child', (await epic('Other parent')).id);
+    await epic('Unrelated');
+    const prepare = jest.spyOn(sqlite, 'prepare');
+
+    const ids = await storage.listDirectChildEpicIds(parent.id);
+
+    expect(ids).toEqual(children.map((child) => child.id).sort());
+    expect(prepare).toHaveBeenCalledTimes(1);
+    expect(prepare.mock.calls[0]![0]).not.toMatch(/\b(limit|offset)\b/i);
+    prepare.mockRestore();
+    await expect(storage.listDirectChildEpicIds(randomUUID())).resolves.toEqual([]);
+  });
+});
+
+// Layer: backend integration with the real durable store and dispatcher: the
+// fence must hold for a link-change delivery that runs after a site replacement.
+describe('ExternalSubtaskSyncSubscriber Jira site fence', () => {
+  const SITE_A = 'acme.atlassian.net';
+  let sqlite: Database.Database;
+  let storage: LocalStorageService;
+  let dispatcher: DurableEventDispatcherService;
+  let jira: FakeProvider;
+  let subscriber: ExternalSubtaskSyncSubscriber;
+  let providerGate: ProviderOperationGate;
+  let secretDirectory: string;
+  let projectId: string;
+  let statusId: string;
+  let connection: IntegrationConnection;
+  let parentId: string;
+
+  function jiraCredentials(site: string, token = 'jira-token'): IntegrationCredentials {
+    return { provider: 'jira', siteUrl: `https://${site}`, email: 'user@example.com', token };
+  }
+
+  function replaceConnection(credentials: IntegrationCredentials) {
+    return storage.replaceIntegrationConnection(
+      { projectId, provider: 'jira', credentials, subtaskSyncEnabled: true },
+      async () => undefined,
+    );
+  }
+
+  function epic(title: string, parent: string | null = null) {
+    return storage.createEpic({
+      projectId,
+      statusId,
+      title,
+      description: null,
+      parentId: parent,
+      data: null,
+      tags: [],
+    });
+  }
+
+  /** Links the parent to a site-A issue; the durable link-change delivery stays pending. */
+  async function linkParentOnSiteA() {
+    await storage.setEpicExternalTaskLink(
+      parentId,
+      {
+        connectionId: connection.id,
+        connectionGeneration: connection.generation,
+        provider: 'jira',
+        remoteScopeKey: SITE_A,
+        remoteTaskId: 'ENG-1',
+        sourceSnapshot: { remoteKey: 'ENG-1', workAreaId: 'board-jira', workAreaName: 'ENG' },
+      },
+      (link) => ({
+        id: randomUUID(),
+        name: 'epic.external_link.changed',
+        payload: { epicId: parentId, projectId, linkId: link.id, change: 'set' },
+        requestId: null,
+        publishedAt: new Date().toISOString(),
+      }),
+    );
+  }
+
+  /** Every vendor request, reads included. */
+  function jiraRequests(): number {
+    const capability = jira.adapter.subtaskSync!;
+    return [
+      capability.create,
+      capability.update,
+      capability.delete,
+      capability.readExact,
+      capability.listOwnedDirectChildren,
+      capability.assertOwned,
+    ].reduce((total, fn) => total + (fn as jest.Mock).mock.calls.length, 0);
+  }
+
+  function pendingDeliveries(): number {
+    return (
+      sqlite
+        .prepare(`SELECT COUNT(*) AS n FROM event_handlers WHERE status != 'delivered'`)
+        .get() as { n: number }
+    ).n;
+  }
+
+  beforeEach(async () => {
+    const database = createTestDatabase();
+    sqlite = database.sqlite;
+    sqlite.pragma('foreign_keys = ON');
+    secretDirectory = mkdtempSync(join(os.tmpdir(), 'devchain-jira-site-fence-'));
+    const registry = new DurableEventRegistryService();
+    const store = new CommittedEventStore(database.db, registry);
+    storage = new LocalStorageService(
+      database.db,
+      new IntegrationCredentialCipher({ secretDirectory, machineIdentity: 'jira-site:test' }),
+      store,
+    );
+    jira = fakeProvider('jira');
+    providerGate = new ProviderOperationGate();
+    subscriber = new ExternalSubtaskSyncSubscriber(
+      storage,
+      {
+        publish: jest.fn().mockResolvedValue(null),
+        registerDurableSubscriber: (subscriber: DurableEventSubscriber) =>
+          registry.register(subscriber),
+      } as unknown as EventsService,
+      new ExternalTaskProviderRegistry([jira.adapter]),
+      providerGate,
+      new ManagedProjectionLock(),
+      { isClaimedHost: () => false },
+    );
+    subscriber.onModuleInit();
+    dispatcher = new DurableEventDispatcherService(store, registry);
+
+    const project = await storage.createProject({
+      name: 'Jira site project',
+      rootPath: '/home/project-owner/jira-site-project',
+      description: null,
+      isTemplate: false,
+    });
+    projectId = project.id;
+    statusId = (await storage.listStatuses(project.id)).items[0]!.id;
+    connection = await replaceConnection(jiraCredentials(SITE_A));
+    parentId = (await epic('Parent')).id;
+  });
+
+  afterEach(() => {
+    sqlite.close();
+    rmSync(secretDirectory, { recursive: true, force: true });
+  });
+
+  it('sends nothing to a replacement site and stops the projection', async () => {
+    const child = await epic('Child', parentId);
+    await linkParentOnSiteA();
+    const replacement = await replaceConnection(jiraCredentials('beta.atlassian.net'));
+    expect(replacement).toMatchObject({ id: connection.id });
+    const admissions = jest.spyOn(providerGate, 'run');
+
+    await dispatcher.dispatchAvailable();
+
+    expect(admissions).not.toHaveBeenCalled();
+    expect(jiraRequests()).toBe(0);
+    expect(await storage.listExternalManagedSubtaskLinksForEpicSnapshot(child.id)).toEqual([
+      expect.objectContaining({
+        operationPhase: 'needs_attention',
+        safeErrorCode: REMOTE_SCOPE_MISMATCH,
+        tombstoneState: 'active',
+        retryAt: null,
+      }),
+    ]);
+    expect(pendingDeliveries()).toBe(0);
+  });
+
+  it('still refuses Retry after an incomplete ownership scan once the site is replaced and restored', async () => {
+    const child = await epic('Child', parentId);
+    jira.create.mockRejectedValueOnce(
+      new ExternalProviderError('jira', 'timeout', { dispatched: true }),
+    );
+    await linkParentOnSiteA();
+    await dispatcher.dispatchAvailable();
+    const [unknown] = await storage.listExternalManagedSubtaskLinksForEpicSnapshot(child.id);
+    expect(unknown).toMatchObject({ operationPhase: 'outcome_unknown' });
+    jira.listOwned.mockResolvedValueOnce({ items: [], complete: false });
+    await subscriber.verifyManagedLink(unknown!.id);
+
+    await replaceConnection(jiraCredentials('beta.atlassian.net'));
+    await subscriber.reconcileEpic(child.id);
+    await replaceConnection(jiraCredentials(SITE_A));
+    await subscriber.reconcileEpic(child.id);
+
+    expect(await storage.getExternalManagedSubtaskLink(unknown!.id)).toMatchObject({
+      operationPhase: 'needs_attention',
+      safeErrorCode: 'ownership_scan_incomplete',
+    });
+    await expect(subscriber.retryManagedLink(unknown!.id)).rejects.toMatchObject({
+      details: { reason: 'ownership_scan_incomplete' },
+    });
+    expect(jira.create).toHaveBeenCalledTimes(1);
+  });
+
+  // `during removal` replaces the site right after the removal tombstone is
+  // written, so only the final read fence sees site B.
+  it.each([
+    ['edited', 'before the reconcile'],
+    ['moved out', 'before the reconcile'],
+    ['moved out', 'during removal'],
+    ['deleted', 'during removal'],
+  ] as const)(
+    'keeps a confirmed subtask and its tombstone on its site when the child is %s and the site is replaced %s',
+    async (change, replaced) => {
+      const child = await epic('Child', parentId);
+      await linkParentOnSiteA();
+      await dispatcher.dispatchAvailable();
+      const [confirmed] = await storage.listExternalManagedSubtaskLinksForEpicSnapshot(child.id);
+      expect(confirmed).toMatchObject({ operationPhase: 'confirmed', tombstoneState: 'active' });
+      const requests = jiraRequests();
+      if (replaced === 'before the reconcile') {
+        await replaceConnection(jiraCredentials('beta.atlassian.net'));
+      } else {
+        const update = storage.updateExternalManagedSubtaskLink.bind(storage);
+        jest
+          .spyOn(storage, 'updateExternalManagedSubtaskLink')
+          .mockImplementation(async (id, patch) => {
+            const updated = await update(id, patch);
+            if (patch.tombstoneState && patch.tombstoneState !== 'active') {
+              await replaceConnection(jiraCredentials('beta.atlassian.net'));
+            }
+            return updated;
+          });
+      }
+      const current = await storage.getEpic(child.id);
+      if (change === 'edited') {
+        await storage.updateEpic(child.id, { title: 'Must stay local' }, current.version);
+      } else if (change === 'moved out') {
+        await storage.updateEpic(child.id, { parentId: null }, current.version);
+      } else {
+        await storage.deleteEpic(child.id);
+      }
+
+      await subscriber.reconcileEpic(child.id);
+
+      expect(jiraRequests()).toBe(requests);
+      expect(jira.remotes.get(confirmed!.remoteTaskId!)).toMatchObject({ title: 'Child' });
+      expect(await storage.getExternalManagedSubtaskLink(confirmed!.id)).toMatchObject({
+        operationPhase: 'needs_attention',
+        safeErrorCode: REMOTE_SCOPE_MISMATCH,
+        retryAt: null,
+        tombstoneState: 'active',
+        tombstonedAt: null,
+      });
+    },
+  );
 });

@@ -211,7 +211,12 @@ describe('handleTeamsList', () => {
 
     expect(
       (ctx.teamsService as unknown as { listTeams: jest.Mock }).listTeams,
-    ).toHaveBeenCalledWith(PROJECT_ID, { limit: 2, offset: 0, q: 'team' });
+    ).toHaveBeenCalledWith(PROJECT_ID, {
+      limit: 2,
+      offset: 0,
+      q: 'team',
+      excludeDisabledMembers: true,
+    });
   });
 });
 
@@ -715,9 +720,12 @@ describe('handleDevchainTeam', () => {
           return Promise.reject(new Error('Agent not found'));
         }),
         getAgentProfile: jest.fn().mockResolvedValue({ id: PROFILE_ID, name: 'Default Profile' }),
-        getProfileProviderConfig: jest
-          .fn()
-          .mockResolvedValue({ id: CONFIG_ID, name: 'claude-sonnet' }),
+        getProfileProviderConfig: jest.fn().mockResolvedValue({
+          id: CONFIG_ID,
+          name: 'claude-sonnet',
+          providerId: 'provider-claude',
+        }),
+        getProvider: jest.fn().mockResolvedValue({ id: 'provider-claude', name: 'claude' }),
       } as never,
       teamsService: {
         ...makeCtx().teamsService!,
@@ -926,6 +934,74 @@ describe('handleDevchainTeam', () => {
     };
     expect(data.members[0].profileName).toBe('Default Profile');
     expect(data.members[0].providerConfigName).toBe('claude-sonnet');
+  });
+
+  it.each([
+    {
+      name: 'the agent overrides',
+      agent: { modelOverride: 'opus', effortOverride: 'xhigh' },
+      config: { model: 'sonnet', effort: 'high', options: '--model haiku' },
+      expected: { model: 'opus', effort: 'xhigh' },
+    },
+    {
+      name: 'the option defaults',
+      agent: { modelOverride: null, effortOverride: null },
+      config: { model: 'sonnet', effort: 'high', options: '--model haiku' },
+      expected: { model: 'sonnet', effort: 'high' },
+    },
+    {
+      name: 'the --model of the raw options',
+      agent: { modelOverride: null, effortOverride: null },
+      config: { model: null, effort: null, options: '--model haiku --verbose' },
+      expected: { model: 'haiku', effort: null },
+    },
+  ])('reports the launch model and effort from $name', async ({ agent, config, expected }) => {
+    const ctx = makeTeamCtx();
+    const getAgent = ctx.storage.getAgent as jest.Mock;
+    const original = getAgent.getMockImplementation()!;
+    getAgent.mockImplementation(async (id: string) => ({ ...(await original(id)), ...agent }));
+    (ctx.storage.getProfileProviderConfig as jest.Mock).mockResolvedValue({
+      id: CONFIG_ID,
+      name: 'claude-sonnet',
+      providerId: 'provider-claude',
+      ...config,
+    });
+
+    const result = await handleDevchainTeam(ctx, { sessionId: 'sess-001' });
+
+    expect(result.success).toBe(true);
+    const data = result.data as {
+      members: Array<{ providerName: string | null; model: string | null; effort: string | null }>;
+    };
+    expect(data.members[0]).toMatchObject({ providerName: 'claude', ...expected });
+  });
+
+  it('keeps the agent overrides when the option or the provider cannot be read', async () => {
+    const ctx = makeTeamCtx();
+    const getAgent = ctx.storage.getAgent as jest.Mock;
+    const original = getAgent.getMockImplementation()!;
+    getAgent.mockImplementation(async (id: string) => ({
+      ...(await original(id)),
+      modelOverride: 'opus',
+      effortOverride: null,
+    }));
+    (ctx.storage.getProvider as jest.Mock).mockRejectedValue(new Error('gone'));
+
+    const withoutProvider = await handleDevchainTeam(ctx, { sessionId: 'sess-001' });
+    expect((withoutProvider.data as { members: unknown[] }).members[0]).toMatchObject({
+      providerConfigName: 'claude-sonnet',
+      providerName: null,
+      model: 'opus',
+    });
+
+    (ctx.storage.getProfileProviderConfig as jest.Mock).mockRejectedValue(new Error('gone'));
+    const withoutOption = await handleDevchainTeam(ctx, { sessionId: 'sess-001' });
+    expect((withoutOption.data as { members: unknown[] }).members[0]).toMatchObject({
+      providerConfigName: null,
+      providerName: null,
+      model: 'opus',
+      effort: null,
+    });
   });
 
   it.each([

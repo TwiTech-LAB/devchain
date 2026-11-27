@@ -16,6 +16,7 @@ import type { TokenUsage } from '../dtos/unified-message.types';
 import type { UnifiedSession } from '../dtos/unified-session.types';
 import { parseDevinAtif, extractAtifSessionId } from '../parsers/devin-atif.parser';
 import { PRICING_SERVICE, type PricingServiceInterface } from '../services/pricing.interface';
+import { PROVIDER_TRANSCRIPT_SOURCE_KINDS } from '../services/transcript-path-validator.service';
 import { mapDevinModelToPricing } from '../readers/devin-model-pricing';
 import {
   DEVIN_TRANSCRIPTS_ROOT,
@@ -38,7 +39,7 @@ export class DevinSessionReaderAdapter implements SessionReaderAdapter, OnModule
   // `parseIncremental` re-reads the file and the cache REPLACES, the same
   // posture Copilot takes for cumulative-report formats.
   readonly incrementalMode = 'snapshot' as const;
-  readonly sourceKind = 'file' as const;
+  readonly sourceKind = PROVIDER_TRANSCRIPT_SOURCE_KINDS[this.providerName];
   readonly allowedRoots: string[];
   private readonly logger = new Logger(DevinSessionReaderAdapter.name);
   private readonly homeDir: string;

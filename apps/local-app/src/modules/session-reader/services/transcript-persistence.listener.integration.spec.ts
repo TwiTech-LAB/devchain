@@ -12,6 +12,7 @@ import { ProviderAdapterFactory } from '../../providers/adapters/provider-adapte
 import { SessionReaderAdapterFactory } from '../adapters/session-reader-adapter.factory';
 import { TranscriptPathValidator } from './transcript-path-validator.service';
 import { TranscriptPersistenceListener } from './transcript-persistence.listener';
+import { HooksService } from '../../hooks/services/hooks.service';
 
 const SESSION_ID = 'session-contention';
 const TRANSCRIPT_PATH = '/tmp/transcript-contention/opencode.db';
@@ -87,6 +88,7 @@ describe('TranscriptPersistenceListener transaction contention', () => {
           },
         },
         { provide: ProviderAdapterFactory, useValue: { getAdapter: jest.fn() } },
+        { provide: HooksService, useValue: { firedBeforeFence: () => false } },
       ],
     }).compile();
     listener = module.get(TranscriptPersistenceListener);

@@ -204,6 +204,7 @@ describe('resolveBackend', () => {
     '/api/epics/external-sources',
     '/api/epics/external-sources/batch',
     '/api/epics/e1/external-sources',
+    '/api/epics/e1/external-sources/link-1',
     '/api/epics/e1/time-logs',
     '/api/epics/e1/time',
     '/api/epics/time-summary/batch',
@@ -237,6 +238,12 @@ describe('resolveBackend', () => {
         {},
         context,
       ),
+    ).toBe(HOME_BACKEND);
+  });
+
+  it('sends an epic external-source unlink home with a remote project active', () => {
+    expect(
+      resolveBackend('/api/epics/e1/external-sources/link-1', { method: 'DELETE' }, {}, context),
     ).toBe(HOME_BACKEND);
   });
 

@@ -563,6 +563,7 @@ export class TerminalIOService implements BeforeApplicationShutdown {
     text: string,
     options: DeliveryOptions,
   ): Promise<DeliveryResult> {
+    const guarded = this.trackRefusal(options);
     return this.runPaneOperation(
       target,
       async () => {
@@ -573,12 +574,12 @@ export class TerminalIOService implements BeforeApplicationShutdown {
           this.gap,
           target,
           text,
-          this.applyFollowNoteGate(options),
+          this.applyFollowNoteGate(guarded.options),
           foregroundCheck,
           this.submitGuard(target),
         );
       },
-      () => changesComposer(options),
+      () => !guarded.refused() && changesComposer(options),
     );
   }
 
@@ -587,6 +588,7 @@ export class TerminalIOService implements BeforeApplicationShutdown {
     text: string,
     options: Omit<DeliveryOptions, 'agentId'>,
   ): Promise<DeliveryResult> {
+    const guarded = this.trackRefusal(options);
     return this.runPaneOperation(
       target,
       async () => {
@@ -596,13 +598,32 @@ export class TerminalIOService implements BeforeApplicationShutdown {
           this.executor,
           target,
           text,
-          this.applyFollowNoteGate(options),
+          this.applyFollowNoteGate(guarded.options),
           foregroundCheck,
           this.submitGuard(target),
         );
       },
-      () => changesComposer(options),
+      () => !guarded.refused() && changesComposer(options),
     );
+  }
+
+  /** A refused first write leaves the pane, and so the human's draft, untouched. */
+  private trackRefusal<T extends Pick<DeliveryOptions, 'firstMutationGuard'>>(
+    options: T,
+  ): { options: T; refused: () => boolean } {
+    const guard = options.firstMutationGuard;
+    if (!guard) return { options, refused: () => false };
+    let refused = false;
+    return {
+      options: {
+        ...options,
+        firstMutationGuard: () => {
+          refused = !guard();
+          return !refused;
+        },
+      },
+      refused: () => refused,
+    };
   }
 
   async sendControl(target: SessionTarget, keys: readonly string[]): Promise<void> {

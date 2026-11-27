@@ -28,6 +28,7 @@ import {
   HomeGitWriteService,
 } from './home-git-write.service';
 import { HomeGitWriteStore } from './home-git-write.store';
+import { HomeGitRecoveryService } from './home-git-recovery.service';
 
 // Integration is required for the loopback HTTP protocol, SQLite persistence across a restart
 // and a real git child's start identity. The VM and Syncthing are replaced.
@@ -68,6 +69,7 @@ import { HomeGitWriteStore } from './home-git-write.store';
       providers: [
         HomeGitWriteService,
         HomeGitWriteStore,
+        { provide: HomeGitRecoveryService, useValue: { schedule: jest.fn() } },
         GitProcessIdentity,
         { provide: DB_CONNECTION, useValue: drizzle(sqlite) },
         {

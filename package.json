@@ -1,6 +1,6 @@
 {
   "name": "devchain-cli",
-  "version": "0.28.0",
+  "version": "0.29.0",
   "description": "AI driven development platform",
   "homepage": "https://devchain.cc/",
   "repository": {
@@ -8,6 +8,16 @@
     "url": "https://github.com/twitech-lab/devchain.git"
   },
   "changelog": {
+    "0.29.0": [
+      "https://devchain.cc/releases/0.29.0/",
+      "",
+      "Sessions: save points, roll back to a save point, and fork a session",
+      "Sessions: agents of one role share one session history",
+      "Dev Template: a Code Review team with Peer Reviewers",
+      "Projects: UI improvements, a more compact Review setup page, and import into a project that runs on a VM",
+      "Chat: the transcript reads in one scroll",
+      "Mobile app 1.15.0: change an agent's model, disable and enable agents, and copy messages"
+    ],
     "0.28.0": [
       "Projects: one Review page to create, import or upgrade a project, and an upgrade keeps your current agents and teams",
       "Terminal: paste images and large text into agent sessions",
@@ -61,18 +71,6 @@
       "Dev Template: shorter plan reviews, and the lead replies to every review",
       "Mobile app 1.12.0: provider usage in chat, and smoother loading and keyboard on Android",
       "Host image 1.5.0: support for VMs that several users share, and OpenCode 2"
-    ],
-    "0.25.0": [
-      "https://devchain.cc/releases/0.25.0/",
-      "",
-      "Mobile app 1.11.0: out of beta and live on the App Store and Google Play",
-      "Security: stronger protection for phone pairing, cloud sign-in and browser requests",
-      "Remote VMs: Docker moves work on more VMs, files of any owner sync, and custom VM sizes use sliders",
-      "Terminal: messages no longer reach the shell after an agent's CLI exits",
-      "Projects: a reminder when a project uses an older template, and custom prompts can be previewed and deleted from chat",
-      "Stability: a recovery screen instead of a blank page when something fails",
-      "Breaking changes: if you open DevChain through a custom hostname, add it to ALLOWED_HOSTS unless it is already the configured HOST.",
-      "Breaking changes: the mobile app connection now requires end-to-end encryption by default. Update clients that send unencrypted requests. E2EE_REQUIRED=false restores the previous setting but permits unencrypted traffic."
     ]
   },
   "publishConfig": {

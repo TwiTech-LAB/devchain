@@ -7,12 +7,24 @@ import { AntigravityAdapter } from './antigravity.adapter';
 import { CopilotAdapter } from './copilot.adapter';
 import { DevinAdapter } from './devin.adapter';
 import { UnsupportedProviderError } from '../../../common/errors/error-types';
+import { isEffortCapable } from './capabilities/type-guards';
 import {
   STORAGE_SERVICE,
   type StorageService,
   type AgentStorage,
   type ProfileProviderConfigStorage,
 } from '../../storage/interfaces/storage.interface';
+
+export interface ProviderEffortSupport {
+  readonly supportsEffort: boolean;
+  readonly requiresModelForEffort: boolean;
+}
+
+/** An unknown provider, or one that takes no effort setting. */
+export const NO_EFFORT_SUPPORT: ProviderEffortSupport = Object.freeze({
+  supportsEffort: false,
+  requiresModelForEffort: false,
+});
 
 /**
  * Factory for resolving ProviderAdapter instances by provider name
@@ -79,6 +91,19 @@ export class ProviderAdapterFactory {
    */
   getSupportedProviders(): string[] {
     return Array.from(this.adapters.keys());
+  }
+
+  /**
+   * Whether the provider takes an effort setting, and whether it needs a model selected first.
+   * An unknown provider and an empty effort catalog are different: only the first is `false`.
+   */
+  getEffortSupport(providerName: string): ProviderEffortSupport {
+    const adapter = this.isSupported(providerName) ? this.getAdapter(providerName) : null;
+    if (!adapter || !isEffortCapable(adapter)) return NO_EFFORT_SUPPORT;
+    return {
+      supportsEffort: true,
+      requiresModelForEffort: adapter.requiresModelForEffort === true,
+    };
   }
 
   /** The agent's provider prompt behavior; empty when the provider cannot be resolved. */

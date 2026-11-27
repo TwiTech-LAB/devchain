@@ -27,6 +27,19 @@ function newestSetup(preview: SetupPreviewResponse) {
   return presets[presets.length - 1];
 }
 
+/** The setups whose providers are all in `providers`, newest first. */
+function fittingSetups(preview: SetupPreviewResponse, providers: string[]) {
+  return [...(preview.payload.presets ?? [])]
+    .reverse()
+    .filter(({ name }) =>
+      preview.presetProviderCoverage.some(
+        (c) =>
+          c.presetName === name &&
+          c.referencedProviders.every((provider) => providers.includes(provider)),
+      ),
+    );
+}
+
 function profileOptions(preview: SetupPreviewResponse, profileName: string) {
   const profile = (preview.payload.profiles ?? []).find(({ name }) => name === profileName)!;
   return profile.providerConfigs ?? [];
@@ -159,33 +172,38 @@ describe('useCreateProjectWizard', () => {
     const mutation = renderCreateWizard(preview);
     await openReviewSetup();
     const providers = within(screen.getByRole('region', { name: 'Providers' }));
-    const setups = within(screen.getByRole('region', { name: 'Setup' }));
-    const claudeSetups = preview.presetProviderCoverage.filter(({ referencedProviders }) =>
-      referencedProviders.every((name) => name === 'claude'),
-    );
-    const suggested = [...preview.payload.presets]
-      .reverse()
-      .find(({ name }) => claudeSetups.some(({ presetName }) => presetName === name))!;
-
+    const claudeSetups = fittingSetups(preview, ['claude']);
+    const suggested = claudeSetups[0];
     expect(providers.getByRole('checkbox', { name: 'Claude' })).toBeChecked();
     expect(providers.getByRole('checkbox', { name: 'Codex' })).toBeChecked();
-    // Every setup that fits the selection is listed; none is behind a "show more" control.
-    const fitting = preview.presetProviderCoverage.filter(({ referencedProviders }) =>
-      referencedProviders.every((name) => INSTALLED.includes(name)),
-    );
-    expect(setups.getAllByRole('radio')).toHaveLength(fitting.length);
+    // Every setup that fits the selection is listed, newest first.
+    const fitting = fittingSetups(preview, INSTALLED);
+    fireEvent.click(screen.getByRole('combobox', { name: 'Ready-made setup' }));
+    const options = await screen.findAllByRole('option');
+    expect(options).toHaveLength(fitting.length);
+    // An option's text also holds its badge, "Runs on ..." and the description.
+    expect(
+      options.map(
+        (option) => fitting.find(({ name }) => option.textContent?.startsWith(name))?.name,
+      ),
+    ).toEqual(fitting.map(({ name }) => name));
+    await closePopover();
     await user.click(providers.getByText('Codex', { exact: true }));
 
     expect(providers.getByRole('checkbox', { name: 'Codex' })).not.toBeChecked();
-    expect(setups.getAllByRole('radio')).toHaveLength(claudeSetups.length);
-    for (const { presetName } of claudeSetups) {
+    const setup = screen.getByRole('combobox', { name: 'Ready-made setup' });
+    expect(setup).toHaveTextContent(suggested.name);
+    fireEvent.click(setup);
+    expect(await screen.findAllByRole('option')).toHaveLength(claudeSetups.length);
+    for (const { name: setupName } of claudeSetups) {
       expect(
-        setups.getByRole('radio', { name: (name) => name.startsWith(presetName) }),
+        screen.getByRole('option', { name: (name) => name.startsWith(setupName) }),
       ).toBeInTheDocument();
     }
     expect(
-      setups.getByRole('radio', { name: (name) => name.startsWith(suggested.name) }),
-    ).toBeChecked();
+      screen.getByRole('option', { name: (name) => name.startsWith(suggested.name) }),
+    ).toHaveAttribute('aria-selected', 'true');
+    await closePopover();
 
     await user.click(screen.getByRole('button', { name: /^Brainstormer: / }));
     expect(
@@ -223,6 +241,38 @@ describe('useCreateProjectWizard', () => {
     expect(claude).toBeChecked();
   });
 
+  it('collapses more than three providers into a popover and submits the toggled selection', async () => {
+    const user = userEvent.setup();
+    const mutation = renderCreateWizard(
+      withoutGuide(teamsDevSetupPreview(['copilot', 'opencode'])),
+    );
+    await openReviewSetup();
+    const section = within(screen.getByRole('region', { name: 'Providers' }));
+    const trigger = section.getByRole('button', { name: /^Providers: / });
+
+    expect(section.queryByRole('checkbox')).not.toBeInTheDocument();
+    expect(within(trigger).queryByRole('button')).not.toBeInTheDocument();
+    await user.click(trigger);
+    // The popover is in a portal outside the region, so query it from the screen.
+    const opencode = await screen.findByRole('checkbox', { name: 'OpenCode' });
+    expect(trigger).toHaveAccessibleName('Providers: Copilot, OpenCode');
+    expect(screen.getByRole('checkbox', { name: 'Claude' })).toHaveAccessibleDescription(
+      'Not installed',
+    );
+
+    await user.click(opencode);
+
+    expect(opencode).not.toBeChecked();
+    expect(opencode).toBeVisible();
+    expect(trigger).toHaveAccessibleName('Providers: Copilot');
+    expect(screen.getByRole('checkbox', { name: 'Copilot' })).toHaveAccessibleDescription(
+      'One provider is required',
+    );
+
+    await closePopover();
+    expect(submittedPayload(mutation)).toMatchObject({ selectedProviderNames: ['copilot'] });
+  });
+
   it('submits a manual Codex option while only Claude is selected for the project', async () => {
     const preview = withoutGuide(teamsDevSetupPreview(INSTALLED));
     const option = agentOptions(preview, 'Brainstormer').find(
@@ -253,6 +303,43 @@ describe('useCreateProjectWizard', () => {
     expect(payload.agentOverrides).toContainEqual(
       expect.objectContaining({ agentName: 'Brainstormer', providerConfigName: option.name }),
     );
+  });
+
+  it('restores the setup with Reset after a manual agent edit', async () => {
+    const preview = withoutGuide(teamsDevSetupPreview(INSTALLED));
+    const mutation = renderCreateWizard(preview);
+    await openReviewSetup();
+    const defaultLabel = screen
+      .getByRole('button', { name: /^Brainstormer: / })
+      .getAttribute('aria-label')!;
+    expect(screen.queryByRole('button', { name: 'Reset setup' })).not.toBeInTheDocument();
+
+    await chooseAgentProvider('Brainstormer', 'codex');
+    await closePopover();
+    expect(screen.getByTestId('wizard-setup-modified')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Reset setup' }));
+
+    expect(screen.getByRole('button', { name: defaultLabel })).toBeVisible();
+    expect(screen.queryByTestId('wizard-setup-modified')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Reset setup' })).not.toBeInTheDocument();
+    const payload = submittedPayload(mutation);
+    expect(payload.presetName).toBe(newestSetup(preview).name);
+    expect(payload.agentOverrides).toBeUndefined();
+  });
+
+  // The rendered Review page connects the dropdown choice to the displayed setup and the request.
+  it('submits the setup selected in the dropdown', async () => {
+    const preview = withoutGuide(teamsDevSetupPreview(INSTALLED));
+    const mutation = renderCreateWizard(preview);
+    await openReviewSetup();
+    const setup = screen.getByRole('combobox', { name: 'Ready-made setup' });
+    const chosen = fittingSetups(preview, INSTALLED)[1];
+
+    fireEvent.click(setup);
+    fireEvent.click((await screen.findAllByRole('option'))[1]);
+
+    expect(setup).toHaveTextContent(chosen.name);
+    expect(submittedPayload(mutation)).toMatchObject({ presetName: chosen.name });
   });
 
   // A rendered Review page connects the provider checkbox event to the displayed choice and request.

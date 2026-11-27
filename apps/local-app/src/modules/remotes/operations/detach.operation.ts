@@ -249,7 +249,11 @@ export class DetachOperation implements RemoteOperationDefinition {
       const details = operation.details as DetachDetails;
       const partial = await this.dockerCopyBack.partialGroups(operation.id);
       const result = partial.length ? { dockerCopyBackPartial: partial } : undefined;
-      if (details.markedDetaching) await this.giveBack(operation, projectId, details);
+      // DevChain 0.28 wrote the binding before the flag, so a Disconnect that stopped between
+      // the two has no flag. The binding of this remote shows the same thing.
+      const binding = await this.bindings.get(projectId);
+      const detaching = binding?.remoteId === operation.remoteId && binding.state === 'detaching';
+      if (details.markedDetaching || detaching) await this.giveBack(operation, projectId, details);
       // Kept until here, so a rollback that failed can name the groups when it runs again.
       await this.dockerCopyBack.finish(operation.id);
       return result;
@@ -333,6 +337,7 @@ export class DetachOperation implements RemoteOperationDefinition {
     const target = details as DetachDetails;
     if (force) await this.protectForcedLanes(run);
     else {
+      await this.fileSync.prepareGitDisconnect(projectId, remoteId, binding.state === 'detaching');
       await this.worktrees.assertRemoteEmpty(remoteId, projectId);
       target.laneWarning = null;
     }
@@ -342,6 +347,9 @@ export class DetachOperation implements RemoteOperationDefinition {
     await this.recordForcedLoss(run, binding.hostCursor);
     await this.liveSync.stop(projectId);
     if (binding.state !== 'detaching') {
+      // Saved before the binding write: the step's outcome is not saved if DevChain stops here,
+      // and a cancel must still give the project back.
+      await run.progress({ markedDetaching: true }, { durable: true });
       await this.bindings.update(projectId, { state: 'detaching' });
     }
     target.markedDetaching = true;

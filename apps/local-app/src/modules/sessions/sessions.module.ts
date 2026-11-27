@@ -1,6 +1,7 @@
 import { SessionRowsModule } from '../storage/sessions/session-rows.module';
 import { Module } from '@nestjs/common';
 import { SessionsService } from './services/sessions.service';
+import { SessionSavePointsService } from './services/session-save-points.service';
 import { SessionCoordinatorService } from './services/session-coordinator.service';
 import { SessionsMessagePoolService } from './services/sessions-message-pool.service';
 import { MessageActivityStreamService } from './services/message-activity-stream.service';
@@ -36,6 +37,7 @@ import { GIT_SHIM_BIN, GIT_SHIM_ON_VM, gitShimBin } from '../../common/git-shim-
 import { getEnvConfig } from '../../common/config/env.config';
 import { isClaimedHost } from '../remotes/host-api-key';
 import { VaultModule } from '../vault/vault.module';
+import { TranscriptPathValidator } from '../session-reader/services/transcript-path-validator.service';
 
 @Module({
   imports: [
@@ -58,6 +60,8 @@ import { VaultModule } from '../vault/vault.module';
   ],
   providers: [
     SessionsService,
+    SessionSavePointsService,
+    TranscriptPathValidator,
     SessionImageUploadService,
     SessionCoordinatorService,
     SessionsMessagePoolService,
@@ -86,6 +90,7 @@ import { VaultModule } from '../vault/vault.module';
   controllers: [SessionsController, SessionImagesController],
   exports: [
     SessionsService,
+    SessionSavePointsService,
     SessionCoordinatorService,
     SessionsMessagePoolService,
     MessageActivityStreamService,

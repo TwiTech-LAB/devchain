@@ -222,6 +222,41 @@ describe('EpicAssignmentNotifierSubscriber', () => {
     }
   });
 
+  it('skips a disabled recipient without an error log or a handler record', async () => {
+    deliverMock.mockResolvedValue({
+      status: 'failed',
+      results: [{ agentId: 'agent-1', status: 'failed', error: 'AGENT_DISABLED' }],
+    });
+    const errorSpy = jest.spyOn(
+      (subscriber as unknown as { logger: { error: (...args: unknown[]) => void } }).logger,
+      'error',
+    );
+
+    await expect(subscriber.handleEpicUpdated(basePayload)).resolves.toBeUndefined();
+
+    expect(errorSpy).not.toHaveBeenCalled();
+    expect(eventLogService.recordHandledFail).not.toHaveBeenCalled();
+    expect(eventLogService.recordHandledOk).not.toHaveBeenCalled();
+    errorSpy.mockRestore();
+  });
+
+  it('records the other recipients as success when one recipient is disabled', async () => {
+    deliverMock.mockResolvedValue({
+      status: 'partial',
+      results: [
+        { agentId: 'agent-1', status: 'failed', error: 'AGENT_DISABLED' },
+        { agentId: 'agent-2', status: 'delivered' },
+      ],
+    });
+
+    await subscriber.handleEpicUpdated(basePayload);
+
+    expect(eventLogService.recordHandledOk).toHaveBeenCalledWith(
+      expect.objectContaining({ detail: { poolStatus: 'delivered' } }),
+    );
+    expect(eventLogService.recordHandledFail).not.toHaveBeenCalled();
+  });
+
   it('keeps thrown handler failures sanitized and maps the stable launch error', async () => {
     deliverMock.mockRejectedValue(new Error('Unable to ensure active session for agent agent-1'));
 

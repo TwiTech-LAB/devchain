@@ -281,6 +281,10 @@ export interface ExternalTaskLinkStateSummary extends ExternalTaskLinkLookupInpu
 }
 
 export interface ExternalTaskSourceSummary {
+  /** Link id; unlink targets this exact link. */
+  id: string;
+  /** True for a link that managed subtask sync owns; only sync removes it. */
+  managed: boolean;
   provider: IntegrationProvider;
   remoteTaskId: string;
   remoteKey: string;

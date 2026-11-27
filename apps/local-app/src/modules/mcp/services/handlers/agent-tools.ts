@@ -39,7 +39,11 @@ export async function handleListAgents(
 
   const MAX_COMBINED_FETCH = 1000;
   const [agentsResult, guests] = await Promise.all([
-    ctx.storage.listAgents(project.id, { limit: MAX_COMBINED_FETCH, offset: 0 }),
+    ctx.storage.listAgents(project.id, {
+      limit: MAX_COMBINED_FETCH,
+      offset: 0,
+      excludeDisabled: true,
+    }),
     ctx.storage.listGuests(project.id),
   ]);
 
@@ -107,7 +111,11 @@ export async function handleGetAgentByName(
   const { project } = projectResult;
 
   const normalizedName = validated.name.trim().toLowerCase();
-  const agentsList = await ctx.storage.listAgents(project.id, { limit: 1000, offset: 0 });
+  const agentsList = await ctx.storage.listAgents(project.id, {
+    limit: 1000,
+    offset: 0,
+    excludeDisabled: true,
+  });
 
   const candidate = agentsList.items.find((agent) => agent.name.toLowerCase() === normalizedName);
 
@@ -126,7 +134,9 @@ export async function handleGetAgentByName(
 
   let agentWithProfile;
   try {
-    agentWithProfile = await ctx.storage.getAgentByName(project.id, candidate.name);
+    agentWithProfile = await ctx.storage.getAgentByName(project.id, candidate.name, {
+      excludeDisabled: true,
+    });
   } catch (error) {
     if (error instanceof NotFoundError) {
       return {

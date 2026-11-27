@@ -2,6 +2,7 @@ import { ManagedExclusionsRemovalStore } from './managed-exclusions-removal.stor
 import { FastifyAdapter, type NestFastifyApplication } from '@nestjs/platform-fastify';
 import { Test } from '@nestjs/testing';
 import { AllExceptionsFilter } from '../../../common/filters/http-exception.filter';
+import { waitForValue } from '../../../common/test/two-instance.fixture';
 import { execFileSync } from 'node:child_process';
 import * as fs from 'node:fs/promises';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
@@ -28,6 +29,7 @@ import { FileSyncController } from '../../file-sync/file-sync.controller';
 import { FileSyncManagedExclusionsStore } from '../../file-sync/file-sync-managed-exclusions.store';
 import { FileSyncAutoFixStore } from '../../file-sync/file-sync-auto-fix.store';
 import { FileSyncService } from '../../file-sync/file-sync.service';
+import { FILE_SYNC_PATHS } from '../../file-sync/file-sync-paths';
 import { FakeFileSyncService } from '../../file-sync/testing/fake-file-sync.service';
 import { HomeGitGuardService } from '../../file-sync/home-git-guard.service';
 import { GitService } from '../../git/services/git.service';
@@ -40,6 +42,10 @@ import { ProjectFileSyncController } from './project-file-sync.controller';
 import { RemoteFileSyncService } from './remote-file-sync.service';
 import { GitOwnerStore } from '../git-owner.store';
 import { RemoteLiveSyncService } from './remote-live-sync.service';
+import { HomeGitRecoveryService } from '../git-writes/home-git-recovery.service';
+import { HomeGitWriteStore } from '../git-writes/home-git-write.store';
+import { GIT_SHIM_HOME } from '../git-shim/git-shim-registry.service';
+import type { GitCoordinatorStatus } from '../git-coordinator/git-coordinator.dto';
 import type { RemoteOperation } from '../../storage/models/domain.models';
 
 // A small Nest app proves routing and validation with both real application services; no transfer is needed.
@@ -52,6 +58,8 @@ describe('project file sync settings routes', () => {
   let operations: RemoteOperation[] = [];
   const remoteId = '00000000-0000-4000-8000-000000000002';
   const binding = { state: 'local', remoteId, projectId };
+  const otherBinding = { state: 'remote', remoteId: 'other-vm', projectId: 'other-project' };
+  let bindings = [binding];
   const autoSettings = { enabled: true, actions: [] };
   const record = jest.fn();
   const managedPatterns = jest.fn<string[], [string]>(() => []);
@@ -66,6 +74,7 @@ describe('project file sync settings routes', () => {
     return current.json<{ revision: number }>().revision;
   };
   const host = {
+    gitCoordinatorStatus: jest.fn<Promise<GitCoordinatorStatus>, [string, string]>(),
     syncDevice: jest.fn(async () => ({ deviceId: 'VM' })),
     syncInspect: jest
       .fn<Promise<SyncPathInspection>, [string, SyncInspectRequest]>()
@@ -83,6 +92,8 @@ describe('project file sync settings routes', () => {
     writeFileSync(join(root, 'logs/file'), 'runtime');
     foreignPaths.add(join(root, 'logs/file'));
     files = new FakeFileSyncService();
+    files.codeRoots.set(projectId, root);
+    files.codeRoots.set(otherBinding.projectId, root);
     const module = await Test.createTestingModule({
       controllers: [ProjectFileSyncController, FileSyncController, RemotesController],
       providers: [
@@ -101,6 +112,10 @@ describe('project file sync settings routes', () => {
         },
         { provide: RemotesService, useValue: {} },
         RemoteLiveSyncService,
+        HomeGitRecoveryService,
+        { provide: FILE_SYNC_PATHS, useValue: { syncthingHome: () => join(root, 'syncthing') } },
+        { provide: GIT_SHIM_HOME, useValue: join(root, 'git-shim') },
+        { provide: HomeGitWriteStore, useValue: {} },
         FileSyncSuggestionsService,
         ManagedExclusionsCheckService,
         { provide: ManagedExclusionsRemovalStore, useValue: {} },
@@ -125,7 +140,8 @@ describe('project file sync settings routes', () => {
           provide: STORAGE_SERVICE,
           useValue: {
             getProject: async () => ({ id: projectId, rootPath: root }),
-            listRemoteProjectBindings: async () => [binding],
+            getRemote: async () => ({ name: 'lab-vm' }),
+            listRemoteProjectBindings: async () => bindings,
             listRemoteOperations: async () => operations,
           },
         },
@@ -234,7 +250,7 @@ describe('project file sync settings routes', () => {
     }
   });
 
-  it('exposes the active warning classification through bindings', async () => {
+  it('exposes the active file sync warning classification through bindings', async () => {
     const service = app.get(RemoteFileSyncService);
     const warning = jest
       .spyOn(service, 'warning')
@@ -249,13 +265,101 @@ describe('project file sync settings routes', () => {
         fileSyncProblem: 'setup',
       });
       binding.state = 'local';
-      expect(
-        (await app.inject({ method: 'GET', url: '/api/remotes/bindings' })).json().items[0],
-      ).not.toHaveProperty('fileSyncProblem');
+      const local = await app.inject({ method: 'GET', url: '/api/remotes/bindings' });
+      expect(local.json().items[0]).not.toHaveProperty('fileSyncProblem');
     } finally {
       binding.state = 'local';
       warning.mockRestore();
       problem.mockRestore();
+    }
+  });
+
+  it('serves routing while a VM status is pending and refreshes its recovery warning on later polls', async () => {
+    const time = '2026-11-21T12:00:00.000Z';
+    const status: GitCoordinatorStatus = {
+      owner: 'vm',
+      generation: 1,
+      homeName: 'pc',
+      homeWrites: {},
+      vmHolds: {},
+      transition: null,
+      checkpoint: null,
+      forcedReclaim: { at: Date.parse(time), fromGeneration: 0, homeName: 'pc' },
+      worktreeBranches: [],
+    };
+    const backup = join(root, 'backups', 'git', projectId, 'reclaim');
+    const ref = 'refs/heads/devchain-recovered/pc-reclaim/feature';
+    const marker = {
+      projectId,
+      remoteId,
+      pcName: 'pc',
+      createdAt: Date.parse(time),
+      refs: [ref],
+    };
+    await fs.mkdir(backup, { recursive: true });
+    const gitRoot = join(backup, 'worktree');
+    execFileSync('git', ['init', '-q', gitRoot]);
+    const publishMarker = async (state: 'pending' | 'recovered') => {
+      const filename = join(backup, 'recovery.json');
+      await fs.writeFile(filename + '.next', JSON.stringify({ ...marker, state }));
+      await fs.rename(filename + '.next', filename);
+    };
+    await publishMarker('pending');
+    execFileSync('git', [
+      '-C',
+      gitRoot,
+      '-c',
+      'user.name=DevChain Test',
+      '-c',
+      'user.email=test@example.com',
+      'commit',
+      '--allow-empty',
+      '-qm',
+      'Recovery test',
+    ]);
+    execFileSync('git', ['-C', gitRoot, 'update-ref', ref, 'HEAD']);
+
+    let releaseStatus!: () => void;
+    const withheld = new Promise<void>((resolve) => {
+      releaseStatus = resolve;
+    });
+    host.gitCoordinatorStatus.mockImplementation(async () => {
+      await withheld;
+      return status;
+    });
+    const readBindings = async () => {
+      const response = await app.inject({ method: 'GET', url: '/api/remotes/bindings' });
+      expect(response.statusCode).toBe(200);
+      return response.json<{ items: (typeof binding & { gitRecoveryWarning?: string })[] }>().items;
+    };
+    const warningFor = async () => (await readBindings())[0].gitRecoveryWarning;
+    files.codeRoots.set(projectId, gitRoot);
+    binding.state = 'remote';
+    bindings = [binding, otherBinding];
+    try {
+      const first = await readBindings();
+      await waitForValue(async () => host.gitCoordinatorStatus.mock.calls.length > 0, 2000);
+      const whilePending = await readBindings();
+      expect(first).toEqual([binding, otherBinding]);
+      expect(whilePending).toEqual(first);
+      expect(host.gitCoordinatorStatus).toHaveBeenCalledTimes(1);
+      releaseStatus();
+      const prefix = `The VM 'lab-vm' took Git back at ${time}`;
+      const pending = `${prefix} because this PC was away. Recovery of this PC's Git work is pending.`;
+      await waitForValue(async () => (await warningFor()) === pending, 2000);
+
+      await publishMarker('recovered');
+      const recovered = `${prefix}. This PC's work is in: ${ref}. Merge or delete these branches.`;
+      await waitForValue(async () => (await warningFor()) === recovered, 2000);
+      execFileSync('git', ['-C', gitRoot, 'update-ref', '-d', ref]);
+      await waitForValue(async () => (await warningFor()) === undefined, 2000);
+    } finally {
+      releaseStatus();
+      binding.state = 'local';
+      bindings = [binding];
+      await readBindings();
+      host.gitCoordinatorStatus.mockReset();
+      files.codeRoots.set(projectId, root);
     }
   });
 

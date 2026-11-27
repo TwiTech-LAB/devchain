@@ -166,7 +166,7 @@ export const teamMetadata: ToolMetadataEntry[] = [
   {
     name: 'devchain_team',
     description:
-      'Get detailed team information including capacity counts (maxMembers, maxConcurrentTasks, freeSeats, freeConcurrentSlots), member list with profile and config details, and busy-member counts. If teamName is omitted, auto-resolves when the calling agent belongs to exactly one team.',
+      'Get detailed team information including capacity counts (maxMembers, maxConcurrentTasks, freeSeats, freeConcurrentSlots), member list with profile and config details (including the provider of each member, and the model and effort that its sessions launch with), and busy-member counts. If teamName is omitted, auto-resolves when the calling agent belongs to exactly one team.',
     inputSchema: {
       type: 'object',
       required: ['sessionId'],

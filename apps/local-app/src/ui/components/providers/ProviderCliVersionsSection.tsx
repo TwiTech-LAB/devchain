@@ -148,8 +148,9 @@ export function ProviderCliVersionsSection() {
         <div>
           <h2 className="text-lg font-semibold">CLI versions</h2>
           <p className="text-sm text-muted-foreground">
-            Pick Latest or a pinned version per provider, and let DevChain manage the install on
-            this PC. Settings apply to this PC and every VM.
+            Pick Latest or a pinned version per provider. Auto-update installs it on this PC and
+            keeps Latest current; a pinned version stays as is. Settings apply to this PC and every
+            VM.
           </p>
         </div>
         <Button
@@ -191,7 +192,7 @@ export function ProviderCliVersionsSection() {
               <TableRow>
                 <TableHead scope="col">Provider</TableHead>
                 <TableHead scope="col">Version</TableHead>
-                <TableHead scope="col">Managed by DevChain on this PC</TableHead>
+                <TableHead scope="col">Auto-update</TableHead>
                 <TableHead scope="col">This PC</TableHead>
                 {remotesView.map((remote) => (
                   <TableHead key={remote.id} scope="col">
@@ -254,7 +255,7 @@ export function ProviderCliVersionsSection() {
                           handleSave(provider, { version: setting.version, homeManaged })
                         }
                         disabled={setEntryMutation.isPending}
-                        aria-label={`Managed by DevChain on this PC: ${label}`}
+                        aria-label={`Auto-update on this PC: ${label}`}
                       />
                     </TableCell>
                     <TableCell>

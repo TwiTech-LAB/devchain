@@ -2,11 +2,15 @@ import type {
   AgentStorage,
   AgentProfileStorage,
   ProfileProviderConfigStorage,
+  ProviderStorage,
 } from '../../../storage/interfaces/storage.interface';
 import type { TeamsService } from '../../../teams/services/teams.service';
 import type { McpResponse } from '../../dtos/mcp.dto';
 
-export type TeamsToolStorage = AgentStorage & AgentProfileStorage & ProfileProviderConfigStorage;
+export type TeamsToolStorage = AgentStorage &
+  AgentProfileStorage &
+  ProfileProviderConfigStorage &
+  Pick<ProviderStorage, 'getProvider'>;
 
 export interface TeamsToolContext {
   storage: TeamsToolStorage;

@@ -1,6 +1,10 @@
-import { Body, Controller, Get, HttpCode, Param, Post, Query } from '@nestjs/common';
+import { Body, Controller, Delete, Get, HttpCode, Param, Post, Query } from '@nestjs/common';
 import { createLogger } from '../../../common/logging/logger';
-import type { hostRoutes, HostHandlerResponse } from '../contract/host-routes';
+import {
+  HostExternalTaskImportSchema,
+  type hostRoutes,
+  type HostHandlerResponse,
+} from '../contract/host-routes';
 import {
   HostChangesQuerySchema,
   HostIdempotencyKeySchema,
@@ -106,5 +110,31 @@ export class HostController {
   ): Promise<HostHandlerResponse<typeof hostRoutes.findEpicByIdempotencyKey, 200>> {
     const projectId = HostProjectIdSchema.parse(id);
     return this.host.findEpicByIdempotencyKey(projectId, HostIdempotencyKeySchema.parse(key));
+  }
+
+  @Post(':id/external-tasks/import')
+  @HttpCode(200)
+  importExternalTask(
+    @Param('id') id: string,
+    @Body() body: unknown,
+  ): Promise<HostHandlerResponse<typeof hostRoutes.importExternalTask, 200>> {
+    const projectId = HostProjectIdSchema.parse(id);
+    logger.info({ projectId }, 'POST /api/host/projects/:id/external-tasks/import');
+    return this.host.importExternalTask(projectId, HostExternalTaskImportSchema.parse(body));
+  }
+
+  @Delete(':id/epics/:epicId/external-links/:linkId')
+  @HttpCode(204)
+  async unlinkExternalTask(
+    @Param('id') id: string,
+    @Param('epicId') epicId: string,
+    @Param('linkId') linkId: string,
+  ): Promise<HostHandlerResponse<typeof hostRoutes.unlinkExternalTask, 204>> {
+    const projectId = HostProjectIdSchema.parse(id);
+    logger.info(
+      { projectId, epicId, linkId },
+      'DELETE /api/host/projects/:id/epics/:epicId/external-links/:linkId',
+    );
+    await this.host.unlinkExternalTask(projectId, epicId, linkId);
   }
 }

@@ -66,6 +66,7 @@ describe('ProviderConfigsService', () => {
       id: 'agent-1',
       projectId: 'project-1',
       isProjectOwner: false,
+      disabled: false,
       profileId: 'profile-1',
       providerConfigId: 'config-1',
       modelOverride: null,

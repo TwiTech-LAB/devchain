@@ -1,6 +1,7 @@
 import { Inject, Injectable, Optional } from '@nestjs/common';
 import { ModuleRef } from '@nestjs/core';
 import {
+  AgentDisabledError,
   ValidationError,
   NotFoundError,
   ConflictError,
@@ -15,8 +16,13 @@ import {
   type MessageEnqueueResult,
 } from '../../sessions/services/message-enqueue.service';
 import { isCommandGuardError } from '../../sessions/services/message-pool.types';
-import { ProviderAdapterFactory } from '../../providers/adapters/provider-adapter.factory';
+import {
+  NO_EFFORT_SUPPORT,
+  ProviderAdapterFactory,
+} from '../../providers/adapters/provider-adapter.factory';
 import { isSessionCommandCapable } from '../../providers/adapters/capabilities/type-guards';
+import { groupNamesByProvider } from '../../providers/utils/catalog-names';
+import { extractModelFromProfileOptions } from '../../providers/utils/profile-options';
 import {
   STORAGE_SERVICE,
   type DeleteAgentOptions,
@@ -25,6 +31,7 @@ import {
   type AgentStorage,
   type ProfileProviderConfigStorage,
   type ProjectStorage,
+  type ProviderStorage,
 } from '../../storage/interfaces/storage.interface';
 import type {
   Agent,
@@ -33,7 +40,11 @@ import type {
   CreateTeam,
   UpdateTeam,
 } from '../../storage/models/domain.models';
-import { TeamsStore, type TeamsListOptions } from '../storage/teams.store';
+import {
+  TeamsStore,
+  type TeamMemberReadOptions,
+  type TeamsListOptions,
+} from '../storage/teams.store';
 import {
   dedupeProfileConfigSelections,
   validateAgentsInProject,
@@ -45,10 +56,15 @@ import {
   validateProfilesInProject,
   validateSelectionsAgainstProfiles,
 } from './teams.validators';
+import { AgentMessageDeliveryService } from '../../agent-message-delivery/agent-message-delivery.service';
 import { EventsService } from '../../events/services/events.service';
 import { SettingsService } from '../../settings/services/settings.service';
 import { ProjectWriteGate } from '../../storage/write-gate/project-write-gate';
 import { createLogger } from '../../../common/logging/logger';
+import { KeyedSerialQueue } from '../../../common/keyed-serial-queue';
+import type { SessionStoppedSource } from '../../events/catalog/session.stopped';
+import { publishAgentsUpdated } from '../../events/catalog/agent.updated';
+import { getProfileConfigOrThrow } from '../../profiles/services/profile-config-ownership';
 import type { RecipientContext } from '../dtos/recipient-context.dto';
 
 const logger = createLogger('TeamsService');
@@ -93,9 +109,65 @@ const TEAM_LEAD_TARGET_CODES = {
   delete: 'CANNOT_DELETE_TEAM_LEAD',
 } as const;
 
+/** The answer for a name that is not in the team. A disabled agent gets the same answer. */
+function agentNotFoundInTeam(name: string, teamName: string) {
+  return {
+    error: {
+      code: 'AGENT_NOT_FOUND_IN_TEAM',
+      message: `No agent named "${name}" found in team "${teamName}"`,
+    },
+  };
+}
+
+export interface AgentOverrideValues {
+  agentId: string;
+  providerConfigId: string;
+  modelOverride: string | null;
+  effortOverride: string | null;
+}
+
+function toOverrideValues(agent: Agent): AgentOverrideValues {
+  return {
+    agentId: agent.id,
+    providerConfigId: agent.providerConfigId,
+    modelOverride: agent.modelOverride,
+    effortOverride: agent.effortOverride,
+  };
+}
+
+/** A config without `env`, `options` and `description`, which can hold secrets. */
+export interface AgentOverrideConfigOption {
+  id: string;
+  name: string;
+  providerId: string;
+  providerName?: string;
+  model: string | null;
+  /** The `--model` of the raw options; launch uses it when `model` is null. Never the options. */
+  optionsModel: string | null;
+  effort: string | null;
+}
+
+export interface AgentOverrideProviderCatalog {
+  providerId: string;
+  models: string[];
+  efforts: string[];
+  supportsEffort: boolean;
+  requiresModelForEffort: boolean;
+}
+
+export interface AgentOverridesForChat extends AgentOverrideValues {
+  configs: AgentOverrideConfigOption[];
+  providers: AgentOverrideProviderCatalog[];
+}
+
 @Injectable()
 export class TeamsService {
   private sessionsServiceRef?: SessionsService;
+  /**
+   * Serializes Disable and Enable per agent, so a rollback never clears a newer flag write.
+   * Separate from the session agent lock, which Disable takes inside this queue.
+   */
+  private readonly agentStateQueue = new KeyedSerialQueue();
 
   constructor(
     private readonly teamsStore: TeamsStore,
@@ -103,7 +175,8 @@ export class TeamsService {
     private readonly storage: AgentProfileStorage &
       AgentStorage &
       ProfileProviderConfigStorage &
-      ProjectStorage,
+      ProjectStorage &
+      Pick<ProviderStorage, 'listProviderModelsByProviderIds' | 'listProviderEffortsByProviderIds'>,
     private readonly moduleRef: ModuleRef,
     private readonly settingsService: SettingsService,
     private readonly gate: ProjectWriteGate,
@@ -111,6 +184,7 @@ export class TeamsService {
     private readonly activeSessionLookup: ActiveSessionLookup,
     private readonly messageEnqueue: MessageEnqueueService,
     private readonly providerAdapterFactory: ProviderAdapterFactory,
+    private readonly messageDelivery: AgentMessageDeliveryService,
     @Optional() private readonly eventsService?: EventsService,
   ) {}
 
@@ -193,7 +267,10 @@ export class TeamsService {
     });
   }
 
-  async getTeam(id: string): Promise<
+  async getTeam(
+    id: string,
+    options?: TeamMemberReadOptions,
+  ): Promise<
     | (Team & {
         members: TeamMember[];
         profileIds: string[];
@@ -201,7 +278,7 @@ export class TeamsService {
       })
     | null
   > {
-    return this.teamsStore.getTeam(id);
+    return this.teamsStore.getTeam(id, options);
   }
 
   /**
@@ -269,7 +346,10 @@ export class TeamsService {
    * client needs (id / name / lead / memberAgentIds). `memberCount` is derived
    * by the caller from `memberAgentIds.length`.
    */
-  async listTeamsWithMemberIds(projectId: string): Promise<
+  async listTeamsWithMemberIds(
+    projectId: string,
+    options?: TeamMemberReadOptions,
+  ): Promise<
     Array<{
       id: string;
       name: string;
@@ -277,7 +357,7 @@ export class TeamsService {
       memberAgentIds: string[];
     }>
   > {
-    const rows = await this.teamsStore.listTeamsWithMembers(projectId);
+    const rows = await this.teamsStore.listTeamsWithMembers(projectId, options);
     return rows.map(({ team, memberAgentIds }) => ({
       id: team.id,
       name: team.name,
@@ -939,6 +1019,7 @@ export class TeamsService {
     const memberAgentIds = teamDetail.members.map((m) => m.agentId);
     const { items: projectAgents } = await this.storage.listAgents(input.projectId, {
       limit: 10000,
+      excludeDisabled: true,
     });
     const memberAgents = projectAgents.filter((a) => memberAgentIds.includes(a.id));
 
@@ -946,12 +1027,7 @@ export class TeamsService {
     const nameMatches = memberAgents.filter((a) => a.name.trim().toLowerCase() === trimmedName);
 
     if (nameMatches.length === 0) {
-      return {
-        error: {
-          code: 'AGENT_NOT_FOUND_IN_TEAM',
-          message: `No agent named "${input.name}" found in team "${team.name}"`,
-        },
-      };
+      return agentNotFoundInTeam(input.name, team.name);
     }
     if (nameMatches.length > 1) {
       return {
@@ -1047,6 +1123,7 @@ export class TeamsService {
     if (input.action === 'stop') {
       await this.sessionLifecycle.terminate(activeSession.sessionId, {
         source: 'team-management',
+        expectedAgentId: targetAgent.id,
       });
       return {
         result: {
@@ -1125,10 +1202,11 @@ export class TeamsService {
       );
       for (const session of activeSessions) {
         try {
-          await sessionsService.terminateSession(session.id, {
-            source: 'team-management',
-            reason: 'agent-deletion',
-          });
+          await sessionsService.terminateSession(
+            session.id,
+            { source: 'team-management', reason: 'agent-deletion' },
+            { expectedAgentId: targetAgent.id },
+          );
         } catch (error) {
           logger.error(
             { sessionId: session.id, agentId: targetAgent.id, error },
@@ -1152,10 +1230,13 @@ export class TeamsService {
       removedAgentName: targetAgent.name,
     };
 
-    // Delete agent
+    // A Disable can commit while the session stop above runs; the delete transaction refuses it.
     try {
-      await this.storage.deleteAgent(targetAgent.id);
+      await this.storage.deleteAgent(targetAgent.id, { protectDisabled: true });
     } catch (error) {
+      if (error instanceof AgentDisabledError) {
+        return agentNotFoundInTeam(input.name, team.name);
+      }
       if (error instanceof ConflictError) {
         return {
           error: { code: 'AGENT_HAS_RUNNING_SESSIONS', message: error.message },
@@ -1308,29 +1389,11 @@ export class TeamsService {
       });
     }
 
-    let config;
-    try {
-      config = await this.storage.getProfileProviderConfig(input.providerConfigId);
-    } catch (error) {
-      // Only the expected "config does not exist" becomes CONFIG_NOT_FOUND; never
-      // swallow an arbitrary storage failure as a not-found.
-      if (error instanceof NotFoundError) {
-        throw new ValidationError('Provider config not found', {
-          code: 'CONFIG_NOT_FOUND',
-          configId: input.providerConfigId,
-        });
-      }
-      throw error;
-    }
-    if (config.profileId !== input.profileId) {
-      // Reject without revealing the config's owning profile id — it may belong to
-      // another project's profile and must never be leaked to the client.
-      throw new ValidationError('Provider config does not belong to the selected profile', {
-        code: 'CONFIG_PROFILE_MISMATCH',
-        configId: input.providerConfigId,
-        expectedProfileId: input.profileId,
-      });
-    }
+    const config = await getProfileConfigOrThrow(
+      this.storage,
+      input.providerConfigId,
+      input.profileId,
+    );
 
     // NEW per-project name-uniqueness guard (replicates the team-create path).
     const { items: existingAgents } = await this.storage.listAgents(input.projectId, {
@@ -1367,6 +1430,77 @@ export class TeamsService {
     }
 
     return agent;
+  }
+
+  /**
+   * `chat.getAgentOverrides` facade: the agent's current config and overrides, every config of
+   * its profile in position order, and the model and effort catalogs of their providers.
+   * The caller has already asserted the agent belongs to the project.
+   */
+  async getAgentOverridesForChat(input: { agentId: string }): Promise<AgentOverridesForChat> {
+    const agent = await this.storage.getAgent(input.agentId);
+    const configs = await this.storage.listProfileProviderConfigsByProfile(agent.profileId);
+
+    const providerNames = new Map<string, string | undefined>();
+    for (const config of configs) {
+      if (!providerNames.has(config.providerId)) {
+        providerNames.set(config.providerId, config.providerName);
+      }
+    }
+    const providerIds = [...providerNames.keys()];
+    const [models, efforts] = await Promise.all([
+      this.storage.listProviderModelsByProviderIds(providerIds),
+      this.storage.listProviderEffortsByProviderIds(providerIds),
+    ]);
+
+    const modelsByProvider = groupNamesByProvider(models);
+    const effortsByProvider = groupNamesByProvider(efforts);
+
+    return {
+      ...toOverrideValues(agent),
+      configs: configs.map((config) => ({
+        id: config.id,
+        name: config.name,
+        providerId: config.providerId,
+        providerName: config.providerName,
+        model: config.model,
+        optionsModel: extractModelFromProfileOptions(config.options),
+        effort: config.effort,
+      })),
+      providers: providerIds.map((providerId) => {
+        const providerName = providerNames.get(providerId);
+        const support = providerName
+          ? this.providerAdapterFactory.getEffortSupport(providerName)
+          : NO_EFFORT_SUPPORT;
+        return {
+          providerId,
+          models: modelsByProvider.get(providerId) ?? [],
+          efforts: effortsByProvider.get(providerId) ?? [],
+          ...support,
+        };
+      }),
+    };
+  }
+
+  /**
+   * `chat.setAgentOverrides` facade: store the agent's config, model override and effort
+   * override. The config must belong to the agent's profile. Values are not checked against the
+   * provider catalogs, and a running session keeps its values until the next launch or restart.
+   * The caller has already asserted the agent belongs to the project.
+   */
+  async setAgentOverridesForChat(
+    input: AgentOverrideValues & { projectId: string },
+  ): Promise<AgentOverrideValues> {
+    this.gate.assertWritable(input.projectId);
+    const agent = await this.storage.getAgent(input.agentId);
+    await getProfileConfigOrThrow(this.storage, input.providerConfigId, agent.profileId);
+    const updated = await this.storage.updateAgent(input.agentId, {
+      providerConfigId: input.providerConfigId,
+      modelOverride: input.modelOverride,
+      effortOverride: input.effortOverride,
+    });
+    await publishAgentsUpdated(this.eventsService, updated.projectId, [updated.id]);
+    return toOverrideValues(updated);
   }
 
   /**
@@ -1418,7 +1552,109 @@ export class TeamsService {
     return this.deleteAgentWithSideEffects(input, agent, {
       protectProjectOwner: true,
       protectTeamLead: true,
+      protectDisabled: true,
     });
+  }
+
+  /**
+   * Disable a team agent, then stop its running session. Storage checks eligibility in the
+   * same transaction as the flag write, so a rejected request never stops a session. When the
+   * stop fails, a flag that this call set is cleared again and the stop error is returned.
+   */
+  async disableAgent(agentId: string, source: SessionStoppedSource): Promise<Agent> {
+    return this.agentStateQueue.run(agentId, async () => {
+      const { agent, changed } = await this.storage.disableAgent(agentId);
+      try {
+        await this.sessionLifecycle.stopDisabledAgent(agentId, {
+          source,
+          reason: 'user-requested',
+        });
+      } catch (error) {
+        if (changed) {
+          try {
+            await this.storage.enableAgent(agentId);
+          } catch (rollbackError) {
+            logger.error(
+              { agentId, error: rollbackError },
+              'Failed to clear the disabled flag after the session stop failed',
+            );
+          }
+        }
+        throw error;
+      }
+      if (changed) {
+        await publishAgentsUpdated(this.eventsService, agent.projectId, [agent.id]);
+        await this.notifyLeadsOfAgentState(agent, 'disabled');
+      }
+      return agent;
+    });
+  }
+
+  /** Clear the disabled flag. Starts no session. */
+  async enableAgent(agentId: string): Promise<Agent> {
+    return this.agentStateQueue.run(agentId, async () => {
+      const wasDisabled = this.storage.isAgentDisabled(agentId);
+      const agent = await this.storage.enableAgent(agentId);
+      if (wasDisabled) {
+        await publishAgentsUpdated(this.eventsService, agent.projectId, [agent.id]);
+        await this.notifyLeadsOfAgentState(agent, 'enabled');
+      }
+      return agent;
+    });
+  }
+
+  /**
+   * One system message per lead of the agent's teams. A lead without a running session is
+   * not started, and a failed notice never fails the state change.
+   */
+  private async notifyLeadsOfAgentState(
+    agent: Agent,
+    state: 'disabled' | 'enabled',
+  ): Promise<void> {
+    const body =
+      state === 'disabled'
+        ? `Agent ${agent.name} is disabled. It is not available until a user enables it.`
+        : `Agent ${agent.name} is enabled again.`;
+    let leadIds: Set<string>;
+    try {
+      const teams = await this.teamsStore.listTeamsByAgent(agent.id);
+      leadIds = new Set(
+        teams
+          .map((team) => team.teamLeadAgentId)
+          .filter((leadId): leadId is string => leadId !== null && leadId !== agent.id),
+      );
+    } catch (error) {
+      logger.warn(
+        { agentId: agent.id, state, error: error instanceof Error ? error.message : error },
+        'Failed to read the team leads for the agent state notice',
+      );
+      return;
+    }
+    for (const leadId of leadIds) {
+      try {
+        await this.messageDelivery.deliver(
+          [leadId],
+          {
+            kind: 'pooled',
+            body,
+            source: 'agent.state',
+            projectId: agent.projectId,
+            senderName: 'System',
+          },
+          { submitKeys: ['Enter'], requireActiveSession: true },
+        );
+      } catch (error) {
+        logger.warn(
+          {
+            agentId: agent.id,
+            leadId,
+            state,
+            error: error instanceof Error ? error.message : error,
+          },
+          'Failed to notify a team lead about the agent state change',
+        );
+      }
+    }
   }
 
   private async deleteAgentWithSideEffects(

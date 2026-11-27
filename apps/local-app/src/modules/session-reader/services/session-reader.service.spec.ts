@@ -121,6 +121,7 @@ const mockAdapter = {
   parseSessionFile: jest.fn(),
   parseFullSession: jest.fn(),
   getSummary: jest.fn(),
+  readFullToolResult: jest.fn(),
 };
 
 const mockSessionCacheService = {
@@ -1126,15 +1127,25 @@ describe('SessionReaderService', () => {
   });
 
   describe('getToolResult', () => {
-    it('should return full tool result content by toolCallId', async () => {
+    it('should return full tool result content by toolCallId and flag a capped one it cannot reread', async () => {
       setupResolveChain();
       const session = makeSession([
         {
           ...makeMessage('m-tool', 'assistant', '2026-01-01T10:00:00.000Z'),
           toolCalls: [
             { id: 'tc-1', name: 'Read', input: { file_path: '/tmp/a.ts' }, isTask: false },
+            { id: 'tc-2', name: 'Bash', input: {}, isTask: false },
           ],
-          toolResults: [{ toolCallId: 'tc-1', content: 'full content', isError: false }],
+          toolResults: [
+            { toolCallId: 'tc-1', content: 'full content', isError: false },
+            {
+              toolCallId: 'tc-2',
+              content: 'capped',
+              isError: false,
+              isTruncated: true,
+              fullLength: 9,
+            },
+          ],
         },
       ]);
       mockAdapter.parseFullSession.mockResolvedValue(session);
@@ -1147,6 +1158,29 @@ describe('SessionReaderService', () => {
         content: 'full content',
         isError: false,
         fullLength: 12,
+        isComplete: true,
+      });
+      // A reread that does not extend the parsed prefix to the original length is not the
+      // same result (source gone, or rewritten under a positional id): report it incomplete.
+      for (const reread of [null, 'capped!', 'CAPPED-XY', 'capped-XYZ']) {
+        mockAdapter.readFullToolResult.mockResolvedValueOnce(
+          reread === null ? null : { toolCallId: 'tc-2', content: reread, isError: false },
+        );
+        await expect(service.getToolResult('sess-1', 'tc-2')).resolves.toMatchObject({
+          content: 'capped',
+          fullLength: 9,
+          isComplete: false,
+        });
+      }
+      mockAdapter.readFullToolResult.mockResolvedValueOnce({
+        toolCallId: 'tc-2',
+        content: 'capped-XY',
+        isError: false,
+      });
+      await expect(service.getToolResult('sess-1', 'tc-2')).resolves.toMatchObject({
+        content: 'capped-XY',
+        fullLength: 9,
+        isComplete: true,
       });
     });
 
@@ -1625,6 +1659,47 @@ describe('SessionReaderService', () => {
       expect(first.messageCount).toBe(3);
       expect(afterFreshnessChange.messageCount).toBe(4);
       expect(mockSessionCacheService.getOrParseWithMeta).toHaveBeenCalledTimes(2);
+    });
+
+    it('starts a new parse when the row names another conversation during a parse', async () => {
+      setupResolveChain();
+      const oldPath = '/home/user/.claude/projects/-test/session.jsonl';
+      const newPath = '/home/user/.claude/projects/-test/restored.jsonl';
+      (mockPathValidator.validateForRead as jest.Mock).mockImplementation(
+        async (path: string) => path,
+      );
+      const oldSession = makeSession();
+      const newSession = makeSession([makeMessage('n1', 'user', '2026-01-01T11:00:00.000Z')]);
+      let resolveOldParse!: (value: UnifiedSession) => void;
+      mockAdapter.parseFullSession.mockImplementation((path: string) =>
+        path === oldPath
+          ? new Promise<UnifiedSession>((resolve) => {
+              resolveOldParse = resolve;
+            })
+          : Promise.resolve(newSession),
+      );
+
+      const oldRequest = service.getTranscript('sess-1');
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(mockAdapter.parseFullSession).toHaveBeenCalledWith(oldPath);
+
+      mockSessionsService.getSession.mockReturnValue({
+        id: 'sess-1',
+        agentId: 'agent-1',
+        providerNameAtLaunch: 'claude',
+        transcriptPath: newPath,
+        status: 'running',
+      });
+      const newRequest = service.getTranscript('sess-1');
+
+      await expect(newRequest).resolves.toEqual(
+        expect.objectContaining({ messages: newSession.messages }),
+      );
+      expect(mockAdapter.parseFullSession).toHaveBeenLastCalledWith(newPath);
+      resolveOldParse(oldSession);
+      await expect(oldRequest).resolves.toEqual(
+        expect.objectContaining({ messages: oldSession.messages }),
+      );
     });
   });
 

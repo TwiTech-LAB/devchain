@@ -9,6 +9,7 @@ import {
   foreignKey,
   primaryKey,
   check,
+  type AnySQLiteColumn,
 } from 'drizzle-orm/sqlite-core';
 
 export const DEFAULT_PROJECT_WORKSPACE_ID = '0defa017-0000-4000-8000-000000000001';
@@ -592,6 +593,7 @@ export const agents = sqliteTable(
     effortOverride: text('effort_override'),
     name: text('name').notNull(),
     description: text('description'),
+    disabled: integer('disabled', { mode: 'boolean' }).notNull().default(false),
     createdAt: text('created_at').notNull(),
     updatedAt: text('updated_at').notNull(),
   },
@@ -903,6 +905,31 @@ export const externalManagedSubtaskLinks = sqliteTable(
       table.remoteTaskId,
     ),
     retryAtIdx: index('external_managed_subtask_retry_at_idx').on(table.retryAt),
+  }),
+);
+
+// Ordinary link sets and unlinks made on a claimed VM, in commit order, until
+// home acknowledges them; home keeps the receipts it applied so each replays
+// once. `epic_id` has no FK: a release must outlive the deleted epic.
+export const externalLinkReceipts = sqliteTable(
+  'external_link_receipts',
+  {
+    id: text('id').primaryKey(),
+    seq: integer('seq').notNull(),
+    kind: text('kind', { enum: ['set', 'release'] }).notNull(),
+    projectId: text('project_id')
+      .notNull()
+      .references(() => projects.id, { onDelete: 'cascade' }),
+    epicId: text('epic_id').notNull(),
+    linkId: text('link_id').notNull(),
+    provider: text('provider', { enum: ['clickup', 'jira'] }).notNull(),
+    remoteScopeKey: text('remote_scope_key').notNull(),
+    remoteTaskId: text('remote_task_id').notNull(),
+    createdAt: text('created_at').notNull(),
+  },
+  (table) => ({
+    projectSeqIdx: index('external_link_receipts_project_seq_idx').on(table.projectId, table.seq),
+    kindCheck: check('external_link_receipts_kind_check', sql`${table.kind} IN ('set', 'release')`),
   }),
 );
 
@@ -1244,6 +1271,12 @@ export const sessions = sqliteTable(
   'sessions',
   {
     id: text('id').primaryKey(),
+    parentSessionId: text('parent_session_id').references((): AnySQLiteColumn => sessions.id, {
+      onDelete: 'set null',
+    }),
+    kind: text('kind', { enum: ['session', 'save_point'] })
+      .notNull()
+      .default('session'),
     epicId: text('epic_id').references(() => epics.id, { onDelete: 'set null' }),
     agentId: text('agent_id').references(() => agents.id, { onDelete: 'restrict' }),
     tmuxSessionId: text('tmux_session_id'),
@@ -1260,6 +1293,7 @@ export const sessions = sqliteTable(
     sizeBytes: integer('size_bytes'),
     createdAt: text('created_at').notNull(),
     updatedAt: text('updated_at').notNull(),
+    inheritedSessionIds: text('inherited_session_ids'),
   },
   (table) => ({
     // Partial unique index: ensures only one running session per agent

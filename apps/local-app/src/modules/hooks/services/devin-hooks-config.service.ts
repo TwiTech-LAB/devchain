@@ -5,6 +5,7 @@ import { dirname, join } from 'path';
 import { addToGitExclude } from '../../../common/git-exclude';
 import { parseJsonc, setJsoncValue } from '../../../common/jsonc';
 import { createLogger } from '../../../common/logging/logger';
+import { SESSION_START_SOURCE_ENV } from '../../providers/adapters/capabilities/hook.capability';
 import { ProcessExecutor } from '../../terminal/services/process-executor/process-executor.port';
 import { HooksConfigService } from './hooks-config.service';
 import type { HookConfigInstaller } from './copilot-hooks-config.service';
@@ -95,6 +96,9 @@ SOURCE=""
 if [ "$HOOK_EVENT_NAME" = "SessionStart" ]; then
   SOURCE="$(echo "$INPUT" | jq -r '.source // empty')" || exit 0
   if [ -z "$SOURCE" ]; then SOURCE="startup"; fi
+  if [ "$SOURCE" = "resume" ] && [ "\${${SESSION_START_SOURCE_ENV}:-}" = "fork" ]; then
+    SOURCE="fork"
+  fi
 fi
 
 # Hook time in epoch ms orders turn hooks that arrive out of order. BSD date has

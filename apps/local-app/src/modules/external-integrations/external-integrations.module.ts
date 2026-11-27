@@ -1,3 +1,8 @@
+import {
+  INTEGRATION_CREDENTIAL_SOURCE,
+  IntegrationCredentialReader,
+} from './connections/integration-credential-source';
+import { IntegrationVmCacheModule } from './vm-cache/integration-vm-cache.module';
 import { Module } from '@nestjs/common';
 import { ClickUpExternalTaskProvider } from './adapters/clickup-external-task.provider';
 import { JiraExternalTaskProvider } from './adapters/jira-external-task.provider';
@@ -10,6 +15,7 @@ import { IntegrationConnectionsController } from './connections/integration-conn
 import { IntegrationConnectionsService } from './connections/integration-connections.service';
 import { ExternalMyWorkController } from './my-work/external-my-work.controller';
 import { ExternalMyWorkService } from './my-work/external-my-work.service';
+import { ExternalTaskReferenceResolver } from './resolution/external-task-reference.resolver';
 import { ExternalEditSessionService } from './my-work/external-edit-session.service';
 import { ExternalTimeMutationService } from './my-work/external-time-mutation.service';
 import { ExternalEditSessionStore } from './sessions/external-edit-session.store';
@@ -20,11 +26,12 @@ import {
   EXTERNAL_RICH_CAPABILITIES_TOKEN,
 } from './models/external-rich-capabilities';
 import { ExternalSubtaskSyncSubscriber } from './subscribers/external-subtask-sync.subscriber';
+import { ManagedProjectionLockModule } from './subscribers/managed-projection-lock.module';
 import { ManagedSubtaskSyncHealthService } from './subscribers/managed-subtask-sync-health.service';
 import { ManagedSubtaskSyncController } from './connections/managed-subtask-sync.controller';
 
 @Module({
-  imports: [StorageModule, EventsCoreModule],
+  imports: [StorageModule, EventsCoreModule, IntegrationVmCacheModule, ManagedProjectionLockModule],
   controllers: [
     IntegrationConnectionsController,
     ManagedSubtaskSyncController,
@@ -56,7 +63,10 @@ import { ManagedSubtaskSyncController } from './connections/managed-subtask-sync
     ExternalEditSessionStore,
     ExternalTimeMutationStore,
     IntegrationConnectionsService,
+    IntegrationCredentialReader,
+    { provide: INTEGRATION_CREDENTIAL_SOURCE, useExisting: IntegrationCredentialReader },
     ExternalMyWorkService,
+    ExternalTaskReferenceResolver,
     ExternalEditSessionService,
     ExternalTimeMutationService,
     ExternalSubtaskSyncSubscriber,
@@ -67,6 +77,8 @@ import { ManagedSubtaskSyncController } from './connections/managed-subtask-sync
     EXTERNAL_TASK_PROVIDERS,
     ProviderOperationGate,
     ExternalTimeMutationService,
+    ExternalTaskReferenceResolver,
+    ManagedProjectionLockModule,
   ],
 })
 export class ExternalIntegrationsModule {}

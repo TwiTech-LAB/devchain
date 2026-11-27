@@ -31,7 +31,11 @@ import {
   SessionsMessageLogReadFacade,
   type PendingMobileMessage,
 } from '../../sessions/services/sessions-message-log-read.facade';
-import { TeamsService } from '../../teams/services/teams.service';
+import {
+  TeamsService,
+  type AgentOverridesForChat,
+  type AgentOverrideValues,
+} from '../../teams/services/teams.service';
 import { PendingAskUserQuestionService } from '../../hooks/services/pending-ask-user-question.service';
 import type { NormalizedAskUserQuestion } from '../../events/catalog/claude.hooks.ask_user_question.pending';
 import { E2eeTrustService } from '../../e2ee/services/e2ee-trust.service';
@@ -73,6 +77,15 @@ export interface MobileChatAgent {
    * omitted (no badge) when the watcher has no entry or its lookup throws.
    */
   latestMessageCount?: number;
+  /**
+   * Present (true) only when the running session has an unanswered AskUserQuestion,
+   * however long it has waited.
+   */
+  pendingQuestion?: true;
+  /** Present (true) only for a disabled agent; such an agent always reports offline. */
+  disabled?: true;
+  /** Present (true) only for the Project Owner agent. */
+  isProjectOwner?: true;
 }
 
 /**
@@ -273,9 +286,10 @@ export class MobileChatRpcService {
    */
   async listAgents(params: Record<string, unknown>): Promise<MobileChatAgent[]> {
     const projectId = params['projectId'] as string;
+    const includeDisabled = params['includeDisabled'] === true;
 
     const [agentsResult, activeSessions] = await Promise.all([
-      this.storage.listAgents(projectId),
+      this.storage.listAgents(projectId, { excludeDisabled: !includeDisabled }),
       this.activeSessions.listActiveSessions(projectId),
     ]);
     const agents = agentsResult.items;
@@ -299,13 +313,17 @@ export class MobileChatRpcService {
     ]);
 
     return agents.map((agent) => {
-      const presence = presenceByAgent.get(agent.id);
+      // Disable sets the flag shortly before it stops the session, so a still-running
+      // session row of a disabled agent must not make it look online.
+      const presence = agent.disabled ? undefined : presenceByAgent.get(agent.id);
       const item: MobileChatAgent = {
         id: agent.id,
         name: agent.name,
         type: 'agent',
         online: presence?.online ?? false,
       };
+      if (agent.disabled) item.disabled = true;
+      if (agent.isProjectOwner) item.isProjectOwner = true;
 
       const profileName = agent.profileId ? profileNameById.get(agent.profileId) : undefined;
       if (profileName) item.profileName = profileName;
@@ -327,6 +345,9 @@ export class MobileChatRpcService {
           if (count !== null) item.latestMessageCount = count;
         } catch {
           // Watcher lookup threw — omit the field; listAgents still succeeds.
+        }
+        if (this.pendingAskUserQuestion.hasPendingQuestion(presence.sessionId)) {
+          item.pendingQuestion = true;
         }
       }
       if (presence) item.activityState = presence.activityState ?? null;
@@ -350,7 +371,9 @@ export class MobileChatRpcService {
    */
   async listTeams(params: Record<string, unknown>): Promise<MobileChatTeam[]> {
     const projectId = params['projectId'] as string;
-    const teams = await this.teamsService.listTeamsWithMemberIds(projectId);
+    const teams = await this.teamsService.listTeamsWithMemberIds(projectId, {
+      excludeDisabledMembers: params['includeDisabled'] !== true,
+    });
     return teams.map((team) => ({
       id: team.id,
       name: team.name,
@@ -478,6 +501,54 @@ export class MobileChatRpcService {
     await this.assertAgentInProject(agentId, projectId);
     await this.teamsService.deleteAgentForChat({ projectId, agentId });
     return { deleted: true };
+  }
+
+  /**
+   * `chat.setAgentDisabled({ projectId, agentId, disabled })` — the same `TeamsService`
+   * Disable/Enable as `POST /api/agents/:id/disable|enable`, so the rules (lead, Project
+   * Owner, no team), the session stop and the lead notice are identical.
+   */
+  async setAgentDisabled(
+    params: Record<string, unknown>,
+  ): Promise<{ agentId: string; disabled: boolean }> {
+    const projectId = params['projectId'] as string;
+    const agentId = params['agentId'] as string;
+    const disabled = params['disabled'] === true;
+    await this.assertAgentInProject(agentId, projectId);
+    const agent = disabled
+      ? await this.teamsService.disableAgent(agentId, 'mobile-rpc')
+      : await this.teamsService.enableAgent(agentId);
+    return { agentId: agent.id, disabled: agent.disabled };
+  }
+
+  /**
+   * `chat.getAgentOverrides({ projectId, agentId })` — the agent's config and overrides, the
+   * configs it can switch to, and each provider's model and effort catalog.
+   */
+  async getAgentOverrides(params: Record<string, unknown>): Promise<AgentOverridesForChat> {
+    const projectId = params['projectId'] as string;
+    const agentId = params['agentId'] as string;
+    await this.assertAgentInProject(agentId, projectId);
+    return this.teamsService.getAgentOverridesForChat({ agentId });
+  }
+
+  /**
+   * `chat.setAgentOverrides({ projectId, agentId, providerConfigId, modelOverride, effortOverride })`
+   * — the tunnel passes the raw params, so the overrides are trimmed here; `null` clears one.
+   */
+  async setAgentOverrides(params: Record<string, unknown>): Promise<AgentOverrideValues> {
+    const projectId = params['projectId'] as string;
+    const agentId = params['agentId'] as string;
+    await this.assertAgentInProject(agentId, projectId);
+    const trimOrNull = (value: unknown): string | null =>
+      typeof value === 'string' ? value.trim() : null;
+    return this.teamsService.setAgentOverridesForChat({
+      projectId,
+      agentId,
+      providerConfigId: params['providerConfigId'] as string,
+      modelOverride: trimOrNull(params['modelOverride']),
+      effortOverride: trimOrNull(params['effortOverride']),
+    });
   }
 
   private toCreatedAgent(agent: Agent, teamId: string | null): MobileChatCreatedAgent {
@@ -771,16 +842,20 @@ export class MobileChatRpcService {
   }
 
   /**
-   * `chat.restoreSession({ sessionId, projectId })` — async. If the agent already
-   * has a running session, that is treated as success (the STATUS_RUNNING case).
-   * Otherwise the restore pipeline runs; its `ConflictError.details.code`
-   * (PROVIDER_MISMATCH / NO_PROVIDER_SESSION_ID / INVALID_SESSION_STATE, and the
-   * OpenCode null-providerSessionId → NO_PROVIDER_SESSION_ID case) is recorded on
-   * the operation for the client to read.
+   * `chat.restoreSession({ sessionId, projectId, targetAgentId?, switchToProviderConfigId? })`. The async operation records
+   * the pipeline's conflict code for the client.
+   *
+   * Without `targetAgentId` (older phones), the operation is tracked under the session's owner,
+   * and an owner that already runs a session succeeds with that running session.
+   * With `targetAgentId`, the operation is tracked under the target, which the phone polls; the
+   * shortcut succeeds only when the target already runs the requested session, and otherwise
+   * the family restore moves the session to the target.
    */
   async restoreSession(params: Record<string, unknown>): Promise<LifecycleStartResult> {
     const sessionId = params['sessionId'] as string;
     const projectId = params['projectId'] as string;
+    const targetAgentId = params['targetAgentId'] as string | undefined;
+    const switchToProviderConfigId = params['switchToProviderConfigId'] as string | undefined;
 
     const scope = await this.activeSessions.getSessionProjectScope(sessionId);
     if (!scope) {
@@ -793,22 +868,37 @@ export class MobileChatRpcService {
         projectId,
       });
     }
+    if (targetAgentId !== undefined) {
+      await this.assertAgentInProject(targetAgentId, projectId);
+    }
 
     const op = this.operationTracker.create({
       type: 'restore',
-      agentId: scope.agentId,
+      agentId: targetAgentId ?? scope.agentId,
       sessionId,
       projectId,
     });
     this.runOperation(op.operationId, async () => {
+      if (targetAgentId !== undefined) {
+        const active = await this.activeSessions.getActiveSession(targetAgentId, projectId);
+        if (active?.sessionId === sessionId) {
+          this.sessionLifecycle.assertRestorableKind(sessionId);
+          return { id: sessionId };
+        }
+        return this.sessionLifecycle.restore(sessionId, projectId, {
+          targetAgentId,
+          switchToProviderConfigId,
+        });
+      }
       if (scope.agentId) {
         const active = await this.activeSessions.getActiveSession(scope.agentId, projectId);
         if (active) {
+          this.sessionLifecycle.assertRestorableKind(sessionId);
           // Already running → restore is a no-op success with the current session.
           return { id: active.sessionId };
         }
       }
-      return this.sessionLifecycle.restore(sessionId, projectId);
+      return this.sessionLifecycle.restore(sessionId, projectId, { switchToProviderConfigId });
     });
     return { operationId: op.operationId, status: 'restoring' };
   }
@@ -904,9 +994,10 @@ export class MobileChatRpcService {
   }
 
   /**
-   * `chat.listSessions({ agentId, projectId, cursor?, limit? })` — the mobile
-   * offline-agent session list: a paginated page of the agent's stopped/failed
-   * sessions (keyset cursor, default page 20, max 100), returning the existing
+   * `chat.listSessions({ agentId, projectId, cursor?, limit?, family? })` — the mobile
+   * offline-agent session list: a paginated page of the stopped/failed sessions of the agent,
+   * or with `family: true` of its whole family (keyset cursor, default page 20, max 100),
+   * returning the existing
    * `SessionHistoryResponseDto` ({ items, nextCursor, hasMore, total }). Project
    * scoping is enforced by `getAgentSessionHistory` (cross-project agent → throws
    * Forbidden), so a caller cannot page another project's agent.
@@ -916,7 +1007,8 @@ export class MobileChatRpcService {
     const projectId = params['projectId'] as string;
     const cursor = params['cursor'] as string | undefined;
     const limit = (params['limit'] as number | undefined) ?? 20;
-    return this.sessionLifecycle.listAgentHistory(agentId, projectId, cursor, limit);
+    const scope = params['family'] === true ? 'family' : 'agent';
+    return this.sessionLifecycle.listAgentHistory(agentId, projectId, cursor, limit, scope);
   }
 
   /**

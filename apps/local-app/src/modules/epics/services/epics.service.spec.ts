@@ -1,3 +1,4 @@
+import { ManagedProjectionLock } from '../../external-integrations/subscribers/managed-projection-lock';
 import { EpicsService, externalImportIdempotencyKey } from './epics.service';
 import type { StorageService } from '../../storage/interfaces/storage.interface';
 import type { EventsService } from '../../events/services/events.service';
@@ -5,6 +6,7 @@ import type { SettingsService } from '../../settings/services/settings.service';
 import type { CreateEpic, Epic } from '../../storage/models/domain.models';
 import type { EventEmitter2 } from '@nestjs/event-emitter';
 import {
+  AppError,
   ConflictError,
   NotFoundError,
   ProjectRemoteError,
@@ -36,12 +38,21 @@ describe('EpicsService', () => {
     createEpicWithExternalTaskLink: jest.Mock;
     getIntegrationConnection: jest.Mock;
     listExternalTaskLinksForEpic: jest.Mock;
+    beginExternalLinkRelease: jest.Mock;
+    closeExternalLinkReleaseAttempt: jest.Mock;
     listExternalTaskLinksForEpics: jest.Mock;
     findExternalTaskLink: jest.Mock;
-    createExternalTaskLink: jest.Mock;
+    createRemoteProjectExternalTaskLink: jest.Mock;
   };
   let admission: ReturnType<typeof createProjectWriteGateStub>;
-  let hostClient: { findEpicByIdempotencyKey: jest.Mock; createEpic: jest.Mock };
+  let hostClient: {
+    findEpicByIdempotencyKey: jest.Mock;
+    createEpic: jest.Mock;
+    importExternalTask: jest.Mock;
+    unlinkExternalTask: jest.Mock;
+  };
+  /** Where the link writer sends a remote project's link write. */
+  let linkWritesGo: 'home' | 'host';
   let mirrorSync: { pullNow: jest.Mock };
   let eventsService: {
     publish: jest.Mock;
@@ -92,12 +103,20 @@ describe('EpicsService', () => {
       createEpicWithExternalTaskLink: jest.fn(),
       getIntegrationConnection: jest.fn(),
       listExternalTaskLinksForEpic: jest.fn(),
+      beginExternalLinkRelease: jest.fn().mockResolvedValue('attempt-1'),
+      closeExternalLinkReleaseAttempt: jest.fn().mockResolvedValue(undefined),
       listExternalTaskLinksForEpics: jest.fn(),
       findExternalTaskLink: jest.fn().mockResolvedValue(null),
-      createExternalTaskLink: jest.fn(),
+      createRemoteProjectExternalTaskLink: jest.fn(),
     };
     admission = createProjectWriteGateStub();
-    hostClient = { findEpicByIdempotencyKey: jest.fn(), createEpic: jest.fn() };
+    hostClient = {
+      findEpicByIdempotencyKey: jest.fn(),
+      createEpic: jest.fn(),
+      importExternalTask: jest.fn(),
+      unlinkExternalTask: jest.fn().mockResolvedValue(undefined),
+    };
+    linkWritesGo = 'home';
     mirrorSync = { pullNow: jest.fn().mockResolvedValue(undefined) };
     eventsService = {
       publish: jest.fn().mockResolvedValue('event-id'),
@@ -228,6 +247,15 @@ describe('EpicsService', () => {
       admission as never,
       hostClient as never,
       mirrorSync,
+      new ManagedProjectionLock(),
+      { isClaimedHost: () => false },
+      {
+        write: (
+          _remoteId: string,
+          _projectId: string,
+          write: { home: () => unknown; host: () => unknown },
+        ) => (linkWritesGo === 'home' ? write.home() : write.host()),
+      } as never,
     );
   });
 
@@ -353,6 +381,7 @@ describe('EpicsService', () => {
 
       expect(eventsService.publish).toHaveBeenCalledWith('epic.time.scope.invalidated', {
         workspaceId: '11111111-1111-4111-8111-111111111111',
+        externalLinks: true,
       });
     });
 
@@ -530,9 +559,10 @@ describe('EpicsService', () => {
         id: 'connection-1',
         projectId: 'project-1',
         provider: 'jira',
+        generation: 3,
       });
       storage.getEpic.mockResolvedValue(mirrored);
-      storage.createExternalTaskLink.mockImplementation(async (link) => ({
+      storage.createRemoteProjectExternalTaskLink.mockImplementation(async (link) => ({
         id: 'link-1',
         ...link,
       }));
@@ -566,13 +596,14 @@ describe('EpicsService', () => {
         data: { idempotencyKey: key },
       });
       expect(mirrorSync.pullNow).toHaveBeenCalledWith('project-1');
-      expect(storage.createExternalTaskLink).toHaveBeenCalledWith(
+      expect(storage.createRemoteProjectExternalTaskLink).toHaveBeenCalledWith(
         expect.objectContaining({ epicId: 'host-epic', connectionId: 'connection-1' }),
       );
       expect(storage.createEpicWithExternalTaskLink).not.toHaveBeenCalled();
       expect(result).toMatchObject({ epic: { id: 'host-epic' }, created: true });
       expect(eventsService.publish).toHaveBeenCalledWith('epic.time.scope.invalidated', {
         workspaceId: '11111111-1111-4111-8111-111111111111',
+        externalLinks: true,
       });
     });
 
@@ -599,7 +630,7 @@ describe('EpicsService', () => {
 
       expect(result).toMatchObject({ epic: { id: 'host-epic' }, created: false });
       expect(hostClient.findEpicByIdempotencyKey).not.toHaveBeenCalled();
-      expect(storage.createExternalTaskLink).not.toHaveBeenCalled();
+      expect(storage.createRemoteProjectExternalTaskLink).not.toHaveBeenCalled();
       expect(eventsService.publish).not.toHaveBeenCalled();
     });
 
@@ -616,7 +647,7 @@ describe('EpicsService', () => {
         code: 'REMOTE_MIRROR_PENDING',
         retryable: true,
       });
-      expect(storage.createExternalTaskLink).not.toHaveBeenCalled();
+      expect(storage.createRemoteProjectExternalTaskLink).not.toHaveBeenCalled();
     });
 
     it('writes nothing at home when the host create fails', async () => {
@@ -626,7 +657,7 @@ describe('EpicsService', () => {
 
       await expect(service.importExternalTask(importInput)).rejects.toThrow('unreachable');
       expect(mirrorSync.pullNow).not.toHaveBeenCalled();
-      expect(storage.createExternalTaskLink).not.toHaveBeenCalled();
+      expect(storage.createRemoteProjectExternalTaskLink).not.toHaveBeenCalled();
     });
 
     it('serializes concurrent imports of one task so the host gets one create', async () => {
@@ -640,7 +671,7 @@ describe('EpicsService', () => {
       });
       let link: unknown = null;
       storage.findExternalTaskLink.mockImplementation(async () => link);
-      storage.createExternalTaskLink.mockImplementation(async (input) => {
+      storage.createRemoteProjectExternalTaskLink.mockImplementation(async (input) => {
         link = { id: 'link-1', ...input };
         return link;
       });
@@ -653,6 +684,182 @@ describe('EpicsService', () => {
       expect(hostClient.createEpic).toHaveBeenCalledTimes(1);
       expect(results.map((result) => result.created)).toEqual([true, false]);
       expect(results.map((result) => result.epic.id)).toEqual(['host-epic', 'host-epic']);
+    });
+
+    describe('on a VM that owns the links', () => {
+      beforeEach(() => {
+        linkWritesGo = 'host';
+      });
+
+      it('returns the link an agent wrote on the VM, creating no epic and no home link', async () => {
+        ownedBy('remote');
+        const vmLink = { id: 'vm-link', epicId: 'host-epic', projectId: 'project-1' };
+        // Home's mirror learns the agent's link only from the pull after the import.
+        mirrorSync.pullNow.mockImplementation(async () => {
+          storage.findExternalTaskLink.mockResolvedValue(vmLink);
+        });
+        hostClient.importExternalTask.mockResolvedValue({
+          epicId: 'host-epic',
+          linkId: 'vm-link',
+          created: false,
+        });
+
+        const result = await service.importExternalTask(importInput);
+
+        expect(hostClient.importExternalTask).toHaveBeenCalledWith('remote-1', 'project-1', {
+          idempotencyKey: key,
+          epic: { statusId: 'status-1', title: 'Imported', description: null },
+          link: expect.objectContaining({
+            connectionId: 'connection-1',
+            connectionGeneration: 3,
+            provider: 'jira',
+            remoteScopeKey: 'acme.atlassian.net',
+            remoteTaskId: 'ENG-1',
+          }),
+        });
+        expect(mirrorSync.pullNow).toHaveBeenCalledWith('project-1');
+        expect(result).toEqual({ epic: mirrored, externalTaskLink: vmLink, created: false });
+        expect(hostClient.createEpic).not.toHaveBeenCalled();
+        expect(storage.createRemoteProjectExternalTaskLink).not.toHaveBeenCalled();
+        expect(eventsService.publish).not.toHaveBeenCalled();
+      });
+
+      it("lets the VM decide even when home's mirror still holds a link of the task", async () => {
+        ownedBy('remote');
+        // The agent moved the link on the VM; home has not pulled since.
+        storage.findExternalTaskLink.mockResolvedValue({ id: 'stale-link', epicId: 'old-epic' });
+        hostClient.importExternalTask.mockResolvedValue({
+          epicId: 'host-epic',
+          linkId: 'vm-link',
+          created: false,
+        });
+
+        const result = await service.importExternalTask(importInput);
+
+        expect(hostClient.importExternalTask).toHaveBeenCalledTimes(1);
+        expect(result).toMatchObject({
+          epic: { id: 'host-epic' },
+          externalTaskLink: { id: 'vm-link', epicId: 'host-epic' },
+          created: false,
+        });
+      });
+
+      it('answers with the VM link before the mirror has it', async () => {
+        ownedBy('remote');
+        hostClient.importExternalTask.mockResolvedValue({
+          epicId: 'host-epic',
+          linkId: 'vm-link',
+          created: true,
+        });
+
+        const result = await service.importExternalTask(importInput);
+
+        expect(result).toMatchObject({
+          epic: { id: 'host-epic' },
+          externalTaskLink: { id: 'vm-link', epicId: 'host-epic', connectionId: 'connection-1' },
+          created: true,
+        });
+        expect(eventsService.publish).toHaveBeenCalledWith(
+          'epic.time.scope.invalidated',
+          expect.objectContaining({ externalLinks: true }),
+        );
+      });
+    });
+  });
+
+  describe('unlinking a task in a remote-owned project', () => {
+    const homeLink = {
+      id: 'vm-link',
+      epicId: 'host-epic',
+      projectId: 'project-1',
+      provider: 'jira',
+      remoteScopeKey: 'acme.atlassian.net',
+      remoteTaskId: 'ENG-1',
+      sourceSnapshot: { remoteKey: 'ENG-1' },
+    };
+
+    beforeEach(() => {
+      storage.getEpic.mockResolvedValue({ ...baseEpic, id: 'host-epic', projectId: 'project-1' });
+      storage.listExternalTaskLinksForEpic.mockResolvedValue([homeLink]);
+      // The pull brings the VM's unlink home.
+      mirrorSync.pullNow.mockImplementation(async () => {
+        storage.listExternalTaskLinksForEpic.mockResolvedValue([]);
+      });
+      admission.getRemoteOwner.mockReturnValue({
+        projectId: 'project-1',
+        remoteId: 'remote-1',
+        remoteName: 'vm-1',
+        state: 'remote',
+      });
+    });
+
+    it('removes the exact link on the VM, then pulls it home', async () => {
+      linkWritesGo = 'host';
+
+      await service.unlinkExternalTaskSource('host-epic', 'vm-link');
+
+      expect(hostClient.unlinkExternalTask).toHaveBeenCalledWith(
+        'remote-1',
+        'project-1',
+        'host-epic',
+        'vm-link',
+      );
+      expect(mirrorSync.pullNow).toHaveBeenCalledWith('project-1');
+      expect(storage.updateEpic).not.toHaveBeenCalled();
+    });
+
+    it('keeps the committed unlink when the scope hint fails', async () => {
+      linkWritesGo = 'host';
+      eventsService.publish.mockRejectedValue(new Error('bus down'));
+
+      await expect(
+        service.unlinkExternalTaskSource('host-epic', 'vm-link'),
+      ).resolves.toBeUndefined();
+
+      expect(hostClient.unlinkExternalTask).toHaveBeenCalledTimes(1);
+      expect(mirrorSync.pullNow).toHaveBeenCalledWith('project-1');
+    });
+
+    it("refuses while home's ledger holds a pending estimate of the task, before the VM is called", async () => {
+      linkWritesGo = 'host';
+      storage.beginExternalLinkRelease.mockRejectedValue(
+        new AppError('pending', 'EXTERNAL_TASK_ESTIMATE_PENDING', 409),
+      );
+
+      const error: unknown = await service
+        .unlinkExternalTaskSource('host-epic', 'vm-link')
+        .catch((e) => e);
+
+      expect(error).toMatchObject({ code: 'EXTERNAL_TASK_ESTIMATE_PENDING', statusCode: 409 });
+      expect(storage.beginExternalLinkRelease).toHaveBeenCalledWith('host-epic', 'vm-link');
+      expect(hostClient.unlinkExternalTask).not.toHaveBeenCalled();
+    });
+
+    it('asks to update a VM of another version, changing nothing', async () => {
+      const error: unknown = await service
+        .unlinkExternalTaskSource('host-epic', 'vm-link')
+        .catch((e) => e);
+
+      expect(error).toBeInstanceOf(ConflictError);
+      expect((error as ConflictError).message).toBe(
+        'Update the VM to unlink tasks in this project.',
+      );
+      expect((error as ConflictError).details).toMatchObject({ code: 'REMOTE_UPDATE_REQUIRED' });
+      expect(hostClient.unlinkExternalTask).not.toHaveBeenCalled();
+    });
+
+    it("asks to update a VM of another version even while home's ledger holds a pending estimate", async () => {
+      storage.beginExternalLinkRelease.mockRejectedValue(
+        new AppError('pending', 'EXTERNAL_TASK_ESTIMATE_PENDING', 409),
+      );
+
+      const error: unknown = await service
+        .unlinkExternalTaskSource('host-epic', 'vm-link')
+        .catch((e) => e);
+
+      expect((error as ConflictError).details).toMatchObject({ code: 'REMOTE_UPDATE_REQUIRED' });
+      expect(hostClient.unlinkExternalTask).not.toHaveBeenCalled();
+      expect(storage.updateEpic).not.toHaveBeenCalled();
     });
   });
 

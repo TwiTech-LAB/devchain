@@ -1,5 +1,5 @@
 import type { RemoteListItemDto } from '@/modules/remotes/dtos/remote.dto';
-import type { RemoteOperationDto } from './lib/remote-vm-contracts';
+import type { FileSyncStatusScope, RemoteOperationDto } from './lib/remote-vm-contracts';
 import type { RemoteProjectBindingRow } from '@/ui/lib/backend-provider';
 import {
   POWER_ON_GRACE_MS,
@@ -14,6 +14,7 @@ import {
   type StatusInput,
 } from './remote-status';
 import { operationTitle } from './OperationDetail';
+import { syncScope } from './testing/file-sync-status.fixture';
 import { vmMenuItems } from './VmList';
 
 const NOW = Date.parse('2026-09-28T12:00:00.000Z');
@@ -536,22 +537,91 @@ describe('projectStatus', () => {
   });
 
   describe('row 5: remote', () => {
-    it.each([
-      [{ syncError: 'disk full' }, {}, 'Sync failed: disk full', 'error'],
-      [{ fileSyncWarning: 'Retrying file sync' }, {}, 'Retrying file sync', 'warn'],
-      [{}, { online: false }, 'VM offline', 'warn'],
-      [{}, { versionMatches: false }, 'Blocked until lab-vm is updated', 'warn'],
-      [{}, {}, 'Files in sync', 'ok'],
-    ])('notes %j on a VM %j as "%s"', (bindingFields, remoteFields, note, tone) => {
+    const scope = (overrides: Partial<FileSyncStatusScope> = {}): FileSyncStatusScope =>
+      syncScope({ remoteId: 'vm1', ...overrides });
+    const reason = 'The reason.';
+    it.each<
+      [
+        Partial<RemoteProjectBindingRow>,
+        Partial<RemoteListItemDto>,
+        FileSyncStatusScope | undefined,
+        string,
+        string,
+      ]
+    >([
+      [{ syncError: 'disk full' }, { online: false }, scope(), 'Sync failed: disk full', 'error'],
+      [
+        { fileSyncWarning: 'Retrying' },
+        { apiKeyRejected: true },
+        scope(),
+        'API key rejected',
+        'error',
+      ],
+      [{ fileSyncWarning: 'Retrying' }, { online: false }, scope(), 'VM offline', 'warn'],
+      [
+        { fileSyncWarning: 'Retrying' },
+        { versionMatches: false },
+        scope(),
+        'Blocked until lab-vm is updated',
+        'warn',
+      ],
+      [{ fileSyncWarning: 'Retrying file sync' }, {}, scope(), 'Retrying file sync', 'warn'],
+      [{}, {}, undefined, 'Checking file sync…', 'neutral'],
+      [{}, {}, scope({ remoteId: 'old-vm' }), 'Checking file sync…', 'neutral'],
+      [{}, {}, scope({ verdict: 'unknown', reason }), reason, 'warn'],
+      [{}, {}, scope({ verdict: 'disconnected', reason }), reason, 'warn'],
+      [{}, {}, scope({ verdict: 'problem', reason }), reason, 'warn'],
+      [{}, {}, scope({ verdict: 'busy', reason }), reason, 'info'],
+      [
+        {},
+        {},
+        scope({ verdict: 'syncing', toVm: { items: 3, bytes: 9 }, fromVm: { items: 2, bytes: 9 } }),
+        'Syncing: 3 to the VM, 2 from the VM',
+        'running',
+      ],
+      [
+        {},
+        {},
+        scope({ verdict: 'waiting', toVm: { items: 0, bytes: 0 }, fromVm: null }),
+        'Waiting',
+        'info',
+      ],
+      [
+        {},
+        {},
+        scope({ verdict: 'waiting', toVm: null, fromVm: { items: 4, bytes: 9 } }),
+        'Waiting: 4 from the VM',
+        'info',
+      ],
+      [{}, {}, scope(), 'Files in sync', 'ok'],
+    ])(
+      'notes %j on a VM %j with status %j as "%s"',
+      (bindingFields, remoteFields, sync, note, tone) => {
+        expect(
+          project({
+            remotes: [remote(remoteFields)],
+            bindings: [binding(bindingFields)],
+            syncScopes: new Map(sync ? [['p1', sync]] : []),
+          }),
+        ).toMatchObject({
+          state: 'remote',
+          label: 'On lab-vm',
+          note,
+          tone,
+          action: { kind: 'disconnect' },
+        });
+      },
+    );
+
+    it('notes a failed status read instead of the last measured status', () => {
       expect(
-        project({ remotes: [remote(remoteFields)], bindings: [binding(bindingFields)] }),
-      ).toMatchObject({
-        state: 'remote',
-        label: 'On lab-vm',
-        note,
-        tone,
-        action: { kind: 'disconnect' },
-      });
+        project({
+          remotes: [remote()],
+          bindings: [binding()],
+          syncScopes: new Map([['p1', scope()]]),
+          syncReadFailed: true,
+        }),
+      ).toMatchObject({ note: 'DevChain could not read the file sync status.', tone: 'warn' });
     });
   });
 
@@ -618,6 +688,21 @@ describe('projectRecovery', () => {
 describe('attentionItems', () => {
   it('says nothing when all is well', () => {
     expect(attentionItems(context())).toEqual([]);
+  });
+
+  it('shows one warning for the project with a Git recovery warning', () => {
+    const warning = "The VM took Git back. Recovery of this PC's Git work is pending.";
+    const ctx = context({
+      bindings: [binding({ gitRecoveryWarning: warning }), binding({ projectId: 'p2' })],
+    });
+    expect(attentionItems(ctx)).toEqual([
+      {
+        key: 'git-recovery:p1',
+        tone: 'warn',
+        text: `Alpha: ${warning}`,
+        action: null,
+      },
+    ]);
   });
 
   it('lists every rule in order, errors before warnings', () => {

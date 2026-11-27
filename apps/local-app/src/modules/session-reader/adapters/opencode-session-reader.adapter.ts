@@ -26,8 +26,13 @@ import type {
   IncrementalResult,
 } from './session-reader-adapter.interface';
 import { EXACT_SUMMARY_FIELDS } from './session-reader-adapter.interface';
-import type { UnifiedSession, UnifiedMessage } from '../dtos/unified-session.types';
+import type {
+  UnifiedSession,
+  UnifiedMessage,
+  UnifiedToolResult,
+} from '../dtos/unified-session.types';
 import { PRICING_SERVICE, type PricingServiceInterface } from '../services/pricing.interface';
+import { PROVIDER_TRANSCRIPT_SOURCE_KINDS } from '../services/transcript-path-validator.service';
 import { ValidationError } from '../../../common/errors/error-types';
 import { OpencodeSqliteV1Reader } from '../readers/opencode-sqlite.v1.reader';
 import { OpencodeSqliteV2Reader } from '../readers/opencode-sqlite.v2.reader';
@@ -54,7 +59,7 @@ const APPROXIMATE_SUMMARY_FIELDS = [
 export class OpenCodeSessionReaderAdapter implements SessionReaderAdapter {
   readonly providerName = 'opencode';
   readonly incrementalMode = 'snapshot' as const;
-  readonly sourceKind = 'db' as const;
+  readonly sourceKind = PROVIDER_TRANSCRIPT_SOURCE_KINDS[this.providerName];
   readonly reportsContextWindow = true as const;
   readonly allowedRoots: string[];
 
@@ -131,6 +136,19 @@ export class OpenCodeSessionReaderAdapter implements SessionReaderAdapter {
     const providerSessionId = this.requireSessionId(sourceRef?.providerSessionId);
     const dbPath = this.resolveDbPath(sourceRef, filePath);
     return this.readerFor(dbPath, providerSessionId).readSession(dbPath, providerSessionId).session;
+  }
+
+  async readFullToolResult(
+    sourceRef: SessionSourceRef,
+    toolCallId: string,
+  ): Promise<UnifiedToolResult | null> {
+    const providerSessionId = this.requireSessionId(sourceRef.providerSessionId);
+    const dbPath = this.resolveDbPath(sourceRef);
+    return this.readerFor(dbPath, providerSessionId).readToolResult(
+      dbPath,
+      providerSessionId,
+      toolCallId,
+    );
   }
 
   async getSummary(sourceRef: SessionSourceRef) {

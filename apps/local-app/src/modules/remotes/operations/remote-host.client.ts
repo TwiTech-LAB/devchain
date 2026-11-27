@@ -7,6 +7,7 @@ import type {
   HostProviderCliSettingsStatus,
   HostSkillSettings,
   HostSkillSettingsStatus,
+  HostIntegrationsPush,
   HostVaultPush,
   HostVaultRequestResolve,
   ProjectReplicaChanges,
@@ -14,7 +15,7 @@ import type {
   ProjectReplicaV1,
 } from '@devchain/shared';
 import { getEnvConfig } from '../../../common/config/env.config';
-import { ConflictError } from '../../../common/errors/error-types';
+import { AppError, ConflictError } from '../../../common/errors/error-types';
 import { createLogger } from '../../../common/logging/logger';
 import type { VaultRequestPendingEventPayload } from '../../events/catalog/vault.request.pending';
 import { STORAGE_SERVICE } from '../../storage/interfaces/storage.interface';
@@ -50,7 +51,7 @@ import {
 import { TRANSCRIPT_TIMEOUT_MS } from '../transcripts/transcript-transfer.dto';
 import type {
   TranscriptFile,
-  TranscriptRef,
+  TranscriptListRequest,
   TranscriptListing,
 } from '../transcripts/transcript-transfer.dto';
 import type { RemoteSession } from './git-owner.dto';
@@ -94,6 +95,8 @@ import {
   RUNTIME_TIMEOUT_MS,
 } from '../contract/host-routes';
 import type {
+  HostExternalTaskImport,
+  HostExternalTaskImportResult,
   HostProviderUsageSettings,
   HostProviderUsageSettingsStatus,
   HostProviderSettings,
@@ -113,6 +116,7 @@ import {
   RemoteHostRequestError,
 } from '../transport/host-transport';
 import type { HostSendOptions, HostTarget } from '../transport/host-transport';
+import { HOST_API_KEY_REJECTED } from '../host-api-key';
 import type { SharedVmRoster } from '../dtos/shared-vm.dto';
 import type { VmDestroyFence } from '../../../common/config/vm-destroy-fence';
 import type { SharedVmNotifyResult } from '../host/shared-vm.contract';
@@ -495,8 +499,12 @@ export class RemoteHostClient {
     return this.dockerJson(remoteId, 'GET', '/api/host/docker/version', undefined, options);
   }
 
-  async listTranscripts(remoteId: string, refs: TranscriptRef[]): Promise<TranscriptListing> {
-    return (await this.call(remoteId, hostRoutes.listTranscripts, {}, { body: { refs } })).body;
+  async listTranscripts(
+    remoteId: string,
+    body: TranscriptListRequest,
+    signal?: AbortSignal,
+  ): Promise<TranscriptListing> {
+    return (await this.call(remoteId, hostRoutes.listTranscripts, {}, { body, signal })).body;
   }
 
   async uploadTranscript(
@@ -708,6 +716,14 @@ export class RemoteHostClient {
     return (await this.call(remoteId, hostRoutes.homeWriteEnd, { projectId }, { body })).body;
   }
 
+  async homeRenew(
+    remoteId: string,
+    projectId: string,
+    body: GitFence,
+  ): Promise<GitCoordinatorRecord> {
+    return (await this.call(remoteId, hostRoutes.homeRenew, { projectId }, { body })).body;
+  }
+
   async handoverBegin(
     remoteId: string,
     projectId: string,
@@ -842,6 +858,34 @@ export class RemoteHostClient {
       key,
     });
     return response.status === 404 ? null : response.body.epicId;
+  }
+
+  /** Imports the task on the VM that owns the project's links; see `HostService.importExternalTask`. */
+  async importExternalTask(
+    remoteId: string,
+    projectId: string,
+    body: HostExternalTaskImport,
+  ): Promise<HostExternalTaskImportResult> {
+    const route = hostRoutes.importExternalTask;
+    const response = await this.call(remoteId, route, { projectId }, { body });
+    if (response.status !== 200) {
+      throw linkWriteRefused(remoteId, projectId, response.status, response.body);
+    }
+    return response.body;
+  }
+
+  /** Removes the epic's ordinary link with exactly `linkId` on the VM that owns it. */
+  async unlinkExternalTask(
+    remoteId: string,
+    projectId: string,
+    epicId: string,
+    linkId: string,
+  ): Promise<void> {
+    const route = hostRoutes.unlinkExternalTask;
+    const response = await this.call(remoteId, route, { projectId, epicId, linkId });
+    if (response.status !== 204) {
+      throw linkWriteRefused(remoteId, projectId, response.status, response.body);
+    }
   }
 
   /**
@@ -1221,6 +1265,20 @@ export class RemoteHostClient {
     checkSettingsRevision(remoteId, route.path({}), response, body.revision);
   }
 
+  /**
+   * `body` may hold integration credentials: errors name the route only, never the body.
+   * Returns the projects the VM has seeded, when it reports them.
+   */
+  async putIntegrations(
+    remoteId: string,
+    body: HostIntegrationsPush,
+  ): Promise<string[] | undefined> {
+    const route = hostRoutes.putIntegrations;
+    const response = await this.call(remoteId, route, {}, { body });
+    checkSettingsRevision(remoteId, route.path({}), response, body.revision);
+    return response.body.seededProjectIds;
+  }
+
   async listVaultRequests(remoteId: string): Promise<VaultRequestPendingEventPayload[]> {
     return (await this.call(remoteId, hostRoutes.listVaultRequests, {})).body.requests;
   }
@@ -1268,6 +1326,69 @@ export class RemoteHostClient {
       stream.destroy();
     }
   }
+}
+
+/** Messages for the VM link refusals home shows as they are; the VM's code travels unchanged. */
+const LINK_WRITE_REFUSALS: Record<string, { message: string; retryable?: boolean }> = {
+  PROJECT_NOT_SEEDED: {
+    message: "The VM is still receiving this project's ClickUp and Jira links; try again shortly.",
+    retryable: true,
+  },
+  INTEGRATION_CONNECTION_CHANGED: {
+    message: 'The integration connection changed on the VM; try again.',
+    retryable: true,
+  },
+  MANAGED_SUBTASK_SYNC_BUSY: {
+    message: 'Managed subtask sync is busy; try again.',
+    retryable: true,
+  },
+  EPIC_ALREADY_LINKED: { message: 'This epic is already linked to an external task.' },
+  EXTERNAL_TASK_LINK_STALE: {
+    message: 'This epic is no longer linked to that task; refresh and try again.',
+  },
+  EXTERNAL_TASK_LINK_MANAGED: {
+    message: 'This link belongs to a managed subtask; managed sync removes it.',
+  },
+  EXTERNAL_TASK_ESTIMATE_PENDING: {
+    message: 'This task has a pending time estimate. Verify or resolve it on its epic first.',
+  },
+};
+
+function linkWriteRefused(
+  remoteId: string,
+  projectId: string,
+  status: number,
+  hostCode: string | null | undefined,
+): AppError {
+  if (status === 423) {
+    return new ConflictError('The remote project is locked for a handoff; try again shortly.', {
+      code: 'REMOTE_PROJECT_LOCKED',
+      retryable: true,
+      remoteId,
+      projectId,
+      hostCode: hostCode ?? null,
+    });
+  }
+  const known = hostCode ? LINK_WRITE_REFUSALS[hostCode] : undefined;
+  return new AppError(
+    known?.message ?? 'The VM refused the link change.',
+    hostCode && known ? hostCode : 'REMOTE_LINK_WRITE_REFUSED',
+    status === 404 ? 404 : 409,
+    { remoteId, projectId, hostCode: hostCode ?? null, retryable: known?.retryable === true },
+  );
+}
+
+/**
+ * Whether a VM link write failed with an answer that changed nothing. A stale link is no
+ * refusal: the VM no longer has it, and home's copy drops it at a later pull. A request
+ * without an answer may commit, but the VM's API key admission refuses before any
+ * controller runs.
+ */
+export function isDefinitiveLinkWriteRefusal(error: unknown): boolean {
+  if (error instanceof RemoteHostRequestError) {
+    return error.hostCode === HOST_API_KEY_REJECTED;
+  }
+  return !(error instanceof AppError && error.code === 'EXTERNAL_TASK_LINK_STALE');
 }
 
 /** A settings route answers with the revision the host stored; any other revision is an invalid answer. */

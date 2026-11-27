@@ -2,8 +2,8 @@
   "_manifest": {
     "slug": "teams-dev",
     "name": "DevChain Development Flow",
-    "description": "A multi-agent development workflow that automates software delivery through three phases:\n\n1. Planning — A Brainstormer agent collaborates with a technical validator to refine user requirements into an approved master plan, then breaks it down into epics and tasks.\n2. Execution — A Coder agent implements tasks while an Epic Manager reviews and controls the flow—approving, revising, or flagging issues until all work is complete.\n3. Code Review — A Code Reviewer audits the completed work against architectural standards, generating findings that feed back into new remediation tasks if needed.\n\nSupported agents: claude, codex, glm, agy, devin",
-    "version": "1.1.78",
+    "description": "A multi-agent development workflow that automates software delivery through three phases:\n\n1. Planning — A Brainstormer agent collaborates with a technical validator to refine user requirements into an approved master plan, then breaks it down into epics and tasks.\n2. Execution — A Coder agent implements tasks while an Epic Manager reviews and controls the flow—approving, revising, or flagging issues until all work is complete.\n3. Code Review — A Code Reviewer audits the completed work against architectural standards, generating findings that feed back into new remediation tasks if needed. Peer Reviewer agents can join its team for independent reviews.\n\nSupported agents: claude, codex, glm, agy, devin",
+    "version": "1.1.84",
     "category": "development",
     "tags": [
       "development",
@@ -33,10 +33,22 @@
       ]
     },
     {
+      "id": "80f571de-d760-46af-bfc8-864c06e82651",
+      "title": "Code Review Method",
+      "content": {
+        "$file": "prompts/002-code-review-method.md"
+      },
+      "version": 1,
+      "tags": [
+        "agent:reference:code-review-method",
+        "type:system"
+      ]
+    },
+    {
       "id": "6f3828f6-b144-45ba-a122-c1d86eda83af",
       "title": "Code Simplifier",
       "content": {
-        "$file": "prompts/002-code-simplifier.md"
+        "$file": "prompts/003-code-simplifier.md"
       },
       "version": 1,
       "tags": [
@@ -47,7 +59,7 @@
       "id": "3cbd5b1c-f207-49cc-9ea7-a78a10f29d89",
       "title": "Code-Aware Technical Lead - SOP",
       "content": {
-        "$file": "prompts/003-code-aware-technical-lead-sop.md"
+        "$file": "prompts/004-code-aware-technical-lead-sop.md"
       },
       "version": 1,
       "tags": [
@@ -59,7 +71,7 @@
       "id": "f9de8df5-cc64-4e8c-896b-ee20689f8de3",
       "title": "Create commit",
       "content": {
-        "$file": "prompts/004-create-commit.md"
+        "$file": "prompts/005-create-commit.md"
       },
       "version": 1,
       "tags": [
@@ -70,7 +82,7 @@
       "id": "8db7620a-edfe-4173-af20-c213df21a132",
       "title": "Development Standards",
       "content": {
-        "$file": "prompts/005-development-standards.md"
+        "$file": "prompts/006-development-standards.md"
       },
       "version": 1,
       "tags": [
@@ -82,7 +94,7 @@
       "id": "74a44a93-0d85-41c7-9dc4-a014750ff105",
       "title": "Documentation Refactoring & Cleanup",
       "content": {
-        "$file": "prompts/006-documentation-refactoring-cleanup.md"
+        "$file": "prompts/007-documentation-refactoring-cleanup.md"
       },
       "version": 1,
       "tags": [
@@ -94,7 +106,7 @@
       "id": "fa65879f-ae28-48b4-a4d6-c9efa14ef18b",
       "title": "Epic Master - instructions SOP",
       "content": {
-        "$file": "prompts/007-epic-master-instructions-sop.md"
+        "$file": "prompts/008-epic-master-instructions-sop.md"
       },
       "version": 1,
       "tags": [
@@ -106,7 +118,7 @@
       "id": "7fc3506d-e364-4f07-953a-3df010b90410",
       "title": "How this template works",
       "content": {
-        "$file": "prompts/008-how-this-template-works.md"
+        "$file": "prompts/009-how-this-template-works.md"
       },
       "version": 1,
       "tags": [
@@ -118,7 +130,7 @@
       "id": "e5ae2cb5-edf1-49c7-95c6-151885a9eb4a",
       "title": "Improve Codebase Architecture",
       "content": {
-        "$file": "prompts/009-improve-codebase-architecture.md"
+        "$file": "prompts/010-improve-codebase-architecture.md"
       },
       "version": 1,
       "tags": [
@@ -129,7 +141,7 @@
       "id": "190a77db-50c0-4afb-bafe-4567d59ffb59",
       "title": "Initialize Agent",
       "content": {
-        "$file": "prompts/010-initialize-agent.md"
+        "$file": "prompts/011-initialize-agent.md"
       },
       "version": 1,
       "tags": [
@@ -140,7 +152,7 @@
       "id": "5342c833-d0d3-4057-ba0e-9da41a462738",
       "title": "Initialize project documentation",
       "content": {
-        "$file": "prompts/011-initialize-project-documentation.md"
+        "$file": "prompts/012-initialize-project-documentation.md"
       },
       "version": 1,
       "tags": [
@@ -149,10 +161,22 @@
       ]
     },
     {
+      "id": "c3fb7ce2-cd74-4d77-9813-e2b46114dad5",
+      "title": "Peer Reviewer - SOP",
+      "content": {
+        "$file": "prompts/013-peer-reviewer-sop.md"
+      },
+      "version": 1,
+      "tags": [
+        "agent:profile:sub-reviewer",
+        "type:system"
+      ]
+    },
+    {
       "id": "207e3598-b777-4177-9b7f-8ba60b0aade4",
       "title": "Reviewer/Architect — Plan Decomposition SOP",
       "content": {
-        "$file": "prompts/012-reviewer-architect-plan-decomposition-sop.md"
+        "$file": "prompts/014-reviewer-architect-plan-decomposition-sop.md"
       },
       "version": 1,
       "tags": [
@@ -164,7 +188,7 @@
       "id": "bb3dfdec-0d9d-4150-91ba-b2d9af7be391",
       "title": "Team Management — Routing & Scaling",
       "content": {
-        "$file": "prompts/013-team-management-routing-scaling.md"
+        "$file": "prompts/015-team-management-routing-scaling.md"
       },
       "version": 1,
       "tags": [
@@ -176,7 +200,7 @@
       "id": "7a39890e-eba8-4237-809c-57c7745a463e",
       "title": "Test Prompt",
       "content": {
-        "$file": "prompts/014-test-prompt.md"
+        "$file": "prompts/016-test-prompt.md"
       },
       "version": 1,
       "tags": [
@@ -187,7 +211,7 @@
       "id": "a8cd66c5-93fb-4e11-9ce7-7c400a5b959e",
       "title": "Worker AI - Task Execution SOP",
       "content": {
-        "$file": "prompts/015-worker-ai-task-execution-sop.md"
+        "$file": "prompts/017-worker-ai-task-execution-sop.md"
       },
       "version": 1,
       "tags": [
@@ -199,7 +223,7 @@
       "id": "56edcaa5-f8f0-41ab-a39d-dff20d0f7dd6",
       "title": "project-skill-review",
       "content": {
-        "$file": "prompts/016-project-skill-review.md"
+        "$file": "prompts/018-project-skill-review.md"
       },
       "version": 1,
       "tags": [
@@ -248,7 +272,7 @@
           "description": null,
           "options": "--dangerously-skip-permissions",
           "env": null,
-          "model": "Gemini 3.1 Pro (High)",
+          "model": "gemini-4-neon-xhigh",
           "position": 4
         },
         {
@@ -327,7 +351,7 @@
           "description": null,
           "options": "--dangerously-skip-permissions",
           "env": null,
-          "model": "Gemini 3.1 Pro (High)",
+          "model": "gemini-4-neon-xhigh",
           "position": 2
         },
         {
@@ -397,7 +421,7 @@
           "options": "--dangerously-bypass-approvals-and-sandbox",
           "env": null,
           "model": "gpt-6.2-astra",
-          "effort": "high",
+          "effort": "xhigh",
           "position": 1
         },
         {
@@ -406,6 +430,7 @@
           "description": null,
           "options": "--dangerously-skip-permissions",
           "env": null,
+          "model": "gemini-4-neon-xhigh",
           "position": 3
         },
         {
@@ -466,7 +491,7 @@
           "env": null,
           "model": "sonnet",
           "effort": "medium",
-          "position": 2
+          "position": 1
         },
         {
           "name": "gpt",
@@ -476,7 +501,7 @@
           "env": null,
           "model": "gpt-6.2-sol",
           "effort": "xhigh",
-          "position": 3
+          "position": 2
         },
         {
           "name": "gpt-med",
@@ -486,7 +511,7 @@
           "env": null,
           "model": "gpt-6.2-sol",
           "effort": "medium",
-          "position": 4
+          "position": 3
         },
         {
           "name": "glm",
@@ -501,7 +526,7 @@
             "CLAUDE_CODE_AUTO_COMPACT_WINDOW": "450000",
             "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE": "95"
           },
-          "position": 5
+          "position": 4
         },
         {
           "name": "opencode",
@@ -509,14 +534,24 @@
           "description": "Junior/Mid-level software engineer for backend and frontend work. Can serve as a fallback for senior-level tasks",
           "options": "--auto",
           "env": null,
+          "position": 5
+        },
+        {
+          "name": "agy-high",
+          "providerName": "agy",
+          "description": "Senior software engineer: Handles ambiguous, cross-cutting, high-risk work, and complex Frontend/UI/Backend development. latest model",
+          "options": "--dangerously-skip-permissions",
+          "env": null,
+          "model": "gemini-4-neon-high",
           "position": 6
         },
         {
-          "name": "agy",
+          "name": "agy-mid",
           "providerName": "agy",
-          "description": "Antigravity CLI coding agent",
+          "description": "Mid-level software engineer, for Backend/Frontend work",
           "options": "--dangerously-skip-permissions",
           "env": null,
+          "model": "gemini-4-neon-medium",
           "position": 7
         },
         {
@@ -548,6 +583,75 @@
       ]
     },
     {
+      "id": "3007cb21-5b2a-40f3-adc4-45ef3ab58b9d",
+      "name": "Peer Reviewer",
+      "provider": {
+        "id": "provider-claude",
+        "name": "claude"
+      },
+      "familySlug": "sub-reviewer",
+      "instructions": {
+        "$file": "profiles/005-peer-reviewer.md"
+      },
+      "temperature": null,
+      "maxTokens": null,
+      "providerConfigs": [
+        {
+          "name": "opus",
+          "providerName": "claude",
+          "description": null,
+          "options": "--dangerously-skip-permissions --disallowed-tools EnterPlanMode",
+          "env": null,
+          "model": "opus",
+          "effort": "xhigh",
+          "position": 0
+        },
+        {
+          "name": "gpt",
+          "providerName": "codex",
+          "description": null,
+          "options": "--dangerously-bypass-approvals-and-sandbox",
+          "env": null,
+          "model": "gpt-6.2-astra",
+          "effort": "xhigh",
+          "position": 1
+        },
+        {
+          "name": "agy",
+          "providerName": "agy",
+          "description": null,
+          "options": "--dangerously-skip-permissions",
+          "env": null,
+          "model": "gemini-4-neon-xhigh",
+          "position": 3
+        },
+        {
+          "name": "opencode",
+          "providerName": "opencode",
+          "description": null,
+          "options": "--auto",
+          "env": null,
+          "position": 4
+        },
+        {
+          "name": "copilot",
+          "providerName": "copilot",
+          "description": null,
+          "options": "--yolo",
+          "env": null,
+          "position": 5
+        },
+        {
+          "name": "devin",
+          "providerName": "devin",
+          "description": null,
+          "options": "--permission-mode dangerous",
+          "env": null,
+          "position": 6
+        }
+      ]
+    },
+    {
       "id": "7d2041a7-e3cc-4315-868e-9e743ee4eb56",
       "name": "Red-Team Architect",
       "provider": {
@@ -556,7 +660,7 @@
       },
       "familySlug": "t2-sub-architect",
       "instructions": {
-        "$file": "profiles/005-red-team-architect.md"
+        "$file": "profiles/006-red-team-architect.md"
       },
       "temperature": null,
       "maxTokens": null,
@@ -602,7 +706,7 @@
       },
       "familySlug": "epic manager",
       "instructions": {
-        "$file": "profiles/006-reviewer.md"
+        "$file": "profiles/007-reviewer.md"
       },
       "temperature": null,
       "maxTokens": null,
@@ -633,7 +737,7 @@
           "description": null,
           "options": "--dangerously-skip-permissions",
           "env": null,
-          "model": "Gemini 3.1 Pro (High)",
+          "model": "gemini-4-neon-medium",
           "position": 2
         },
         {
@@ -805,7 +909,9 @@
     {
       "providerName": "agy",
       "models": [
-        "Gemini 3.1 Pro (High)"
+        "gemini-4-neon-xhigh",
+        "gemini-4-neon-high",
+        "gemini-4-neon-medium"
       ]
     },
     {
@@ -1466,6 +1572,49 @@
       "groupName": null,
       "position": 0,
       "priority": 0
+    },
+    {
+      "id": "52dbf640-9277-442c-8a51-8184d045a05e",
+      "name": "Peer Reviewer Cleanup on Phase",
+      "description": null,
+      "enabled": true,
+      "eventName": "epic.updated",
+      "eventFilter": {
+        "combinator": "and",
+        "filters": [
+          {
+            "field": "changes.statusId.currentName",
+            "operator": "equals",
+            "value": "Done"
+          },
+          {
+            "field": "parentId",
+            "operator": "is_null",
+            "value": ""
+          }
+        ]
+      },
+      "actionType": "terminate_session",
+      "actionInputs": {
+        "familySlug": {
+          "source": "custom",
+          "customValue": "sub-reviewer"
+        },
+        "skipWhileEpicsInStatuses": {
+          "source": "custom",
+          "customValue": "Review"
+        },
+        "skipWhileAgentsBusy": {
+          "source": "custom",
+          "customValue": "true"
+        }
+      },
+      "delayMs": 0,
+      "cooldownMs": 5000,
+      "retryOnError": false,
+      "groupName": "Reset",
+      "position": 5,
+      "priority": 50
     }
   ],
   "teams": [
@@ -1510,6 +1659,17 @@
             "opus"
           ]
         }
+      ]
+    },
+    {
+      "name": "Code Review",
+      "description": "Reviews completed phases. The Code Reviewer verifies each finding and owns the verdict. Add Peer Reviewer members to get independent reviews from other models",
+      "teamLeadAgentName": "Code Reviewer",
+      "memberAgentNames": [
+        "Code Reviewer"
+      ],
+      "profileNames": [
+        "Peer Reviewer"
       ]
     }
   ],

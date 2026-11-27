@@ -432,6 +432,49 @@ describe('ProviderMcpEnsureService', () => {
     });
   });
 
+  describe('project owner checked inside the provider queue', () => {
+    const devin = createProvider({ id: 'provider-dv', name: 'devin' });
+    const projectA = '/home/user/project';
+    const projectB = '/home/user/another-project';
+    const added = { success: true, action: 'added', endpoint: 'x', alias: 'devchain' };
+
+    it.each([
+      { name: 'skips B, which became remote-owned while it waited', remote: true },
+      { name: 'registers B, which is still home-owned when its turn comes', remote: false },
+    ])('$name', async ({ remote }) => {
+      let releaseA!: () => void;
+      mockMcpRegistration.ensureRegistration.mockImplementation(
+        async (_provider: Provider, _options: unknown, exec: { cwd: string }) => {
+          if (exec.cwd === projectA) await new Promise<void>((resolve) => (releaseA = resolve));
+          return added;
+        },
+      );
+
+      const ensureA = service.ensureMcp(devin, projectA);
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      const ensureB = service.ensureMcp(devin, projectB);
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      if (remote) {
+        mockAdmission.getRemoteOwner.mockImplementation((projectId: string) =>
+          projectId === 'project-2'
+            ? { projectId, remoteId: 'remote-1', remoteName: 'VM 1' }
+            : null,
+        );
+      }
+      releaseA();
+
+      expect(await ensureA).toMatchObject({ success: true, action: 'added' });
+      expect(await ensureB).toMatchObject({
+        success: true,
+        action: remote ? 'skipped' : 'added',
+      });
+      const written = mockMcpRegistration.ensureRegistration.mock.calls.map(
+        ([, , exec]) => (exec as { cwd: string }).cwd,
+      );
+      expect(written).toEqual(remote ? [projectA] : [projectA, projectB]);
+    });
+  });
+
   describe('exception handling', () => {
     it('catches and returns error when ensureRegistration throws', async () => {
       const provider = createProvider();

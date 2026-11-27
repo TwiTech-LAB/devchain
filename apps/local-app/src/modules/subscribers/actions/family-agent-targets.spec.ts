@@ -8,6 +8,7 @@ function makeAgent(id: string, name: string, profileId: string): Agent {
     id,
     projectId: PROJECT_ID,
     isProjectOwner: false,
+    disabled: false,
     profileId,
     providerConfigId: 'config-1',
     modelOverride: null,
@@ -43,6 +44,7 @@ describe('resolveFamilyAgentTargets', () => {
     expect(storage.listAgents).toHaveBeenCalledWith(PROJECT_ID, {
       limit: 10_000,
       offset: 0,
+      excludeDisabled: true,
     });
   });
 

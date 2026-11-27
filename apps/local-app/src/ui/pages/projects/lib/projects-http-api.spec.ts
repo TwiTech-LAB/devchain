@@ -387,6 +387,47 @@ describe('ProjectsHttpApi', () => {
       ]);
     });
 
+    it('sends the import preview and commit through the remote proxy', async () => {
+      const fetchMock = jest
+        .fn()
+        .mockResolvedValueOnce(response(setupPreview))
+        .mockResolvedValueOnce(
+          response({ success: true, counts: { imported: {}, deleted: {} }, mappings: {} }),
+        );
+      window.fetch = fetchMock as unknown as typeof fetch;
+
+      await api.loadSetupPreview({ rawContent: { version: 1 } }, remoteId);
+      await api.commitImport('p1', { version: 1 }, remoteId);
+
+      expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
+        `/r/${remoteId}/api/projects/setup-preview`,
+        `/r/${remoteId}/api/projects/p1/import`,
+      ]);
+    });
+
+    it('reads template content from home only', async () => {
+      const fetchMock = jest
+        .fn()
+        .mockResolvedValueOnce(response({ slug: 'a/b', content: { marker: 'latest' } }))
+        .mockResolvedValueOnce(response({ slug: 'a/b', content: { marker: '1.0.0' } }))
+        .mockResolvedValueOnce(
+          response({ message: 'Template not found' }, { ok: false, status: 404 }),
+        );
+      window.fetch = fetchMock as unknown as typeof fetch;
+
+      await expect(api.readHomeTemplateContent('a/b')).resolves.toEqual({ marker: 'latest' });
+      await expect(api.readHomeTemplateContent('a/b', '1.0.0+x')).resolves.toEqual({
+        marker: '1.0.0',
+      });
+      await expect(api.readHomeTemplateContent('gone', null)).rejects.toThrow('Template not found');
+
+      expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
+        '/api/templates/a%2Fb',
+        '/api/templates/a%2Fb/versions/1.0.0%2Bx',
+        '/api/templates/gone',
+      ]);
+    });
+
     it('shows the server message when the upgrade preview is refused', async () => {
       window.fetch = jest
         .fn()

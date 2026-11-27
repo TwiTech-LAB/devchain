@@ -1,3 +1,4 @@
+import { HooksModule } from '../hooks/hooks.module';
 import { Module } from '@nestjs/common';
 import { SubscribersController } from './controllers/subscribers.controller';
 import { ActionsController } from './controllers/actions.controller';
@@ -19,6 +20,7 @@ import { TeamsModule } from '../teams/teams.module';
     EventsCoreModule,
     AgentMessageDeliveryModule,
     TeamsModule,
+    HooksModule,
   ],
   controllers: [SubscribersController, ActionsController],
   providers: [SubscribersService, SubscriberExecutorService, AutomationSchedulerService],

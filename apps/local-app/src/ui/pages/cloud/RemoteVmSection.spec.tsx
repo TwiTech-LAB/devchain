@@ -21,6 +21,7 @@ import {
 } from './testing/remote-vm-section.fixture';
 import { RemoteOperationDto } from './lib/remote-vm-contracts';
 import { exclusion, fileSyncFailures } from './testing/file-sync-failures.fixture';
+import { syncScope } from './testing/file-sync-status.fixture';
 import { POWER_ON_GRACE_MS } from './remote-status';
 const mockUseAllProjects = jest.fn();
 const mockUseWorkspaces = jest.fn();
@@ -153,6 +154,7 @@ describe('RemoteVmSection', () => {
     });
 
     it('shows a retryable file sync warning independently of database mirror errors', async () => {
+      fx.remotesData = [{ ...REMOTE, online: true, versionMatches: true }];
       fx.bindingsData = [
         {
           projectId: 'p1',
@@ -166,6 +168,78 @@ describe('RemoteVmSection', () => {
         'File sync will retry automatically.',
       );
       expect(screen.queryByText(/sync failed:/)).not.toBeInTheDocument();
+    });
+
+    it('shows the measured file sync status and reads the summary again every 15 s', async () => {
+      jest.useFakeTimers({ advanceTimers: true });
+      try {
+        fx.remotesData = [{ ...REMOTE, online: true, versionMatches: true }];
+        fx.bindingsData = [{ projectId: 'p1', remoteId: 'r1', state: 'remote' }];
+        fx.syncStatus = {
+          ...fx.syncStatus,
+          scopes: [syncScope({ verdict: 'syncing', toVm: { items: 2, bytes: 10 } })],
+        };
+        renderSection();
+        expect(await projectRow('Project One')).toHaveTextContent('Syncing: 2 to the VM');
+        const reads = fx.calls.readSyncStatus.length;
+        expect(fx.calls.readSyncStatus[0][0]).toEqual({ projectId: undefined, details: false });
+        await act(async () => {
+          jest.advanceTimersByTime(14_000);
+        });
+        expect(fx.calls.readSyncStatus).toHaveLength(reads);
+        await act(async () => {
+          jest.advanceTimersByTime(1_000);
+        });
+        await waitFor(() => expect(fx.calls.readSyncStatus).toHaveLength(reads + 1));
+      } finally {
+        jest.useRealTimers();
+      }
+    });
+
+    it('reads the details once more when the user refreshes the File sync tab', async () => {
+      fx.bindingsData = [{ projectId: 'p1', remoteId: 'r1', state: 'remote' }];
+      fx.syncStatus = { ...fx.syncStatus, scopes: [syncScope({ folders: [] })] };
+      renderSection('/?tab=file-sync');
+      await screen.findByRole('row', { name: 'Project One' });
+      const reads = fx.calls.readSyncStatus.length;
+
+      await userEvent.click(screen.getByRole('button', { name: 'Refresh status' }));
+      await waitFor(() => expect(fx.calls.readSyncStatus).toHaveLength(reads + 1));
+      expect(fx.calls.readSyncStatus[reads][0]).toEqual({ projectId: undefined, details: true });
+    });
+
+    it('opens the File sync tab from the URL and polls only the details while it shows', async () => {
+      jest.useFakeTimers({ advanceTimers: true });
+      try {
+        fx.bindingsData = [{ projectId: 'p1', remoteId: 'r1', state: 'remote' }];
+        fx.syncStatus = {
+          ...fx.syncStatus,
+          scopes: [syncScope({ folders: [] })],
+        };
+        renderSection('/?tab=file-sync');
+        expect(screen.getByRole('tab', { name: 'File sync' })).toHaveAttribute(
+          'aria-selected',
+          'true',
+        );
+        expect(await screen.findByRole('row', { name: 'Project One' })).toHaveTextContent(
+          'Files in sync',
+        );
+        const reads = () => fx.calls.readSyncStatus.map(([request]) => request.details);
+        expect(reads()).toEqual([true]);
+        await act(async () => {
+          jest.advanceTimersByTime(5_000);
+        });
+        await waitFor(() => expect(reads()).toEqual([true, true]));
+
+        await userEvent.click(screen.getByRole('tab', { name: /^Projects/ }));
+        await waitFor(() => expect(reads()).toEqual([true, true, false]));
+        await act(async () => {
+          jest.advanceTimersByTime(14_000);
+        });
+        expect(reads()).toEqual([true, true, false]);
+      } finally {
+        jest.useRealTimers();
+      }
     });
 
     it('falls back to the generic file line when home cannot tell what it has not received', async () => {
@@ -705,6 +779,7 @@ describe('RemoteVmSection.shell', () => {
         'Overview',
         'Projects2',
         'VMs1',
+        'File sync',
         'Logins0',
         'Proxmox1',
       ]);
@@ -2182,12 +2257,50 @@ describe('RemoteVmSection Fix file sync', () => {
     ];
     fx.remotesData = [{ ...REMOTE, online: true, versionMatches: true, logins: {} }];
     fx.fileSyncFailures.p1 = fileSyncFailures();
+    fx.syncStatus = {
+      ...fx.syncStatus,
+      scopes: [
+        syncScope({
+          verdict: 'problem',
+          reason: '2 files on this PC fail to sync.',
+          failed: { home: 1, vm: 1 },
+          folders: [],
+        }),
+      ],
+    };
   });
-  it.each(['row', 'attention', 'disconnect'] as const)(
+
+  /** Expands the project in the File sync tab and returns its details, where its actions show. */
+  async function fileSyncTabDetails(): Promise<HTMLElement> {
+    const row = await screen.findByRole('row', { name: 'Project One' });
+    await userEvent.click(within(row).getByRole('button', { name: 'Project One' }));
+    return screen.getByRole('region', { name: 'Project One details' });
+  }
+
+  it('opens File sync settings from the File sync tab', async () => {
+    renderSection('/?tab=file-sync');
+    const details = await fileSyncTabDetails();
+    await userEvent.click(within(details).getByRole('button', { name: 'File sync settings' }));
+    expect(
+      await screen.findByRole('dialog', { name: 'File sync settings · Project One' }),
+    ).toBeInTheDocument();
+  });
+
+  it.each(['row', 'attention', 'disconnect', 'file-sync tab'] as const)(
     'opens Fix file sync from %s',
     async (entry) => {
-      renderSection(entry === 'attention' ? '/?tab=overview' : '/?tab=projects');
-      if (entry === 'attention') {
+      renderSection(
+        entry === 'attention'
+          ? '/?tab=overview'
+          : entry === 'file-sync tab'
+            ? '/?tab=file-sync'
+            : '/?tab=projects',
+      );
+      if (entry === 'file-sync tab') {
+        await userEvent.click(
+          within(await fileSyncTabDetails()).getByRole('button', { name: 'Fix file sync' }),
+        );
+      } else if (entry === 'attention') {
         await userEvent.click(
           within(await screen.findByRole('list', { name: 'Needs attention' })).getByRole('button', {
             name: 'Fix',

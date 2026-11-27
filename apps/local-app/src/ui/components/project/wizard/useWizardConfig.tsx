@@ -6,6 +6,7 @@ import type {
   SetupPreviewResponse,
 } from '@/ui/pages/projects/lib/project-contracts';
 import type { WizardStep } from '@/ui/hooks/useProjectSetupWizard';
+import type { BackendId } from '@/ui/lib/api-transport';
 import { SetupReviewProvider } from './SetupReviewContext';
 import type { WizardConfigHandlers, WizardConfigState } from './wizardConfigTypes';
 import {
@@ -40,19 +41,34 @@ import {
 
 export type { WizardConfigHandlers, WizardConfigState };
 
+interface PresetChoice {
+  presetName?: string | null;
+  useSuggestedPreset?: boolean;
+}
+
+/**
+ * The setup to apply for a provider selection: the named one when it fits, else the suggested
+ * (newest fitting) one unless `useSuggestedPreset` is false. Undefined means the template defaults.
+ */
+export function presetFor(
+  preview: SetupPreviewResponse,
+  selectedProviderNames: string[],
+  { presetName, useSuggestedPreset = true }: PresetChoice = {},
+) {
+  const presets = selectablePresetsNewestFirst(preview, selectedProviderNames);
+  return (
+    presets.find((candidate) => eqName(candidate.name, presetName)) ??
+    (useSuggestedPreset ? presets[0] : undefined)
+  );
+}
+
 export function wizardConfigStateFor(
   preview: SetupPreviewResponse,
   selectedProviderNames: string[],
-  {
-    presetName,
-    useSuggestedPreset = true,
-  }: { presetName?: string | null; useSuggestedPreset?: boolean } = {},
+  choice: PresetChoice = {},
 ): WizardConfigState {
   let agentRows = templateAgentRows(preview.payload, selectedProviderNames);
-  const presets = selectablePresetsNewestFirst(preview, selectedProviderNames);
-  const preset =
-    presets.find((candidate) => eqName(candidate.name, presetName)) ??
-    (useSuggestedPreset ? presets[0] : undefined);
+  const preset = presetFor(preview, selectedProviderNames, choice);
   if (preset) {
     agentRows = applyPresetToRows(agentRows, preset);
   }
@@ -63,6 +79,7 @@ export function wizardConfigStateFor(
     agentPresetName: preset?.name ?? null,
     agentPresetModified: false,
     teamStates: templateTeamStates(preview.payload, selectedProviderNames, preset),
+    hasManualEdits: false,
   };
 }
 
@@ -116,6 +133,7 @@ export function useWizardConfigHandlers<S extends WizardConfigState>(
             [key]: patchAgentRow(preview, prev.selectedProviderNames, existing, patch),
           },
           agentPresetModified: prev.agentPresetName ? true : prev.agentPresetModified,
+          hasManualEdits: true,
         };
       });
     },
@@ -148,13 +166,34 @@ export function useWizardConfigHandlers<S extends WizardConfigState>(
         if (!current) return prev;
         const nextStates = new Map(prev.teamStates);
         nextStates.set(teamName, { ...current, ...patch });
-        return { ...prev, teamStates: nextStates };
+        return { ...prev, teamStates: nextStates, hasManualEdits: true };
       });
     },
     [setState],
   );
 
-  return { onSelectedProvidersChange, onAgentRowChange, onApplyPreset, onTeamStateChange };
+  const onResetSetup = useCallback(() => {
+    if (!preview) return;
+    setState((prev) =>
+      prev
+        ? {
+            ...prev,
+            ...wizardConfigStateFor(preview, prev.selectedProviderNames, {
+              presetName: prev.agentPresetName,
+              useSuggestedPreset: false,
+            }),
+          }
+        : prev,
+    );
+  }, [preview, setState]);
+
+  return {
+    onSelectedProvidersChange,
+    onAgentRowChange,
+    onApplyPreset,
+    onTeamStateChange,
+    onResetSetup,
+  };
 }
 
 /**
@@ -204,10 +243,12 @@ export function buildSetupStep(params: {
   state: WizardConfigState | null;
   handlers: WizardConfigHandlers;
   Review: ComponentType;
+  /** The backend that answered the preview. */
+  backend: BackendId;
   currentExport?: ExportData | null;
   validateTemplateAgents?: boolean;
 }): WizardStep {
-  const { preview, state, handlers, Review, currentExport } = params;
+  const { preview, state, handlers, Review, backend, currentExport } = params;
 
   const unresolvedAgents =
     params.validateTemplateAgents !== false && preview && state
@@ -232,6 +273,7 @@ export function buildSetupStep(params: {
           preview={preview}
           state={state}
           handlers={handlers}
+          backend={backend}
           currentExport={currentExport}
         >
           <Review />

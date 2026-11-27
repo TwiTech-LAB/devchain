@@ -192,7 +192,9 @@ describe('agent-tools handlers', () => {
 
       expect(result.success).toBe(true);
       expect(dataOf<GetAgentByNameResponse>(result).agent.name).toBe(AGENT_NAME);
-      expect(ctx.storage.getAgentByName).toHaveBeenCalledWith(PROJECT_ID, AGENT_NAME);
+      expect(ctx.storage.getAgentByName).toHaveBeenCalledWith(PROJECT_ID, AGENT_NAME, {
+        excludeDisabled: true,
+      });
       expect(dataOf<GetAgentByNameResponse>(result).agent.profile).toEqual({
         id: 'p1',
         name: 'Profile',

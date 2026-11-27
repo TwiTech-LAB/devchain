@@ -41,6 +41,7 @@ import {
   type ClaimProviderState,
 } from '../operations/claim.operation';
 import { RemotesService } from '../services/remotes.service';
+import { HomeGitRecoveryService } from '../git-writes/home-git-recovery.service';
 
 const logger = createLogger('RemotesController');
 
@@ -70,6 +71,7 @@ export class RemotesController {
     private readonly remotes: RemotesService,
     private readonly files: RemoteFileSyncService,
     private readonly liveSync: RemoteLiveSyncService,
+    private readonly gitRecovery: HomeGitRecoveryService,
   ) {}
 
   @Get()
@@ -88,22 +90,27 @@ export class RemotesController {
       fileSyncWarning?: string;
       fileSyncProblem?: ReturnType<RemoteFileSyncService['problem']>;
       fileSyncFailed?: FileSyncFailedCounts;
+      gitRecoveryWarning?: string;
     })[];
   }> {
     logger.info('GET /api/remotes/bindings');
     const items = await this.storage.listRemoteProjectBindings();
+    const recoveryWarnings = this.gitRecovery.bindingWarnings(items);
     return {
       items: items.map((binding) => {
+        if (binding.state !== 'remote') return binding;
         const warning = this.files.warning(binding.projectId);
         const failed = this.files.failedCounts(binding.projectId);
-        return warning && binding.state === 'remote'
-          ? {
-              ...binding,
-              fileSyncWarning: warning,
-              fileSyncProblem: this.files.problem(binding.projectId),
-              ...(failed && { fileSyncFailed: failed }),
-            }
-          : binding;
+        const gitRecoveryWarning = recoveryWarnings.get(binding.projectId);
+        return {
+          ...binding,
+          ...(warning && {
+            fileSyncWarning: warning,
+            fileSyncProblem: this.files.problem(binding.projectId),
+            ...(failed && { fileSyncFailed: failed }),
+          }),
+          ...(gitRecoveryWarning && { gitRecoveryWarning }),
+        };
       }),
     };
   }

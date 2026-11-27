@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { agentCreatedEvent } from './agent.created';
 import { agentDeletedEvent } from './agent.deleted';
+import { agentUpdatedEvent } from './agent.updated';
 import { agentMessageSentEvent } from './agent.message.sent';
 import { epicCreatedEvent } from './epic.created';
 import { epicDeletedEvent } from './epic.deleted';
@@ -8,6 +9,7 @@ import { epicUpdatedEvent } from './epic.updated';
 import { epicCommentCreatedEvent } from './epic.comment.created';
 import { epicRelationsInvalidatedEvent } from './epic.relations.invalidated';
 import { epicTimeScopeInvalidatedEvent } from './epic.time.scope.invalidated';
+import { epicExternalLinkChangedEvent } from './epic.external_link.changed';
 import { sessionStartedEvent } from './session.started';
 import { sessionStartingEvent } from './session.starting';
 import { sessionRestoredEvent } from './session.restored';
@@ -78,6 +80,7 @@ export type {
 export const eventCatalog = {
   [agentCreatedEvent.name]: agentCreatedEvent.schema,
   [agentDeletedEvent.name]: agentDeletedEvent.schema,
+  [agentUpdatedEvent.name]: agentUpdatedEvent.schema,
   [agentMessageSentEvent.name]: agentMessageSentEvent.schema,
   [epicCreatedEvent.name]: epicCreatedEvent.schema,
   [epicDeletedEvent.name]: epicDeletedEvent.schema,
@@ -85,6 +88,7 @@ export const eventCatalog = {
   [epicCommentCreatedEvent.name]: epicCommentCreatedEvent.schema,
   [epicRelationsInvalidatedEvent.name]: epicRelationsInvalidatedEvent.schema,
   [epicTimeScopeInvalidatedEvent.name]: epicTimeScopeInvalidatedEvent.schema,
+  [epicExternalLinkChangedEvent.name]: epicExternalLinkChangedEvent.schema,
   [sessionStartedEvent.name]: sessionStartedEvent.schema,
   [sessionStartingEvent.name]: sessionStartingEvent.schema,
   [sessionRestoredEvent.name]: sessionRestoredEvent.schema,
@@ -136,6 +140,7 @@ export const eventNames = Object.keys(eventCatalog) as EventName[];
 // EventsService.publish enforces this policy. Direct EventLogService.recordPublished callers
 // bypass it.
 export const transientEventNames = [
+  'agent.updated',
   'epic.relations.invalidated',
   'epic.time.scope.invalidated',
   'provider-usage.updated',

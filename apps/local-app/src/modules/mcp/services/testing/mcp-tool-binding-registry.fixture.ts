@@ -22,6 +22,8 @@ export type McpToolBindingRegistryFixtureDependencies = Partial<
     | 'worktreesService'
     | 'vaultDiscoveryService'
     | 'vaultRequestService'
+    | 'externalTaskResolver'
+    | 'externalTaskAdmission'
   >
 >;
 
@@ -48,5 +50,7 @@ export function createMcpToolBindingRegistryFixture(
     dependencies.worktreesService,
     dependencies.vaultDiscoveryService,
     dependencies.vaultRequestService,
+    dependencies.externalTaskResolver,
+    dependencies.externalTaskAdmission,
   );
 }

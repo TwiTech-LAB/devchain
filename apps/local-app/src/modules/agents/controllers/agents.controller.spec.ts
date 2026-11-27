@@ -9,6 +9,7 @@ import { SessionCoordinatorService } from '../../sessions/services/session-coord
 import { EventsService } from '../../events/services/events.service';
 import { SessionRuntime } from '../../sessions/services/session-runtime';
 import { SettingsService } from '../../settings/services/settings.service';
+import { TeamsService } from '../../teams/services/teams.service';
 import { ProjectWriteGate } from '../../storage/write-gate/project-write-gate';
 import { createProjectWriteGateStub } from '../../storage/write-gate/testing/project-write-gate.stub';
 
@@ -28,7 +29,7 @@ describe('AgentsController', () => {
     listProfileProviderConfigsByIds: jest.Mock;
     listProvidersByIds: jest.Mock;
     createAgent: jest.Mock;
-    updateAgent: jest.Mock;
+    updateAgentReportingWrites: jest.Mock;
     deleteAgent: jest.Mock;
   };
   let sessionsService: {
@@ -42,6 +43,7 @@ describe('AgentsController', () => {
   let mockSessionRuntime: {
     launch: jest.Mock;
     restore: jest.Mock;
+    verifyAgentProvider: jest.Mock;
   };
   let eventsService: {
     publish: jest.Mock;
@@ -54,6 +56,7 @@ describe('AgentsController', () => {
     id: 'agent-1',
     projectId: 'project-1',
     isProjectOwner: false,
+    disabled: false,
     profileId: 'profile-1',
     providerConfigId: 'config-1', // Required after Phase 4
     modelOverride: null,
@@ -120,7 +123,7 @@ describe('AgentsController', () => {
       listProfileProviderConfigsByIds: jest.fn().mockResolvedValue([]),
       listProvidersByIds: jest.fn().mockResolvedValue([]),
       createAgent: jest.fn(),
-      updateAgent: jest.fn(),
+      updateAgentReportingWrites: jest.fn(),
       deleteAgent: jest.fn(),
     };
 
@@ -132,6 +135,7 @@ describe('AgentsController', () => {
     mockSessionRuntime = {
       launch: jest.fn(),
       restore: jest.fn(),
+      verifyAgentProvider: jest.fn().mockResolvedValue(undefined),
     };
 
     sessionCoordinator = {
@@ -174,6 +178,7 @@ describe('AgentsController', () => {
           provide: SettingsService,
           useValue: settingsService,
         },
+        { provide: TeamsService, useValue: {} },
       ],
     }).compile();
 
@@ -405,10 +410,13 @@ describe('AgentsController', () => {
     ])('validates provider config ownership against the $name', async ({ profileId, patch }) => {
       storage.getAgent.mockResolvedValue(mockAgent);
       storage.getProfileProviderConfig.mockResolvedValue({ ...mockConfig, profileId });
-      storage.updateAgent.mockResolvedValue({ ...mockAgent, ...patch });
+      storage.updateAgentReportingWrites.mockResolvedValue({
+        agent: { ...mockAgent, ...patch },
+        writtenAgentIds: ['agent-1'],
+      });
       const result = await controller.updateAgent('agent-1', patch);
       expect(storage.getProfileProviderConfig).toHaveBeenCalledWith('config-1');
-      expect(storage.updateAgent).toHaveBeenCalledWith('agent-1', patch);
+      expect(storage.updateAgentReportingWrites).toHaveBeenCalledWith('agent-1', patch);
       expect(result.providerConfigId).toBe('config-1');
     });
 
@@ -420,6 +428,27 @@ describe('AgentsController', () => {
       await expect(
         controller.updateAgent('agent-1', { providerConfigId: 'config-1' }),
       ).rejects.toThrow(BadRequestException);
+    });
+
+    it('returns the updated agent when the agent.updated publish fails', async () => {
+      storage.updateAgentReportingWrites.mockResolvedValue({
+        agent: { ...mockAgent, name: 'Renamed' },
+        writtenAgentIds: ['agent-1'],
+      });
+      eventsService.publish.mockRejectedValueOnce(new Error('publish failed'));
+
+      const result = await controller.patchAgent('agent-1', { name: 'Renamed' });
+
+      expect(result.name).toBe('Renamed');
+    });
+
+    it('publishes nothing when the write fails', async () => {
+      storage.updateAgentReportingWrites.mockRejectedValue(new Error('write failed'));
+
+      await expect(controller.updateAgent('agent-1', { name: 'Renamed' })).rejects.toThrow(
+        'write failed',
+      );
+      expect(eventsService.publish).not.toHaveBeenCalled();
     });
 
     // effortOverride mirrors modelOverride: set, clear via null, omit preserves,
@@ -529,10 +558,14 @@ describe('AgentsController', () => {
         mockSessionRuntime.launch.mockResolvedValue(mockNewSession);
         const result = await controller.restartAgent('agent-1', { projectId: 'project-1' });
         if (hasSession)
-          expect(sessionsService.terminateSession).toHaveBeenCalledWith('session-old', {
-            source: 'web-api',
-            reason: 'restart',
-          });
+          expect(sessionsService.terminateSession).toHaveBeenCalledWith(
+            'session-old',
+            {
+              source: 'web-api',
+              reason: 'restart',
+            },
+            { expectedAgentId: 'agent-1', admit: expect.any(Function) },
+          );
         else expect(sessionsService.terminateSession).not.toHaveBeenCalled();
         expect(mockSessionRuntime.launch).toHaveBeenCalledWith({
           agentId: 'agent-1',
@@ -546,6 +579,22 @@ describe('AgentsController', () => {
         expect(result.session.id).toBe('session-new');
       },
     );
+
+    it('refuses before the terminate when the agent provider check fails', async () => {
+      storage.getAgent.mockResolvedValue(mockAgent);
+      sessionsService.listActiveSessions.mockResolvedValue([
+        { id: 'session-old', agentId: 'agent-1', status: 'running' },
+      ]);
+      mockSessionRuntime.verifyAgentProvider.mockRejectedValue(new Error('binary not accessible'));
+
+      await expect(controller.restartAgent('agent-1', { projectId: 'project-1' })).rejects.toThrow(
+        'binary not accessible',
+      );
+
+      expect(mockSessionRuntime.verifyAgentProvider).toHaveBeenCalledWith('agent-1', 'project-1');
+      expect(sessionsService.terminateSession).not.toHaveBeenCalled();
+      expect(mockSessionRuntime.launch).not.toHaveBeenCalled();
+    });
 
     it('throws BadRequestException when agent belongs to different project', async () => {
       storage.getAgent.mockResolvedValue({ ...mockAgent, projectId: 'other-project' });

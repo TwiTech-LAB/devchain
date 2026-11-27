@@ -308,6 +308,31 @@ describe('LocalStorageService project write admission', () => {
           blocked.record.version,
         ),
     ],
+    [
+      'ordinary link epic',
+      () =>
+        storage.createExternalTaskLink({
+          epicId: blocked.epic.id,
+          connectionId: null,
+          provider: 'clickup',
+          remoteScopeKey: 'scope',
+          remoteTaskId: 'task',
+          sourceSnapshot: {},
+        }),
+    ],
+    [
+      'epic link change',
+      () =>
+        storage.setEpicExternalTaskLink(blocked.epic.id, {
+          connectionId: 'connection',
+          connectionGeneration: 1,
+          provider: 'clickup',
+          remoteScopeKey: 'scope',
+          remoteTaskId: 'task',
+          sourceSnapshot: {},
+        }),
+    ],
+    ['epic unlink', () => storage.deleteExternalTaskLink(blocked.epic.id, null)],
     ['epic comment hop', () => storage.deleteEpicComment(blocked.comment.id)],
     ['review comment hop', () => storage.deleteReviewComment(blocked.reviewComment.id)],
     ['scheduled run hop', () => storage.claimScheduledEpicRun(blocked.run.run.id)],

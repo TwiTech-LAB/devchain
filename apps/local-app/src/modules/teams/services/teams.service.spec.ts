@@ -5,15 +5,23 @@ import {
   ConflictError,
   ForbiddenError,
   ProjectFrozenError,
+  ProjectRemoteError,
 } from '../../../common/errors/error-types';
 import { STORAGE_SERVICE } from '../../storage/interfaces/storage.interface';
-import type { Agent, AgentProfile, Team, TeamMember } from '../../storage/models/domain.models';
+import type {
+  Agent,
+  AgentProfile,
+  ProfileProviderConfig,
+  Team,
+  TeamMember,
+} from '../../storage/models/domain.models';
 import { TeamsStore } from '../storage/teams.store';
 import { TeamsService } from './teams.service';
 import { EventsService } from '../../events/services/events.service';
 import { SessionsService } from '../../sessions/services/sessions.service';
 import { SessionLifecycleFacade } from '../../sessions/services/session-lifecycle-facade.service';
 import { ActiveSessionLookup } from '../../sessions/services/active-session-lookup.service';
+import { AgentMessageDeliveryService } from '../../agent-message-delivery/agent-message-delivery.service';
 import { MessageEnqueueService } from '../../sessions/services/message-enqueue.service';
 import { ProviderAdapterFactory } from '../../providers/adapters/provider-adapter.factory';
 import { SettingsService } from '../../settings/services/settings.service';
@@ -35,6 +43,7 @@ function makeAgent(id: string, projectId: string = PROJECT_ID): Agent {
     id,
     projectId,
     isProjectOwner: false,
+    disabled: false,
     profileId: 'profile-1',
     providerConfigId: 'config-1',
     modelOverride: null,
@@ -109,7 +118,14 @@ describe('TeamsService', () => {
     getAgentProfile: jest.Mock;
     createAgent: jest.Mock;
     deleteAgent: jest.Mock;
+    disableAgent: jest.Mock;
+    enableAgent: jest.Mock;
+    isAgentDisabled: jest.Mock;
     getProfileProviderConfig: jest.Mock;
+    listProfileProviderConfigsByProfile: jest.Mock;
+    listProviderModelsByProviderIds: jest.Mock;
+    listProviderEffortsByProviderIds: jest.Mock;
+    updateAgent: jest.Mock;
   };
   let eventsService: {
     publish: jest.Mock;
@@ -123,11 +139,13 @@ describe('TeamsService', () => {
     renameTeamInProjectPresets: jest.Mock;
     removeTeamFromProjectPresets: jest.Mock;
   };
-  let sessionLifecycle: jest.Mocked<Pick<SessionLifecycleFacade, 'restart' | 'terminate'>>;
+  let sessionLifecycle: jest.Mocked<
+    Pick<SessionLifecycleFacade, 'restart' | 'terminate' | 'stopDisabledAgent'>
+  >;
   let activeSessionLookup: jest.Mocked<Pick<ActiveSessionLookup, 'getActiveSession'>>;
   let messageEnqueue: jest.Mocked<Pick<MessageEnqueueService, 'enqueue'>>;
   let providerAdapterFactory: jest.Mocked<
-    Pick<ProviderAdapterFactory, 'isSupported' | 'getAdapter'>
+    Pick<ProviderAdapterFactory, 'isSupported' | 'getAdapter' | 'getEffortSupport'>
   >;
   let gate: ReturnType<typeof createProjectWriteGateStub>;
 
@@ -154,10 +172,17 @@ describe('TeamsService', () => {
       getAgentProfile: jest.fn(),
       createAgent: jest.fn(),
       deleteAgent: jest.fn().mockResolvedValue(undefined),
+      disableAgent: jest.fn(),
+      enableAgent: jest.fn(),
+      isAgentDisabled: jest.fn(),
       getProfileProviderConfig: jest.fn().mockImplementation((id: string) => {
         // Default: config belongs to PROFILE_A
         return Promise.resolve({ id, profileId: PROFILE_A, name: `config-${id}` });
       }),
+      listProfileProviderConfigsByProfile: jest.fn().mockResolvedValue([]),
+      listProviderModelsByProviderIds: jest.fn().mockResolvedValue([]),
+      listProviderEffortsByProviderIds: jest.fn().mockResolvedValue([]),
+      updateAgent: jest.fn(),
     };
 
     // Default: all agents belong to PROJECT_ID
@@ -196,6 +221,7 @@ describe('TeamsService', () => {
     sessionLifecycle = {
       restart: jest.fn().mockResolvedValue({ id: 'new-session' }),
       terminate: jest.fn().mockResolvedValue(undefined),
+      stopDisabledAgent: jest.fn().mockResolvedValue(undefined),
     };
     activeSessionLookup = { getActiveSession: jest.fn().mockResolvedValue(null) };
     messageEnqueue = {
@@ -207,6 +233,10 @@ describe('TeamsService', () => {
         providerName: 'claude',
         buildLaunchArgs: () => ({ argv: [] }),
         sessionCommands: { compact: '/compact' },
+      }),
+      getEffortSupport: jest.fn().mockReturnValue({
+        supportsEffort: false,
+        requiresModelForEffort: false,
       }),
     };
     gate = createProjectWriteGateStub();
@@ -230,6 +260,7 @@ describe('TeamsService', () => {
         { provide: ActiveSessionLookup, useValue: activeSessionLookup },
         { provide: MessageEnqueueService, useValue: messageEnqueue },
         { provide: ProviderAdapterFactory, useValue: providerAdapterFactory },
+        { provide: AgentMessageDeliveryService, useValue: { deliver: jest.fn() } },
       ],
     }).compile();
 
@@ -1776,6 +1807,7 @@ describe('TeamsService', () => {
       });
       expect(sessionLifecycle.terminate).toHaveBeenCalledWith('old-session', {
         source: 'team-management',
+        expectedAgentId: AGENT_B,
       });
       expect(sessionLifecycle.restart).not.toHaveBeenCalled();
       expect(messageEnqueue.enqueue).not.toHaveBeenCalled();
@@ -1950,7 +1982,7 @@ describe('TeamsService', () => {
           teamName: 'Test Team',
         },
       });
-      expect(storageService.deleteAgent).toHaveBeenCalledWith(AGENT_B);
+      expect(storageService.deleteAgent).toHaveBeenCalledWith(AGENT_B, { protectDisabled: true });
       expect(settingsService.removeAgentFromProjectPresets).toHaveBeenCalledWith(
         PROJECT_ID,
         `Agent-${AGENT_B}`,
@@ -2159,15 +2191,20 @@ describe('TeamsService', () => {
         PROJECT_ID,
         new Set([AGENT_B]),
       );
-      expect(sessionsService.terminateSession).toHaveBeenCalledWith('sess-1', {
-        source: 'team-management',
-        reason: 'agent-deletion',
-      });
-      expect(sessionsService.terminateSession).toHaveBeenCalledWith('sess-2', {
-        source: 'team-management',
-        reason: 'agent-deletion',
-      });
-      expect(storageService.deleteAgent).toHaveBeenCalledWith(AGENT_B);
+      expect(sessionsService.terminateSession).toHaveBeenCalledWith(
+        'sess-1',
+        {
+          source: 'team-management',
+          reason: 'agent-deletion',
+        },
+        { expectedAgentId: AGENT_B },
+      );
+      expect(sessionsService.terminateSession).toHaveBeenCalledWith(
+        'sess-2',
+        { source: 'team-management', reason: 'agent-deletion' },
+        { expectedAgentId: AGENT_B },
+      );
+      expect(storageService.deleteAgent).toHaveBeenCalledWith(AGENT_B, { protectDisabled: true });
     });
 
     it('proceeds to delete even when session termination fails', async () => {
@@ -2181,7 +2218,7 @@ describe('TeamsService', () => {
         name: `Agent-${AGENT_B}`,
       });
 
-      expect(storageService.deleteAgent).toHaveBeenCalledWith(AGENT_B);
+      expect(storageService.deleteAgent).toHaveBeenCalledWith(AGENT_B, { protectDisabled: true });
       expect(result).toHaveProperty('result');
     });
 
@@ -2487,6 +2524,235 @@ describe('TeamsService', () => {
     });
   });
 
+  describe('getAgentOverridesForChat', () => {
+    // Layer: service unit. The projection, the grouping per provider and the fixed read count
+    // are logic in this service; storage ordering has its own delegate tests.
+    const config = (
+      id: string,
+      providerId: string,
+      providerName: string,
+      position: number,
+    ): ProfileProviderConfig => ({
+      id,
+      profileId: 'profile-1',
+      providerId,
+      providerName,
+      name: `cfg-${id}`,
+      description: 'may hold a secret',
+      options: '{"apiKey":"sk-secret"}',
+      env: { API_KEY: 'sk-secret' },
+      model: position === 0 ? 'opus' : null,
+      effort: position === 0 ? 'high' : null,
+      position,
+      createdAt: '2026-01-01T00:00:00.000Z',
+      updatedAt: '2026-01-01T00:00:00.000Z',
+    });
+    const catalogRow = (providerId: string, name: string, position: number) => ({
+      id: `${providerId}-${name}`,
+      providerId,
+      name,
+      position,
+      createdAt: '2026-01-01T00:00:00.000Z',
+      updatedAt: '2026-01-01T00:00:00.000Z',
+    });
+
+    it('returns the overrides, the profile configs without secrets, and one catalog per provider', async () => {
+      storageService.getAgent.mockResolvedValue({
+        ...makeAgent(AGENT_A),
+        modelOverride: 'sonnet',
+        effortOverride: null,
+      });
+      storageService.listProfileProviderConfigsByProfile.mockResolvedValue([
+        config('config-1', 'prov-claude', 'claude', 0),
+        config('config-2', 'prov-agy', 'agy', 1),
+        config('config-3', 'prov-claude', 'claude', 2),
+      ]);
+      storageService.listProviderModelsByProviderIds.mockResolvedValue([
+        catalogRow('prov-agy', 'gemini', 0),
+        catalogRow('prov-claude', 'opus', 0),
+        catalogRow('prov-claude', 'sonnet', 1),
+      ]);
+      storageService.listProviderEffortsByProviderIds.mockResolvedValue([
+        catalogRow('prov-claude', 'low', 0),
+        catalogRow('prov-claude', 'high', 1),
+      ]);
+      providerAdapterFactory.getEffortSupport.mockImplementation((name: string) => ({
+        supportsEffort: name === 'claude',
+        requiresModelForEffort: false,
+      }));
+
+      const result = await service.getAgentOverridesForChat({ agentId: AGENT_A });
+
+      expect(result).toEqual({
+        agentId: AGENT_A,
+        providerConfigId: 'config-1',
+        modelOverride: 'sonnet',
+        effortOverride: null,
+        configs: [
+          {
+            id: 'config-1',
+            name: 'cfg-config-1',
+            providerId: 'prov-claude',
+            providerName: 'claude',
+            model: 'opus',
+            optionsModel: null,
+            effort: 'high',
+          },
+          {
+            id: 'config-2',
+            name: 'cfg-config-2',
+            providerId: 'prov-agy',
+            providerName: 'agy',
+            model: null,
+            optionsModel: null,
+            effort: null,
+          },
+          {
+            id: 'config-3',
+            name: 'cfg-config-3',
+            providerId: 'prov-claude',
+            providerName: 'claude',
+            model: null,
+            optionsModel: null,
+            effort: null,
+          },
+        ],
+        providers: [
+          {
+            providerId: 'prov-claude',
+            models: ['opus', 'sonnet'],
+            efforts: ['low', 'high'],
+            supportsEffort: true,
+            requiresModelForEffort: false,
+          },
+          {
+            providerId: 'prov-agy',
+            models: ['gemini'],
+            efforts: [],
+            supportsEffort: false,
+            requiresModelForEffort: false,
+          },
+        ],
+      });
+      expect(JSON.stringify(result)).not.toContain('secret');
+      expect(storageService.listProfileProviderConfigsByProfile).toHaveBeenCalledWith('profile-1');
+      expect(storageService.listProviderModelsByProviderIds).toHaveBeenCalledTimes(1);
+      expect(storageService.listProviderEffortsByProviderIds).toHaveBeenCalledWith([
+        'prov-claude',
+        'prov-agy',
+      ]);
+    });
+
+    // Launch falls back to the raw options' --model when the config has no model, so the
+    // phone needs that model to tell whether an effort can apply. Only the model leaves the PC.
+    it.each([
+      ['--model openai/gpt-5 --token sk-secret', 'openai/gpt-5'],
+      ['-m=openai/o3', 'openai/o3'],
+      ['--token sk-secret', null],
+      ['--model "a\nb" sk-secret', null],
+      [null, null],
+    ])('gives options %j the options model %j and never the options', async (options, expected) => {
+      storageService.getAgent.mockResolvedValue(makeAgent(AGENT_A));
+      storageService.listProfileProviderConfigsByProfile.mockResolvedValue([
+        { ...config('config-1', 'prov-opencode', 'opencode', 1), options },
+      ]);
+      storageService.listProviderModelsByProviderIds.mockResolvedValue([]);
+      storageService.listProviderEffortsByProviderIds.mockResolvedValue([]);
+      providerAdapterFactory.getEffortSupport.mockReturnValue({
+        supportsEffort: true,
+        requiresModelForEffort: true,
+      });
+
+      const result = await service.getAgentOverridesForChat({ agentId: AGENT_A });
+
+      expect(result.configs[0].optionsModel).toBe(expected);
+      expect(JSON.stringify(result)).not.toContain('secret');
+    });
+  });
+
+  describe('setAgentOverridesForChat', () => {
+    // Layer: service unit. The gate, config ownership and the stored fields are decided here;
+    // the storage write itself is covered by the agent delegate tests.
+    const input = {
+      projectId: PROJECT_ID,
+      agentId: AGENT_A,
+      providerConfigId: 'config-2',
+      modelOverride: 'opus',
+      effortOverride: null,
+    };
+
+    beforeEach(() => {
+      storageService.getProfileProviderConfig.mockResolvedValue({
+        id: 'config-2',
+        profileId: 'profile-1',
+        name: 'cfg',
+      });
+      storageService.updateAgent.mockImplementation((id: string, data: Partial<Agent>) =>
+        Promise.resolve({ ...makeAgent(id), ...data }),
+      );
+    });
+
+    it('stores the config and both overrides, with null clearing an override', async () => {
+      const result = await service.setAgentOverridesForChat(input);
+
+      expect(storageService.updateAgent).toHaveBeenCalledWith(AGENT_A, {
+        providerConfigId: 'config-2',
+        modelOverride: 'opus',
+        effortOverride: null,
+      });
+      expect(result).toEqual({
+        agentId: AGENT_A,
+        providerConfigId: 'config-2',
+        modelOverride: 'opus',
+        effortOverride: null,
+      });
+      expect(sessionLifecycle.restart).not.toHaveBeenCalled();
+      expect(eventsService.publish).toHaveBeenCalledWith('agent.updated', {
+        agentId: AGENT_A,
+        projectId: PROJECT_ID,
+      });
+    });
+
+    it.each([
+      {
+        code: 'CONFIG_NOT_FOUND',
+        arrange: () =>
+          storageService.getProfileProviderConfig.mockRejectedValue(
+            new NotFoundError('ProviderConfig', 'config-2'),
+          ),
+      },
+      {
+        code: 'CONFIG_PROFILE_MISMATCH',
+        arrange: () =>
+          storageService.getProfileProviderConfig.mockResolvedValue({
+            id: 'config-2',
+            profileId: 'foreign-profile',
+            name: 'cfg',
+          }),
+      },
+    ])('rejects $code and stores nothing', async ({ code, arrange }) => {
+      arrange();
+
+      const error = await service.setAgentOverridesForChat(input).catch((e: unknown) => e);
+
+      expect(error).toMatchObject({ details: { code } });
+      expect(JSON.stringify(error)).not.toContain('foreign-profile');
+      expect(storageService.updateAgent).not.toHaveBeenCalled();
+    });
+
+    it('refuses a remote-owned project before any read or write', async () => {
+      const error = new ProjectRemoteError(PROJECT_ID, 'remote-1', 'Laptop');
+      gate.assertWritable.mockImplementation(() => {
+        throw error;
+      });
+
+      await expect(service.setAgentOverridesForChat(input)).rejects.toBe(error);
+      expect(gate.assertWritable).toHaveBeenCalledWith(PROJECT_ID);
+      expect(storageService.getAgent).not.toHaveBeenCalled();
+      expect(storageService.updateAgent).not.toHaveBeenCalled();
+    });
+  });
+
   describe('deleteAgentForChat', () => {
     beforeEach(() => {
       teamsStore.getTeamLeadTeams.mockResolvedValue([]);
@@ -2599,7 +2865,7 @@ describe('TeamsService', () => {
       teamsStore.listTeamsByAgent.mockResolvedValue([]);
     });
 
-    it('enables Project Owner and Team Lead protection while retaining deletion side effects', async () => {
+    it('enables Project Owner, Team Lead and disabled-agent protection while retaining deletion side effects', async () => {
       teamsStore.listTeamsByAgent.mockResolvedValue([
         makeTeam({ id: 'team-3', name: 'Squad', teamLeadAgentId: AGENT_A }),
       ]);
@@ -2609,6 +2875,7 @@ describe('TeamsService', () => {
       expect(storageService.deleteAgent).toHaveBeenCalledWith(AGENT_B, {
         protectProjectOwner: true,
         protectTeamLead: true,
+        protectDisabled: true,
       });
       expect(settingsService.removeAgentFromProjectPresets).toHaveBeenCalledWith(
         PROJECT_ID,
@@ -2660,6 +2927,7 @@ describe('TeamsService', () => {
       expect(storageService.deleteAgent).toHaveBeenCalledWith(AGENT_B, {
         protectProjectOwner: true,
         protectTeamLead: true,
+        protectDisabled: true,
       });
       expect(eventsService.publish).toHaveBeenCalledWith(
         'agent.deleted',
@@ -2885,6 +3153,81 @@ describe('TeamsService', () => {
       ).resolves.toBeDefined();
       expect(storageService.getAgent).not.toHaveBeenCalledWith(AGENT_B);
       expect(teamsStore.updateTeam).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('disableAgent', () => {
+    const disabledB = { ...makeAgent(AGENT_B), disabled: true };
+
+    it('sets the flag, then stops the running session', async () => {
+      storageService.disableAgent.mockResolvedValue({ agent: disabledB, changed: true });
+
+      await expect(service.disableAgent(AGENT_B, 'web-api')).resolves.toEqual(disabledB);
+      expect(sessionLifecycle.stopDisabledAgent).toHaveBeenCalledWith(AGENT_B, {
+        source: 'web-api',
+        reason: 'user-requested',
+      });
+      expect(eventsService.publish).toHaveBeenCalledTimes(1);
+      expect(eventsService.publish).toHaveBeenCalledWith('agent.updated', {
+        agentId: AGENT_B,
+        projectId: disabledB.projectId,
+      });
+    });
+
+    it('publishes nothing for a repeated Disable', async () => {
+      storageService.disableAgent.mockResolvedValue({ agent: disabledB, changed: false });
+
+      await service.disableAgent(AGENT_B, 'web-api');
+
+      expect(eventsService.publish).not.toHaveBeenCalled();
+    });
+
+    it('stops no session when the agent is not eligible', async () => {
+      storageService.disableAgent.mockRejectedValue(
+        new ConflictError('lead', { code: 'AGENT_IS_TEAM_LEAD' }),
+      );
+
+      await expect(service.disableAgent(AGENT_B, 'web-api')).rejects.toMatchObject({
+        details: { code: 'AGENT_IS_TEAM_LEAD' },
+      });
+      expect(sessionLifecycle.stopDisabledAgent).not.toHaveBeenCalled();
+    });
+
+    it('clears the flag it set and returns the error when the stop fails', async () => {
+      storageService.disableAgent.mockResolvedValue({ agent: disabledB, changed: true });
+      sessionLifecycle.stopDisabledAgent.mockRejectedValue(new Error('tmux down'));
+
+      await expect(service.disableAgent(AGENT_B, 'web-api')).rejects.toThrow('tmux down');
+      expect(storageService.enableAgent).toHaveBeenCalledWith(AGENT_B);
+      expect(eventsService.publish).not.toHaveBeenCalled();
+    });
+
+    it('stops the session of an agent that is already disabled and keeps it disabled on failure', async () => {
+      storageService.disableAgent.mockResolvedValue({ agent: disabledB, changed: false });
+      sessionLifecycle.stopDisabledAgent.mockRejectedValue(new Error('tmux down'));
+
+      await expect(service.disableAgent(AGENT_B, 'web-api')).rejects.toThrow('tmux down');
+      expect(sessionLifecycle.stopDisabledAgent).toHaveBeenCalledTimes(1);
+      expect(storageService.enableAgent).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('enableAgent', () => {
+    it.each([
+      ['publishes agent.updated when the agent was disabled', true, 1],
+      ['publishes nothing when the agent was already enabled', false, 0],
+    ])('%s', async (_case, wasDisabled, events) => {
+      storageService.isAgentDisabled.mockReturnValue(wasDisabled);
+      storageService.enableAgent.mockResolvedValue(makeAgent(AGENT_B));
+
+      await service.enableAgent(AGENT_B);
+
+      expect(eventsService.publish.mock.calls).toEqual(
+        Array.from({ length: events }, () => [
+          'agent.updated',
+          { agentId: AGENT_B, projectId: makeAgent(AGENT_B).projectId },
+        ]),
+      );
     });
   });
 });

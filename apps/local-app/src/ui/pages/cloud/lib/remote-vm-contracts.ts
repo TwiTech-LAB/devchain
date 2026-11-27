@@ -276,6 +276,18 @@ export interface ProjectFileSyncStatus {
   folders: FolderNeed[] | null;
 }
 
+export type {
+  FileSyncStatusFolder,
+  FileSyncStatusLink,
+  FileSyncStatusResponse,
+  FileSyncStatusScope,
+  FileSyncVerdict,
+  LastReceivedFile,
+  PendingCount,
+  /** Options of `GET /api/remotes/file-sync/status`. */
+  FileSyncStatusOptions as SyncStatusRequest,
+} from '@/modules/remotes/sync/file-sync-status.dto';
+
 export interface StartProviderAuthGenerationInput {
   provider: string;
   label?: string;

@@ -7,7 +7,10 @@ import type { AgentMessageDeliveryService } from '../../agent-message-delivery/a
 import type { SessionsMessageLogReadFacade } from '../../sessions/services/sessions-message-log-read.facade';
 import type { SessionLifecycleFacade } from '../../sessions/services/session-lifecycle-facade.service';
 import type { TeamsService } from '../../teams/services/teams.service';
-import type { PendingAskUserQuestionService } from '../../hooks/services/pending-ask-user-question.service';
+import {
+  PENDING_ASK_QUESTION_TTL_MS,
+  PendingAskUserQuestionService,
+} from '../../hooks/services/pending-ask-user-question.service';
 import type { E2eeTrustService } from '../../e2ee/services/e2ee-trust.service';
 import type { ProviderUsageService } from '../../provider-usage/services/provider-usage.service';
 import { LifecycleOperationTracker } from './lifecycle-operation-tracker';
@@ -107,6 +110,7 @@ function build(overrides: {
     ...overrides.messageLogRead,
   } as unknown as SessionsMessageLogReadFacade;
   const sessionLifecycle = {
+    assertRestorableKind: jest.fn(),
     launch: jest.fn(),
     restart: jest.fn(),
     restore: jest.fn(),
@@ -121,6 +125,7 @@ function build(overrides: {
     // Default: no pending entries; clear is a no-op returning 0. Tests that
     // exercise listPendingAskQuestions / clear-on-send override these explicitly.
     getBySession: jest.fn().mockReturnValue([]),
+    hasPendingQuestion: jest.fn().mockReturnValue(false),
     clearBySession: jest.fn().mockReturnValue(0),
     ...overrides.pendingAskUserQuestion,
   } as unknown as PendingAskUserQuestionService;
@@ -233,8 +238,77 @@ describe('MobileChatRpcService.listAgents', () => {
       },
     ]);
 
-    expect(storage.listAgents).toHaveBeenCalledWith(PROJECT_ID);
+    expect(storage.listAgents).toHaveBeenCalledWith(PROJECT_ID, { excludeDisabled: true });
     expect(activeSessions.listActiveSessions).toHaveBeenCalledWith(PROJECT_ID);
+  });
+
+  it('omits a disabled agent by default and returns it flagged with includeDisabled: true', async () => {
+    const stored = [
+      agent({
+        id: AGENT_A,
+        name: 'Owner',
+        providerConfigId: null,
+        profileId: null,
+        disabled: false,
+        isProjectOwner: true,
+      }),
+      agent({
+        id: AGENT_B,
+        name: 'Parked',
+        providerConfigId: null,
+        profileId: null,
+        disabled: true,
+      }),
+    ];
+    // Applies the storage filter, so the test fails if the handler drops the opt-in.
+    const listAgents = jest.fn((_projectId: string, options?: { excludeDisabled?: boolean }) => {
+      const items = options?.excludeDisabled ? stored.filter((a) => !a.disabled) : stored;
+      return Promise.resolve({ items, total: items.length, limit: 100, offset: 0 });
+    });
+    const { service } = build({
+      storage: { listAgents: listAgents as unknown as StorageService['listAgents'] },
+    });
+
+    const byDefault = await service.listAgents({ projectId: PROJECT_ID });
+    expect(byDefault).toEqual([
+      { id: AGENT_A, name: 'Owner', type: 'agent', online: false, isProjectOwner: true },
+    ]);
+    // An enabled agent's entry carries no `disabled` key.
+    expect(byDefault[0]).not.toHaveProperty('disabled');
+
+    const withDisabled = await service.listAgents({ projectId: PROJECT_ID, includeDisabled: true });
+    expect(withDisabled).toEqual([
+      { id: AGENT_A, name: 'Owner', type: 'agent', online: false, isProjectOwner: true },
+      { id: AGENT_B, name: 'Parked', type: 'agent', online: false, disabled: true },
+    ]);
+    expect(withDisabled[1]).not.toHaveProperty('isProjectOwner');
+  });
+
+  it('reports a disabled agent with a still-running session row as offline with no session fields', async () => {
+    const getLastKnownMessageCount = jest.fn().mockReturnValue(7);
+    const { service } = build({
+      storage: {
+        listAgents: jest.fn().mockResolvedValue({
+          items: [agent({ id: AGENT_A, providerConfigId: null, profileId: null, disabled: true })],
+          total: 1,
+          limit: 100,
+          offset: 0,
+        }),
+      },
+      activeSessions: {
+        listActiveSessions: jest
+          .fn()
+          .mockResolvedValue([activeSession({ agentId: AGENT_A, activityState: 'busy' })]),
+      },
+      transcriptWatcher: { getLastKnownMessageCount },
+    });
+
+    const result = await service.listAgents({ projectId: PROJECT_ID, includeDisabled: true });
+
+    expect(result).toEqual([
+      { id: AGENT_A, name: 'Coder', type: 'agent', online: false, disabled: true },
+    ]);
+    expect(getLastKnownMessageCount).not.toHaveBeenCalled();
   });
 
   it('merges presence: offline agents report online:false with no session', async () => {
@@ -466,6 +540,51 @@ describe('MobileChatRpcService.listAgents', () => {
       expect(result).toEqual([{ id: AGENT_A, name: 'Coder', type: 'agent', online: false }]);
       expect(transcriptWatcher.getLastKnownMessageCount).not.toHaveBeenCalled();
     });
+  });
+
+  // Layer: service unit. The flag is set in the listAgents mapping; the real in-memory
+  // pending-question store (no I/O) proves the 30-minute case without the Nest graph.
+  it('sets pendingQuestion only for an online agent with a question, however old it is', async () => {
+    const SESSION_B = '22222222-2222-4222-8222-222222222222';
+    const pending = new PendingAskUserQuestionService();
+    pending.set({
+      projectId: PROJECT_ID,
+      agentId: AGENT_A,
+      sessionId: SESSION_A,
+      claudeSessionId: 'claude-a',
+      toolUseId: 'tool-a',
+      questions: [],
+      now: Date.now() - PENDING_ASK_QUESTION_TTL_MS - 60_000,
+    });
+    const { service } = build({
+      storage: {
+        listAgents: jest.fn().mockResolvedValue({
+          items: [
+            agent({ id: AGENT_A, name: 'Coder', providerConfigId: null, profileId: null }),
+            agent({ id: AGENT_B, name: 'Reviewer', providerConfigId: null, profileId: null }),
+          ],
+          total: 2,
+          limit: 100,
+          offset: 0,
+        }),
+      },
+      activeSessions: {
+        listActiveSessions: jest
+          .fn()
+          .mockResolvedValue([
+            activeSession({ agentId: AGENT_A, sessionId: SESSION_A }),
+            activeSession({ agentId: AGENT_B, sessionId: SESSION_B }),
+          ]),
+      },
+      pendingAskUserQuestion: {
+        hasPendingQuestion: (sessionId: string) => pending.hasPendingQuestion(sessionId),
+      },
+    });
+
+    const result = await service.listAgents({ projectId: PROJECT_ID });
+
+    expect(result[0]).toMatchObject({ id: AGENT_A, pendingQuestion: true });
+    expect(result[1]).not.toHaveProperty('pendingQuestion');
   });
 });
 
@@ -1317,6 +1436,8 @@ describe('MobileChatRpcService lifecycle RPCs', () => {
   });
 
   describe('restoreSession', () => {
+    const SWITCH_CONFIG_ID = 'c0c0c0c0-c0c0-4c0c-8c0c-c0c0c0c0c0c0';
+
     it('treats an already-running agent as success without invoking restore (STATUS_RUNNING)', async () => {
       const { service, operationTracker, sessionLifecycle } = build({
         activeSessions: {
@@ -1335,6 +1456,54 @@ describe('MobileChatRpcService lifecycle RPCs', () => {
         type: 'restore',
         status: 'succeeded',
         sessionId: 'running-session',
+      });
+    });
+
+    it('passes the switch config to the owner restore', async () => {
+      const { service, sessionLifecycle } = build({
+        activeSessions: {
+          getSessionProjectScope: jest.fn().mockResolvedValue(scopeOk),
+          getActiveSession: jest.fn().mockResolvedValue(null),
+        },
+        sessionLifecycle: { restore: jest.fn().mockResolvedValue({ id: SESSION_A }) },
+      });
+
+      await service.restoreSession({
+        sessionId: SESSION_A,
+        projectId: PROJECT_ID,
+        switchToProviderConfigId: SWITCH_CONFIG_ID,
+      });
+      await flush();
+
+      expect(sessionLifecycle.restore).toHaveBeenCalledWith(SESSION_A, PROJECT_ID, {
+        switchToProviderConfigId: SWITCH_CONFIG_ID,
+      });
+    });
+
+    // The RPC unit test covers the already-active path that bypasses a full restore.
+    it('records the save point conflict even when the agent is already running', async () => {
+      const { service, operationTracker } = build({
+        activeSessions: {
+          getSessionProjectScope: jest.fn().mockResolvedValue(scopeOk),
+          getActiveSession: jest.fn().mockResolvedValue({ sessionId: 'running-session' }),
+        },
+        sessionLifecycle: {
+          assertRestorableKind: () => {
+            throw new ConflictError('Save points cannot be restored', {
+              code: 'SAVE_POINT_NOT_RESTORABLE',
+            });
+          },
+        },
+      });
+
+      const { operationId } = await service.restoreSession({
+        sessionId: SESSION_A,
+        projectId: PROJECT_ID,
+      });
+      await flush();
+      expect(operationTracker.get(operationId)).toMatchObject({
+        status: 'failed',
+        errorCode: 'SAVE_POINT_NOT_RESTORABLE',
       });
     });
 
@@ -1360,6 +1529,121 @@ describe('MobileChatRpcService lifecycle RPCs', () => {
       expect(operationTracker.get(operationId)).toMatchObject({
         status: 'failed',
         errorCode: 'PROVIDER_MISMATCH',
+      });
+    });
+
+    describe('with targetAgentId', () => {
+      const ownerLive = 'a0a0a0a0-a0a0-4a0a-8a0a-a0a0a0a0a0a0';
+      const targetLive = 'b0b0b0b0-b0b0-4b0b-8b0b-b0b0b0b0b0b0';
+      const buildTarget = (
+        targetActive: string,
+        overrides: { restore?: jest.Mock; targetProjectId?: string } = {},
+      ) =>
+        build({
+          storage: {
+            getAgent: jest.fn().mockResolvedValue({
+              id: AGENT_B,
+              projectId: overrides.targetProjectId ?? PROJECT_ID,
+              name: 'Clone',
+            }),
+          },
+          activeSessions: {
+            getSessionProjectScope: jest.fn().mockResolvedValue(scopeOk),
+            getActiveSession: jest.fn().mockImplementation(async (agentId: string) => ({
+              sessionId: agentId === AGENT_A ? ownerLive : targetActive,
+            })),
+          },
+          sessionLifecycle: {
+            restore: overrides.restore ?? jest.fn().mockResolvedValue({ id: SESSION_A }),
+          },
+        });
+      const restoreInto = (service: MobileChatRpcService) =>
+        service.restoreSession({
+          sessionId: SESSION_A,
+          projectId: PROJECT_ID,
+          targetAgentId: AGENT_B,
+        });
+
+      it('tracks the operation under the target and restores past other live sessions', async () => {
+        const { service, operationTracker, sessionLifecycle } = buildTarget(targetLive);
+
+        const { operationId } = await restoreInto(service);
+        await flush();
+
+        expect(sessionLifecycle.restore).toHaveBeenCalledWith(SESSION_A, PROJECT_ID, {
+          targetAgentId: AGENT_B,
+        });
+        expect(operationTracker.get(operationId)).toMatchObject({
+          agentId: AGENT_B,
+          status: 'succeeded',
+          sessionId: SESSION_A,
+        });
+        await expect(
+          service.getAgentStatus({ agentId: AGENT_B, projectId: PROJECT_ID }),
+        ).resolves.toMatchObject({ operationId });
+      });
+
+      it('passes the switch config to the restore', async () => {
+        const { service, sessionLifecycle } = buildTarget(targetLive);
+
+        await service.restoreSession({
+          sessionId: SESSION_A,
+          projectId: PROJECT_ID,
+          targetAgentId: AGENT_B,
+          switchToProviderConfigId: SWITCH_CONFIG_ID,
+        });
+        await flush();
+
+        expect(sessionLifecycle.restore).toHaveBeenCalledWith(SESSION_A, PROJECT_ID, {
+          targetAgentId: AGENT_B,
+          switchToProviderConfigId: SWITCH_CONFIG_ID,
+        });
+      });
+
+      it('succeeds without a restore only when the target already runs the requested session', async () => {
+        const { service, operationTracker, sessionLifecycle } = buildTarget(SESSION_A);
+
+        const { operationId } = await restoreInto(service);
+        await flush();
+
+        expect(sessionLifecycle.restore).not.toHaveBeenCalled();
+        expect(operationTracker.get(operationId)).toMatchObject({
+          agentId: AGENT_B,
+          status: 'succeeded',
+          sessionId: SESSION_A,
+        });
+      });
+
+      it('refuses a target in another project before creating an operation', async () => {
+        const { service, operationTracker, sessionLifecycle } = buildTarget(targetLive, {
+          targetProjectId: 'other',
+        });
+
+        const err = await restoreInto(service).catch((e) => e);
+
+        expect(err).toBeInstanceOf(ForbiddenError);
+        expect((err as ForbiddenError).details).toMatchObject({ code: 'AGENT_PROJECT_MISMATCH' });
+        expect(sessionLifecycle.restore).not.toHaveBeenCalled();
+        expect(operationTracker.latestForAgent(AGENT_B)).toBeUndefined();
+      });
+
+      it.each([
+        new ForbiddenError('outside family', { code: 'SESSION_FAMILY_MISMATCH' }),
+        new ConflictError('running elsewhere', { code: 'SESSION_RUNNING_ON_OTHER_AGENT' }),
+        new ConflictError('related running', { code: 'SESSION_LINEAGE_RUNNING' }),
+      ])('records the restore code $details.code on the operation', async (error) => {
+        const { service, operationTracker } = buildTarget(targetLive, {
+          restore: jest.fn().mockRejectedValue(error),
+        });
+
+        const { operationId } = await restoreInto(service);
+        await flush();
+
+        expect(operationTracker.get(operationId)).toMatchObject({
+          status: 'failed',
+          errorCode: error.details?.['code'],
+          errorMessage: error.message,
+        });
       });
     });
 
@@ -1541,6 +1825,41 @@ describe('MobileChatRpcService.getProviderUsage', () => {
 });
 
 describe('MobileChatRpcService.listTeams', () => {
+  it('keeps a disabled member id and count only with includeDisabled: true', async () => {
+    const DISABLED_MEMBER = 'member-disabled';
+    const stored = {
+      id: 'team-a',
+      name: 'Alpha',
+      teamLeadAgentId: 'lead-1',
+      memberAgentIds: ['lead-1', DISABLED_MEMBER, 'member-3'],
+    };
+    // Applies the store filter, so the test fails if the handler drops the opt-in.
+    const listTeamsWithMemberIds = jest.fn(
+      (_projectId: string, options?: { excludeDisabledMembers?: boolean }) =>
+        Promise.resolve([
+          options?.excludeDisabledMembers
+            ? {
+                ...stored,
+                memberAgentIds: stored.memberAgentIds.filter((id) => id !== DISABLED_MEMBER),
+              }
+            : stored,
+        ]),
+    );
+    const { service } = build({ teamsService: { listTeamsWithMemberIds } });
+
+    const [byDefault] = await service.listTeams({ projectId: PROJECT_ID });
+    expect(byDefault).toMatchObject({ memberAgentIds: ['lead-1', 'member-3'], memberCount: 2 });
+
+    const [withDisabled] = await service.listTeams({
+      projectId: PROJECT_ID,
+      includeDisabled: true,
+    });
+    expect(withDisabled).toMatchObject({
+      memberAgentIds: ['lead-1', DISABLED_MEMBER, 'member-3'],
+      memberCount: 3,
+    });
+  });
+
   it('returns teams with lead + ordered memberAgentIds + memberCount, scoped by projectId', async () => {
     const { service, teamsService } = build({
       teamsService: {
@@ -1557,7 +1876,10 @@ describe('MobileChatRpcService.listTeams', () => {
 
     const result = await service.listTeams({ projectId: PROJECT_ID });
 
-    expect(teamsService.listTeamsWithMemberIds).toHaveBeenCalledWith(PROJECT_ID);
+    expect(teamsService.listTeamsWithMemberIds).toHaveBeenCalledWith(PROJECT_ID, {
+      excludeDisabledMembers: true,
+    });
+
     expect(result).toEqual([
       {
         id: 'team-a',
@@ -1644,7 +1966,7 @@ describe('MobileChatRpcService.listTeams', () => {
 
       await service.listSessions({ agentId: AGENT_A, projectId: PROJECT_ID });
 
-      expect(listAgentHistory).toHaveBeenCalledWith(AGENT_A, PROJECT_ID, undefined, 20);
+      expect(listAgentHistory).toHaveBeenCalledWith(AGENT_A, PROJECT_ID, undefined, 20, 'agent');
     });
   });
 });
@@ -1851,6 +2173,155 @@ describe('MobileChatRpcService.deleteAgent', () => {
       service.deleteAgent({ projectId: PROJECT_ID, agentId: AGENT_A }),
     ).rejects.toMatchObject({ details: { code: 'AGENT_PROJECT_MISMATCH' } });
     expect(deleteAgentForChat).not.toHaveBeenCalled();
+  });
+});
+
+// Layer: service unit. The raw-params projection, the trim and the project guard live in this
+// service, so a stubbed TeamsService is the cheapest layer that catches a regression in them.
+describe('MobileChatRpcService agent overrides', () => {
+  it.each([
+    {
+      label: 'trims both padded overrides',
+      sent: { modelOverride: '  opus  ', effortOverride: '\thigh ' },
+      stored: { modelOverride: 'opus', effortOverride: 'high' },
+    },
+    {
+      label: 'keeps null for both overrides, so both clear',
+      sent: { modelOverride: null, effortOverride: null },
+      stored: { modelOverride: null, effortOverride: null },
+    },
+  ])('setAgentOverrides $label', async ({ sent, stored }) => {
+    // Echoes what it receives, so the result shows what the RPC layer sent to the write.
+    const setAgentOverridesForChat = jest.fn(
+      (input: Parameters<TeamsService['setAgentOverridesForChat']>[0]) =>
+        Promise.resolve({
+          agentId: input.agentId,
+          providerConfigId: input.providerConfigId,
+          modelOverride: input.modelOverride,
+          effortOverride: input.effortOverride,
+        }),
+    );
+    const { service } = build({
+      storage: { getAgent: jest.fn().mockResolvedValue(agent({ id: AGENT_A })) },
+      teamsService: { setAgentOverridesForChat },
+    });
+
+    const result = await service.setAgentOverrides({
+      projectId: PROJECT_ID,
+      agentId: AGENT_A,
+      providerConfigId: CONFIG_CLAUDE,
+      ...sent,
+    });
+
+    expect(result).toEqual({ agentId: AGENT_A, providerConfigId: CONFIG_CLAUDE, ...stored });
+  });
+
+  it('setAgentOverrides does not forward extra raw params to the write', async () => {
+    const setAgentOverridesForChat = jest.fn().mockResolvedValue({
+      agentId: AGENT_A,
+      providerConfigId: CONFIG_CLAUDE,
+      modelOverride: null,
+      effortOverride: null,
+    });
+    const { service } = build({
+      storage: { getAgent: jest.fn().mockResolvedValue(agent({ id: AGENT_A })) },
+      teamsService: { setAgentOverridesForChat },
+    });
+
+    await service.setAgentOverrides({
+      projectId: PROJECT_ID,
+      agentId: AGENT_A,
+      providerConfigId: CONFIG_CLAUDE,
+      modelOverride: null,
+      effortOverride: null,
+      name: 'renamed',
+    });
+
+    // The tunnel hands over the raw params; only the projected fields may reach storage.
+    expect(setAgentOverridesForChat.mock.calls[0][0]).not.toHaveProperty('name');
+  });
+
+  it.each([
+    {
+      method: 'getAgentOverrides' as const,
+      facade: 'getAgentOverridesForChat' as const,
+      params: {},
+    },
+    {
+      method: 'setAgentOverrides' as const,
+      facade: 'setAgentOverridesForChat' as const,
+      params: { providerConfigId: CONFIG_CLAUDE, modelOverride: null, effortOverride: null },
+    },
+  ])(
+    '$method rejects a cross-project agentId (AGENT_PROJECT_MISMATCH) before delegating',
+    async ({ method, facade, params }) => {
+      const delegate = jest.fn();
+      const { service } = build({
+        storage: {
+          getAgent: jest.fn().mockResolvedValue(agent({ id: AGENT_A, projectId: OTHER_PROJECT })),
+        },
+        teamsService: { [facade]: delegate },
+      });
+
+      await expect(
+        service[method]({ projectId: PROJECT_ID, agentId: AGENT_A, ...params }),
+      ).rejects.toMatchObject({ details: { code: 'AGENT_PROJECT_MISMATCH' } });
+      expect(delegate).not.toHaveBeenCalled();
+    },
+  );
+});
+
+describe('MobileChatRpcService.setAgentDisabled', () => {
+  it.each([
+    { disabled: true, method: 'disableAgent' as const, args: [AGENT_A, 'mobile-rpc'] },
+    { disabled: false, method: 'enableAgent' as const, args: [AGENT_A] },
+  ])(
+    'disabled: $disabled calls TeamsService.$method and returns the stored state',
+    async ({ disabled, method, args }) => {
+      const disableAgent = jest.fn().mockResolvedValue(agent({ id: AGENT_A, disabled: true }));
+      const enableAgent = jest.fn().mockResolvedValue(agent({ id: AGENT_A, disabled: false }));
+      const { service, teamsService } = build({
+        storage: { getAgent: jest.fn().mockResolvedValue(agent({ id: AGENT_A })) },
+        teamsService: { disableAgent, enableAgent },
+      });
+
+      const out = await service.setAgentDisabled({
+        projectId: PROJECT_ID,
+        agentId: AGENT_A,
+        disabled,
+      });
+
+      expect(teamsService[method]).toHaveBeenCalledWith(...args);
+      expect(method === 'disableAgent' ? enableAgent : disableAgent).not.toHaveBeenCalled();
+      expect(out).toEqual({ agentId: AGENT_A, disabled });
+    },
+  );
+
+  it('rejects a cross-project agentId (AGENT_PROJECT_MISMATCH) before delegating', async () => {
+    const disableAgent = jest.fn();
+    const { service } = build({
+      storage: {
+        getAgent: jest.fn().mockResolvedValue(agent({ id: AGENT_A, projectId: OTHER_PROJECT })),
+      },
+      teamsService: { disableAgent },
+    });
+
+    await expect(
+      service.setAgentDisabled({ projectId: PROJECT_ID, agentId: AGENT_A, disabled: true }),
+    ).rejects.toMatchObject({ details: { code: 'AGENT_PROJECT_MISMATCH' } });
+    expect(disableAgent).not.toHaveBeenCalled();
+  });
+
+  it('passes a server rule failure through with its message', async () => {
+    const ruleError = new ConflictError('Cannot disable "Owner" — they are the Project Owner');
+    const { service } = build({
+      storage: { getAgent: jest.fn().mockResolvedValue(agent({ id: AGENT_A })) },
+      teamsService: { disableAgent: jest.fn().mockRejectedValue(ruleError) },
+    });
+
+    await expect(
+      service.setAgentDisabled({ projectId: PROJECT_ID, agentId: AGENT_A, disabled: true }),
+    ).rejects.toBe(ruleError);
   });
 });
 

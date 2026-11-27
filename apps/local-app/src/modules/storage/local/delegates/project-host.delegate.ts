@@ -4,6 +4,7 @@ import { PROJECT_REPLICA_SETTING_KEYS } from '@devchain/shared';
 import { ConflictError, NotFoundError } from '../../../../common/errors/error-types';
 import { createLogger } from '../../../../common/logging/logger';
 import { dropProviderEnvKeysOfProject } from '../helpers/storage-helpers';
+import { forgetSeededLinkProject } from '../helpers/external-link-receipts';
 import { BaseStorageDelegate, type StorageDelegateContext } from './base-storage.delegate';
 
 const logger = createLogger('ProjectHostStorageDelegate');
@@ -48,7 +49,10 @@ export class ProjectHostStorageDelegate extends BaseStorageDelegate implements P
    * agents' sessions and the events whose payload names it. The workspace goes
    * too unless it is the default one or another project still uses it.
    */
-  async releaseProject(projectId: string): Promise<void> {
+  async releaseProject(
+    projectId: string,
+    options: { deleteIntegrationConnections?: boolean } = {},
+  ): Promise<void> {
     await this.txRunner.runImmediateQueued(() => {
       const project = this.rawClient
         .prepare('SELECT workspace_id, frozen_at FROM projects WHERE id = ?')
@@ -61,6 +65,11 @@ export class ProjectHostStorageDelegate extends BaseStorageDelegate implements P
           code: 'PROJECT_NOT_FROZEN',
           projectId,
         });
+      }
+      if (options.deleteIntegrationConnections) {
+        this.rawClient
+          .prepare('DELETE FROM integration_connections WHERE project_id = ?')
+          .run(projectId);
       }
       const connection = this.rawClient
         .prepare('SELECT 1 FROM integration_connections WHERE project_id = ? LIMIT 1')
@@ -88,6 +97,7 @@ export class ProjectHostStorageDelegate extends BaseStorageDelegate implements P
         projectId,
       );
       this.removeSettingsSlices(projectId);
+      forgetSeededLinkProject(this.rawClient, projectId);
       dropProviderEnvKeysOfProject(this.rawClient, projectId);
       run('DELETE FROM projects WHERE id = ?', projectId);
 

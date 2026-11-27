@@ -43,12 +43,11 @@ export class SessionContextResolver {
     }
 
     try {
-      const activeSessions = await this.sessionsService.listActiveSessions();
-
-      const matchingSessions =
-        sessionId.length === 36
-          ? activeSessions.filter((session) => session.id === sessionId)
-          : activeSessions.filter((session) => session.id.startsWith(sessionId));
+      const fullId = sessionId.length === 36;
+      const matchesId = (id: string) => (fullId ? id === sessionId : id.startsWith(sessionId));
+      const matchingSessions = this.sessionsService
+        .listRunningSessionIdentities()
+        .filter((session) => matchesId(session.id) || session.inheritedSessionIds.some(matchesId));
 
       if (matchingSessions.length === 0) {
         const guestContext = await this.tryResolveGuestContext(sessionId);

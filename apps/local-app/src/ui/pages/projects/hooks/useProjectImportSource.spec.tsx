@@ -23,18 +23,26 @@ describe('useProjectImportSource', () => {
   it('owns target and resets the selected source whenever it opens', () => {
     const { result } = renderHook(() => useProjectImportSource(templates));
 
-    act(() => result.current.open({ id: 'project-1', name: 'First project' }));
+    act(() => result.current.open({ id: 'project-1', name: 'First project', backend: 'home' }));
     act(() => result.current.selectTemplate('registry-template'));
 
     expect(result.current.isOpen).toBe(true);
-    expect(result.current.target).toEqual({ id: 'project-1', name: 'First project' });
+    expect(result.current.target).toEqual({
+      id: 'project-1',
+      name: 'First project',
+      backend: 'home',
+    });
     expect(result.current.selectedTemplateSource).toBe('registry');
     expect(result.current.selectedVersion).toBe('2.0.0');
     expect(result.current.sortedVersions).toEqual(['2.0.0', '1.10.0', '1.2.0']);
 
-    act(() => result.current.open({ id: 'project-2', name: 'Second project' }));
+    act(() => result.current.open({ id: 'project-2', name: 'Second project', backend: 'home' }));
 
-    expect(result.current.target).toEqual({ id: 'project-2', name: 'Second project' });
+    expect(result.current.target).toEqual({
+      id: 'project-2',
+      name: 'Second project',
+      backend: 'home',
+    });
     expect(result.current.selectedTemplateId).toBe('');
     expect(result.current.selectedVersion).toBe('');
   });
@@ -49,7 +57,7 @@ describe('useProjectImportSource', () => {
       value: input,
     });
 
-    act(() => result.current.open({ id: 'project-1', name: 'Project' }));
+    act(() => result.current.open({ id: 'project-1', name: 'Project', backend: 'home' }));
     act(() => result.current.openFilePicker());
 
     expect(input.value).toBe('');
@@ -58,7 +66,7 @@ describe('useProjectImportSource', () => {
     act(() => result.current.onOpenChange(false));
     expect(result.current.isOpen).toBe(false);
 
-    act(() => result.current.open({ id: 'project-2', name: 'Project 2' }));
+    act(() => result.current.open({ id: 'project-2', name: 'Project 2', backend: 'home' }));
     act(() => result.current.close());
     expect(result.current.isOpen).toBe(false);
   });

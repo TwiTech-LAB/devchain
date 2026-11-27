@@ -5,6 +5,7 @@ import {
   GitCoordinatorRecordSchema,
   GitCoordinatorStatusSchema,
   GitFenceSchema,
+  HomeRenewSchema,
   HomeWriteBeginSchema,
   HomeWriteEndSchema,
   HandoverBeginSchema,
@@ -18,6 +19,10 @@ import {
   HostSkillSettingsSchema,
   ProviderUsageSettingsSchema,
   HostSkillSettingsStatusSchema,
+  HOST_INTEGRATIONS_CONTENT_TYPE,
+  HostIntegrationsPushSchema,
+  HostIntegrationsPutResultSchema,
+  HostIntegrationsStatusSchema,
   HOST_VAULT_CONTENT_TYPE,
   HostVaultPushSchema,
   HostVaultRequestResolveSchema,
@@ -27,6 +32,7 @@ import {
   ProjectReplicaImportResultSchema,
   ProjectReplicaV1Schema,
   ReplicaProviderSettingsRowSchema,
+  type ProjectReplicaV1,
 } from '@devchain/shared';
 import { DockerRuntimeSchema } from '../../core/controllers/docker-runtime';
 import {
@@ -71,6 +77,7 @@ import { HostSshKeysRequestSchema } from '../host/host-ssh-keys.dto';
 import { RemoteSessionSchema } from '../operations/git-owner.dto';
 import { ProjectTimeSettlementSchema } from '../time/project-time-settler.dto';
 import {
+  TRANSCRIPT_TIMEOUT_MS,
   TranscriptListRequestSchema,
   TranscriptListingSchema,
 } from '../transcripts/transcript-transfer.dto';
@@ -117,6 +124,8 @@ export const HostRuntimeSchema = z
     cliVersions: z.record(z.string()).nullable().optional(),
     /** Claimed VMs only; absent on builds without the VM Vault cache. */
     vault: HostVaultStatusSchema.optional(),
+    /** Claimed VMs only; absent on builds without the VM integrations cache. */
+    integrations: HostIntegrationsStatusSchema.optional(),
   })
   .passthrough();
 export type HostRuntime = z.infer<typeof HostRuntimeSchema>;
@@ -136,6 +145,36 @@ export type HostUpdateProgress = NonNullable<z.infer<typeof HostUpdateStatusBody
 const FrozenProjectSchema = z.object({ projectId: z.string(), frozenAt: z.string() });
 const EpicIdSchema = z.object({ epicId: z.string().min(1) });
 const CreatedEpicSchema = z.object({ id: z.string().min(1) });
+/** A home UI import of a remote task into a project whose links the VM owns. */
+export const HostExternalTaskImportSchema = z
+  .object({
+    idempotencyKey: z.string().min(1).max(256),
+    epic: z
+      .object({
+        statusId: z.string().min(1),
+        title: z.string().trim().min(1).max(1000),
+        description: z.string().nullable(),
+      })
+      .strict(),
+    link: z
+      .object({
+        connectionId: z.string().min(1),
+        connectionGeneration: z.number().int().positive(),
+        provider: z.enum(['clickup', 'jira']),
+        remoteScopeKey: z.string().min(1).max(1024),
+        remoteTaskId: z.string().min(1).max(1024),
+        sourceSnapshot: z.record(z.unknown()),
+      })
+      .strict(),
+  })
+  .strict();
+export type HostExternalTaskImport = z.infer<typeof HostExternalTaskImportSchema>;
+const HostExternalTaskImportResultSchema = z.object({
+  epicId: z.string().min(1),
+  linkId: z.string().min(1),
+  created: z.boolean(),
+});
+export type HostExternalTaskImportResult = z.infer<typeof HostExternalTaskImportResultSchema>;
 
 type HostStatusBody = z.ZodTypeAny | 'error-code' | 'none';
 export interface HostRoute {
@@ -176,6 +215,12 @@ const enc = encodeURIComponent;
 const fixed = (path: string) => (_params: NoParams) => path;
 const NO_CONTENT = { 204: 'none' } as const;
 const RevisionAckSchema = z.object({ revision: z.string() });
+// Keep the full replica schema internals out of the inferred route table declaration.
+const HostProjectReplicaSchema: z.ZodType<
+  ProjectReplicaV1,
+  z.ZodTypeDef,
+  z.input<typeof ProjectReplicaV1Schema>
+> = ProjectReplicaV1Schema;
 
 export const HostProviderUsageSettingsSchema = z
   .object({ revision: z.string().regex(/^[a-f0-9]{64}$/), settings: ProviderUsageSettingsSchema })
@@ -256,6 +301,13 @@ export const hostRoutes = {
     timeoutMs: REPLICA_TIMEOUT_MS,
     statuses: { 200: GitCoordinatorRecordSchema },
   },
+  homeRenew: {
+    method: 'POST',
+    path: (params: ProjectParams) => `${projectPath(params)}/git-coordinator/home-renew`,
+    body: HomeRenewSchema,
+    timeoutMs: CONTROL_TIMEOUT_MS,
+    statuses: { 200: GitCoordinatorRecordSchema },
+  },
   handoverBegin: {
     method: 'POST',
     path: (params: ProjectParams) => `${projectPath(params)}/git-coordinator/handover-begin`,
@@ -307,7 +359,7 @@ export const hostRoutes = {
     method: 'POST',
     path: fixed('/api/host/transcripts/list'),
     body: TranscriptListRequestSchema,
-    timeoutMs: CONTROL_TIMEOUT_MS,
+    timeoutMs: TRANSCRIPT_TIMEOUT_MS,
     statuses: { 200: TranscriptListingSchema },
   },
   projectExists: {
@@ -319,7 +371,7 @@ export const hostRoutes = {
   importProject: {
     method: 'POST',
     path: fixed('/api/host/projects/import'),
-    body: ProjectReplicaV1Schema,
+    body: HostProjectReplicaSchema,
     contentType: PROJECT_REPLICA_CONTENT_TYPE,
     timeoutMs: REPLICA_TIMEOUT_MS,
     statuses: { 201: ProjectReplicaImportResultSchema, 409: 'error-code' },
@@ -329,7 +381,7 @@ export const hostRoutes = {
     path: (params: ProjectParams & { scope: 'attach' | 'detach' }) =>
       `${projectPath(params)}/replica?scope=${params.scope}`,
     timeoutMs: REPLICA_TIMEOUT_MS,
-    statuses: { 200: ProjectReplicaV1Schema },
+    statuses: { 200: HostProjectReplicaSchema },
   },
   changes: {
     method: 'GET',
@@ -413,6 +465,28 @@ export const hostRoutes = {
       `${projectPath(params)}/epics/by-idempotency-key/${enc(params.key)}`,
     timeoutMs: CONTROL_TIMEOUT_MS,
     statuses: { 200: EpicIdSchema, 404: 'none' },
+  },
+  /** Claimed VM only: see `HostService.importExternalTask`. */
+  importExternalTask: {
+    method: 'POST',
+    path: (params: ProjectParams) => `${projectPath(params)}/external-tasks/import`,
+    body: HostExternalTaskImportSchema,
+    timeoutMs: CONTROL_TIMEOUT_MS,
+    statuses: {
+      200: HostExternalTaskImportResultSchema,
+      400: 'error-code',
+      404: 'error-code',
+      409: 'error-code',
+      423: 'error-code',
+    },
+  },
+  /** Claimed VM only: removes the epic's ordinary link with exactly this id. */
+  unlinkExternalTask: {
+    method: 'DELETE',
+    path: (params: ProjectParams & { epicId: string; linkId: string }) =>
+      `${projectPath(params)}/epics/${enc(params.epicId)}/external-links/${enc(params.linkId)}`,
+    timeoutMs: CONTROL_TIMEOUT_MS,
+    statuses: { 204: 'none', 404: 'error-code', 409: 'error-code', 423: 'error-code' },
   },
   createEpic: {
     method: 'POST',
@@ -744,6 +818,18 @@ export const hostRoutes = {
     body: HostVaultPushSchema,
     timeoutMs: CONTROL_TIMEOUT_MS,
     statuses: { 200: RevisionAckSchema },
+  },
+  /**
+   * Body may carry integration credentials: never log it. Any refusal throws with the
+   * host's code.
+   */
+  putIntegrations: {
+    method: 'PUT',
+    path: fixed('/api/host/integrations'),
+    contentType: HOST_INTEGRATIONS_CONTENT_TYPE,
+    body: HostIntegrationsPushSchema,
+    timeoutMs: CONTROL_TIMEOUT_MS,
+    statuses: { 200: HostIntegrationsPutResultSchema },
   },
   /**
    * Metadata only: never carries a value. The VM lists its store's requests, which are

@@ -104,7 +104,9 @@ export const sendMessageAction: ActionDefinition = {
 
       if (inputAgentName) {
         try {
-          const agent = await storage.getAgentByName(projectId, inputAgentName);
+          const agent = await storage.getAgentByName(projectId, inputAgentName, {
+            excludeDisabled: true,
+          });
           if (agent.projectId !== projectId) {
             return {
               success: false,

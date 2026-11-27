@@ -22,7 +22,7 @@ export interface ChatTerminalProps {
 
 export interface SessionStatePayload {
   sessionId: string;
-  status: 'started' | 'ended' | 'crashed' | 'timeout';
+  status: 'started' | 'ended' | 'crashed' | 'timeout' | 'restarted';
   message?: string;
 }
 

@@ -23,6 +23,7 @@ import {
 } from '@/ui/lib/multiavatar';
 import { sameCatalogName, useProviderModels } from '@/ui/hooks/useProviderModels';
 import { useProviderEfforts } from '@/ui/hooks/useProviderEfforts';
+import { launchModelOf } from '@/ui/lib/provider-efforts';
 import { shortModelName } from '@/ui/lib/model-utils';
 import { useFetchFactory } from '@/ui/hooks/useFetchFactory';
 
@@ -176,12 +177,11 @@ export function AgentFormDialog({
     enabled: !!formData.profileId,
   });
 
-  const selectedProviderId = useMemo(() => {
-    if (!providerConfigs || !formData.providerConfigId) return null;
-    return (
-      providerConfigs.find((config) => config.id === formData.providerConfigId)?.providerId ?? null
-    );
+  const selectedConfig = useMemo(() => {
+    if (!providerConfigs || !formData.providerConfigId) return undefined;
+    return providerConfigs.find((config) => config.id === formData.providerConfigId);
   }, [providerConfigs, formData.providerConfigId]);
+  const selectedProviderId = selectedConfig?.providerId ?? null;
 
   // Stable clearers so the hook stale-selection effects don't churn each render.
   const clearStaleModelOverride = useCallback(
@@ -208,12 +208,6 @@ export function AgentFormDialog({
     effortOverride: formData.effortOverride,
     onStaleSelection: clearStaleEffortOverride,
   });
-
-  // Structured model on the selected config (for the "Select a model first" gating)
-  const selectedConfigStructuredModel = useMemo(() => {
-    if (!providerConfigs || !formData.providerConfigId) return null;
-    return providerConfigs.find((config) => config.id === formData.providerConfigId)?.model ?? null;
-  }, [providerConfigs, formData.providerConfigId]);
 
   // Auto-select config when profile changes
   useEffect(() => {
@@ -491,13 +485,18 @@ export function AgentFormDialog({
               <select
                 id={`${idPrefix}-model-override`}
                 value={formData.modelOverride ?? DEFAULT_MODEL_OVERRIDE}
-                onChange={(e) =>
+                onChange={(e) => {
+                  const modelOverride =
+                    e.target.value === DEFAULT_MODEL_OVERRIDE ? null : e.target.value;
+                  // A model change that leaves no model clears the effort: its select locks then.
+                  const effortLocked =
+                    requiresModelForEffort && !launchModelOf(modelOverride, selectedConfig);
                   setFormData((prev) => ({
                     ...prev,
-                    modelOverride:
-                      e.target.value === DEFAULT_MODEL_OVERRIDE ? null : e.target.value,
-                  }))
-                }
+                    modelOverride,
+                    ...(effortLocked ? { effortOverride: null } : {}),
+                  }));
+                }}
                 className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
               >
                 <option value={DEFAULT_MODEL_OVERRIDE}>Default</option>
@@ -519,10 +518,8 @@ export function AgentFormDialog({
             formData.providerConfigId &&
             supportsEffort &&
             (() => {
-              const hasResolvableModel = Boolean(
-                formData.modelOverride || selectedConfigStructuredModel,
-              );
-              const modelRequired = requiresModelForEffort && !hasResolvableModel;
+              const modelRequired =
+                requiresModelForEffort && !launchModelOf(formData.modelOverride, selectedConfig);
               const emptyCatalog = providerEfforts.length === 0;
               const disabled = modelRequired || emptyCatalog;
               const hint = modelRequired

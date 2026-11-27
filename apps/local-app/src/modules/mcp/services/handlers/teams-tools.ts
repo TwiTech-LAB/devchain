@@ -22,6 +22,26 @@ import { ServiceUnavailableError } from '../../../../common/errors/service-unava
 import { resolveSessionContext } from '../utils/session-context-helpers';
 import { resolveAgentNames } from '../utils/agent-name-resolver';
 import { requireProject } from '../utils/require-project';
+import { extractModelFromProfileOptions } from '../../../providers/utils/profile-options';
+
+/**
+ * The model and effort that a session of this agent launches with, in launch order
+ * (provider-runtime-preparation.service.ts): the agent override, then the option default, then
+ * the --model of the option's raw flags. A null model means the provider default.
+ */
+function launchModelAndEffort(
+  agent: { modelOverride?: string | null; effortOverride?: string | null },
+  config: { model: string | null; effort: string | null; options: string | null } | null,
+): { model: string | null; effort: string | null } {
+  return {
+    model:
+      agent.modelOverride ??
+      config?.model ??
+      extractModelFromProfileOptions(config?.options ?? null) ??
+      null,
+    effort: agent.effortOverride ?? config?.effort ?? null,
+  };
+}
 
 function teamsServiceUnavailable(): McpResponse {
   return {
@@ -55,7 +75,12 @@ export async function handleTeamsList(
   const offset = validated.offset ?? 0;
 
   try {
-    const result = await ctx.teamsService.listTeams(project.id, { limit, offset, q: validated.q });
+    const result = await ctx.teamsService.listTeams(project.id, {
+      limit,
+      offset,
+      q: validated.q,
+      excludeDisabledMembers: true,
+    });
 
     const teams: TeamSummary[] = result.items.map((t) => ({
       id: t.id,
@@ -102,7 +127,9 @@ export async function handleTeamsMembersList(
 
   try {
     if (validated.teamId) {
-      const team = await ctx.teamsService.getTeam(validated.teamId);
+      const team = await ctx.teamsService.getTeam(validated.teamId, {
+        excludeDisabledMembers: true,
+      });
       if (!team) {
         return {
           success: false,
@@ -163,7 +190,9 @@ export async function handleTeamsMembersList(
 
     const teamsEntries: TeamMembersEntry[] = [];
     for (const team of agentTeams) {
-      const fullTeam = await ctx.teamsService.getTeam(team.id);
+      const fullTeam = await ctx.teamsService.getTeam(team.id, {
+        excludeDisabledMembers: true,
+      });
       if (!fullTeam) continue;
 
       const members = await buildTeamMembers(ctx, fullTeam.members, fullTeam.teamLeadAgentId);
@@ -500,13 +529,18 @@ export async function handleDevchainTeam(
       teamId = teams[0].id;
     }
 
-    const detail = await ctx.teamsService.getTeam(teamId);
+    const detail = await ctx.teamsService.getTeam(teamId, { excludeDisabledMembers: true });
     if (!detail) {
       return {
         success: false,
         error: { code: 'TEAM_NOT_FOUND', message: 'Team not found' },
       };
     }
+    // A disabled agent keeps its seat, so free seats follow the stored count.
+    const stored = await ctx.teamsService.getTeam(teamId);
+    const storedMemberCount = (stored?.members ?? detail.members).filter(
+      (m) => m.agentId !== detail.teamLeadAgentId,
+    ).length;
 
     const memberAgentIds = new Set(detail.members.map((m) => m.agentId));
     const agentNameById = await resolveAgentNames(ctx.storage, memberAgentIds);
@@ -518,6 +552,9 @@ export async function handleDevchainTeam(
       let profileName: string | null = null;
       let providerConfigId: string | null = null;
       let providerConfigName: string | null = null;
+      let providerName: string | null = null;
+      let model: string | null = null;
+      let effort: string | null = null;
 
       const agentName = agentNameById.get(m.agentId) ?? m.agentId;
 
@@ -526,6 +563,7 @@ export async function handleDevchainTeam(
         agentDescription = agentRecord.description;
         profileId = agentRecord.profileId;
         providerConfigId = agentRecord.providerConfigId;
+        ({ model, effort } = launchModelAndEffort(agentRecord, null));
 
         if (profileId) {
           try {
@@ -539,6 +577,12 @@ export async function handleDevchainTeam(
           try {
             const config = await ctx.storage.getProfileProviderConfig(providerConfigId);
             providerConfigName = config.name;
+            ({ model, effort } = launchModelAndEffort(agentRecord, config));
+            try {
+              providerName = (await ctx.storage.getProvider(config.providerId)).name;
+            } catch {
+              /* best-effort */
+            }
           } catch {
             /* best-effort */
           }
@@ -556,6 +600,9 @@ export async function handleDevchainTeam(
         profileName,
         providerConfigId,
         providerConfigName,
+        providerName,
+        model,
+        effort,
       });
     }
 
@@ -578,7 +625,7 @@ export async function handleDevchainTeam(
       allowTeamLeadCreateAgents: detail.allowTeamLeadCreateAgents,
       currentMemberCount,
       busyMembersCount,
-      freeSeats: Math.max(0, detail.maxMembers - currentMemberCount),
+      freeSeats: Math.max(0, detail.maxMembers - storedMemberCount),
       freeConcurrentSlots: Math.max(0, detail.maxConcurrentTasks - busyMembersCount),
       createdAt: detail.createdAt,
       updatedAt: detail.updatedAt,

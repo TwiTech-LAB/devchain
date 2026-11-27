@@ -226,6 +226,12 @@ export const STORAGE_ROUTES = {
     scope: 'exempt',
     reason: 'Binding deletion returns remote ownership to home.',
   },
+  markVmLinkOwners: {
+    delegate: 'remote',
+    scope: 'exempt',
+    reason: "Home records the VM as the owner of a bound project's links while it is remote.",
+  },
+  getVmLinkOwnerSince: { delegate: 'remote', scope: 'read' },
   createRemoteOperation: { delegate: 'remote', scope: 'global' },
   getRemoteOperation: { delegate: 'remote', scope: 'read' },
   listRemoteOperations: { delegate: 'remote', scope: 'read' },
@@ -280,6 +286,7 @@ export const STORAGE_ROUTES = {
   },
   deleteEpic: { delegate: 'epic', scope: ownedBy('epic') },
   listSubEpics: { delegate: 'epic', scope: 'read' },
+  listDirectChildEpicIds: { delegate: 'epic', scope: 'read' },
   listParentChildren: { delegate: 'epic', scope: 'read' },
   listSubEpicsForParents: { delegate: 'epic', scope: 'read' },
   countSubEpicsByStatus: { delegate: 'epic', scope: 'read' },
@@ -444,7 +451,17 @@ export const STORAGE_ROUTES = {
       projectIds(([, data]) => [data.projectId]),
     ),
   },
+  updateAgentReportingWrites: {
+    delegate: 'agent',
+    scope: combineScopes(
+      ownedBy('agent'),
+      projectIds(([, data]) => [data.projectId]),
+    ),
+  },
   deleteAgent: { delegate: 'agent', scope: ownedBy('agent') },
+  disableAgent: { delegate: 'agent', scope: ownedBy('agent') },
+  enableAgent: { delegate: 'agent', scope: ownedBy('agent') },
+  isAgentDisabled: { delegate: 'agent', scope: 'read' },
   createRecord: { delegate: 'record', scope: entityProjects('epic', ([data]) => [data.epicId]) },
   getRecord: { delegate: 'record', scope: 'read' },
   listRecords: { delegate: 'record', scope: 'read' },
@@ -553,6 +570,25 @@ export const STORAGE_ROUTES = {
   },
   listIntegrationConnectionsByLegacySourceConnectionId: { delegate: 'integration', scope: 'read' },
   listIntegrationConnections: { delegate: 'integration', scope: 'read' },
+  replaceDeliveredIntegrationConnections: {
+    delegate: 'integration',
+    scope: 'exempt',
+    reason: 'Home delivers the connections of its projects to a claimed VM.',
+  },
+  readExternalLinkSyncState: { delegate: 'integration', scope: 'read' },
+  listOrdinaryExternalTaskLinkRows: { delegate: 'integration', scope: 'read' },
+  listExternalLinkReceiptIds: { delegate: 'integration', scope: 'read' },
+  assertExternalLinkReleaseAllowed: { delegate: 'integration', scope: 'read' },
+  beginExternalLinkRelease: {
+    delegate: 'integration',
+    scope: 'exempt',
+    reason: HOME_OWNED_INTEGRATION_REASON,
+  },
+  closeExternalLinkReleaseAttempt: {
+    delegate: 'integration',
+    scope: 'exempt',
+    reason: HOME_OWNED_INTEGRATION_REASON,
+  },
   getIntegrationConnectionCredentials: { delegate: 'integration', scope: 'read' },
   getIntegrationConnectionCredentialsById: { delegate: 'integration', scope: 'read' },
   migrateIntegrationCredentialsToVault: {
@@ -587,8 +623,18 @@ export const STORAGE_ROUTES = {
   },
   createExternalTaskLink: {
     delegate: 'integration',
+    scope: entityProjects('epic', ([data]) => [data.epicId]),
+  },
+  createRemoteProjectExternalTaskLink: {
+    delegate: 'integration',
     scope: 'exempt',
     reason: 'Home maintains external task links for remote-owned projects.',
+  },
+  setEpicExternalTaskLink: { delegate: 'integration', scope: ownedBy('epic') },
+  deleteExternalTaskLink: { delegate: 'integration', scope: ownedBy('epic') },
+  importHostedExternalTask: {
+    delegate: 'integration',
+    scope: projectIds(([data]) => [data.epic.projectId]),
   },
   createEpicWithExternalTaskLink: {
     delegate: 'integration',
@@ -611,6 +657,10 @@ export const STORAGE_ROUTES = {
     scope: 'read',
   },
   listExternalManagedSubtaskLinksForEpicSnapshot: {
+    delegate: 'externalManagedSubtask',
+    scope: 'read',
+  },
+  listExternalManagedSubtaskLinksByParentSourceLink: {
     delegate: 'externalManagedSubtask',
     scope: 'read',
   },

@@ -8,10 +8,15 @@ import { statusQueries } from '@/ui/lib/statuses';
 import { agentQueries } from '@/ui/lib/agents';
 import { useToast } from '../hooks/use-toast';
 import { getErrorMessage } from '@/ui/lib/toast-helpers';
+import { fetchJsonOrThrow, SessionApiError } from '@/ui/lib/http-json';
 import { useSelectedProject } from '@/ui/hooks/useProjectSelection';
 import { useFetchFactory } from '@/ui/hooks/useFetchFactory';
 import { useIntegrationAvailability } from '@/ui/hooks/useIntegrationAvailability';
 import { useEpicExternalSources } from '@/ui/hooks/useEpicExternalSources';
+import { epicExternalSourceQueryKeys } from '@/ui/lib/external-my-work';
+import type { ExternalTaskSourceSummary } from '@/modules/external-integrations/models/external-provider.models';
+import { epicDetailQueryKey, useEpicDetailSync } from '@/ui/hooks/useEpicDetailSync';
+import { externalBoardProviderLabel } from '@/ui/lib/external-board';
 import { resolveSkillSlugs } from '@/ui/lib/skills';
 import {
   boardReturnUrlFromState,
@@ -72,6 +77,7 @@ import {
   Layers,
   Plus,
   Sparkles,
+  Unlink,
   User,
 } from 'lucide-react';
 
@@ -282,16 +288,96 @@ async function terminateSession(sessionId: string, fetchFn: FetchFn) {
 }
 
 async function updateEpicRequest(id: string, data: Partial<Epic>, fetchFn: FetchFn) {
-  const res = await fetchFn(`/api/epics/${id}`, {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(data),
-  });
-  if (!res.ok) {
-    const error = await res.json().catch(() => ({ message: 'Failed to update epic' }));
-    throw new Error(error.message || 'Failed to update epic');
-  }
-  return res.json() as Promise<Awaited<ReturnType<EpicsController['updateEpic']>>>;
+  return fetchJsonOrThrow<Awaited<ReturnType<EpicsController['updateEpic']>>>(
+    `/api/epics/${id}`,
+    {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    },
+    'Failed to update epic',
+    fetchFn,
+  );
+}
+
+function isVersionConflict(error: unknown): boolean {
+  return (
+    error instanceof SessionApiError &&
+    error.status === 409 &&
+    error.payload?.code === 'optimistic_lock_error'
+  );
+}
+
+type DraftField = 'title' | 'description';
+
+/**
+ * What a field's draft was synced from: the stored value and the epic version
+ * it was read at. A save sends this version, so the server refuses it when the
+ * same field changed since. `theirs` holds a newer stored value, with the
+ * version it was read at, that differs from both the baseline and the dirty
+ * draft; while set, the field never saves. `explicitSave` is set when the user
+ * chose to keep their draft over someone else's value: focus loss then no
+ * longer saves it.
+ */
+interface DraftBaseline {
+  value: string;
+  version: number;
+  theirs: { value: string; version: number } | null;
+  explicitSave: boolean;
+}
+
+interface DraftBaselines {
+  epicId: string;
+  title: DraftBaseline;
+  description: DraftBaseline;
+}
+
+function freshBaseline(value: string, version: number, explicitSave = false): DraftBaseline {
+  return { value, version, theirs: null, explicitSave };
+}
+
+function reconcileDraft(
+  draft: string,
+  baseline: DraftBaseline | null,
+  stored: string,
+  version: number,
+): { draft: string; baseline: DraftBaseline } {
+  const synced = { draft: stored, baseline: freshBaseline(stored, version) };
+  if (!baseline) return synced;
+  const mine = draft.trim();
+  if (mine === baseline.value.trim() || mine === stored.trim()) return synced;
+  if (stored === baseline.value) return { draft, baseline: { ...baseline, version, theirs: null } };
+  return { draft, baseline: { ...baseline, theirs: { value: stored, version } } };
+}
+
+const DRAFT_FIELD_LABEL: Record<DraftField, string> = {
+  title: 'Title',
+  description: 'Description',
+};
+
+function DraftConflictNotice({
+  field,
+  onUseTheirs,
+  onKeepMine,
+}: {
+  field: DraftField;
+  onUseTheirs: () => void;
+  onKeepMine: () => void;
+}) {
+  return (
+    <Alert variant="warn">
+      <AlertCircle className="h-4 w-4" />
+      <AlertDescription className="flex flex-wrap items-center gap-2">
+        <span>{DRAFT_FIELD_LABEL[field]} was changed by someone else.</span>
+        <Button type="button" variant="outline" size="sm" onClick={onUseTheirs}>
+          Use theirs
+        </Button>
+        <Button type="button" variant="outline" size="sm" onClick={onKeepMine}>
+          Keep mine
+        </Button>
+      </AlertDescription>
+    </Alert>
+  );
 }
 
 async function createEpicComment(
@@ -350,6 +436,22 @@ async function deleteEpic(epicId: string, fetchFn: FetchFn) {
     const error = await res.json().catch(() => ({ message: 'Failed to delete epic' }));
     throw new Error(error.message || 'Failed to delete epic');
   }
+}
+
+async function unlinkExternalSource(epicId: string, linkId: string, fetchFn: FetchFn) {
+  const res = await fetchFn(
+    `/api/epics/${encodeURIComponent(epicId)}/external-sources/${encodeURIComponent(linkId)}`,
+    { method: 'DELETE' },
+  );
+  if (!res.ok) {
+    const error = await res.json().catch(() => ({ message: 'Failed to unlink the task' }));
+    throw new Error(error.message || 'Failed to unlink the task');
+  }
+}
+
+interface UnlinkTarget {
+  epicId: string;
+  source: ExternalTaskSourceSummary;
 }
 
 interface EpicRouteWindowProps {
@@ -432,6 +534,7 @@ export function EpicDetailPage() {
   const [addSubEpicOpen, setAddSubEpicOpen] = useState(false);
   const [addSubEpicForm, setAddSubEpicForm] = useState({ title: '', statusId: '' });
   const [deleteDialog, setDeleteDialog] = useState<DeleteEpicDialogState | null>(null);
+  const [unlinkTarget, setUnlinkTarget] = useState<UnlinkTarget | null>(null);
   const [searchParams] = useSearchParams();
   const editMode = searchParams.get('edit') === '1';
   const titleInputRef = useRef<HTMLInputElement>(null);
@@ -442,6 +545,7 @@ export function EpicDetailPage() {
     queryFn: () => fetchEpic(id!, apiFetch),
     enabled: !!id,
   });
+  useEpicDetailSync(epic?.projectId, id);
   const externalSources = useEpicExternalSources(id, {
     enabled: integrationAvailability.canUseIntegrations,
   });
@@ -554,13 +658,45 @@ export function EpicDetailPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps -- Sync persisted assignee changes only; the unsaved launch selector is disabled by EPIC_LAUNCH_ENABLED.
   }, [epic?.agentId]);
 
+  // A refetch replaces a clean draft, advances the baseline version of a dirty
+  // draft whose field did not change, and marks a dirty draft whose field did
+  // change as conflicted.
+  const [baselines, setBaselines] = useState<DraftBaselines | null>(null);
+  // Baselines of another epic (the route changed) are never used.
+  const currentBaselines = baselines?.epicId === epic?.id ? baselines : null;
   useEffect(() => {
-    if (epic) {
-      setTitleDraft(epic.title);
-      setDescriptionDraft(epic.description ?? '');
+    if (!epic) return;
+    const previous = currentBaselines;
+    const title = reconcileDraft(titleDraft, previous?.title ?? null, epic.title, epic.version);
+    const description = reconcileDraft(
+      descriptionDraft,
+      previous?.description ?? null,
+      epic.description ?? '',
+      epic.version,
+    );
+    setTitleDraft(title.draft);
+    setDescriptionDraft(description.draft);
+    setBaselines({ epicId: epic.id, title: title.baseline, description: description.baseline });
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- Reconcile on stored changes only; typing must not reconcile.
+  }, [epic?.id, epic?.version, epic?.title, epic?.description]);
+  const titleBaseline = currentBaselines?.title;
+  const descriptionBaseline = currentBaselines?.description;
+
+  const resolveDraftConflict = (field: DraftField, keep: 'mine' | 'theirs') => {
+    if (!epic || !baselines) return;
+    const theirs = baselines[field].theirs;
+    if (theirs === null) return;
+    if (keep === 'theirs') {
+      (field === 'title' ? setTitleDraft : setDescriptionDraft)(theirs.value);
+    } else if (field === 'title') {
+      setTitleEditing(true);
+      titleInputRef.current?.focus();
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- Refresh drafts only when persisted content changes; unrelated refetches must not erase edits.
-  }, [epic?.title, epic?.description]);
+    setBaselines({
+      ...baselines,
+      [field]: freshBaseline(theirs.value, theirs.version, keep === 'mine'),
+    });
+  };
 
   useEffect(() => {
     if (editMode) {
@@ -659,6 +795,10 @@ export function EpicDetailPage() {
         description: error.message,
         variant: 'destructive',
       });
+      // The refetch keeps the draft and marks a same-field conflict.
+      if (isVersionConflict(error)) {
+        queryClient.invalidateQueries({ queryKey: epicDetailQueryKey(id!) });
+      }
     },
   });
 
@@ -775,6 +915,36 @@ export function EpicDetailPage() {
       });
     },
   });
+
+  const unlinkSourceMutation = useMutation({
+    mutationFn: ({ epicId, source }: UnlinkTarget) =>
+      unlinkExternalSource(epicId, source.id, apiFetch),
+    onSuccess: (_result, { source }) => {
+      toast({
+        title: 'Task unlinked',
+        description: `${externalBoardProviderLabel(source.provider)} ${source.remoteKey} is no longer linked.`,
+      });
+    },
+    onError: (error: Error) => {
+      toast({
+        title: 'Unlink failed',
+        description: error.message,
+        variant: 'destructive',
+      });
+    },
+    // This epic's own views refresh at once; the link-change scope hint the
+    // server publishes after commit refreshes every other link view.
+    onSettled: (_result, _error, { epicId }) => {
+      void queryClient.invalidateQueries({ queryKey: epicDetailQueryKey(epicId) });
+      void queryClient.invalidateQueries({ queryKey: epicExternalSourceQueryKeys.detail(epicId) });
+    },
+  });
+  // The page instance survives a change of `/epics/:id`; a confirmation opened
+  // for another epic must never act here.
+  const openUnlinkTarget = unlinkTarget?.epicId === id ? unlinkTarget : null;
+  useEffect(() => {
+    setUnlinkTarget(null);
+  }, [id]);
 
   const agents = useMemo(() => agentsData?.items || [], [agentsData]);
 
@@ -971,7 +1141,15 @@ export function EpicDetailPage() {
     commentMutation.mutate({ authorName, content });
   };
 
-  const commitTitle = () => {
+  const commitTitle = (trigger: 'blur' | 'explicit') => {
+    if (
+      !titleBaseline ||
+      titleBaseline.theirs !== null ||
+      (titleBaseline.explicitSave && trigger === 'blur')
+    ) {
+      setTitleEditing(true);
+      return;
+    }
     const trimmed = titleDraft.trim();
     if (!trimmed) {
       toast({
@@ -979,28 +1157,42 @@ export function EpicDetailPage() {
         description: 'Epic title cannot be empty.',
         variant: 'destructive',
       });
-      setTitleDraft(epic.title);
+      setTitleDraft(titleBaseline.value);
       setTitleEditing(false);
       return;
     }
     setTitleEditing(false);
-    if (trimmed === epic.title) {
+    if (trimmed === titleBaseline.value) {
       return;
     }
-    updateEpicMutation.mutate({ title: trimmed, version: epic.version });
+    updateEpicMutation.mutate({ title: trimmed, version: titleBaseline.version });
   };
 
   const cancelTitleEdit = () => {
     setTitleDraft(epic.title);
+    setBaselines((current) =>
+      current
+        ? {
+            ...current,
+            title: freshBaseline(epic.title, epic.version),
+          }
+        : current,
+    );
     setTitleEditing(false);
   };
 
+  const descriptionUnsaved =
+    descriptionBaseline !== undefined && descriptionDraft.trim() !== descriptionBaseline.value;
+
   const handleSaveDescription = () => {
-    const trimmed = descriptionDraft.trim();
-    if (trimmed === (epic.description ?? '')) {
+    if (!descriptionBaseline || descriptionBaseline.theirs !== null || !descriptionUnsaved) {
       return;
     }
-    updateEpicMutation.mutate({ description: trimmed || null, version: epic.version });
+    const trimmed = descriptionDraft.trim();
+    updateEpicMutation.mutate({
+      description: trimmed || null,
+      version: descriptionBaseline.version,
+    });
   };
 
   const handleAddSubEpicSubmit = () => {
@@ -1046,11 +1238,11 @@ export function EpicDetailPage() {
               ref={titleInputRef}
               value={titleDraft}
               onChange={(event) => setTitleDraft(event.target.value)}
-              onBlur={commitTitle}
+              onBlur={() => commitTitle('blur')}
               onKeyDown={(event) => {
                 if (event.key === 'Enter') {
                   event.preventDefault();
-                  commitTitle();
+                  commitTitle('explicit');
                 } else if (event.key === 'Escape') {
                   event.preventDefault();
                   cancelTitleEdit();
@@ -1067,10 +1259,22 @@ export function EpicDetailPage() {
               {epic.title}
             </button>
           )}
+          {titleEditing && titleBaseline?.explicitSave && (
+            <Button type="button" size="sm" onClick={() => commitTitle('explicit')}>
+              Save title
+            </Button>
+          )}
           {updateEpicMutation.isPending && !titleEditing && (
             <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
           )}
         </div>
+        {titleBaseline?.theirs != null && (
+          <DraftConflictNotice
+            field="title"
+            onUseTheirs={() => resolveDraftConflict('title', 'theirs')}
+            onKeepMine={() => resolveDraftConflict('title', 'mine')}
+          />
+        )}
 
         {/* Controls Row - Status, Agent, Tags */}
         <div className="flex flex-wrap items-end gap-3">
@@ -1186,13 +1390,21 @@ export function EpicDetailPage() {
                   placeholder="Add a description"
                   className="min-h-[200px] resize-none overflow-hidden"
                 />
+                {descriptionBaseline?.theirs != null && (
+                  <DraftConflictNotice
+                    field="description"
+                    onUseTheirs={() => resolveDraftConflict('description', 'theirs')}
+                    onKeepMine={() => resolveDraftConflict('description', 'mine')}
+                  />
+                )}
                 <div className="flex justify-end">
                   <Button
                     variant="outline"
                     size="sm"
                     onClick={handleSaveDescription}
                     disabled={
-                      descriptionDraft.trim() === (epic.description ?? '') ||
+                      !descriptionUnsaved ||
+                      descriptionBaseline?.theirs != null ||
                       updateEpicMutation.isPending
                     }
                   >
@@ -1666,6 +1878,36 @@ export function EpicDetailPage() {
                 <span>Last Updated</span>
                 <span className="font-medium text-foreground">{formatDate(epic.updatedAt)}</span>
               </div>
+              {externalSources.data?.items?.map((source) => {
+                const providerLabel = externalBoardProviderLabel(source.provider);
+                return (
+                  <div key={source.id} className="flex items-center justify-between gap-2">
+                    <span>Linked {providerLabel} task</span>
+                    <span className="flex min-w-0 items-center gap-1">
+                      <span className="truncate font-medium text-foreground">
+                        {source.remoteKey}
+                      </span>
+                      {source.managed ? (
+                        <Badge variant="outline" title="Managed subtask sync owns this link.">
+                          Synced subtask
+                        </Badge>
+                      ) : (
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="h-7 px-2 text-muted-foreground hover:text-destructive"
+                          aria-label={`Unlink ${providerLabel} ${source.remoteKey}`}
+                          disabled={unlinkSourceMutation.isPending}
+                          onClick={() => setUnlinkTarget({ epicId: id!, source })}
+                        >
+                          <Unlink className="mr-1 h-3.5 w-3.5" />
+                          Unlink
+                        </Button>
+                      )}
+                    </span>
+                  </div>
+                );
+              })}
             </CardContent>
             <CardFooter>
               <Button
@@ -1703,6 +1945,25 @@ export function EpicDetailPage() {
         variant="destructive"
         loading={deleteSubEpicMutation.isPending || deleteThisEpicMutation.isPending}
         onConfirm={handleConfirmDelete}
+      />
+      <ConfirmDialog
+        open={openUnlinkTarget !== null}
+        onOpenChange={(open) => {
+          if (!open) setUnlinkTarget(null);
+        }}
+        title="Unlink task?"
+        description={
+          openUnlinkTarget
+            ? `Unlink ${externalBoardProviderLabel(openUnlinkTarget.source.provider)} ${openUnlinkTarget.source.remoteKey}? Remote subtasks stay in ${externalBoardProviderLabel(openUnlinkTarget.source.provider)} and DevChain stops updating them.`
+            : ''
+        }
+        confirmText="Unlink"
+        cancelText="Cancel"
+        variant="destructive"
+        loading={unlinkSourceMutation.isPending}
+        onConfirm={() => {
+          if (openUnlinkTarget) unlinkSourceMutation.mutate(openUnlinkTarget);
+        }}
       />
     </>,
   );

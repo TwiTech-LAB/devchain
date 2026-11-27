@@ -4,8 +4,17 @@ import {
   CliForegroundExecutor,
   FakeProcessExecutor,
 } from '../process-executor/fake-process-executor';
-import { ShellForegroundError, TypeCommandFailedError } from './delivery';
+import {
+  DeliveryRefusedError,
+  PasteNotConfirmedError,
+  ShellForegroundError,
+  TypeCommandFailedError,
+} from './delivery';
 import type { CannedResponse } from '../process-executor/fake-process-executor';
+import type {
+  ExecutorResult,
+  ProcessExecutorOptions,
+} from '../process-executor/process-executor.port';
 import type { EventsService } from '../../../events/services/events.service';
 import type { SettingsService } from '../../../settings/services/settings.service';
 import { HumanPromptStateService } from '../human-prompt-state.service';
@@ -125,6 +134,35 @@ describe('TerminalIOService', () => {
       expect(cli.calls.some((call) => call.argv[1] === 'paste-buffer')).toBe(true);
       expect(cli.calls.at(-1)?.argv).toEqual(['tmux', 'send-keys', '-t', '=agent-pane:', 'Enter']);
     });
+
+    it.each(['deliver', 'deliverImmediate'] as const)(
+      '%s writes nothing and keeps the draft target when the first-mutation guard refuses',
+      async (method) => {
+        const cli = new CliForegroundExecutor();
+        const prompts = new HumanPromptStateService();
+        const cliSvc = new TerminalIOService(
+          cli,
+          { publish: jest.fn() } as unknown as EventsService,
+          prompts,
+          { getFollowNoteEnabled: () => true } as unknown as SettingsService,
+        );
+        const draftTarget = prompts.captureDraftTarget(target.name);
+
+        await expect(
+          cliSvc[method](target, 'automated text', { ...options, firstMutationGuard: () => false }),
+        ).rejects.toBeInstanceOf(DeliveryRefusedError);
+
+        const tmux = cli.calls
+          .filter((call) => call.argv[0] === 'tmux')
+          .map((call) => call.argv[1]);
+        expect(tmux).not.toContain('paste-buffer');
+        expect(tmux).not.toContain('send-keys');
+        expect(tmux.filter((command) => command === 'load-buffer')).toHaveLength(
+          tmux.filter((command) => command === 'delete-buffer').length,
+        );
+        expect(prompts.isCurrentDraftTarget(target.name, draftTarget)).toBe(true);
+      },
+    );
 
     it.each([0, 1])('fails closed for an invalid read at probe %s', async (probe) => {
       const invalidReads: CannedResponse[] = [
@@ -944,5 +982,109 @@ describe('TerminalIOService', () => {
       await expect(svc.applyWindowTheme(target, fg, bg)).rejects.toThrow(/window-style.*timed out/);
       expect(fake.calls).toHaveLength(1);
     });
+  });
+
+  // The executor boundary shows the order of pane reads and writes around the guard.
+  describe('first-mutation guard and the confirmation baseline', () => {
+    const target = { name: 'agent-pane' };
+    const indicator = '[Pasted Content 10 chars]';
+
+    /** A pane whose screen Escape changes; capture reads can be held. */
+    class ScreenExecutor extends CliForegroundExecutor {
+      screen = `draft\n${indicator}`;
+      private heldCapture: Promise<void> | null = null;
+      captured = false;
+
+      holdNextCapture(): () => void {
+        let release!: () => void;
+        this.heldCapture = new Promise<void>((resolve) => (release = resolve));
+        return () => release();
+      }
+
+      async run(options: ProcessExecutorOptions): Promise<ExecutorResult> {
+        if (options.argv[1] === 'capture-pane') {
+          this.calls.push(options);
+          this.captured = true;
+          const held = this.heldCapture;
+          this.heldCapture = null;
+          if (held) await held;
+          return {
+            success: true,
+            exitCode: 0,
+            stdout: this.screen,
+            stderr: '',
+            timedOut: false,
+            truncated: false,
+          };
+        }
+        if (options.argv[1] === 'send-keys' && options.argv.includes('Escape')) {
+          this.screen = `cleared\n${indicator}`;
+        }
+        return super.run(options);
+      }
+    }
+
+    const build = () => {
+      const executor = new ScreenExecutor();
+      const service = new TerminalIOService(
+        executor,
+        { publish: jest.fn() } as unknown as EventsService,
+        new HumanPromptStateService(),
+        { getFollowNoteEnabled: () => false } as unknown as SettingsService,
+      );
+      return { executor, service };
+    };
+    const paneWrites = (executor: ScreenExecutor) =>
+      executor.calls.filter((c) => c.argv[1] === 'paste-buffer' || c.argv[1] === 'send-keys');
+
+    it.each(['deliver', 'deliverImmediate'] as const)(
+      '%s reads the baseline after a pre-key, so a pane change from the pre-key does not confirm a missing paste',
+      async (method) => {
+        const { executor, service } = build();
+        const options = {
+          agentId: 'agent-1',
+          confirm: true,
+          confirmTimeoutMs: 0,
+          maxAttempts: 1,
+          postPasteDelayMs: 0,
+          preKeys: ['Escape'],
+          firstMutationGuard: () => true,
+        };
+
+        const delivery = service[method](target, 'automated text', options);
+
+        if (method === 'deliver') {
+          await expect(delivery).resolves.toMatchObject({ confirmed: false });
+        } else {
+          await expect(delivery).rejects.toBeInstanceOf(PasteNotConfirmedError);
+        }
+        const escape = executor.calls.findIndex((c) => c.argv.includes('Escape'));
+        const firstCapture = executor.calls.findIndex((c) => c.argv[1] === 'capture-pane');
+        expect(escape).toBeGreaterThanOrEqual(0);
+        expect(firstCapture).toBeGreaterThan(escape);
+      },
+    );
+
+    it.each(['deliver', 'deliverImmediate'] as const)(
+      '%s refuses with no pane write when the guard turns false during the baseline read',
+      async (method) => {
+        const { executor, service } = build();
+        let allowed = true;
+        const releaseCapture = executor.holdNextCapture();
+
+        const delivery = service[method](target, 'automated text', {
+          agentId: 'agent-1',
+          confirm: true,
+          postPasteDelayMs: 0,
+          firstMutationGuard: () => allowed,
+        });
+        while (!executor.captured) await new Promise<void>((resolve) => setImmediate(resolve));
+        allowed = false;
+        releaseCapture();
+
+        await expect(delivery).rejects.toBeInstanceOf(DeliveryRefusedError);
+        expect(paneWrites(executor)).toEqual([]);
+      },
+    );
   });
 });

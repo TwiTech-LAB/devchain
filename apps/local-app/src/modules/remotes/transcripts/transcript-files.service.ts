@@ -3,13 +3,22 @@ import { ValidationError, ConflictError } from '../../../common/errors/error-typ
 import { constants } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { lstat, mkdir, open, readdir, realpath, rename, unlink } from 'node:fs/promises';
-import { basename, dirname, join, relative, sep } from 'node:path';
-import { Readable, Transform, Writable } from 'node:stream';
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { addAbortSignal, Readable, Transform, Writable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { eq } from 'drizzle-orm';
 import { DB_CONNECTION } from '../../storage/db/db.provider';
 import type { BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
-import { sessions, agents } from '../../storage/db/schema';
+import { sessions, agents, projects } from '../../storage/db/schema';
+import {
+  encodeClaudeProjectPath,
+  readClaudeToolResultPaths,
+} from '../../session-reader/adapters/claude-session-reader.adapter';
+import {
+  codexRolloutSessionId,
+  readCodexRolloutHeader,
+  type CodexRolloutHeader,
+} from '../../session-reader/adapters/codex-session-reader.adapter';
 import {
   TranscriptPathValidator,
   isWithin,
@@ -19,6 +28,7 @@ import {
   DEVIN_STORE_SESSIONS_DIR,
 } from '../../../common/devin-transcript-paths';
 import {
+  CLAUDE_COMPANION_FILE,
   CLAUDE_COMPANION_FOLDERS,
   DEVIN_EXPORT_REF,
   DEVIN_SESSION_FILES,
@@ -32,6 +42,8 @@ import {
   type TranscriptListing,
 } from './transcript-transfer.dto';
 
+type TranscriptFileEntry = TranscriptListing['files'][number];
+
 @Injectable()
 export class TranscriptFilesService {
   private readonly writing = new Set<string>();
@@ -41,13 +53,27 @@ export class TranscriptFilesService {
     @Inject(DB_CONNECTION) private readonly db: BetterSQLite3Database,
   ) {}
 
+  async projectRefs(
+    projectId: string,
+    signal?: AbortSignal,
+  ): Promise<{ refs: TranscriptRef[]; skipped: number; listing: TranscriptListing }> {
+    const { refs, skipped } = this.recordedProjectRefs(projectId);
+    const { entries, missing } = await this.recordedFiles(refs);
+    const dependencies = await this.addDependencies(entries, projectId, signal);
+    return {
+      refs: [...refs, ...dependencies.refs],
+      skipped: skipped + dependencies.skipped,
+      listing: { files: this.sortedEntries(entries), missing },
+    };
+  }
+
   /**
    * The project's recorded transcripts, and for Devin the session folder in the
    * project's store. A record whose path lies outside the provider root or has an
    * unexpected name is counted in `skipped`, not thrown: one such row must not
    * block every Connect and Disconnect of the project.
    */
-  projectRefs(projectId: string): { refs: TranscriptRef[]; skipped: number } {
+  recordedProjectRefs(projectId: string): { refs: TranscriptRef[]; skipped: number } {
     let skipped = 0;
     const refs = new Map<string, TranscriptRef>();
     const add = (ref: unknown): void => {
@@ -75,7 +101,11 @@ export class TranscriptFilesService {
         try {
           const absolute = this.validator.validateShape(row.path, provider);
           const path = relative(this.validator.root(provider), absolute);
-          if (provider === 'devin' && !DEVIN_EXPORT_REF.test(path)) skipped++;
+          if (
+            (provider === 'devin' && !DEVIN_EXPORT_REF.test(path)) ||
+            (provider === 'claude' && CLAUDE_COMPANION_FILE.test(path))
+          )
+            skipped++;
           else add({ provider, path: provider === 'claude' ? path.replace(/\.jsonl$/, '') : path });
         } catch {
           skipped++;
@@ -98,8 +128,29 @@ export class TranscriptFilesService {
     );
   }
 
-  async list(refs: TranscriptRef[]): Promise<TranscriptListing> {
-    const files = new Map<string, TranscriptListing['files'][number]>();
+  async list(refs: TranscriptRef[], dependencyProjectId?: string): Promise<TranscriptListing> {
+    const { entries, missing } = await this.recordedFiles(refs);
+    const skipped =
+      dependencyProjectId === undefined
+        ? undefined
+        : (await this.addDependencies(entries, dependencyProjectId)).skipped;
+    return {
+      files: this.sortedEntries(entries),
+      missing,
+      ...(skipped !== undefined && { skipped }),
+    };
+  }
+
+  async listFiles(files: TranscriptFile[]): Promise<TranscriptFileEntry[]> {
+    const entries = new Map<string, TranscriptFileEntry>();
+    for (const file of files) await this.addFile(entries, file);
+    return this.sortedEntries(entries);
+  }
+
+  private async recordedFiles(
+    refs: TranscriptRef[],
+  ): Promise<{ entries: Map<string, TranscriptFileEntry>; missing: number }> {
+    const files = new Map<string, TranscriptFileEntry>();
     let missing = 0;
     for (const ref of refs) {
       TranscriptRefSchema.parse(ref);
@@ -111,12 +162,13 @@ export class TranscriptFilesService {
         if (!found) missing++;
         continue;
       }
+      const claudeSession = ref.provider === 'claude' && !CLAUDE_COMPANION_FILE.test(ref.path);
       const main: TranscriptFile = {
         provider: ref.provider,
-        path: ref.path + (ref.provider === 'claude' ? '.jsonl' : ''),
+        path: ref.path + (claudeSession ? '.jsonl' : ''),
       };
       if (!(await this.addFile(files, main))) missing++;
-      if (ref.provider !== 'claude') continue;
+      if (!claudeSession) continue;
       for (const folder of CLAUDE_COMPANION_FOLDERS) {
         const dir = join(this.validator.root('claude'), ref.path, folder);
         if (!(await this.regularAncestors(dir, this.validator.root('claude')))) continue;
@@ -139,16 +191,166 @@ export class TranscriptFilesService {
         }
       }
     }
-    return {
-      files: [...files.values()].sort((a, b) => a.file.path.localeCompare(b.file.path)),
-      missing,
+    return { entries: files, missing };
+  }
+
+  private sortedEntries(files: Map<string, TranscriptFileEntry>): TranscriptFileEntry[] {
+    return [...files.values()].sort((a, b) => a.file.path.localeCompare(b.file.path));
+  }
+
+  private async addDependencies(
+    entries: Map<string, TranscriptFileEntry>,
+    projectId: string,
+    signal?: AbortSignal,
+  ): Promise<{ refs: TranscriptRef[]; skipped: number }> {
+    const refs: TranscriptRef[] = [];
+    const attempted = new Set<string>();
+    const roots = await this.projectWorkspacePaths(projectId);
+    const claudeWorkspaces = new Set([...roots].map(encodeClaudeProjectPath));
+    const codexHeaders = new Map<string, CodexRolloutHeader | undefined>();
+    let skipped = 0;
+    let rollouts: Map<string, string | null> | undefined;
+    const readHeader = async (file: TranscriptFile): Promise<CodexRolloutHeader | undefined> => {
+      if (codexHeaders.has(file.path)) return codexHeaders.get(file.path);
+      codexHeaders.set(file.path, undefined);
+      const { stream } = await this.read(file);
+      try {
+        if (signal) addAbortSignal(signal, stream);
+        const header = await readCodexRolloutHeader(stream);
+        codexHeaders.set(file.path, header);
+        return header;
+      } finally {
+        stream.destroy();
+      }
     };
+    const add = async (
+      key: string,
+      resolveFile: () => TranscriptFile | undefined | Promise<TranscriptFile | undefined>,
+    ): Promise<void> => {
+      if (attempted.has(key)) return;
+      attempted.add(key);
+      try {
+        const file = await resolveFile();
+        if (file) {
+          if (entries.has(fileKey(file))) return;
+          if (await this.addFile(entries, file, TRANSCRIPT_MAX_BYTES)) {
+            refs.push(file);
+            return;
+          }
+        }
+      } catch {
+        signal?.throwIfAborted();
+        // An unavailable dependency must not prevent the other files from moving.
+      }
+      skipped++;
+    };
+
+    // Deleting a parent clears the row link. The file map also visits each
+    // newly found ancestor once, including when several branches share it.
+    for (const { file } of entries.values()) {
+      signal?.throwIfAborted();
+      if (file.provider === 'devin' || file.path.includes('/tool-results/')) continue;
+      let stream: Readable | undefined;
+      try {
+        if (file.provider === 'claude') {
+          const workspace = file.path.split('/', 1)[0];
+          ({ stream } = await this.read(file));
+          if (signal) addAbortSignal(signal, stream);
+          for await (const absolute of readClaudeToolResultPaths(stream)) {
+            await add(`claude:${workspace}:${absolute}`, () =>
+              claudeWorkspaces.has(workspace)
+                ? this.claudeDependency(absolute, claudeWorkspaces)
+                : undefined,
+            );
+          }
+        } else {
+          const header = await readHeader(file);
+          const threadId = header?.historyBaseId;
+          if (threadId === undefined) continue;
+          if (!threadId || !isProjectWorkspace(header?.workspacePath, roots)) {
+            skipped++;
+            continue;
+          }
+          rollouts ??= await this.indexCodexRollouts(signal);
+          const path = rollouts.get(threadId);
+          await add(`codex:${threadId}`, async () => {
+            if (!path) return undefined;
+            const candidate: TranscriptFile = { provider: 'codex', path };
+            const source = await readHeader(candidate);
+            if (
+              source?.providerSessionId === threadId &&
+              isProjectWorkspace(source.workspacePath, roots)
+            )
+              return candidate;
+          });
+        }
+      } catch {
+        signal?.throwIfAborted();
+        skipped++;
+      } finally {
+        stream?.destroy();
+      }
+    }
+    return { refs, skipped };
+  }
+
+  private async projectWorkspacePaths(projectId: string): Promise<Set<string>> {
+    const project = this.db
+      .select({ rootPath: projects.rootPath })
+      .from(projects)
+      .where(eq(projects.id, projectId))
+      .get();
+    if (!project || !isAbsolute(project.rootPath)) return new Set();
+    const root = resolve(project.rootPath);
+    return new Set([root, await realpath(root).catch(() => root)]);
+  }
+
+  private claudeDependency(
+    absolute: string,
+    workspaces: ReadonlySet<string>,
+  ): TranscriptFile | undefined {
+    if (!isAbsolute(absolute)) return undefined;
+    const path = relative(
+      this.validator.root('claude'),
+      this.validator.validateShape(absolute, 'claude'),
+    );
+    if (CLAUDE_COMPANION_FILE.test(path) && workspaces.has(path.split('/', 1)[0]))
+      return { provider: 'claude', path };
+  }
+
+  private async indexCodexRollouts(signal?: AbortSignal): Promise<Map<string, string | null>> {
+    const root = this.validator.root('codex');
+    const rollouts = new Map<string, string | null>();
+    if (!(await this.regularAncestors(root, root))) return rollouts;
+    const scan = async (folder: string, depth: number): Promise<void> => {
+      signal?.throwIfAborted();
+      const children = await readdir(join(root, folder), { withFileTypes: true }).catch(() => []);
+      for (const child of children) {
+        const path = join(folder, child.name);
+        if (depth < 3) {
+          const namePattern = depth === 0 ? /^\d{4}$/ : /^\d{2}$/;
+          if (child.isDirectory() && namePattern.test(child.name)) await scan(path, depth + 1);
+        } else if (
+          child.isFile() &&
+          child.name.startsWith('rollout-') &&
+          child.name.endsWith('.jsonl')
+        ) {
+          const id = codexRolloutSessionId(child.name)?.toLowerCase();
+          if (id) rollouts.set(id, rollouts.has(id) ? null : path);
+        }
+      }
+    };
+    await scan('', 0);
+    return rollouts;
   }
 
   private async addFile(
-    files: Map<string, TranscriptListing['files'][number]>,
+    files: Map<string, TranscriptFileEntry>,
     file: TranscriptFile,
+    maxSize = Infinity,
   ): Promise<boolean> {
+    const key = fileKey(file);
+    if (files.has(key)) return true;
     const path = this.path(file);
     if (!(await this.regularAncestors(path, this.validator.root(file.provider)))) return false;
     let stat;
@@ -158,9 +360,9 @@ export class TranscriptFilesService {
       if (isMissing(error)) return false;
       throw error;
     }
-    if (!stat.isFile()) return false;
+    if (!stat.isFile() || stat.size > maxSize) return false;
     await this.validator.validateForRead(path, file.provider);
-    files.set(`${file.provider}:${file.path}`, {
+    files.set(key, {
       file,
       size: stat.size,
       ...(HASHED_TRANSCRIPT_PROVIDERS.has(file.provider) && { sha256: await this.sha256(file) }),
@@ -320,6 +522,15 @@ export class TranscriptFilesService {
     }
     return true;
   }
+}
+
+/** Two listing entries are the same file when this key is equal. */
+export function fileKey(file: TranscriptFile): string {
+  return `${file.provider}:${file.path}`;
+}
+
+function isProjectWorkspace(path: string | undefined, roots: ReadonlySet<string>): boolean {
+  return path !== undefined && isAbsolute(path) && roots.has(resolve(path));
 }
 
 function isMissing(error: unknown): boolean {

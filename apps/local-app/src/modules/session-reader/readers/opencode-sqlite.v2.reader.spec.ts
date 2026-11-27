@@ -11,6 +11,7 @@ import {
   createOpencodeV2FixtureDb,
   updateV2Catalog,
   updateV2MessageInPlace,
+  withWritableOpencodeDb,
   type V2SeedSession,
 } from '../__fixtures__/opencode-v2-fixture-db';
 
@@ -377,14 +378,21 @@ describe('OpencodeSqliteV2Reader', () => {
     expect(reader.readSession(dbPath, 'ses_rich').freshness).toEqual(freshness);
   });
 
-  it('finds sessions by directory or project worktree within the launch window, closest first', () => {
+  it('finds ordinary sessions by directory or worktree within the launch window, closest first', () => {
     const base = { projectId: V2_FIXTURE_PROJECT.id, messages: [] };
     seed([
       { ...base, id: 'ses_far', directory: '/workspace/demo', timeCreated: 100_000 },
       { ...base, id: 'ses_dir', directory: '/workspace/demo', timeCreated: 10_050 },
       { ...base, id: 'ses_sub', directory: '/workspace/demo/pkg', timeCreated: 10_010 },
+      { ...base, id: 'ses_fork', directory: '/workspace/demo', timeCreated: 10_000 },
       { ...base, id: 'ses_other', directory: '/elsewhere', projectId: 'p2', timeCreated: 10_000 },
     ]);
+    withWritableOpencodeDb(dbPath, (db) => {
+      db.prepare('UPDATE session_v2 SET fork_session_id = ? WHERE id = ?').run(
+        'ses_dir',
+        'ses_fork',
+      );
+    });
     const candidates = new OpencodeSqliteV2Reader().findSessionCandidates(dbPath, {
       directory: '/workspace/demo',
       startedAtMs: 10_000,

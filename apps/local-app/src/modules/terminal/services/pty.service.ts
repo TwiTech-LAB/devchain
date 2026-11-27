@@ -114,14 +114,15 @@ export class PtyService implements OnModuleDestroy, OnModuleInit {
       // (never per-frame in the onData hot path): LF normalization, and whether this
       // provider is a full-screen TUI that keeps the alternate screen.
       const runtimeDescriptor = this.sessionTerminalRuntime.getDescriptor(sessionId);
-      this.activeSessions.set(sessionId, {
+      const sess: PtySession = {
         sessionId,
         tmuxSessionName,
         ptyProcess,
         needsLfNormalize: runtimeDescriptor.normalizeLf,
         usesAlternateScreen: runtimeDescriptor.usesAlternateScreen,
         loggedPath: false,
-      });
+      };
+      this.activeSessions.set(sessionId, sess);
 
       // Alt-screen policy is PER-PROVIDER (set on the tmux window by the launch/restore
       // pipeline via setAlternateScreen). For non-TUI providers (the default) we ALSO
@@ -135,11 +136,9 @@ export class PtyService implements OnModuleDestroy, OnModuleInit {
 
       // Listen to data from the PTY
       ptyProcess.onData((data: string) => {
-        const sess = this.activeSessions.get(sessionId);
-        if (!sess) {
-          // Session was removed (e.g., disconnected) but PTY still firing events
-          return;
-        }
+        // This PTY was stopped. A session that restarts on the same ID has a new stream by then,
+        // and late data from this PTY must not go into it.
+        if (this.activeSessions.get(sessionId) !== sess) return;
         if (!sess.loggedPath) {
           logger.info(
             {
@@ -166,6 +165,8 @@ export class PtyService implements OnModuleDestroy, OnModuleInit {
       // Handle PTY exit
       ptyProcess.onExit(({ exitCode, signal }) => {
         logger.info({ sessionId, exitCode, signal }, 'PTY process exited');
+        // The exit of a stopped PTY can arrive after a new stream started for the same session.
+        if (this.activeSessions.get(sessionId) !== sess) return;
         this.activeSessions.delete(sessionId);
         this.terminalActivity.clearSession(sessionId);
       });

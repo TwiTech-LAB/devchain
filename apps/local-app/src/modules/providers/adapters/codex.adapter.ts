@@ -1,6 +1,19 @@
-import { getProviderCliNoUpdateOptions } from './provider-cli-policy';
+import { applyProviderCliNoUpdate, getProviderCliNoUpdateOptions } from './provider-cli-policy';
 import { Injectable } from '@nestjs/common';
+import { createReadStream } from 'node:fs';
+import { lstat, realpath, unlink } from 'node:fs/promises';
+import { homedir } from 'node:os';
+import { isAbsolute, resolve } from 'path';
 import { CODEX_TRAITS } from './codex.traits';
+import { IOError, ValidationError } from '../../../common/errors/error-types';
+import {
+  isWithin,
+  PROVIDER_ROOTS,
+} from '../../session-reader/services/transcript-path-validator.service';
+import {
+  codexRolloutSessionId,
+  readCodexRolloutHeader,
+} from '../../session-reader/adapters/codex-session-reader.adapter';
 import type {
   ProviderAdapter,
   AddMcpServerOptions,
@@ -21,8 +34,17 @@ import type {
   ProvisioningResult,
   SessionCommandCapability,
 } from './capabilities';
+import type {
+  CreateSessionSavePointInput,
+  PrepareSessionForkLaunchInput,
+  SessionForkCapability,
+  SessionForkLaunchResult,
+  SessionSavePointCopy,
+} from './capabilities/session-fork.capability';
 import type { ProviderPluginCatalogEntry } from '../dtos/provider-plugin.dto';
+import { CodexAppServerClient } from '../services/codex-app-server.client';
 import { ensureCodexProjectTrusted } from '../utils/codex-config';
+import { stripPositionalPrompt } from './fork-profile-options';
 import {
   isRecord,
   optionalBoolean,
@@ -31,6 +53,9 @@ import {
   requireRecord,
   requireString,
 } from './plugin-catalog.utils';
+
+const FORK_TIMEOUT_MS = 60_000;
+const FORK_MAX_OUTPUT_BYTES = 1024 * 1024;
 
 @Injectable()
 export class CodexAdapter
@@ -41,7 +66,8 @@ export class CodexAdapter
     EffortCapability,
     ProviderPluginCapability,
     ProjectProvisioningCapability,
-    SessionCommandCapability
+    SessionCommandCapability,
+    SessionForkCapability
 {
   readonly providerName = 'codex';
   readonly traits = CODEX_TRAITS;
@@ -70,6 +96,8 @@ export class CodexAdapter
     preDelayMs: 2000,
   };
   readonly runtimePromptBehavior: RuntimePromptBehavior = { inputPromptMarker: '›' };
+
+  constructor(private readonly appServer: CodexAppServerClient = new CodexAppServerClient()) {}
 
   async provisionProjectPath(
     projectPath: string,
@@ -134,6 +162,77 @@ export class CodexAdapter
       return { argv: ['resume', ...profileOptionArgs, ...overrides, providerSessionId!] };
     }
     return { argv: [...profileOptionArgs, ...overrides] };
+  }
+
+  async createSavePoint({
+    providerSessionId,
+    transcriptPath: sourcePath,
+    providerBinPath,
+    helperEnv,
+  }: CreateSessionSavePointInput): Promise<SessionSavePointCopy> {
+    const command = applyProviderCliNoUpdate(
+      this.providerName,
+      [providerBinPath, 'app-server'],
+      helperEnv,
+    );
+    const result = await this.appServer.request({
+      ...command,
+      method: 'thread/fork',
+      params: { threadId: providerSessionId, excludeTurns: true },
+      timeoutMs: FORK_TIMEOUT_MS,
+      maxOutputBytes: FORK_MAX_OUTPUT_BYTES,
+    });
+    if (!isRecord(result) || !isRecord(result.thread)) {
+      throw new IOError('Codex thread/fork returned no thread');
+    }
+    const { id, path: transcriptPath } = result.thread;
+    if (
+      typeof id !== 'string' ||
+      !id.trim() ||
+      id === providerSessionId ||
+      typeof transcriptPath !== 'string' ||
+      !isAbsolute(transcriptPath)
+    ) {
+      throw new IOError('Codex thread/fork returned an invalid ID or rollout path');
+    }
+    return {
+      providerSessionId: id,
+      transcriptPath,
+      discardUnboundTranscript: () => discardForkedRollout(id, transcriptPath, sourcePath),
+    };
+  }
+
+  async prepareForkLaunch(input: PrepareSessionForkLaunchInput): Promise<SessionForkLaunchResult> {
+    const child = await this.createSavePoint(input);
+    const { argv } = this.buildLaunchArgs({
+      mode: 'restore',
+      providerSessionId: child.providerSessionId,
+      profileOptionArgs: stripPositionalPrompt(input.profileOptionArgs, {
+        valueFlags: [
+          '-c',
+          '--config',
+          '--enable',
+          '--disable',
+          '--remote',
+          '--remote-auth-token-env',
+          '-m',
+          '--model',
+          '--local-provider',
+          '-p',
+          '--profile',
+          '-s',
+          '--sandbox',
+          '-C',
+          '--cd',
+          '--add-dir',
+          '-a',
+          '--ask-for-approval',
+        ],
+        // Codex submits an image-only user message even when there is no text prompt.
+        variadicPromptFlags: ['-i', '--image'],
+      }),
+    });
+    return { ...child, argv };
   }
 
   applyEffort(
@@ -259,4 +358,42 @@ function normalizeCodexPlugin(
     installPolicy: optionalString(plugin, 'installPolicy'),
     authPolicy: optionalString(plugin, 'authPolicy'),
   };
+}
+
+/**
+ * Removes the rollout that `thread/fork` wrote for `threadId` when DevChain does not store it.
+ * Removes only a regular file, never a link, under the Codex transcript root (the same root that
+ * stored transcript paths are checked against) whose file name and `session_meta` header both
+ * carry `threadId`, and never the source rollout. Anything else is refused and kept.
+ */
+async function discardForkedRollout(
+  threadId: string,
+  rolloutPath: string,
+  sourcePath: string,
+): Promise<void> {
+  const refuse = (reason: string) =>
+    new ValidationError(`Codex rollout was not discarded: ${reason}`, { rolloutPath });
+  let info;
+  try {
+    info = await lstat(rolloutPath);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return;
+    throw error;
+  }
+  if (!info.isFile()) throw refuse('not a regular file');
+  const real = await realpath(rolloutPath);
+  const roots = await Promise.all(
+    PROVIDER_ROOTS.codex.map((root) =>
+      realpath(resolve(homedir(), root)).catch(() => resolve(homedir(), root)),
+    ),
+  );
+  if (!roots.some((root) => isWithin(root, real))) throw refuse('outside the Codex root');
+  const source = await realpath(sourcePath).catch(() => resolve(sourcePath));
+  if (real === source) throw refuse('it is the source rollout');
+  const id = threadId.toLowerCase();
+  if (codexRolloutSessionId(real)?.toLowerCase() !== id) throw refuse('another thread file name');
+  const stream = createReadStream(real, { encoding: 'utf8' });
+  const header = await readCodexRolloutHeader(stream).finally(() => stream.destroy());
+  if (header?.providerSessionId !== id) throw refuse('another thread header');
+  await unlink(real);
 }

@@ -8,6 +8,7 @@ import { WatchersService } from '../../watchers/services/watchers.service';
 import { WatcherRunnerService } from '../../watchers/services/watcher-runner.service';
 import { UnifiedTemplateService } from '../../registry/services/unified-template.service';
 import { TeamsService } from '../../teams/services/teams.service';
+import { EventsService } from '../../events/services/events.service';
 import { NotFoundError } from '../../../common/errors/error-types';
 
 jest.mock('../../../common/logging/logger', () => ({
@@ -20,6 +21,7 @@ import { createProjectWriteGateStub } from '../../storage/write-gate/testing/pro
 
 describe('ProjectsService', () => {
   let service: ProjectsService;
+  let eventsService: { publish: jest.Mock };
   let storage: {
     getProject: jest.Mock;
     listProviders: jest.Mock;
@@ -181,9 +183,12 @@ describe('ProjectsService', () => {
       getTemplateFromFilePath: jest.fn(),
     };
 
+    eventsService = { publish: jest.fn().mockResolvedValue(null) };
+
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         { provide: ProjectWriteGate, useValue: createProjectWriteGateStub() },
+        { provide: EventsService, useValue: eventsService },
         ProjectsService,
         {
           provide: STORAGE_SERVICE,
@@ -682,6 +687,76 @@ describe('ProjectsService', () => {
       expect(updatedAgents).toHaveLength(2);
       expect(updatedAgents[0].providerConfigId).toBe(claudeConfigId);
       expect(updatedAgents[1].providerConfigId).toBe(agyConfigId);
+    });
+
+    describe('agent.updated events', () => {
+      const profileId = 'profile-1';
+
+      function arrangeProject(agentConfigs: Array<Record<string, unknown>>) {
+        settings.getProjectPresets.mockReturnValue([{ name: 'default', agentConfigs }]);
+        storage.listAgentProfiles.mockResolvedValue({
+          items: [{ id: profileId, projectId, name: 'CodeOpus' }],
+          total: 1,
+          limit: 1000,
+          offset: 0,
+        });
+        storage.listAgents.mockResolvedValue({
+          items: [
+            { id: 'agent-1', name: 'Coder', profileId, providerConfigId: null },
+            { id: 'agent-2', name: 'Reviewer', profileId, providerConfigId: null },
+          ],
+          total: 2,
+          limit: 1000,
+          offset: 0,
+        });
+        storage.listProfileProviderConfigsByProfile.mockResolvedValue(
+          ['config-a', 'config-b'].map((name) => ({
+            id: `id-${name}`,
+            profileId,
+            providerId: 'claude',
+            name,
+            options: null,
+            env: null,
+            createdAt: '',
+            updatedAt: '',
+          })),
+        );
+      }
+
+      it('publishes once per distinct agent and keeps the last entry for a repeated agent', async () => {
+        arrangeProject([
+          { agentName: 'Coder', providerConfigName: 'config-a', modelOverride: 'first' },
+          { agentName: 'Reviewer', providerConfigName: 'config-a' },
+          { agentName: 'coder', providerConfigName: 'config-b', modelOverride: 'last' },
+        ]);
+        const result = await service.applyPreset(projectId, 'default');
+
+        expect(result.applied).toBe(3);
+        expect(storage.updateAgent).toHaveBeenLastCalledWith('agent-1', {
+          providerConfigId: 'id-config-b',
+          modelOverride: 'last',
+        });
+        expect(eventsService.publish.mock.calls).toEqual([
+          ['agent.updated', { agentId: 'agent-1', projectId }],
+          ['agent.updated', { agentId: 'agent-2', projectId }],
+        ]);
+      });
+
+      it('publishes for the agents written before a later write fails', async () => {
+        arrangeProject([
+          { agentName: 'Coder', providerConfigName: 'config-a' },
+          { agentName: 'Reviewer', providerConfigName: 'config-a' },
+        ]);
+        storage.updateAgent
+          .mockResolvedValueOnce({ id: 'agent-1' } as never)
+          .mockRejectedValueOnce(new Error('write failed'));
+
+        await expect(service.applyPreset(projectId, 'default')).rejects.toThrow('write failed');
+
+        expect(eventsService.publish.mock.calls).toEqual([
+          ['agent.updated', { agentId: 'agent-1', projectId }],
+        ]);
+      });
     });
 
     it('should throw NotFoundError when preset not found', async () => {

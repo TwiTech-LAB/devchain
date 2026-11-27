@@ -89,6 +89,9 @@ type MaybePromise<T> = T | Promise<T>;
 export interface UseCrudMutationOptions<TData, TVars, TMeta> {
   mutationFn: (vars: TVars) => Promise<TData>;
 
+  /** Names the mutation in the shared cache, so `useIsMutating` sees it after the caller unmounts. */
+  mutationKey?: QueryKey;
+
   /**
    * Optimistic projection over a single list-cache key. `project` receives the
    * current cached value (unknown — the consumer narrows) and the mutation vars,
@@ -140,6 +143,7 @@ export function useCrudMutation<TData = unknown, TVars = void, TMeta = void>(
 
   const {
     mutationFn,
+    mutationKey,
     optimistic,
     rollbackKeys,
     invalidateKeys,
@@ -151,6 +155,7 @@ export function useCrudMutation<TData = unknown, TVars = void, TMeta = void>(
 
   return useMutation<TData, unknown, TVars, CrudMutationContext<TMeta>>({
     mutationFn,
+    mutationKey,
     onMutate: async (vars) => {
       const keys: QueryKey[] = [];
       if (optimistic) keys.push(optimistic.queryKey);

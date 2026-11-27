@@ -1,6 +1,5 @@
-import { useCallback, useMemo, useState } from 'react';
+import { useMemo } from 'react';
 import { cn } from '@/ui/lib/utils';
-import { fetchJsonOrThrow } from '@/ui/lib/sessions';
 import {
   Collapsible,
   CollapsibleContent,
@@ -14,7 +13,9 @@ import {
   truncateText,
 } from '@/ui/utils/session-reader-formatters';
 import { useSessionViewMode } from '@/ui/hooks/useSessionViewMode';
-import { useFetchFactory } from '@/ui/hooks/useFetchFactory';
+import { useTranscriptDisclosure } from '@/ui/hooks/useTranscriptDisclosure';
+import { ClampedContent } from './ClampedContent';
+import { FullToolResultStatus, loadFullResultLabel, useFullToolResult } from './useFullToolResult';
 
 const INPUT_TRUNCATE = 500;
 const RESULT_TRUNCATE = 500;
@@ -30,19 +31,6 @@ const SENSITIVE_KEYS = new Set([
   'apisecret',
   'api_secret',
 ]);
-
-interface FullToolResultResponse {
-  sessionId: string;
-  toolCallId: string;
-  content: string | unknown[];
-  isError: boolean;
-  fullLength: number;
-}
-
-function formatToolResultSize(fullLength?: number): string {
-  if (!fullLength || fullLength <= 0) return '';
-  return `${(fullLength / 1024).toFixed(fullLength >= 10 * 1024 ? 0 : 1)} KB`;
-}
 
 function buildOneLiner(step: SerializedSemanticStep): string {
   const name = step.content.toolName ?? 'Unknown';
@@ -78,6 +66,8 @@ export interface ToolCallItemProps {
   sessionId?: string | null;
   step: SerializedSemanticStep;
   resultStep?: SerializedSemanticStep;
+  /** Scopes the open-state keys; step ids repeat across chunks. */
+  chunkId?: string;
   isStepHot?: boolean;
   percentOfChunk?: number;
 }
@@ -86,10 +76,10 @@ export function ToolCallItem({
   sessionId,
   step,
   resultStep,
+  chunkId = '',
   isStepHot,
   percentOfChunk,
 }: ToolCallItemProps) {
-  const fetchFn = useFetchFactory();
   const { mode } = useSessionViewMode();
   const toolName = step.content.toolName ?? 'Unknown';
   const isTask = toolName === 'Task';
@@ -114,79 +104,38 @@ export function ToolCallItem({
         ? JSON.stringify(rawResult, null, 2)
         : null;
   const toolCallId = resultStep?.content.toolCallId ?? step.content.toolCallId;
-  const isServerTruncated = resultStep?.content.isTruncated === true;
-  const [expandedServerResult, setExpandedServerResult] = useState<string | null>(null);
-  const [isFetchingFullResult, setIsFetchingFullResult] = useState(false);
-  const [fetchError, setFetchError] = useState<string | null>(null);
-  const effectiveResultText = expandedServerResult ?? resultText;
-  const allowLocalResultToggle = !isServerTruncated || expandedServerResult !== null;
-  const loadFullLabel = useMemo(() => {
-    if (!isServerTruncated) return null;
-    const sizeText = formatToolResultSize(resultStep?.content.fullLength);
-    return sizeText ? `Show full result (${sizeText})` : 'Show full result';
-  }, [isServerTruncated, resultStep?.content.fullLength]);
+  const keyPrefix = `${chunkId}:${step.id}`;
+  const [open, setOpen] = useTranscriptDisclosure(`${keyPrefix}:section`);
+  const [showFullInput, setShowFullInput] = useTranscriptDisclosure(`${keyPrefix}:input`);
+  const [showFullResult, setShowFullResult] = useTranscriptDisclosure(`${keyPrefix}:result`);
+  const fullResult = useFullToolResult({
+    sessionId,
+    toolCallId,
+    isTruncated: resultStep?.content.isTruncated,
+    expanded: showFullResult,
+  });
+  const effectiveResultText = fullResult.fullText ?? resultText;
 
-  const [showFullInput, setShowFullInput] = useState(false);
-  const [showFullResult, setShowFullResult] = useState(false);
-
+  // The character caps bound the DOM size of the collapsed previews.
   const isInputLong = (inputText?.length ?? 0) > INPUT_TRUNCATE;
   const isResultLong = (effectiveResultText?.length ?? 0) > RESULT_TRUNCATE;
+  const isResultCut = fullResult.canLoad && fullResult.fullText === null;
 
   const displayInput =
     inputText && isInputLong && !showFullInput
       ? inputText.slice(0, INPUT_TRUNCATE) + '…'
       : inputText;
   const displayResult =
-    effectiveResultText && isResultLong && !showFullResult && allowLocalResultToggle
+    effectiveResultText && isResultLong && !showFullResult
       ? effectiveResultText.slice(0, RESULT_TRUNCATE) + '…'
       : effectiveResultText;
-
-  const handleLoadFullResult = useCallback(async () => {
-    if (
-      !sessionId ||
-      !toolCallId ||
-      !isServerTruncated ||
-      isFetchingFullResult ||
-      expandedServerResult !== null
-    ) {
-      return;
-    }
-
-    setFetchError(null);
-    setIsFetchingFullResult(true);
-    try {
-      const response = await fetchJsonOrThrow<FullToolResultResponse>(
-        `/api/sessions/${sessionId}/transcript/tool-result/${encodeURIComponent(toolCallId)}`,
-        {},
-        'Failed to fetch full tool result',
-        fetchFn,
-      );
-      const fullText =
-        typeof response.content === 'string'
-          ? response.content
-          : JSON.stringify(response.content, null, 2);
-      setExpandedServerResult(fullText);
-      setShowFullResult(true);
-    } catch (error) {
-      setFetchError(error instanceof Error ? error.message : 'Failed to fetch full tool result');
-    } finally {
-      setIsFetchingFullResult(false);
-    }
-  }, [
-    expandedServerResult,
-    fetchFn,
-    isFetchingFullResult,
-    isServerTruncated,
-    sessionId,
-    toolCallId,
-  ]);
 
   return (
     <div
       className={cn(isStepHot && 'border-l-2 border-status-warn pl-1.5')}
       data-testid="tool-call-wrapper"
     >
-      <Collapsible>
+      <Collapsible open={open} onOpenChange={setOpen}>
         <CollapsibleTrigger
           className="group flex items-center gap-1.5 text-[11px] text-muted-foreground hover:text-foreground transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring rounded-sm"
           data-testid="tool-call-trigger"
@@ -239,71 +188,48 @@ export function ToolCallItem({
         <CollapsibleContent>
           <div className="mt-1 space-y-1">
             {displayInput && (
-              <div>
+              <ClampedContent
+                disclosureKey={`${keyPrefix}:input`}
+                expanded={showFullInput}
+                onExpandedChange={setShowFullInput}
+                maxHeight={256}
+                truncated={isInputLong}
+                fadeClassName="from-muted"
+              >
                 <pre
-                  className="max-h-64 overflow-auto whitespace-pre-wrap rounded-md bg-muted/40 p-2 text-[11px] text-foreground leading-relaxed"
+                  className="overflow-x-auto whitespace-pre-wrap rounded-md bg-muted/40 p-2 text-[11px] text-foreground leading-relaxed"
                   data-testid="tool-call-input"
                 >
                   {displayInput}
                 </pre>
-                {isInputLong && (
-                  <button
-                    type="button"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      setShowFullInput((prev) => !prev);
-                    }}
-                    className="mt-0.5 text-[10px] text-primary hover:underline"
-                    data-testid="tool-input-show-more"
-                  >
-                    {showFullInput ? 'Show less' : 'Show more'}
-                  </button>
-                )}
-              </div>
+              </ClampedContent>
             )}
             {displayResult && (
               <div>
-                <pre
-                  className={cn(
-                    'max-h-64 overflow-auto whitespace-pre-wrap rounded-md p-2 text-[11px] leading-relaxed',
-                    isError ? 'bg-destructive/10 text-destructive' : 'bg-muted/40 text-foreground',
-                  )}
-                  data-testid="tool-call-result"
+                <ClampedContent
+                  disclosureKey={`${keyPrefix}:result`}
+                  expanded={showFullResult}
+                  onExpandedChange={setShowFullResult}
+                  maxHeight={256}
+                  truncated={isResultLong || isResultCut}
+                  collapsedLabel={
+                    isResultCut ? loadFullResultLabel(resultStep?.content.fullLength) : undefined
+                  }
+                  fadeClassName={isError ? 'from-destructive/10' : 'from-muted'}
                 >
-                  {displayResult}
-                </pre>
-                {isServerTruncated && !expandedServerResult && sessionId && toolCallId && (
-                  <button
-                    type="button"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      void handleLoadFullResult();
-                    }}
-                    className="mt-0.5 text-[10px] text-primary hover:underline disabled:opacity-60"
-                    disabled={isFetchingFullResult}
-                    data-testid="tool-result-load-full"
+                  <pre
+                    className={cn(
+                      'overflow-x-auto whitespace-pre-wrap rounded-md p-2 text-[11px] leading-relaxed',
+                      isError
+                        ? 'bg-destructive/10 text-destructive'
+                        : 'bg-muted/40 text-foreground',
+                    )}
+                    data-testid="tool-call-result"
                   >
-                    {isFetchingFullResult ? 'Loading full result…' : loadFullLabel}
-                  </button>
-                )}
-                {isResultLong && allowLocalResultToggle && (
-                  <button
-                    type="button"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      setShowFullResult((prev) => !prev);
-                    }}
-                    className="mt-0.5 text-[10px] text-primary hover:underline"
-                    data-testid="tool-result-show-more"
-                  >
-                    {showFullResult ? 'Show less' : 'Show more'}
-                  </button>
-                )}
-                {fetchError && (
-                  <p className="text-[10px] text-destructive" data-testid="tool-result-load-error">
-                    {fetchError}
-                  </p>
-                )}
+                    {displayResult}
+                  </pre>
+                </ClampedContent>
+                <FullToolResultStatus isLoading={fullResult.isLoading} error={fullResult.error} />
               </div>
             )}
           </div>

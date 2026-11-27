@@ -1,6 +1,11 @@
+import { readFile, rename, rm, writeFile } from 'fs/promises';
+import { dirname, join } from 'path';
 import { ClaudeAdapter } from './claude.adapter';
 import { ensureClaudeProjectTrusted } from '../utils/claude-config';
+import { parseProfileOptions } from '../utils/profile-options';
+import type { BuildLaunchArgsInput } from './provider-adapter.interface';
 
+jest.mock('fs/promises');
 jest.mock('../utils/claude-config', () => ({
   ensureClaudeProjectTrusted: jest.fn(),
 }));
@@ -321,6 +326,121 @@ describe('ClaudeAdapter', () => {
         profileOptionArgs: ['--model', 'claude-opus-4-5'],
       });
       expect(result.argv).toEqual(['--resume', 'session-abc', '--model', 'claude-opus-4-5']);
+    });
+
+    it('has no fork mode, so a fork cannot start a new conversation', () => {
+      // @ts-expect-error A fork launch comes from prepareForkLaunch.
+      const input: BuildLaunchArgsInput = { mode: 'fork', profileOptionArgs: [] };
+      expect(input.mode).toBe('fork');
+    });
+  });
+
+  describe('SessionForkCapability', () => {
+    const source = {
+      providerSessionId: 'ea82b212-f4a6-4deb-b199-f1ec1b45c7c1',
+      transcriptPath: '/project/transcripts/ea82b212-f4a6-4deb-b199-f1ec1b45c7c1.jsonl',
+      projectId: 'project-id',
+      projectPath: '/project',
+      providerBinPath: 'claude',
+      sessionId: 'save-point-row-id',
+      env: null,
+      helperEnv: {},
+    };
+
+    // Unit fixtures exercise the adapter contract without running a provider process.
+    it.each([
+      { mode: 'save', suffix: '', label: 'a terminated final record' },
+      { mode: 'save', suffix: '{"type":"assistant"}', label: 'an unterminated final record' },
+      {
+        mode: 'fork',
+        suffix: '{"type":"assistant"}',
+        label: 'an unterminated final record and a positional prompt',
+        prompt: '"read the project notes"',
+      },
+      {
+        mode: 'fork',
+        suffix: '{"type":"assistant"}',
+        label: 'an unterminated final record and a prompt after --',
+        prompt: '-- "read the project notes"',
+      },
+    ])('$mode copies complete lines with $label', async ({ mode, suffix, prompt }) => {
+      const records = [
+        { type: 'user', sessionId: source.providerSessionId, message: 'first turn' },
+        { type: 'file-history-snapshot', messageId: 'snapshot-id' },
+        { type: 'assistant', sessionId: source.providerSessionId, message: 'response' },
+      ];
+      const transcript = `${records.map((row) => JSON.stringify(row)).join('\n')}\n${suffix}`;
+      const sessionId = '97832185-29f6-4c67-a515-538af3286fc8';
+      const rowTranscriptPath = join(dirname(source.transcriptPath), `${sessionId}.jsonl`);
+      const rowTranscript = '{"type":"user","message":"current turn"}\n';
+      const files = new Map([
+        [source.transcriptPath, transcript],
+        [rowTranscriptPath, rowTranscript],
+      ]);
+      const read = (path: string): string => {
+        const content = files.get(path);
+        if (content === undefined) throw new Error(`Missing fixture file ${path}`);
+        return content;
+      };
+      jest.mocked(readFile).mockImplementation(async (path) => read(String(path)));
+      jest.mocked(writeFile).mockImplementation(async (path, data) => {
+        if (typeof data !== 'string') throw new Error('Expected JSONL text');
+        files.set(String(path), data);
+      });
+      jest.mocked(rename).mockImplementation(async (from, to) => {
+        files.set(String(to), read(String(from)));
+        files.delete(String(from));
+      });
+      jest.mocked(rm).mockImplementation(async (path) => {
+        files.delete(String(path));
+      });
+
+      const profile = [
+        '--add-dir /one /two --model claude-opus-4-5 --effort=high --permission-mode plan',
+        '--system-prompt-file "system instructions.txt"',
+        '--append-system-prompt-file "additional instructions.txt"',
+      ].join(' ');
+      const profileOptionArgs = parseProfileOptions(`${profile} ${prompt ?? ''}`);
+      const fork =
+        mode === 'fork'
+          ? await adapter.prepareForkLaunch({ ...source, sessionId, profileOptionArgs })
+          : null;
+      const saved = fork ?? (await adapter.createSavePoint(source));
+
+      if (fork) {
+        expect(fork.providerSessionId).not.toBe(sessionId);
+        expect(fork.argv).toEqual([
+          '--resume',
+          fork.providerSessionId,
+          ...parseProfileOptions(profile),
+        ]);
+      }
+      expect(saved.providerSessionId).toMatch(
+        /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/,
+      );
+      expect(saved.providerSessionId).not.toBe(source.providerSessionId);
+      expect(saved.transcriptPath).toBe(
+        join(dirname(source.transcriptPath), `${saved.providerSessionId}.jsonl`),
+      );
+      expect(read(source.transcriptPath)).toBe(transcript);
+      const expected = records.map((row) =>
+        JSON.stringify({ ...row, sessionId: saved.providerSessionId }),
+      );
+      expect(read(saved.transcriptPath)).toBe(`${expected.join('\n')}\n`);
+      const [tempPath] = jest.mocked(writeFile).mock.lastCall!;
+      expect(tempPath).not.toBe(saved.transcriptPath);
+      expect(writeFile).toHaveBeenCalledWith(tempPath, expect.any(String), {
+        mode: 0o600,
+        flag: 'wx',
+      });
+      expect(rename).toHaveBeenCalledWith(tempPath, saved.transcriptPath);
+      expect(read(rowTranscriptPath)).toBe(rowTranscript);
+
+      if (fork) {
+        await fork.discardUnboundTranscript?.();
+        expect(files.has(fork.transcriptPath)).toBe(false);
+        expect(read(rowTranscriptPath)).toBe(rowTranscript);
+      }
     });
   });
 

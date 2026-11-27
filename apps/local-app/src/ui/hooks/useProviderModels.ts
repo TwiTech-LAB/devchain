@@ -1,7 +1,7 @@
 import { useEffect } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { providerModelQueryKeys } from '@/ui/lib/provider-model-query-keys';
-import { useFetchFactory } from '@/ui/hooks/useFetchFactory';
+import { useAmbientBackend, useFetchFactory } from '@/ui/hooks/useFetchFactory';
 
 /**
  * Provider model catalog option. `id` is a stable composite when the API omits
@@ -80,10 +80,11 @@ export interface UseProviderModelsResult {
  */
 export function useProviderModels(options: UseProviderModelsOptions): UseProviderModelsResult {
   const fetchFn = useFetchFactory();
+  const backend = useAmbientBackend();
   const { providerId, modelOverride, onStaleSelection } = options;
 
   const { data: models = [], isLoading } = useQuery({
-    queryKey: providerModelQueryKeys.main(providerId ?? 'none'),
+    queryKey: providerModelQueryKeys.main(providerId ?? 'none', backend),
     queryFn: async () => {
       if (!providerId) return [] as ProviderModelOption[];
       const res = await fetchFn(`/api/providers/${providerId}/models`);

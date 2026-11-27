@@ -244,6 +244,8 @@ export const SyncStatusQuerySchema = z
 
 export interface SyncStatusOptions {
   allErrors?: boolean;
+  /** Rejects when the error sample cannot be read, instead of answering with no sample. */
+  strictErrors?: boolean;
 }
 
 export const FolderSyncStatusSchema = z.object({
@@ -262,6 +264,10 @@ export const FolderSyncStatusSchema = z.object({
   needTotalItems: z.number(),
   needBytes: z.number(),
   receiveOnlyChangedFiles: z.number(),
+  /** Optional because an older VM does not send them. */
+  globalBytes: z.number().optional(),
+  needDeletes: z.number().optional(),
+  watchError: z.string().optional(),
   /** This side's view of the peer's copy; present when the status was asked for a device. */
   peer: z
     .object({
@@ -269,11 +275,22 @@ export const FolderSyncStatusSchema = z.object({
       completion: z.number(),
       needItems: z.number(),
       needBytes: z.number(),
+      /** Deletions the peer still needs; `needItems` does not count them. */
+      needDeletes: z.number().optional(),
       remoteState: z.string(),
     })
     .nullable(),
 });
 export type FolderSyncStatus = z.infer<typeof FolderSyncStatusSchema>;
+
+/** The files of a folder that fail to sync, without the files that Syncthing retries. */
+export function failedCount(status: FolderSyncStatus): number {
+  const files = status.fileErrors ?? [];
+  if (files.length === 0) return status.errors ?? 0;
+  const failed = files.filter((file) => !isTransientSyncError(file.error)).length;
+  // fileErrors is a sample; scale it to the full count when every sampled file failed for real.
+  return failed === files.length ? Math.max(failed, status.errors ?? 0) : failed;
+}
 
 /** Reports retain full counts while bounding the paths stored in operation details. */
 export const FILE_SYNC_REPORT_SAMPLE = 20;

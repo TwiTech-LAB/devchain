@@ -3,7 +3,7 @@ import { ApiNoContentResponse, ApiOkResponse, ApiOperation, ApiTags } from '@nes
 import type { FastifyRequest } from 'fastify';
 import { HostProjectIdSchema } from '../host/host.dto';
 import { VmHoldRequestSchema } from './git-coordinator.dto';
-import type { GitCoordinatorRecord } from './git-coordinator.dto';
+import type { VmHoldAcquisition } from './git-coordinator.dto';
 import { GitCoordinatorService } from './git-coordinator.service';
 import { assertLoopback } from './loopback';
 
@@ -15,12 +15,15 @@ export class VmGitCoordinatorController {
   @Post('acquire')
   @HttpCode(200)
   @ApiOperation({ summary: 'Admit a local supervised Git child by PID and start identity' })
-  @ApiOkResponse({ description: 'VM ownership and durable process hold, after any reclaim' })
+  @ApiOkResponse({
+    description:
+      'VM ownership and durable process hold, with a notice on the first hold after a forced reclaim',
+  })
   acquire(
     @Req() request: FastifyRequest,
     @Param('id') id: string,
     @Body() body: unknown,
-  ): Promise<GitCoordinatorRecord> {
+  ): Promise<VmHoldAcquisition> {
     assertLoopback(request, 'VM Git holds require a loopback connection');
     return this.coordinator.acquireVmHold(
       HostProjectIdSchema.parse(id),

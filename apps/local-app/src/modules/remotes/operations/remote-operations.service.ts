@@ -113,6 +113,13 @@ export class RemoteOperationsService {
         return null;
       });
     if (record?.closed) warnings.push('The project is disconnecting; new Git writes wait.');
+    if (record?.forcedReclaim) {
+      const recovery = await this.homeWrites.recoveryWarning(projectId, binding.remoteId, {
+        name: remote.name,
+        forcedReclaim: record.forcedReclaim,
+      });
+      if (recovery) warnings.push(recovery);
+    }
     const unconfirmed = record?.homeWrites ?? {};
     const stuck = this.stuckHomeWrites(projectId, unconfirmed);
     if (stuck) warnings.push(stuck);

@@ -14,7 +14,12 @@ import {
   useCreateProjectWizard,
 } from '@/ui/hooks/useCreateProjectWizard';
 import { useConfirmDialog, useFormDialog } from '@/ui/hooks/useFormDialog';
-import { useImportProjectWizard, useUpgradeProjectWizard } from '@/ui/hooks/useImportProjectWizard';
+import {
+  targetBackend,
+  useImportProjectWizard,
+  useUpgradeProjectWizard,
+  type ImportWizardTarget,
+} from '@/ui/hooks/useImportProjectWizard';
 import { useSelectedProject } from '@/ui/hooks/useProjectSelection';
 import { useRemotes } from '@/ui/hooks/useRemotes';
 import { useTemplateForm } from '@/ui/hooks/useTemplateForm';
@@ -107,6 +112,17 @@ interface ProjectDragState {
   projectId: string | null;
   sourceWorkspaceId: string | null;
   targetWorkspaceId: string | null;
+}
+
+const TEMPLATE_PREVIEW_FAILURE = 'Failed to load the template preview. Close and try again.';
+
+/** A failed preview shows the server's message when the wizard has one, else `fallback`. */
+function previewErrorText(
+  wizard: { isError: boolean; errorMessage?: string | null },
+  fallback: string,
+): string | undefined {
+  if (!wizard.isError) return undefined;
+  return wizard.errorMessage ?? fallback;
 }
 
 const emptyProjectDrag = (): ProjectDragState => ({
@@ -676,8 +692,28 @@ export function useProjectsPageController(
 
   const createWizard = useCreateProjectWizard(createMutation, api);
   const { openWizard } = createWizard;
+  // The pull is not awaited: the result dialog must not wait for a host that may take
+  // up to two minutes to answer. A pull changes only home's project rows.
+  const pullRemoteProjectChanges = useCallback(
+    (projectId: string, backend: BackendId) => {
+      if (backend === HOME_BACKEND) return;
+      void api
+        .pullRemoteProject(projectId)
+        .catch(() => undefined)
+        .finally(() => void queryClient.invalidateQueries({ queryKey: projectsQueryKeys.list() }));
+    },
+    [api, queryClient],
+  );
+
   const [importResult, setImportResult] = useState<ImportProjectSuccess | null>(null);
-  const importWizard = useImportProjectWizard({ onImported: setImportResult, toast, api });
+  const handleImported = useCallback(
+    (result: ImportProjectSuccess, target: ImportWizardTarget) => {
+      setImportResult(result);
+      pullRemoteProjectChanges(target.id, targetBackend(target));
+    },
+    [pullRemoteProjectChanges],
+  );
+  const importWizard = useImportProjectWizard({ onImported: handleImported, toast, api });
   const { openImportWizard } = importWizard;
 
   const invalidateUpgradeSources = useCallback(() => {
@@ -690,15 +726,9 @@ export function useProjectsPageController(
     invalidateUpgradeSources();
   }, [invalidateUpgradeSources]);
 
-  // The pull is not awaited: the result dialog must not wait for a host that may take
-  // up to two minutes to answer. A pull changes only home's project rows.
   const pullUpgradedProject = useCallback(() => {
-    if (!upgradeTarget || upgradeTarget.backend === HOME_BACKEND) return;
-    void api
-      .pullRemoteProject(upgradeTarget.project.id)
-      .catch(() => undefined)
-      .finally(() => void queryClient.invalidateQueries({ queryKey: projectsQueryKeys.list() }));
-  }, [api, queryClient, upgradeTarget]);
+    if (upgradeTarget) pullRemoteProjectChanges(upgradeTarget.project.id, upgradeTarget.backend);
+  }, [pullRemoteProjectChanges, upgradeTarget]);
 
   const handleUpgradeFinished = useCallback(
     (result: UpgradeProjectResponse) => {
@@ -800,6 +830,20 @@ export function useProjectsPageController(
       });
     },
     [remoteOwners],
+  );
+
+  // Like an upgrade, an import of a `remote` project runs on its VM; every request of that
+  // import uses the backend chosen here.
+  const openImport = useCallback(
+    (project: ProjectWithStats) => {
+      const owner = remoteOwners.get(project.id);
+      importSource.open({
+        id: project.id,
+        name: project.name,
+        backend: owner?.state === 'remote' ? owner.remoteId : HOME_BACKEND,
+      });
+    },
+    [importSource, remoteOwners],
   );
 
   const noticeItems = useMemo(
@@ -978,7 +1022,7 @@ export function useProjectsPageController(
       openProject,
       editProject,
       requestDelete: deleteDialog.open,
-      startImport: importSource.open,
+      startImport: openImport,
       exportProject: setExportTarget,
       configureProject: setConfigureTarget,
       upgradeProject: openUpgrade,
@@ -1090,9 +1134,7 @@ export function useProjectsPageController(
           submitLabel: 'Create project',
           isLoading: createWizard.isLoading,
           isSubmitting: createWizard.isSubmitting,
-          errorMessage: createWizard.isError
-            ? 'Failed to load the template preview. Close and try again.'
-            : undefined,
+          errorMessage: previewErrorText(createWizard, TEMPLATE_PREVIEW_FAILURE),
         },
         providerMapping: providerMappingData
           ? {
@@ -1141,9 +1183,7 @@ export function useProjectsPageController(
           submitLabel: 'Replace Project',
           isLoading: importWizard.isLoading,
           isSubmitting: importWizard.isSubmitting,
-          errorMessage: importWizard.isError
-            ? 'Failed to load the template preview. Close and try again.'
-            : undefined,
+          errorMessage: previewErrorText(importWizard, TEMPLATE_PREVIEW_FAILURE),
         },
         result: importResult,
         closeResult: () => setImportResult(null),
@@ -1161,9 +1201,10 @@ export function useProjectsPageController(
           submitLabel: `Apply ${upgradeActionName}`,
           isLoading: upgradeWizard.isLoading,
           isSubmitting: upgradeWizard.isSubmitting,
-          errorMessage: upgradeWizard.isError
-            ? 'Failed to load the target template preview. Close and try again.'
-            : undefined,
+          errorMessage: previewErrorText(
+            upgradeWizard,
+            'Failed to load the target template preview. Close and try again.',
+          ),
         },
         result: upgradeResultModel,
       },

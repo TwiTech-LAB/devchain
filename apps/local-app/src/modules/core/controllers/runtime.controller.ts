@@ -19,6 +19,7 @@ import { readHostCliVersions } from './host-cli-versions';
 import { readHostUserIdentity } from './host-user-identity';
 import type { HostRuntimeResponse } from '../../remotes/contract/host-routes';
 import { VaultVmCacheService } from '../../vault/vault-vm-cache.service';
+import { IntegrationVmCacheService } from '../../external-integrations/vm-cache/integration-vm-cache.service';
 
 @ApiTags('runtime')
 @Controller('api/runtime')
@@ -30,6 +31,7 @@ export class RuntimeController {
     // read-only join of provider, provider-config and project rows.
     @Inject(STORAGE_SERVICE) private readonly storage: HostEnvOverrideReportStorage,
     private readonly vaultCache: VaultVmCacheService,
+    private readonly integrationCache: IntegrationVmCacheService,
   ) {}
 
   @Get()
@@ -42,11 +44,13 @@ export class RuntimeController {
         ? env.RUNTIME_TOKEN.trim()
         : undefined;
     // Independent reads: the Docker probe, the database-backed override report and,
-    // on a claimed VM, the Vault cache state (revision and readiness, never values).
-    const [docker, providerEnvOverrides, vault] = await Promise.all([
+    // on a claimed VM, the Vault and integration cache states (revision and readiness,
+    // never values).
+    const [docker, providerEnvOverrides, vault, integrations] = await Promise.all([
       readDockerRuntime(),
       readHostEnvOverrideReport(this.storage),
       this.vaultCache.isClaimedHost() ? this.vaultCache.status() : undefined,
+      this.integrationCache.isClaimedHost() ? this.integrationCache.status() : undefined,
     ]);
 
     return {
@@ -74,6 +78,7 @@ export class RuntimeController {
       // names only, never values.
       providerEnvOverrides,
       ...(vault ? { vault } : {}),
+      ...(integrations ? { integrations } : {}),
       ...(runtimeToken ? { runtimeToken } : {}),
     };
   }

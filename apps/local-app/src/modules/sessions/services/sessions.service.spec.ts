@@ -11,6 +11,7 @@ jest.mock('../../../common/logging/logger', () => ({
 
 import { SessionRowStore } from '../../storage/sessions/session-row.store';
 import { SessionsService } from './sessions.service';
+import { PendingAskUserQuestionService } from '../../hooks/services/pending-ask-user-question.service';
 import { ForbiddenError, NotFoundError, ValidationError } from '../../../common/errors/error-types';
 import type { StorageService } from '../../storage/interfaces/storage.interface';
 import type { BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
@@ -74,6 +75,7 @@ describe('SessionsService', () => {
   let claudeLaunchSettings: { cleanupSessionSync: jest.Mock };
   let codexPluginProfiles: { cleanupSession: jest.Mock; reconcileStartup: jest.Mock };
   let service: SessionsService;
+  let pendingQuestions: PendingAskUserQuestionService;
 
   beforeEach(() => {
     jest.clearAllMocks();
@@ -149,6 +151,7 @@ describe('SessionsService', () => {
       reconcileStartup: jest.fn().mockResolvedValue(undefined),
     };
 
+    pendingQuestions = new PendingAskUserQuestionService();
     service = new SessionsService(
       dbMock,
       storage as unknown as StorageService,
@@ -180,6 +183,7 @@ describe('SessionsService', () => {
       } as unknown as EpicTimeStore,
       { listRemoteOwnedProjectIds: () => [] } as never,
       new SessionRowStore(dbMock),
+      pendingQuestions,
     );
   });
 
@@ -668,6 +672,115 @@ describe('SessionsService', () => {
       const preparedSql = sqlitePrepare.mock.calls.map(([sql]) => String(sql));
       expect(preparedSql).toHaveLength(1);
       expect(preparedSql.join('\n')).not.toMatch(/chat_activities|chat_threads/);
+    });
+
+    // Layer: backend unit. The terminal registry and the stored row are the two sources of
+    // one presence entry; mocked values for both show which field reads which source.
+    it.each([
+      {
+        name: 'a quiet tool run: the stored turn is busy, the terminal timer says idle',
+        stored: { activity_state: 'busy', busy_since: '2026-07-18T10:01:00.000Z' },
+        terminal: { busySince: null, idleSince: Date.parse('2026-07-18T10:01:31.000Z') },
+        expected: {
+          activityState: 'idle',
+          turnActivityState: 'busy',
+          turnBusySince: '2026-07-18T10:01:00.000Z',
+        },
+      },
+      {
+        name: 'output after a finished turn: the stored turn is idle, the terminal says busy',
+        stored: { activity_state: 'idle', busy_since: null },
+        terminal: { busySince: Date.parse('2026-07-18T10:02:00.000Z'), idleSince: null },
+        expected: {
+          activityState: 'busy',
+          busySince: '2026-07-18T10:02:00.000Z',
+          turnActivityState: 'idle',
+          turnBusySince: null,
+        },
+      },
+    ])('reports the stored turn state beside the terminal state for $name', async (row) => {
+      sqlitePrepare.mockReturnValue({
+        run: insertRunMock,
+        get: jest.fn().mockReturnValue(undefined),
+        all: jest.fn().mockReturnValue([
+          {
+            id: 'session-1',
+            epic_id: null,
+            agent_id: 'agent-1',
+            tmux_session_id: null,
+            status: 'running',
+            started_at: '2026-07-18T10:00:00.000Z',
+            ended_at: null,
+            last_activity_at: '2026-07-18T10:01:00.000Z',
+            transcript_path: null,
+            name: null,
+            created_at: '2026-07-18T10:00:00.000Z',
+            updated_at: '2026-07-18T10:01:00.000Z',
+            ...row.stored,
+          },
+        ]),
+      });
+      terminalSessionRegistry.get.mockReturnValue({
+        getActivityState: () => ({
+          lastDataAt: Date.parse('2026-07-18T10:02:00.000Z'),
+          ...row.terminal,
+        }),
+      });
+
+      expect((await service.getAgentPresence()).get('agent-1')).toMatchObject(row.expected);
+    });
+
+    // Layer: backend unit. The flag is a lookup in an in-memory store, so a real
+    // PendingAskUserQuestionService with mocked SQL rows covers it without a database.
+    it('flags a pending question until it is answered or the session stops', async () => {
+      const runningRow = {
+        id: 'session-1',
+        epic_id: null,
+        agent_id: 'agent-1',
+        tmux_session_id: null,
+        status: 'running',
+        started_at: '2026-07-18T10:00:00.000Z',
+        ended_at: null,
+        last_activity_at: '2026-07-18T10:01:00.000Z',
+        activity_state: 'busy',
+        busy_since: '2026-07-18T10:01:00.000Z',
+        transcript_path: null,
+        name: null,
+        created_at: '2026-07-18T10:00:00.000Z',
+        updated_at: '2026-07-18T10:01:00.000Z',
+      };
+      const rows = jest.fn().mockReturnValue([runningRow]);
+      sqlitePrepare.mockReturnValue({
+        run: insertRunMock,
+        get: jest.fn().mockReturnValue(undefined),
+        all: rows,
+      });
+      const ask = (toolUseId: string) =>
+        pendingQuestions.set({
+          projectId: 'project-1',
+          agentId: 'agent-1',
+          sessionId: 'session-1',
+          claudeSessionId: 'claude-1',
+          toolUseId,
+          questions: [],
+        });
+
+      expect((await service.getAgentPresence()).get('agent-1')?.pendingQuestion).toBe(false);
+
+      ask('tool-1');
+      expect((await service.getAgentPresence()).get('agent-1')?.pendingQuestion).toBe(true);
+
+      pendingQuestions.clearByToolUseId('session-1', 'tool-1');
+      expect((await service.getAgentPresence()).get('agent-1')?.pendingQuestion).toBe(false);
+
+      ask('tool-2');
+      pendingQuestions.onSessionStopped({ sessionId: 'session-1' } as never);
+      rows.mockReturnValue([]);
+      storage.listAgents.mockResolvedValue({ items: [{ id: 'agent-1', name: 'Agent 1' }] });
+      expect((await service.getAgentPresence('project-1')).get('agent-1')).toEqual({
+        online: false,
+      });
+      expect(pendingQuestions.hasPendingQuestion('session-1')).toBe(false);
     });
   });
 

@@ -1,6 +1,6 @@
 /**
- * Importing a vendor task into a project a remote owns: the epic is created on
- * the host, home mirrors it and keeps the link row.
+ * Importing a vendor task into a project a remote of another version owns: the
+ * epic is created on the host, home mirrors it and keeps the link row.
  * Test layer: two-instance integration. The contract spans the host epic
  * routes over HTTP, home's mirror pull and home's link write, and the recovery
  * cases need a host that really stops and restarts.
@@ -13,6 +13,7 @@ import {
   type TwoInstances,
 } from '../../../common/test/two-instance.fixture';
 import { RemoteHostClient } from '../../remotes/operations/remote-host.client';
+import { RemoteHealthService } from '../../remotes/services/remote-health.service';
 import { T, replicaSeeder } from '../../remotes/replica/__fixtures__/replica-seed';
 import type { Remote, RemoteOperation } from '../../storage/models/domain.models';
 
@@ -170,6 +171,15 @@ describe('external task import into a remote-owned project', () => {
     }, 15_000);
   }, 60_000);
 
+  beforeEach(() => {
+    // Both instances run one build; the link writer must see an older VM.
+    const health = home.app.get(RemoteHealthService);
+    const read = health.getState.bind(health);
+    jest
+      .spyOn(health, 'getState')
+      .mockImplementation((remoteId) => ({ ...read(remoteId), versionMatches: false }));
+  });
+
   afterEach(() => {
     jest.restoreAllMocks();
   });
@@ -216,7 +226,7 @@ describe('external task import into a remote-owned project', () => {
 
   it('reuses the host epic after a failure between the host create and the link write', async () => {
     jest
-      .spyOn(home.storage, 'createExternalTaskLink')
+      .spyOn(home.storage, 'createRemoteProjectExternalTaskLink')
       .mockRejectedValueOnce(new Error('link write failed'));
 
     const failed = await importTask('ENG-2');

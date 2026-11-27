@@ -3,6 +3,7 @@ import { Inject, Injectable, Optional } from '@nestjs/common';
 import { and, eq, sql, inArray } from 'drizzle-orm';
 import type { BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
 import {
+  AgentDisabledError,
   ConflictError,
   NotFoundError,
   StorageError,
@@ -10,6 +11,7 @@ import {
 } from '../../../common/errors/error-types';
 import { DB_CONNECTION } from '../../storage/db/db.provider';
 import {
+  agents,
   teams,
   teamMembers,
   teamProfiles,
@@ -24,8 +26,18 @@ import type { ListOptions, ListResult } from '../../storage/interfaces/storage.i
 import type { Team, TeamMember, CreateTeam, UpdateTeam } from '../../storage/models/domain.models';
 import { ProjectWriteGate } from '../../storage/write-gate/project-write-gate';
 
-export interface TeamsListOptions extends ListOptions {
+/** Member reads include disabled agents unless `excludeDisabledMembers` is set. */
+export interface TeamMemberReadOptions {
+  excludeDisabledMembers?: boolean;
+}
+
+export interface TeamsListOptions extends ListOptions, TeamMemberReadOptions {
   q?: string;
+}
+
+/** The filter for a member read joined to `agents`; `and()` ignores `undefined`. */
+function enabledMembersOnly(options: TeamMemberReadOptions) {
+  return options.excludeDisabledMembers ? eq(agents.disabled, false) : undefined;
 }
 
 // Creation order, not rowid order: a replica inserts a project's teams sorted by id, so a
@@ -57,6 +69,7 @@ export class TeamsStore {
 
     try {
       return await this.txRunner.runImmediateAsync(async () => {
+        this.assertLeadEnabled(data.teamLeadAgentId);
         const now = await this.nextTeamCreatedAt(data.projectId);
         await this.db.insert(teams).values({
           id,
@@ -127,7 +140,10 @@ export class TeamsStore {
     }
   }
 
-  async getTeam(id: string): Promise<
+  async getTeam(
+    id: string,
+    options: TeamMemberReadOptions = {},
+  ): Promise<
     | (Team & {
         members: TeamMember[];
         profileIds: string[];
@@ -138,7 +154,12 @@ export class TeamsStore {
     const [row] = await this.db.select().from(teams).where(eq(teams.id, id));
     if (!row) return null;
 
-    const members = await this.db.select().from(teamMembers).where(eq(teamMembers.teamId, id));
+    const members = await this.db
+      .select({ teamMembers })
+      .from(teamMembers)
+      .innerJoin(agents, eq(agents.id, teamMembers.agentId))
+      .where(and(eq(teamMembers.teamId, id), enabledMembersOnly(options)))
+      .then((rows) => rows.map((row) => row.teamMembers));
     const profileRows = await this.db
       .select()
       .from(teamProfiles)
@@ -192,7 +213,8 @@ export class TeamsStore {
           count: sql<number>`count(*)`,
         })
         .from(teamMembers)
-        .where(inArray(teamMembers.teamId, teamIds))
+        .innerJoin(agents, eq(agents.id, teamMembers.agentId))
+        .where(and(inArray(teamMembers.teamId, teamIds), enabledMembersOnly(options)))
         .groupBy(teamMembers.teamId);
 
       for (const c of counts) {
@@ -226,6 +248,7 @@ export class TeamsStore {
    */
   async listTeamsWithMembers(
     projectId: string,
+    options: TeamMemberReadOptions = {},
   ): Promise<Array<{ team: Team; memberAgentIds: string[] }>> {
     const teamRows = await this.db
       .select()
@@ -236,9 +259,10 @@ export class TeamsStore {
     if (teamIds.length === 0) return [];
 
     const memberRows = await this.db
-      .select()
+      .select({ teamId: teamMembers.teamId, agentId: teamMembers.agentId })
       .from(teamMembers)
-      .where(inArray(teamMembers.teamId, teamIds));
+      .innerJoin(agents, eq(agents.id, teamMembers.agentId))
+      .where(and(inArray(teamMembers.teamId, teamIds), enabledMembersOnly(options)));
 
     const membersByTeam = new Map<string, string[]>();
     for (const row of memberRows) {
@@ -263,12 +287,26 @@ export class TeamsStore {
     return row ? this.toTeam(row) : null;
   }
 
+  /** Runs inside the team write transaction, so a Disable cannot commit between check and write. */
+  private assertLeadEnabled(teamLeadAgentId: string | null | undefined): void {
+    if (!teamLeadAgentId) return;
+    const lead = this.db
+      .select({ name: agents.name, disabled: agents.disabled })
+      .from(agents)
+      .where(eq(agents.id, teamLeadAgentId))
+      .get();
+    if (lead?.disabled) {
+      throw new AgentDisabledError({ id: teamLeadAgentId, name: lead.name });
+    }
+  }
+
   async updateTeam(id: string, data: UpdateTeam): Promise<Team> {
     this.assertTeamWritable(id);
     const now = new Date().toISOString();
 
     try {
       return await this.txRunner.runImmediateAsync(async () => {
+        this.assertLeadEnabled(data.teamLeadAgentId);
         const updateSet: Record<string, unknown> = { updatedAt: now };
         if (data.name !== undefined) updateSet.name = data.name;
         if (data.description !== undefined) updateSet.description = data.description;
@@ -526,6 +564,7 @@ export class TeamsStore {
     });
   }
 
+  /** Open sub-epics of a disabled agent do not use a concurrency slot. */
   async countBusyTeamMembers(teamId: string, teamLeadAgentId: string | null): Promise<number> {
     const result = this.sqlite
       .prepare(
@@ -533,7 +572,9 @@ export class TeamsStore {
          FROM epics e
          JOIN statuses s ON e.status_id = s.id
          JOIN team_members tm ON tm.agent_id = e.agent_id
+         JOIN agents a ON a.id = e.agent_id
          WHERE tm.team_id = ?
+           AND a.disabled = 0
            AND e.parent_id IS NOT NULL
            AND lower(s.label) <> 'done'
            AND (? IS NULL OR e.agent_id <> ?)`,

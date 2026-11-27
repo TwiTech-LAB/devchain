@@ -47,10 +47,12 @@ import { RemotesController } from '../controllers/remotes.controller';
 import { RemotesService } from './remotes.service';
 import { RemoteFileSyncService } from '../sync/remote-file-sync.service';
 import { RemoteLiveSyncService } from '../sync/remote-live-sync.service';
+import { HomeGitRecoveryService } from '../git-writes/home-git-recovery.service';
 import { resetEnvConfig } from '../../../common/config/env.config';
 import { fixtureTls, installFixtureTlsFront } from '../../../common/test/tls-fixture';
 import { providerCliPolicyRevision } from '../host/host-provider-cli-policy';
 import { VaultVmCacheService } from '../../vault/vault-vm-cache.service';
+import { IntegrationVmCacheService } from '../../external-integrations/vm-cache/integration-vm-cache.service';
 
 jest.mock('../../core/controllers/docker-runtime', () => ({
   ...jest.requireActual('../../core/controllers/docker-runtime'),
@@ -193,6 +195,11 @@ describe('provider CLI policy across home and VM', () => {
       sharedVmGuardStub(),
       { poll: async () => undefined, prune: () => undefined } as never,
       { pushIfChanged: async () => undefined, useHealth: () => undefined } as never,
+      {
+        pushIfChanged: async () => undefined,
+        useHealth: () => undefined,
+        noteReport: () => undefined,
+      } as never,
     );
     const module = await Test.createTestingModule({
       controllers: [
@@ -213,9 +220,11 @@ describe('provider CLI policy across home and VM', () => {
         { provide: REMOTE_HEALTH_PORT, useValue: health },
         { provide: SyncthingManager, useValue: { getState: () => null } },
         { provide: VaultVmCacheService, useValue: { isClaimedHost: () => false } },
+        { provide: IntegrationVmCacheService, useValue: { isClaimedHost: () => false } },
         { provide: RemotesService, useValue: {} },
         { provide: RemoteFileSyncService, useValue: {} },
         { provide: RemoteLiveSyncService, useValue: {} },
+        { provide: HomeGitRecoveryService, useValue: { bindingWarnings: () => new Map() } },
       ],
     }).compile();
     const app = module.createNestApplication<NestFastifyApplication>(
